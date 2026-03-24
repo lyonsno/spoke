@@ -8,6 +8,7 @@ microphone input, with fast rise and slow decay for a breathing effect.
 from __future__ import annotations
 
 import logging
+import time
 
 import objc
 from AppKit import (
@@ -22,8 +23,10 @@ from AppKit import (
 )
 from Foundation import NSObject
 from Quartz import (
+    CABasicAnimation,
     CAGradientLayer,
     CALayer,
+    CAMediaTimingFunction,
     CAShapeLayer,
     CGPathCreateWithRoundedRect,
     kCAFillRuleEvenOdd,
@@ -36,8 +39,12 @@ _GLOW_COLOR = (0.7, 0.92, 0.95)  # pale turquoise-white blue RGB
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 30.0  # tighter bloom — stays near the edge
 _GLOW_MAX_OPACITY = 1.0  # full brightness at peak to compensate for smaller size
-_GLOW_BASE_OPACITY = 0.05  # barely-there base in silence
-_CORNER_RADIUS = 10.0  # macOS screen corner radius
+_GLOW_BASE_OPACITY = 0.15  # visible base in silence — clear signal that we're listening
+# MacBook Pro 14"/16" (2021+) has asymmetric display corners.
+# We use slightly tighter radii than the physical bezel so the glow
+# source stays close to the corners — the bezel hides the overshoot.
+_CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corners
+_CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.75  # snappy but not instant
@@ -46,6 +53,33 @@ _DECAY_FACTOR = 0.85  # faster falloff for more responsive feel
 # Fade timing
 _FADE_IN_S = 0.08
 _FADE_OUT_S = 0.2
+
+
+def _rounded_rect_path(x, y, w, h, top_radius, bottom_radius):
+    """Create a CGPath rounded rect with different top and bottom corner radii."""
+    from Quartz import (
+        CGPathCreateMutable,
+        CGPathMoveToPoint,
+        CGPathAddArcToPoint,
+        CGPathCloseSubpath,
+    )
+    # macOS coordinate system: y=0 is bottom
+    path = CGPathCreateMutable()
+    tr = top_radius
+    br = bottom_radius
+
+    # Start at bottom-left, just above the bottom-left corner
+    CGPathMoveToPoint(path, None, x, y + br)
+    # Bottom-left corner
+    CGPathAddArcToPoint(path, None, x, y, x + br, y, br)
+    # Bottom edge to bottom-right corner
+    CGPathAddArcToPoint(path, None, x + w, y, x + w, y + br, br)
+    # Right edge to top-right corner
+    CGPathAddArcToPoint(path, None, x + w, y + h, x + w - tr, y + h, tr)
+    # Top edge to top-left corner
+    CGPathAddArcToPoint(path, None, x, y + h, x, y + h - tr, tr)
+    CGPathCloseSubpath(path)
+    return path
 
 
 class GlowOverlay(NSObject):
@@ -61,6 +95,7 @@ class GlowOverlay(NSObject):
         self._glow_layer: CAShapeLayer | None = None
         self._smoothed_amplitude = 0.0
         self._visible = False
+        self._fade_in_until = 0.0
         self._update_count = 0
         return self
 
@@ -104,16 +139,12 @@ class GlowOverlay(NSObject):
         # Its own fill is hidden by the mask below — only its shadow is visible.
         shadow_shape = CAShapeLayer.alloc().init()
 
-        outer = CGPathCreateWithRoundedRect(
-            ((0, 0), (w, h)), _CORNER_RADIUS, _CORNER_RADIUS, None
-        )
-        inner = CGPathCreateWithRoundedRect(
-            ((_GLOW_WIDTH, _GLOW_WIDTH),
-             (w - 2 * _GLOW_WIDTH, h - 2 * _GLOW_WIDTH)),
-            max(_CORNER_RADIUS - _GLOW_WIDTH, 0),
-            max(_CORNER_RADIUS - _GLOW_WIDTH, 0),
-            None,
-        )
+        outer = _rounded_rect_path(0, 0, w, h,
+                                   _CORNER_RADIUS_TOP, _CORNER_RADIUS_BOTTOM)
+        inner = _rounded_rect_path(_GLOW_WIDTH, _GLOW_WIDTH,
+                                   w - 2 * _GLOW_WIDTH, h - 2 * _GLOW_WIDTH,
+                                   max(_CORNER_RADIUS_TOP - _GLOW_WIDTH, 0),
+                                   max(_CORNER_RADIUS_BOTTOM - _GLOW_WIDTH, 0))
 
         from Quartz import CGPathCreateMutableCopy, CGPathAddPath
         combined = CGPathCreateMutableCopy(outer)
@@ -156,6 +187,10 @@ class GlowOverlay(NSObject):
 
         grad_depth = _GLOW_WIDTH * 4  # gradient extends 4x border width
 
+        # Create a rounded-rect mask path so gradients follow screen curvature
+        mask_path = _rounded_rect_path(0, 0, w, h,
+                                       _CORNER_RADIUS_TOP, _CORNER_RADIUS_BOTTOM)
+
         edges = [
             # (origin, size, start_point, end_point)
             ((0, 0), (w, grad_depth), (0.5, 0.0), (0.5, 1.0)),          # bottom
@@ -170,6 +205,15 @@ class GlowOverlay(NSObject):
             g.setLocations_(locations)
             g.setStartPoint_(start)
             g.setEndPoint_(end)
+
+            # Mask to rounded screen shape so corners follow the bezel curve
+            mask = CAShapeLayer.alloc().init()
+            # Offset the mask path to account for the gradient layer's origin
+            mask.setFrame_(((0, 0), (w, h)))
+            mask.setPosition_((-origin[0] + w / 2, -origin[1] + h / 2))
+            mask.setPath_(mask_path)
+            g.setMask_(mask)
+
             self._glow_layer.addSublayer_(g)
 
         content.layer().addSublayer_(self._glow_layer)
@@ -177,24 +221,60 @@ class GlowOverlay(NSObject):
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
     def show(self) -> None:
-        """Show the glow window with a faint base opacity."""
+        """Fade the glow window in to base opacity."""
         if self._window is None:
             return
         self._visible = True
         self._smoothed_amplitude = 0.0
         self._update_count = 0
-        self._glow_layer.setOpacity_(_GLOW_BASE_OPACITY)
+        self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
+
+        anim = CABasicAnimation.animationWithKeyPath_("opacity")
+        anim.setFromValue_(0.0)
+        anim.setToValue_(_GLOW_BASE_OPACITY)
+        anim.setDuration_(0.2)
+        anim.setTimingFunction_(
+            CAMediaTimingFunction.functionWithName_("easeOut")
+        )
+        self._glow_layer.setOpacity_(_GLOW_BASE_OPACITY)
+        self._glow_layer.addAnimation_forKey_(anim, "fadeIn")
         logger.info("Glow show")
 
     def hide(self) -> None:
-        """Hide the glow window."""
+        """Fade the glow window out smoothly."""
         if self._window is None:
             return
         self._visible = False
-        self._glow_layer.setOpacity_(0.0)
-        self._window.orderOut_(None)
         logger.info("Glow hide (received %d amplitude updates)", self._update_count)
+
+        try:
+            current = self._glow_layer.opacity()
+            anim = CABasicAnimation.animationWithKeyPath_("opacity")
+            anim.setFromValue_(current)
+            anim.setToValue_(0.0)
+            anim.setDuration_(0.35)
+            anim.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeIn")
+            )
+            self._glow_layer.setOpacity_(0.0)
+            self._glow_layer.addAnimation_forKey_(anim, "fadeOut")
+
+            # Order out after animation completes
+            from Foundation import NSTimer
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.4, self, "hideWindowAfterFade:", None, False
+            )
+        except Exception:
+            # If animation fails, just snap off
+            logger.exception("Fade-out animation failed, snapping off")
+            self._glow_layer.setOpacity_(0.0)
+            self._window.orderOut_(None)
+
+    def hideWindowAfterFade_(self, timer) -> None:
+        """Remove window after fade-out animation completes."""
+        if not self._visible and self._window is not None:
+            self._window.orderOut_(None)
 
     def update_amplitude(self, rms: float) -> None:
         """Update glow intensity from an RMS amplitude value (0.0–1.0).
@@ -202,6 +282,10 @@ class GlowOverlay(NSObject):
         Must be called on the main thread.
         """
         if not self._visible or self._glow_layer is None:
+            return
+
+        # Don't override the fade-in animation
+        if time.monotonic() < self._fade_in_until:
             return
 
         self._update_count += 1

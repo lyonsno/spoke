@@ -43,12 +43,18 @@ def _make_fake_quartz():
     q.CFRunLoopGetMain = MagicMock(return_value=MagicMock())
 
     # Glow module (Core Animation / Quartz)
+    q.CABasicAnimation = MagicMock()
     q.CAGradientLayer = MagicMock()
     q.CALayer = MagicMock()
+    q.CAMediaTimingFunction = MagicMock()
     q.CAShapeLayer = MagicMock()
     q.kCAGravityCenter = "center"
     q.CGPathCreateWithRoundedRect = MagicMock(return_value=MagicMock())
+    q.CGPathCreateMutable = MagicMock(return_value=MagicMock())
     q.CGPathCreateMutableCopy = MagicMock(return_value=MagicMock())
+    q.CGPathMoveToPoint = MagicMock()
+    q.CGPathAddArcToPoint = MagicMock()
+    q.CGPathCloseSubpath = MagicMock()
     q.CGPathAddPath = MagicMock()
     q.CGAffineTransformIdentity = MagicMock()
     q.kCAFillRuleEvenOdd = "even-odd"
