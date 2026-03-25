@@ -312,7 +312,7 @@ class GlowOverlay(NSObject):
 
         # Map smoothed amplitude to opacity range [base, max]
         # Fixed multiplier — ceiling is absolute, floor is adaptive
-        amplitude_linear = min(self._smoothed_amplitude * 50.0, 1.0)
+        amplitude_linear = min(self._smoothed_amplitude * 25.0, 1.0)
         # Perceptual correction: log curve so glow tracks perceived loudness.
         # All smoothing math above stays linear; this is the last step
         # before "rendering" — the display gamma, essentially.
