@@ -1,6 +1,6 @@
 """Tests for repetition loop detection and truncation."""
 
-from donttype.dedup import truncate_repetition
+from donttype.dedup import truncate_repetition, is_hallucination
 
 
 class TestTruncateRepetition:
@@ -48,3 +48,32 @@ class TestTruncateRepetition:
         text = "okay. okay. okay. okay."
         result = truncate_repetition(text, min_repeats=3)
         assert len(result) < len(text)
+
+
+class TestIsHallucination:
+    """Test Whisper silence hallucination detection."""
+
+    def test_thank_you_is_hallucination(self):
+        assert is_hallucination("Thank you.") is True
+
+    def test_thank_you_case_insensitive(self):
+        assert is_hallucination("thank you.") is True
+        assert is_hallucination("THANK YOU.") is True
+
+    def test_thanks_for_watching(self):
+        assert is_hallucination("Thanks for watching.") is True
+
+    def test_bye(self):
+        assert is_hallucination("Bye.") is True
+
+    def test_empty_string(self):
+        assert is_hallucination("") is True
+
+    def test_whitespace_only(self):
+        assert is_hallucination("   ") is True
+
+    def test_real_text_is_not_hallucination(self):
+        assert is_hallucination("I want to thank you for your help.") is False
+
+    def test_thank_you_in_longer_text(self):
+        assert is_hallucination("Thank you for coming today.") is False

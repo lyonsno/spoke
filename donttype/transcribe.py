@@ -10,7 +10,7 @@ import logging
 
 import httpx
 
-from .dedup import truncate_repetition
+from .dedup import truncate_repetition, is_hallucination
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,9 @@ class TranscriptionClient:
         body = resp.json()
         text = body.get("text", "").strip()
         text = truncate_repetition(text)
+        if is_hallucination(text):
+            logger.info("Discarding hallucination: %r", text)
+            return ""
         logger.info("Transcription: %r (%d bytes audio)", text, len(wav_bytes))
         return text
 

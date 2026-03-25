@@ -1,8 +1,10 @@
-"""Detect and truncate Whisper-style repetition loops.
+"""Detect and clean Whisper transcription artifacts.
 
-Whisper occasionally gets stuck in a decoder loop, repeating the last
-word or phrase indefinitely. This module detects that pattern and
-truncates the output at the first repetition.
+Whisper has two known failure modes:
+1. Decoder loop: repeats the last word/phrase indefinitely
+2. Silence hallucination: outputs "Thank you." or similar on silent input
+
+This module detects both and cleans the output.
 """
 
 from __future__ import annotations
@@ -65,3 +67,26 @@ def truncate_repetition(text: str, min_phrase_len: int = 3, min_repeats: int = 3
             return truncated
 
     return text
+
+
+# Known Whisper silence hallucinations — these appear when the model
+# receives silent or near-silent audio. Case-insensitive, stripped.
+_SILENCE_HALLUCINATIONS = {
+    "thank you.",
+    "thank you",
+    "thanks for watching.",
+    "thanks for watching",
+    "thanks for listening.",
+    "thanks for listening",
+    "you",
+    "bye.",
+    "bye",
+    "the end.",
+    "the end",
+    "",
+}
+
+
+def is_hallucination(text: str) -> bool:
+    """Return True if the text is a known Whisper silence hallucination."""
+    return text.strip().lower() in _SILENCE_HALLUCINATIONS
