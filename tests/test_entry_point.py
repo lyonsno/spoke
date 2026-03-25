@@ -32,12 +32,18 @@ except OSError:
     except (ValueError, ProcessLookupError, PermissionError):
         pass
     # Retry with backoff — old process needs time to die and release lock
-    for _ in range(10):
+    for _attempt in range(10):
         time.sleep(0.2)
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
         except OSError:
+            if _attempt == 4:
+                # SIGTERM didn't work — escalate to SIGKILL
+                try:
+                    os.kill(old_pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, NameError):
+                    pass
             continue
     else:
         print("BLOCKED")
@@ -54,6 +60,24 @@ print(f"LOCKED:{os.getpid()}")
 if "--hold" in sys.argv:
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
     time.sleep(30)
+'''
+
+# Variant that ignores SIGTERM, simulating a process stuck in a Metal abort
+_UNKILLABLE_HOLD_SCRIPT = '''
+import sys, os, fcntl, signal, time
+
+lock_path = sys.argv[1]
+lock_file = open(lock_path, "a+")
+lock_file.seek(0)
+fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+lock_file.truncate()
+lock_file.write(str(os.getpid()))
+lock_file.flush()
+print(f"LOCKED:{os.getpid()}")
+
+# Ignore SIGTERM — simulate stuck process
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+time.sleep(30)
 '''
 
 
@@ -115,6 +139,30 @@ class TestSingleInstanceGuard:
         )
         assert result.returncode == 0
         assert result.stdout.startswith("LOCKED:")
+
+    def test_sigkill_escalation_for_stuck_process(self, tmp_path):
+        """If the old process ignores SIGTERM, guard should escalate to SIGKILL."""
+        lock_path = str(tmp_path / ".donttype.lock")
+
+        # Start an unkillable instance (ignores SIGTERM)
+        first = subprocess.Popen(
+            ["python3", "-c", _UNKILLABLE_HOLD_SCRIPT, lock_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        time.sleep(0.5)
+        assert first.poll() is None  # still running
+
+        # Second instance should escalate to SIGKILL and take the lock
+        result = subprocess.run(
+            ["python3", "-c", _GUARD_SCRIPT, lock_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0
+        assert result.stdout.startswith("LOCKED:")
+
+        # First instance should be dead (killed by SIGKILL)
+        first.wait(timeout=2)
+        assert first.returncode is not None
 
     def test_stale_pid_no_process(self, tmp_path):
         """Guard should handle a PID for a process that no longer exists."""

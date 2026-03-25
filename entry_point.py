@@ -50,6 +50,13 @@ except OSError:
             fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
         except OSError:
+            if _attempt == 4:
+                # SIGTERM didn't work (e.g. stuck in Metal SIGABRT) — escalate
+                try:
+                    os.kill(old_pid, signal.SIGKILL)
+                    print(f"Escalated to SIGKILL (pid={old_pid})", file=sys.stderr)
+                except (ProcessLookupError, PermissionError, NameError):
+                    pass
             continue
     else:
         print("DontType is already running. Exiting.", file=sys.stderr)
