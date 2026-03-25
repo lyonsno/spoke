@@ -8,6 +8,7 @@ microphone input, with fast rise and slow decay for a breathing effect.
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 import objc
@@ -311,8 +312,12 @@ class GlowOverlay(NSObject):
 
         # Map smoothed amplitude to opacity range [base, max]
         # Fixed multiplier — ceiling is absolute, floor is adaptive
-        amplitude_opacity = self._smoothed_amplitude * 50.0
-        opacity = _GLOW_BASE_OPACITY + min(amplitude_opacity, 1.0) * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
+        amplitude_linear = min(self._smoothed_amplitude * 50.0, 1.0)
+        # Perceptual correction: log curve so glow tracks perceived loudness.
+        # All smoothing math above stays linear; this is the last step
+        # before "rendering" — the display gamma, essentially.
+        amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
+        opacity = _GLOW_BASE_OPACITY + amplitude_opacity * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
 
         self._glow_layer.setOpacity_(opacity)
 
