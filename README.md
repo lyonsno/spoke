@@ -136,13 +136,32 @@ This avoids the fundamental problem with streaming STT stitching: chunk boundari
 - [ ] Graceful fallback if local preview model is unavailable (amplitude-only feedback)
 - [ ] Future: swap local preview from MLX to CoreML for ANE offload (zero unified memory pressure, lower power)
 
-### Phase 4 — Polish
+### Phase 4 — Polish & distribution
 
-- [ ] **Self-contained DMG distribution** — PyInstaller bundle with embedded Python, MLX, and model downloader. No terminal, no dependencies. Drag to Applications and go.
+- [ ] **Self-contained DMG distribution** — PyInstaller bundle with embedded Python, MLX, and model downloader. No terminal, no dependencies. Drag to Applications and go. ✅ (336MB bundle working)
+- [ ] Code signing with Developer ID + notarization for Gatekeeper
+- [ ] First-launch model download with progress UI
 - [ ] LaunchAgent for auto-start at login
 - [ ] Config file (`~/.config/dictate/config.json`) — hold threshold, server URL, model, overlay preferences
+- [ ] **Menubar source toggles** — independent selection of preview and transcription backends:
+  - Previews: local (chunked) | sidecar | off
+  - Transcription: local | sidecar
 - [ ] **Toggle mode** — menubar toggle between hold-to-record (current spacebar behavior) and press-to-start/press-to-stop with a configurable hotkey. Toggle mode for accessibility and workflows where holding is impractical; configurable hotkey for users who need bare spacebar (gaming, etc.)
 - [ ] Settable hotkey via menubar dropdown (any key/modifier combo)
+- [ ] Paste-failure recovery — keep text in overlay with copy/insert affordances when no text field is focused
+
+### Phase 5 — Silence-batched hybrid transcription
+
+**The lowest-latency architecture.** During recording, detect silence boundaries via RMS threshold and batch already-spoken segments to the sidecar for transcription in the background. The local model provides real-time preview of the current utterance. By the time the user releases the spacebar, most of the audio has already been transcribed by the sidecar — the final pass only covers the last segment since the last silence.
+
+This turns release-to-text latency from "full buffer transcription time" into "last segment transcription time," regardless of total recording length.
+
+- [ ] Silence detection via RMS threshold + minimum duration on per-chunk amplitude (infrastructure already in capture.py)
+- [ ] Utterance segmentation: split audio at silence boundaries into discrete segments
+- [ ] Background sidecar batching: send completed segments to sidecar during recording, accumulate results
+- [ ] Local preview: real-time transcription of current (in-progress) utterance
+- [ ] Result merging: stitch sidecar segment results + final segment into complete transcription on release
+- [ ] Graceful degradation: if sidecar is unavailable, fall back to full-buffer local transcription
 
 ## License
 
