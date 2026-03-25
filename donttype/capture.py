@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 DTYPE = "float32"
-BLOCKSIZE = 256  # ~16 ms at 16 kHz — 62Hz amplitude updates
+BLOCKSIZE = 1024  # ~64 ms at 16 kHz — 16Hz amplitude updates
 
 
 class AudioCapture:

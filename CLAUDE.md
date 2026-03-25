@@ -33,6 +33,10 @@ Always run `uv run pytest -q` after code changes and before committing. All test
 - Do NOT run `tccutil reset` in scripts — it causes more problems than it solves.
 - Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
 
+## Epistaxis
+
+When reading epistaxis, if any recorded state doesn't match what you observe in the code or thread, flag it before proceeding — even if the mismatch might just be stale rather than wrong. Multiple sessions may write to the same epistaxis file concurrently; merge your changes without overwriting entries you didn't write.
+
 ## Commits
 
 Use descriptive commit messages. Include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` in all commits.
