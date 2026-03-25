@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dictate.transcribe import TranscriptionClient, _DEFAULT_MODEL
+from donttalk.transcribe import TranscriptionClient, _DEFAULT_MODEL
 
 
 class TestTranscriptionClient:
@@ -36,7 +36,7 @@ class TestTranscriptionClient:
         assert result == ""
         client._client.post.assert_not_called()
 
-    @patch("dictate.transcribe.httpx.Client")
+    @patch("donttalk.transcribe.httpx.Client")
     def test_transcribe_sends_correct_request(self, MockClient):
         """transcribe() should POST multipart with file and model."""
         mock_resp = MagicMock()
@@ -56,7 +56,7 @@ class TestTranscriptionClient:
         assert "file" in call_kwargs[1]["files"]
         assert call_kwargs[1]["data"]["model"] == "test-model"
 
-    @patch("dictate.transcribe.httpx.Client")
+    @patch("donttalk.transcribe.httpx.Client")
     def test_transcribe_strips_whitespace(self, MockClient):
         """Transcription result should be stripped of leading/trailing whitespace."""
         mock_resp = MagicMock()
@@ -69,7 +69,7 @@ class TestTranscriptionClient:
 
         assert client.transcribe(b"wav") == "hello world"
 
-    @patch("dictate.transcribe.httpx.Client")
+    @patch("donttalk.transcribe.httpx.Client")
     def test_transcribe_missing_text_key(self, MockClient):
         """If response has no 'text' key, should return empty string."""
         mock_resp = MagicMock()

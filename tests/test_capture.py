@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from dictate.capture import AudioCapture, SAMPLE_RATE, CHANNELS
+from donttalk.capture import AudioCapture, SAMPLE_RATE, CHANNELS
 
 
 class TestWavEncoding:
@@ -119,7 +119,7 @@ class TestAudioCallback:
 class TestStartStop:
     """Test start/stop lifecycle with mocked sounddevice."""
 
-    @patch("dictate.capture.sd")
+    @patch("donttalk.capture.sd")
     def test_start_creates_stream(self, mock_sd):
         """start() should create and start an InputStream."""
         cap = AudioCapture()
@@ -127,7 +127,7 @@ class TestStartStop:
         mock_sd.InputStream.assert_called_once()
         mock_sd.InputStream.return_value.start.assert_called_once()
 
-    @patch("dictate.capture.sd")
+    @patch("donttalk.capture.sd")
     def test_stop_returns_wav_bytes(self, mock_sd):
         """stop() after accumulating frames should return valid WAV."""
         cap = AudioCapture()
@@ -139,7 +139,7 @@ class TestStartStop:
         wav = cap.stop()
         assert len(wav) > 44  # WAV header + data
 
-    @patch("dictate.capture.sd")
+    @patch("donttalk.capture.sd")
     def test_stop_with_no_frames_returns_empty(self, mock_sd):
         """stop() with no recorded frames should return empty bytes."""
         cap = AudioCapture()
@@ -147,7 +147,7 @@ class TestStartStop:
         wav = cap.stop()
         assert wav == b""
 
-    @patch("dictate.capture.sd")
+    @patch("donttalk.capture.sd")
     def test_get_buffer_nondestructive(self, mock_sd):
         """get_buffer() should not consume frames."""
         cap = AudioCapture()
@@ -158,7 +158,7 @@ class TestStartStop:
         assert buf1 == buf2
         assert len(cap._frames) == 1  # frames not consumed
 
-    @patch("dictate.capture.sd")
+    @patch("donttalk.capture.sd")
     def test_double_start_stops_previous_stream(self, mock_sd):
         """Calling start() twice should stop and close the first stream."""
         cap = AudioCapture()
@@ -173,7 +173,7 @@ class TestStartStop:
         first_stream.stop.assert_called_once()
         first_stream.close.assert_called_once()
 
-    @patch("dictate.capture.sd")
+    @patch("donttalk.capture.sd")
     def test_stop_without_start_clears_stale_frames(self, mock_sd):
         """stop() when stream is None should clear leftover frames and return
         empty bytes, not stale audio from a previous session."""

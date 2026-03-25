@@ -1,4 +1,4 @@
-"""Tests for DictateAppDelegate orchestration and error paths.
+"""Tests for DontTalkAppDelegate orchestration and error paths.
 
 Tests the wiring between layers: hold callbacks, transcription lifecycle,
 generation-based stale result rejection, and env var validation.
@@ -12,7 +12,7 @@ def _make_delegate(main_module, monkeypatch):
     """Create a DictateAppDelegate with mocked sub-components."""
     monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
 
-    delegate = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+    delegate = main_module.DontTalkAppDelegate.__new__(main_module.DontTalkAppDelegate)
     delegate._capture = MagicMock()
     delegate._client = MagicMock()
     delegate._detector = MagicMock()
@@ -200,7 +200,7 @@ class TestHoldMsBounds:
         import pytest
 
         with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+            d = main_module.DontTalkAppDelegate.__new__(main_module.DontTalkAppDelegate)
             d.init()
         assert exc_info.value.code == 1
 
@@ -211,7 +211,7 @@ class TestHoldMsBounds:
         import pytest
 
         with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+            d = main_module.DontTalkAppDelegate.__new__(main_module.DontTalkAppDelegate)
             d.init()
         assert exc_info.value.code == 1
 
@@ -222,7 +222,7 @@ class TestEnvValidation:
     def test_missing_whisper_url_uses_local(self, main_module, monkeypatch):
         """Missing DICTATE_WHISPER_URL should fall back to local transcription."""
         monkeypatch.delenv("DICTATE_WHISPER_URL", raising=False)
-        d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+        d = main_module.DontTalkAppDelegate.__new__(main_module.DontTalkAppDelegate)
         result = d.init()
         assert result is not None
         assert isinstance(d._client, main_module.LocalTranscriptionClient)
@@ -233,7 +233,7 @@ class TestEnvValidation:
         monkeypatch.setenv("DICTATE_HOLD_MS", "not-a-number")
         import pytest
         with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+            d = main_module.DontTalkAppDelegate.__new__(main_module.DontTalkAppDelegate)
             d.init()
         assert exc_info.value.code == 1
 
@@ -241,6 +241,6 @@ class TestEnvValidation:
         """Valid env vars should create a delegate without error."""
         monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
         monkeypatch.setenv("DICTATE_HOLD_MS", "300")
-        d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+        d = main_module.DontTalkAppDelegate.__new__(main_module.DontTalkAppDelegate)
         result = d.init()
         assert result is not None

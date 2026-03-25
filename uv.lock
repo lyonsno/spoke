@@ -232,7 +232,7 @@ nvtx = [
 ]
 
 [[package]]
-name = "dictate"
+name = "donttalk"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

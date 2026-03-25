@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Dictate.app — macOS global hold-to-dictate."""
+"""PyInstaller spec for DontTalk.app — macOS global hold-to-dictate."""
 
 import os
 import sys
@@ -37,17 +37,17 @@ a = Analysis(
     binaries=mlx_binaries + mlx_whisper_binaries + certifi_binaries,
     datas=mlx_datas + mlx_whisper_datas + certifi_datas + _extra_datas,
     hiddenimports=mlx_hiddenimports + mlx_whisper_hiddenimports + certifi_hiddenimports + [
-        # dictate modules
-        'dictate',
-        'dictate.__main__',
-        'dictate.capture',
-        'dictate.glow',
-        'dictate.inject',
-        'dictate.input_tap',
-        'dictate.menubar',
-        'dictate.overlay',
-        'dictate.transcribe',
-        'dictate.transcribe_local',
+        # donttalk modules
+        'donttalk',
+        'donttalk.__main__',
+        'donttalk.capture',
+        'donttalk.glow',
+        'donttalk.inject',
+        'donttalk.input_tap',
+        'donttalk.menubar',
+        'donttalk.overlay',
+        'donttalk.transcribe',
+        'donttalk.transcribe_local',
         # third-party
         'sounddevice',
         'numpy',
@@ -89,7 +89,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='Dictate',
+    name='DontTalk',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -107,22 +107,22 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='Dictate',
+    name='DontTalk',
 )
 
 app = BUNDLE(
     coll,
-    name='Dictate.app',
+    name='DontTalk.app',
     icon=None,  # TODO: add icon.icns
-    bundle_identifier='com.noahlyons.dictate',
+    bundle_identifier='com.noahlyons.donttalk',
     codesign_identity=os.environ.get('CODESIGN_IDENTITY', ''),
     info_plist={
-        'CFBundleName': 'Dictate',
-        'CFBundleDisplayName': 'Dictate',
+        'CFBundleName': 'DontTalk',
+        'CFBundleDisplayName': 'DontTalk',
         'CFBundleVersion': _version,
         'CFBundleShortVersionString': _version,
         'LSUIElement': True,
-        'NSMicrophoneUsageDescription': 'Dictate needs microphone access to record speech for transcription.',
-        'NSAppleEventsUsageDescription': 'Dictate needs accessibility access to type transcribed text.',
+        'NSMicrophoneUsageDescription': 'DontTalk needs microphone access to record speech for transcription.',
+        'NSAppleEventsUsageDescription': 'DontTalk needs accessibility access to type transcribed text.',
     },
 )

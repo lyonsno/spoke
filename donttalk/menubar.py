@@ -1,4 +1,4 @@
-"""NSStatusItem menubar icon for dictate.
+"""NSStatusItem menubar icon for DontTalk.
 
 Shows a mic icon that changes state between idle and recording.
 Phase 2 will add amplitude-driven animation.
@@ -49,10 +49,10 @@ class MenuBarIcon(NSObject):
 
         # SF Symbols — available on macOS 11+
         self._idle_image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-            "mic", "Dictate — idle"
+            "mic", "DontTalk — idle"
         )
         self._recording_image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-            "mic.fill", "Dictate — recording"
+            "mic.fill", "DontTalk — recording"
         )
 
         button = self._status_item.button()
@@ -87,7 +87,7 @@ class MenuBarIcon(NSObject):
         menu.addItem_(NSMenuItem.separatorItem())
 
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit Dictate", "quitApp:", "q"
+            "Quit DontTalk", "quitApp:", "q"
         )
         quit_item.setTarget_(self)
         menu.addItem_(quit_item)

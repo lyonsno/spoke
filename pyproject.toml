@@ -1,5 +1,5 @@
 [project]
-name = "dictate"
+name = "donttalk"
 version = "0.1.0"
 description = "Global hold-to-dictate for macOS — spacebar → record → transcribe → paste"
 requires-python = ">=3.13"
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-dictate = "dictate.__main__:main"
+donttalk = "donttalk.__main__:main"
 
 [dependency-groups]
 dev = [

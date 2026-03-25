@@ -1,4 +1,4 @@
-# dictate
+# donttalk
 
 Global hold-to-dictate for macOS. Hold spacebar anywhere on the system — in your terminal, editor, browser, wherever — to record audio, transcribe it via a local Whisper server, and paste the result at your cursor.
 
@@ -17,13 +17,13 @@ Runs as a menubar accessory app — mic icon in the menubar, no Dock icon.
 ## Architecture
 
 ```
-dictate/
+donttalk/
 ├── input_tap.py     # CGEventTap spacebar state machine (IDLE → WAITING → RECORDING)
 ├── capture.py       # sounddevice audio recording + RMS amplitude callback
 ├── transcribe.py    # httpx client for /v1/audio/transcriptions
 ├── inject.py        # pasteboard save → set text → Cmd+V → restore
 ├── menubar.py       # NSStatusItem with mic/mic.fill icons
-└── __main__.py      # DictateAppDelegate — wires all layers together
+└── __main__.py      # DontTalkAppDelegate — wires all layers together
 ```
 
 Each layer is independent and testable in isolation.
@@ -59,12 +59,12 @@ mlx-audio-server --host 0.0.0.0 --port 8000
 
 ```sh
 # Clone and install
-git clone https://github.com/lyonsno/dictate.git
-cd dictate
+git clone https://github.com/lyonsno/donttalk.git
+cd donttalk
 uv sync
 
 # Run (point at your Whisper server)
-DICTATE_WHISPER_URL=http://<sidecar-ip>:8000 uv run dictate
+DICTATE_WHISPER_URL=http://<sidecar-ip>:8000 uv run donttalk
 ```
 
 On first run, macOS will prompt for Accessibility permission. Grant it to your terminal app (Terminal.app, iTerm2, Ghostty, etc.) in System Settings → Privacy & Security → Accessibility.
@@ -142,7 +142,7 @@ This avoids the fundamental problem with streaming STT stitching: chunk boundari
 - [ ] Code signing with Developer ID + notarization for Gatekeeper
 - [ ] First-launch model download with progress UI
 - [ ] LaunchAgent for auto-start at login
-- [ ] Config file (`~/.config/dictate/config.json`) — hold threshold, server URL, model, overlay preferences
+- [ ] Config file (`~/.config/donttalk/config.json`) — hold threshold, server URL, model, overlay preferences
 - [ ] **Menubar source toggles** — independent selection of preview and transcription backends:
   - Previews: local (chunked) | sidecar | off
   - Transcription: local | sidecar

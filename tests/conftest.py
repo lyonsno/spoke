@@ -1,4 +1,4 @@
-"""Shared fixtures for dictate tests.
+"""Shared fixtures for donttalk tests.
 
 Stubs out PyObjC/Quartz/AppKit so tests run without macOS GUI runtime.
 """
@@ -155,41 +155,41 @@ def mock_pyobjc():
 
 @pytest.fixture
 def input_tap_module(mock_pyobjc):
-    """Import dictate.input_tap with mocked PyObjC."""
+    """Import donttalk.input_tap with mocked PyObjC."""
     # Remove cached module if present
-    sys.modules.pop("dictate.input_tap", None)
-    mod = importlib.import_module("dictate.input_tap")
+    sys.modules.pop("donttalk.input_tap", None)
+    mod = importlib.import_module("donttalk.input_tap")
     yield mod
-    sys.modules.pop("dictate.input_tap", None)
+    sys.modules.pop("donttalk.input_tap", None)
 
 
 @pytest.fixture
 def inject_module(mock_pyobjc):
-    """Import dictate.inject with mocked PyObjC."""
-    sys.modules.pop("dictate.inject", None)
-    mod = importlib.import_module("dictate.inject")
+    """Import donttalk.inject with mocked PyObjC."""
+    sys.modules.pop("donttalk.inject", None)
+    mod = importlib.import_module("donttalk.inject")
     yield mod
-    sys.modules.pop("dictate.inject", None)
+    sys.modules.pop("donttalk.inject", None)
 
 
 @pytest.fixture
 def menubar_module(mock_pyobjc):
-    """Import dictate.menubar with mocked PyObjC."""
-    sys.modules.pop("dictate.menubar", None)
-    mod = importlib.import_module("dictate.menubar")
+    """Import donttalk.menubar with mocked PyObjC."""
+    sys.modules.pop("donttalk.menubar", None)
+    mod = importlib.import_module("donttalk.menubar")
     yield mod
-    sys.modules.pop("dictate.menubar", None)
+    sys.modules.pop("donttalk.menubar", None)
 
 
 @pytest.fixture
 def main_module(mock_pyobjc):
-    """Import dictate.__main__ with mocked PyObjC and sub-modules."""
-    # Clear all cached dictate modules so they re-import against fakes
+    """Import donttalk.__main__ with mocked PyObjC and sub-modules."""
+    # Clear all cached donttalk modules so they re-import against fakes
     for name in list(sys.modules):
-        if name.startswith("dictate."):
+        if name.startswith("donttalk."):
             sys.modules.pop(name, None)
-    mod = importlib.import_module("dictate.__main__")
+    mod = importlib.import_module("donttalk.__main__")
     yield mod
     for name in list(sys.modules):
-        if name.startswith("dictate."):
+        if name.startswith("donttalk."):
             sys.modules.pop(name, None)

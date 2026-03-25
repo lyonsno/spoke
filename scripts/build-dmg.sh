@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Package Dictate.app into a DMG installer.
+# Package DontTalk.app into a DMG installer.
 # Usage: ./scripts/build-dmg.sh [version]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="$PROJECT_DIR/dist"
-APP_PATH="$DIST_DIR/Dictate.app"
+APP_PATH="$DIST_DIR/DontTalk.app"
 
 if [ ! -d "$APP_PATH" ]; then
     echo "ERROR: $APP_PATH not found. Run './scripts/build.sh' first."
@@ -27,21 +27,21 @@ if [ "$VERSION" != "$PYPROJECT_VERSION" ]; then
     exit 1
 fi
 
-DMG_PATH="$DIST_DIR/Dictate-${VERSION}-arm64.dmg"
+DMG_PATH="$DIST_DIR/DontTalk-${VERSION}-arm64.dmg"
 
 cd "$PROJECT_DIR"
 
-echo "==> Creating DMG for Dictate v${VERSION}..."
+echo "==> Creating DMG for DontTalk v${VERSION}..."
 
 rm -f "$DMG_PATH"
 create-dmg \
-    --volname "Dictate" \
+    --volname "DontTalk" \
     --window-pos 200 120 \
     --window-size 600 400 \
     --icon-size 128 \
-    --icon "Dictate.app" 175 190 \
+    --icon "DontTalk.app" 175 190 \
     --app-drop-link 425 190 \
-    --hide-extension "Dictate.app" \
+    --hide-extension "DontTalk.app" \
     --no-internet-enable \
     "$DMG_PATH" \
     "$APP_PATH"

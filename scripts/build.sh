@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build Dictate.app with PyInstaller and sign for macOS.
+# Build DontTalk.app with PyInstaller and sign for macOS.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="$PROJECT_DIR/dist"
-APP_PATH="$DIST_DIR/Dictate.app"
+APP_PATH="$DIST_DIR/DontTalk.app"
 
 # Resolve signing identity: env var > auto-detect > ad-hoc
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
@@ -32,13 +32,13 @@ if [ "${1:-}" = "--fast" ]; then
     CLEAN_FLAG=""
 else
     echo "==> Cleaning previous build..."
-    rm -rf build "$APP_PATH" "$DIST_DIR/Dictate"
-    find "$PROJECT_DIR/dictate" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    rm -rf build "$APP_PATH" "$DIST_DIR/DontTalk"
+    find "$PROJECT_DIR/donttalk" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     CLEAN_FLAG="--clean"
 fi
 
 echo "==> Running PyInstaller..."
-uv run pyinstaller Dictate.spec $CLEAN_FLAG --noconfirm
+uv run pyinstaller DontTalk.spec $CLEAN_FLAG --noconfirm
 
 # Ensure metallib is adjacent to EVERY libmlx.dylib in the bundle
 METALLIB=$(find "$APP_PATH/Contents" -name "mlx.metallib" -print -quit 2>/dev/null)
@@ -68,7 +68,7 @@ echo ""
 echo "==> Build complete: $APP_PATH ($APP_SIZE)"
 
 if [ "${1:-}" = "--fast" ]; then
-    BUNDLE_ID="com.noahlyons.dictate"
+    BUNDLE_ID="com.noahlyons.donttalk"
     OLD_PID=$(lsappinfo info -only pid -app "$BUNDLE_ID" 2>/dev/null | grep -o '[0-9]*' || true)
     if [ -n "$OLD_PID" ]; then
         echo "==> Stopping old instance (pid=$OLD_PID)..."
