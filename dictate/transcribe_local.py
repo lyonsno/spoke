@@ -11,6 +11,8 @@ import logging
 import tempfile
 import os
 
+import mlx_whisper
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
@@ -33,9 +35,6 @@ class LocalTranscriptionClient:
         """Trigger model download if not cached."""
         if self._loaded:
             return
-        import mlx_whisper
-        # mlx_whisper downloads on first transcribe call, but we can
-        # trigger it explicitly by importing and checking the cache
         logger.info("Loading model %s (first use may download ~400MB)", self._model)
         self._loaded = True
 
@@ -48,8 +47,6 @@ class LocalTranscriptionClient:
             return ""
 
         self._ensure_model()
-
-        import mlx_whisper
 
         # mlx_whisper.transcribe() expects a file path, not bytes
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
