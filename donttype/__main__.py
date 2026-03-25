@@ -51,7 +51,7 @@ class DontTypeAppDelegate(NSObject):
         model = os.environ.get(
             "DICTATE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-        hold_ms_raw = os.environ.get("DICTATE_HOLD_MS", "400")
+        hold_ms_raw = os.environ.get("DICTATE_HOLD_MS", "300")
         try:
             hold_ms = int(hold_ms_raw)
         except ValueError:
@@ -143,9 +143,6 @@ class DontTypeAppDelegate(NSObject):
         flooding the main run loop, which can cause macOS to disable the
         event tap.
         """
-        self._amplitude_counter = getattr(self, '_amplitude_counter', 0) + 1
-        if self._amplitude_counter % 3 != 0:
-            return
         from Foundation import NSNumber
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "amplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
@@ -163,8 +160,8 @@ class DontTypeAppDelegate(NSObject):
         preview text to the main thread, then waits a minimum interval before
         sending the next buffer. Stops when _preview_active is cleared.
         """
-        _MIN_INTERVAL = 1.5 if self._local_mode else 0.75
-        _INITIAL_DELAY = 0.8 if self._local_mode else 0.3
+        _MIN_INTERVAL = 0.5 if self._local_mode else 0.75
+        _INITIAL_DELAY = 0.4 if self._local_mode else 0.3
 
         # Wait for some audio to accumulate before first preview
         time.sleep(_INITIAL_DELAY)

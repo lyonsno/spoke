@@ -47,8 +47,8 @@ _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corner
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 # Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.75  # snappy but not instant
-_DECAY_FACTOR = 0.85  # faster falloff for more responsive feel
+_RISE_FACTOR = 0.85  # very snappy response to voice
+_DECAY_FACTOR = 0.70  # quick falloff between words
 
 # Fade timing
 _FADE_IN_S = 0.08
@@ -253,7 +253,7 @@ class GlowOverlay(NSObject):
             anim = CABasicAnimation.animationWithKeyPath_("opacity")
             anim.setFromValue_(current)
             anim.setToValue_(0.0)
-            anim.setDuration_(0.35)
+            anim.setDuration_(0.6)
             anim.setTimingFunction_(
                 CAMediaTimingFunction.functionWithName_("easeIn")
             )
@@ -263,7 +263,7 @@ class GlowOverlay(NSObject):
             # Order out after animation completes
             from Foundation import NSTimer
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.4, self, "hideWindowAfterFade:", None, False
+                0.65, self, "hideWindowAfterFade:", None, False
             )
         except Exception:
             # If animation fails, just snap off

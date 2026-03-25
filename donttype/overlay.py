@@ -33,7 +33,7 @@ _OVERLAY_BOTTOM_MARGIN = 120.0  # distance from bottom of screen
 _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 300.0  # max before text scrolls
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.15
+_FADE_IN_S = 0.2  # match glow fade-in
 _FADE_OUT_S = 0.35
 _FADE_STEPS = 12  # number of steps for manual fade animation
 
