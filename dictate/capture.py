@@ -42,6 +42,14 @@ class AudioCapture:
         self._lock = threading.Lock()
         self._amplitude_cb: Callable[[float], None] | None = None
 
+    def warmup(self) -> None:
+        """Pre-initialize PortAudio so first start() is fast."""
+        try:
+            sd.query_devices()
+            logger.info("PortAudio warmed up (%d devices)", len(sd.query_devices()))
+        except Exception:
+            logger.debug("PortAudio warmup failed", exc_info=True)
+
     def start(self, amplitude_callback: Callable[[float], None] | None = None) -> None:
         """Begin recording.
 

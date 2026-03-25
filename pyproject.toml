@@ -9,13 +9,18 @@ dependencies = [
     "sounddevice",
     "numpy",
     "httpx",
+    "mlx-whisper>=0.4.3",
 ]
 
 [project.scripts]
 dictate = "dictate.__main__:main"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = [
+    "py2app>=0.28.10",
+    "pyinstaller>=6.19.0",
+    "pytest",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

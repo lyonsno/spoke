@@ -4,7 +4,7 @@ Run with:  uv run dictate
     or:    uv run python -m dictate
 
 Configure via environment variables:
-    DICTATE_WHISPER_URL    Sidecar Whisper server URL (required)
+    DICTATE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
     DICTATE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
     DICTATE_HOLD_MS        Hold threshold in ms (default: 400, must be > 0)
     DICTATE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
@@ -34,6 +34,7 @@ from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
+from .transcribe_local import LocalTranscriptionClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +48,6 @@ class DictateAppDelegate(NSObject):
             return None
 
         whisper_url = os.environ.get("DICTATE_WHISPER_URL", "")
-        if not whisper_url:
-            logger.error("DICTATE_WHISPER_URL is required")
-            print(
-                "ERROR: Set DICTATE_WHISPER_URL to your sidecar Whisper server URL.\n"
-                "  Example: DICTATE_WHISPER_URL=http://192.168.68.125:8000 uv run dictate",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
         model = os.environ.get(
             "DICTATE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
@@ -81,8 +73,17 @@ class DictateAppDelegate(NSObject):
             sys.exit(1)
 
         self._capture = AudioCapture()
-        self._client = TranscriptionClient(base_url=whisper_url, model=model)
-        self._preview_client = TranscriptionClient(base_url=whisper_url, model=model)
+        self._capture.warmup()
+        if whisper_url:
+            logger.info("Using sidecar transcription: %s", whisper_url)
+            self._client = TranscriptionClient(base_url=whisper_url, model=model)
+            self._preview_client = TranscriptionClient(base_url=whisper_url, model=model)
+            self._local_mode = False
+        else:
+            logger.info("Using local transcription: %s", model)
+            self._client = LocalTranscriptionClient(model=model)
+            self._preview_client = None  # no preview in local mode — too heavy
+            self._local_mode = True
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
             self._on_hold_end,
@@ -130,10 +131,11 @@ class DictateAppDelegate(NSObject):
             self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
 
-        # Start the adaptive preview loop
-        self._preview_active = True
-        self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
-        self._preview_thread.start()
+        # Start the adaptive preview loop (sidecar only — local mode is too heavy)
+        if not self._local_mode:
+            self._preview_active = True
+            self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
+            self._preview_thread.start()
 
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread.
@@ -303,7 +305,8 @@ class DictateAppDelegate(NSObject):
         self._detector.uninstall()
         self._preview_active = False
         self._client.close()
-        self._preview_client.close()
+        if self._preview_client is not None:
+            self._preview_client.close()
         NSApp.terminate_(None)
 
     def _show_accessibility_alert(self) -> None:

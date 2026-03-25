@@ -138,9 +138,11 @@ This avoids the fundamental problem with streaming STT stitching: chunk boundari
 
 ### Phase 4 — Polish
 
+- [ ] **Self-contained DMG distribution** — PyInstaller bundle with embedded Python, MLX, and model downloader. No terminal, no dependencies. Drag to Applications and go.
 - [ ] LaunchAgent for auto-start at login
 - [ ] Config file (`~/.config/dictate/config.json`) — hold threshold, server URL, model, overlay preferences
-- [ ] Configurable hotkey (alternatives to spacebar hold)
+- [ ] **Toggle mode** — menubar toggle between hold-to-record (current spacebar behavior) and press-to-start/press-to-stop with a configurable hotkey. Toggle mode for accessibility and workflows where holding is impractical; configurable hotkey for users who need bare spacebar (gaming, etc.)
+- [ ] Settable hotkey via menubar dropdown (any key/modifier combo)
 
 ## License
 

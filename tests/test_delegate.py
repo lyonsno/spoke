@@ -24,6 +24,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_active = False
     delegate._preview_thread = None
     delegate._preview_client = MagicMock()
+    delegate._local_mode = False
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -218,14 +219,13 @@ class TestHoldMsBounds:
 class TestEnvValidation:
     """Test environment variable validation in DictateAppDelegate.init."""
 
-    def test_missing_whisper_url_exits(self, main_module, monkeypatch):
-        """Missing DICTATE_WHISPER_URL should sys.exit(1)."""
+    def test_missing_whisper_url_uses_local(self, main_module, monkeypatch):
+        """Missing DICTATE_WHISPER_URL should fall back to local transcription."""
         monkeypatch.delenv("DICTATE_WHISPER_URL", raising=False)
-        import pytest
-        with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
-            d.init()
-        assert exc_info.value.code == 1
+        d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+        result = d.init()
+        assert result is not None
+        assert isinstance(d._client, main_module.LocalTranscriptionClient)
 
     def test_invalid_hold_ms_exits(self, main_module, monkeypatch):
         """Non-integer DICTATE_HOLD_MS should sys.exit(1)."""
