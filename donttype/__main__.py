@@ -82,7 +82,7 @@ class DontTypeAppDelegate(NSObject):
         else:
             logger.info("Using local transcription: %s", model)
             self._client = LocalTranscriptionClient(model=model)
-            self._preview_client = None  # no preview in local mode — too heavy
+            self._preview_client = self._client  # share model instance
             self._local_mode = True
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
@@ -131,11 +131,10 @@ class DontTypeAppDelegate(NSObject):
             self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
 
-        # Start the adaptive preview loop (sidecar only — local mode is too heavy)
-        if not self._local_mode:
-            self._preview_active = True
-            self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
-            self._preview_thread.start()
+        # Start the adaptive preview loop
+        self._preview_active = True
+        self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
+        self._preview_thread.start()
 
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread.
@@ -160,14 +159,15 @@ class DontTypeAppDelegate(NSObject):
     def _preview_loop(self) -> None:
         """Background thread: adaptive-interval preview transcription.
 
-        Sends the growing audio buffer to the sidecar, waits for the response,
-        posts the preview text to the main thread, then waits a minimum interval
-        before sending the next buffer. Stops when _preview_active is cleared.
+        Sends the growing audio buffer, waits for the response, posts the
+        preview text to the main thread, then waits a minimum interval before
+        sending the next buffer. Stops when _preview_active is cleared.
         """
-        _MIN_INTERVAL = 0.75  # minimum seconds between preview requests
+        _MIN_INTERVAL = 1.5 if self._local_mode else 0.75
+        _INITIAL_DELAY = 0.8 if self._local_mode else 0.3
 
         # Wait for some audio to accumulate before first preview
-        time.sleep(0.3)
+        time.sleep(_INITIAL_DELAY)
 
         while self._preview_active:
             loop_start = time.monotonic()
@@ -309,7 +309,7 @@ class DontTypeAppDelegate(NSObject):
         self._detector.uninstall()
         self._preview_active = False
         self._client.close()
-        if self._preview_client is not None:
+        if self._preview_client is not None and self._preview_client is not self._client:
             self._preview_client.close()
         NSApp.terminate_(None)
 
