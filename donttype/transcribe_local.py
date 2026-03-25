@@ -14,6 +14,8 @@ import wave
 import numpy as np
 import mlx_whisper
 
+from .dedup import truncate_repetition
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
@@ -60,6 +62,7 @@ class LocalTranscriptionClient:
         )
 
         text = result.get("text", "").strip()
+        text = truncate_repetition(text)
         logger.info("Local transcription: %r (%d bytes audio)", text, len(wav_bytes))
         return text
 

@@ -10,6 +10,8 @@ import logging
 
 import httpx
 
+from .dedup import truncate_repetition
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
@@ -55,6 +57,7 @@ class TranscriptionClient:
 
         body = resp.json()
         text = body.get("text", "").strip()
+        text = truncate_repetition(text)
         logger.info("Transcription: %r (%d bytes audio)", text, len(wav_bytes))
         return text
 
