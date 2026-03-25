@@ -97,6 +97,7 @@ class GlowOverlay(NSObject):
         self._visible = False
         self._fade_in_until = 0.0
         self._update_count = 0
+        self._noise_floor = 0.0  # adaptive ambient noise level
         return self
 
     def setup(self) -> None:
@@ -227,6 +228,7 @@ class GlowOverlay(NSObject):
         self._visible = True
         self._smoothed_amplitude = 0.0
         self._update_count = 0
+        self._noise_floor = 0.0
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -290,14 +292,25 @@ class GlowOverlay(NSObject):
 
         self._update_count += 1
 
+        # Adaptive noise floor — slowly tracks ambient noise level.
+        # Rises slowly (adapts to fan noise), falls slowly (doesn't
+        # drop to zero between words).
+        if rms < self._noise_floor or self._noise_floor == 0.0:
+            self._noise_floor += (rms - self._noise_floor) * 0.05  # fast adapt down
+        else:
+            self._noise_floor += (rms - self._noise_floor) * 0.002  # slow adapt up
+
+        # Subtract floor — only signal above ambient triggers the glow
+        signal = max(rms - self._noise_floor, 0.0)
+
         # Smooth: rise fast, decay slow
-        if rms > self._smoothed_amplitude:
-            self._smoothed_amplitude += (rms - self._smoothed_amplitude) * _RISE_FACTOR
+        if signal > self._smoothed_amplitude:
+            self._smoothed_amplitude += (signal - self._smoothed_amplitude) * _RISE_FACTOR
         else:
             self._smoothed_amplitude *= _DECAY_FACTOR
 
         # Map smoothed amplitude to opacity range [base, max]
-        # Tuned to saturate at moderate speaking volume in quiet environments
+        # Fixed multiplier — ceiling is absolute, floor is adaptive
         amplitude_opacity = self._smoothed_amplitude * 50.0
         opacity = _GLOW_BASE_OPACITY + min(amplitude_opacity, 1.0) * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
 
