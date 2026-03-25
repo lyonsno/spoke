@@ -37,10 +37,6 @@ else
     CLEAN_FLAG="--clean"
 fi
 
-# Reset Accessibility TCC entry so the new signature gets a clean slate.
-# Don't reset Microphone — it's granted to the Python binary, not the bundle ID.
-tccutil reset Accessibility com.noahlyons.donttype 2>/dev/null || true
-
 echo "==> Running PyInstaller..."
 uv run pyinstaller DontType.spec $CLEAN_FLAG --noconfirm
 
