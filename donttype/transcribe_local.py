@@ -74,8 +74,10 @@ class LocalTranscriptionClient:
         """Decode WAV bytes to float32 numpy array at 16kHz mono."""
         buf = io.BytesIO(wav_bytes)
         with wave.open(buf, "rb") as wf:
-            assert wf.getnchannels() == 1, "Expected mono audio"
-            assert wf.getsampwidth() == 2, "Expected 16-bit audio"
+            if wf.getnchannels() != 1:
+                raise ValueError(f"Expected mono audio, got {wf.getnchannels()} channels")
+            if wf.getsampwidth() != 2:
+                raise ValueError(f"Expected 16-bit audio, got {wf.getsampwidth() * 8}-bit")
             frames = wf.readframes(wf.getnframes())
             pcm = np.frombuffer(frames, dtype=np.int16)
             return pcm.astype(np.float32) / 32768.0

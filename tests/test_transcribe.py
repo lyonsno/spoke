@@ -131,3 +131,64 @@ class TestTranscriptionClient:
         client._client = MagicMock()
         client.close()
         client._client.close.assert_called_once()
+
+
+class TestTranscriptionFiltering:
+    """Test that transcription client applies dedup filtering."""
+
+    def test_hallucination_returns_empty(self):
+        """Server returning a known hallucination should produce empty string."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "Thank you."}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == ""
+
+    def test_thanks_for_watching_returns_empty(self):
+        """'Thanks for watching.' is a known Whisper silence hallucination."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "Thanks for watching."}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == ""
+
+    def test_repetition_is_truncated(self):
+        """Repeated phrases should be truncated to a single occurrence."""
+        repeated = "I think so. " * 5
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": repeated}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        result = client.transcribe(b"wav")
+        assert result.count("I think so.") < 5
+
+    def test_real_text_passes_through(self):
+        """Normal transcription text should not be filtered."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "The quick brown fox jumps over the lazy dog."}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == "The quick brown fox jumps over the lazy dog."
+
+    def test_whitespace_only_is_hallucination(self):
+        """Whitespace-only result should be treated as hallucination."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "   \n  "}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == ""

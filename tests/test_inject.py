@@ -33,7 +33,7 @@ class TestInjectText:
         )
 
         # Should have posted keyboard events (Cmd+V down + up)
-        assert Quartz.CGEventPost.call_count >= 2
+        assert Quartz.CGEventPost.call_count == 2
 
     def test_saves_original_pasteboard(self, inject_module):
         """Should read all pasteboard items before overwriting."""

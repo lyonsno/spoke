@@ -140,3 +140,72 @@ class TestLocalTranscriptionClient:
 
         client = LocalTranscriptionClient()
         client.close()  # should not raise
+
+
+def _make_wav_bytes(n_samples=1000):
+    """Helper: create valid mono 16-bit WAV bytes."""
+    import io, wave, numpy as np
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(np.zeros(n_samples, dtype=np.int16).tobytes())
+    return buf.getvalue()
+
+
+class TestLocalTranscriptionFiltering:
+    """Test that local client applies dedup filtering."""
+
+    @patch("donttype.transcribe_local.mlx_whisper", create=True)
+    def test_hallucination_returns_empty(self, mock_mlx_whisper):
+        """Known hallucination from local model should produce empty string."""
+        from donttype.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "Thank you."}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == ""
+
+    @patch("donttype.transcribe_local.mlx_whisper", create=True)
+    def test_bye_is_hallucination(self, mock_mlx_whisper):
+        """'Bye.' is a known Whisper silence hallucination."""
+        from donttype.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "Bye."}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == ""
+
+    @patch("donttype.transcribe_local.mlx_whisper", create=True)
+    def test_repetition_is_truncated(self, mock_mlx_whisper):
+        """Repeated phrases from local model should be truncated."""
+        from donttype.transcribe_local import LocalTranscriptionClient
+
+        repeated = "okay. " * 5
+        mock_mlx_whisper.transcribe.return_value = {"text": repeated}
+        client = LocalTranscriptionClient()
+
+        result = client.transcribe(_make_wav_bytes())
+        assert result.count("okay.") < 5
+
+    @patch("donttype.transcribe_local.mlx_whisper", create=True)
+    def test_real_text_passes_through(self, mock_mlx_whisper):
+        """Normal transcription text should not be filtered."""
+        from donttype.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "Hello, this is a test."}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == "Hello, this is a test."
+
+    @patch("donttype.transcribe_local.mlx_whisper", create=True)
+    def test_whitespace_only_is_hallucination(self, mock_mlx_whisper):
+        """Whitespace-only result should be treated as hallucination."""
+        from donttype.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "   "}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == ""

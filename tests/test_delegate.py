@@ -87,6 +87,7 @@ class TestTranscriptionToken:
         """If token doesn't match, result should be silently discarded."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcription_token = 5
+        d._transcribing = True
 
         # Simulate a result from an older generation
         with patch.object(main_module, "inject_text") as mock_inject:
@@ -94,7 +95,7 @@ class TestTranscriptionToken:
 
         mock_inject.assert_not_called()
         # _transcribing should NOT be cleared — current generation is still in flight
-        assert d._transcribing is False  # was never set to True in this test
+        assert d._transcribing is True
 
     def test_current_token_is_accepted(self, main_module, monkeypatch):
         """Result with matching token should be injected."""
