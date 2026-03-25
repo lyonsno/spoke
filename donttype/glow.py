@@ -102,6 +102,7 @@ class GlowOverlay(NSObject):
         self._fade_in_until = 0.0
         self._update_count = 0
         self._noise_floor = 0.0  # adaptive ambient noise level
+        self._cap_factor = 1.0  # 1.0 = no cap, ramps down toward 0.25 near recording limit
         return self
 
     def setup(self) -> None:
@@ -233,6 +234,7 @@ class GlowOverlay(NSObject):
         self._smoothed_amplitude = 0.0
         self._update_count = 0
         self._noise_floor = 0.0
+        self._cap_factor = 1.0
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -321,6 +323,13 @@ class GlowOverlay(NSObject):
         # before "rendering" — the display gamma, essentially.
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
         opacity = _GLOW_BASE_OPACITY + amplitude_opacity * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
+
+        # Apply recording-cap countdown: eases glow toward 25% of max
+        # over the last 5 seconds as a passive visual warning.
+        if self._cap_factor < 1.0:
+            cap_floor = 0.25
+            scale = cap_floor + (1.0 - cap_floor) * self._cap_factor
+            opacity = _GLOW_BASE_OPACITY + (opacity - _GLOW_BASE_OPACITY) * scale
 
         self._glow_layer.setOpacity_(opacity)
 

@@ -130,6 +130,13 @@ class SpacebarHoldDetector(NSObject):
         logger.info("CGEventTap installed — spacebar hold detection active")
         return True
 
+    def force_end(self) -> None:
+        """Programmatically end a recording hold (e.g. recording cap reached)."""
+        if self._state == _State.RECORDING:
+            self._cancel_safety_timer()
+            self._state = _State.IDLE
+            self._on_hold_end()
+
     def uninstall(self) -> None:
         """Disable and remove the event tap."""
         if self._tap is not None:

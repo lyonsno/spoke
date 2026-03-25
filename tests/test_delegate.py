@@ -25,6 +25,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_thread = None
     delegate._preview_client = MagicMock()
     delegate._local_mode = False
+    delegate._record_start_time = 0.0
+    delegate._cap_fired = False
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate

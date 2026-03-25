@@ -40,6 +40,22 @@ from .transcribe_qwen import LocalQwenClient
 logger = logging.getLogger(__name__)
 
 
+def _get_ram_gb() -> float:
+    """Return system RAM in GB via sysctl."""
+    import subprocess
+    try:
+        out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+        return int(out.strip()) / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
+# Recording cap: 20s on machines with < 36GB RAM to avoid Metal GPU crashes
+# on long MLX inference buffers. No cap in sidecar mode (inference is remote).
+_RAM_GB = _get_ram_gb()
+_MAX_RECORD_SECS: float | None = 15.0 if _RAM_GB < 36 else None
+
+
 class DontTypeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
 
@@ -101,6 +117,15 @@ class DontTypeAppDelegate(NSObject):
         self._transcription_token = 0
         self._preview_active = False
         self._preview_thread: threading.Thread | None = None
+        self._record_start_time: float = 0.0
+        self._cap_fired = False
+
+        if self._local_mode and _MAX_RECORD_SECS is not None:
+            logger.info(
+                "RAM %.0fGB < 36GB — recording capped at %.0fs to avoid Metal crashes",
+                _RAM_GB, _MAX_RECORD_SECS,
+            )
+
         return self
 
     # ── NSApplication delegate ──────────────────────────────
@@ -193,6 +218,8 @@ class DontTypeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
+        self._record_start_time = time.monotonic()
+        self._cap_fired = False
 
         # Start the adaptive preview loop
         self._preview_active = True
@@ -209,6 +236,29 @@ class DontTypeAppDelegate(NSObject):
     def amplitudeUpdate_(self, rms_number) -> None:
         """Main thread: forward amplitude to glow and overlay text."""
         rms = float(rms_number)
+
+        # Recording cap: check elapsed time on every amplitude tick
+        if self._local_mode and _MAX_RECORD_SECS is not None and not self._cap_fired:
+            elapsed = time.monotonic() - self._record_start_time
+            _CAP_WARN_SECS = 5.0
+
+            # Update countdown glow in the last 5 seconds
+            warn_start = _MAX_RECORD_SECS - _CAP_WARN_SECS
+            if elapsed >= warn_start and self._glow is not None:
+                progress = min((elapsed - warn_start) / _CAP_WARN_SECS, 1.0)
+                eased = progress * progress  # ease-in: slow start, accelerating
+                self._glow._cap_factor = 1.0 - eased
+
+            # Fire the cap
+            if elapsed >= _MAX_RECORD_SECS:
+                self._cap_fired = True
+                logger.warning(
+                    "Recording capped at %.0fs (%.0fGB RAM) — transcribing what we have",
+                    _MAX_RECORD_SECS, _RAM_GB,
+                )
+                self._detector.force_end()
+                return
+
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
@@ -219,7 +269,8 @@ class DontTypeAppDelegate(NSObject):
             # Inner glow: track screen glow, saturate aggressively
             glow_opacity = self._glow._glow_layer.opacity()
             self._overlay.update_glow_amplitude(
-                min(glow_opacity * 2.5, 1.0)
+                min(glow_opacity * 2.5, 1.0),
+                cap_factor=self._glow._cap_factor,
             )
 
     def _preview_loop(self) -> None:

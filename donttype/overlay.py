@@ -412,19 +412,26 @@ class TranscriptionOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
         )
 
-    def update_glow_amplitude(self, opacity: float) -> None:
+    def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.
 
         opacity should be the screen glow's current opacity (0.0–1.0).
+        cap_factor scales the glow down during the recording cap countdown
+        (1.0 = full, ramps toward 0.25 near the cap).
         """
         if not self._visible:
             return
+        # Apply recording-cap countdown scaling
+        if cap_factor < 1.0:
+            cap_floor = 0.25
+            scale = cap_floor + (1.0 - cap_floor) * cap_factor
+            opacity *= scale
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowOpacity_(opacity)
         if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(opacity * 0.3)
+            self._outer_glow_tight.setShadowOpacity_(opacity * 0.5)
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(opacity * 0.5)
+            self._outer_glow_wide.setShadowOpacity_(opacity * 0.8)
 
     # ── layout helpers ───────────────────────────────────────
 
