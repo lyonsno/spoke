@@ -40,6 +40,7 @@ _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
 _TEXT_ALPHA_MIN = 0.45  # text opacity floor (silence)
 _TEXT_ALPHA_MAX = 1.00  # text opacity ceiling (loud speech)
+_TEXT_AMP_SATURATION = 0.5  # amplitude at which text reaches full brightness
 
 
 class TranscriptionOverlay(NSObject):
@@ -281,7 +282,8 @@ class TranscriptionOverlay(NSObject):
         else:
             self._text_amplitude *= 0.92
 
-        alpha = _TEXT_ALPHA_MIN + self._text_amplitude * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
+        alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
         )
