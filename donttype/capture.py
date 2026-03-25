@@ -41,6 +41,7 @@ class AudioCapture:
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._amplitude_cb: Callable[[float], None] | None = None
+        self._read_cursor: int = 0  # index into _frames for incremental reads
 
     def warmup(self) -> None:
         """Pre-initialize PortAudio so first start() is fast."""
@@ -67,6 +68,7 @@ class AudioCapture:
             self._stream = None
 
         self._frames = []
+        self._read_cursor = 0
         self._amplitude_cb = amplitude_callback
         self._stream = sd.InputStream(
             samplerate=self._sample_rate,
@@ -97,6 +99,20 @@ class AudioCapture:
         Used for incremental transcription — returns everything recorded so far.
         """
         return self._encode_wav(self._get_all_frames())
+
+    def get_new_frames(self) -> np.ndarray:
+        """Return audio frames accumulated since the last call (incremental).
+
+        Returns a float32 numpy array at 16kHz mono. Returns an empty array
+        if no new frames are available. Advances an internal cursor so each
+        chunk is returned exactly once.
+        """
+        with self._lock:
+            if self._read_cursor >= len(self._frames):
+                return np.array([], dtype=np.float32)
+            new = self._frames[self._read_cursor:]
+            self._read_cursor = len(self._frames)
+        return np.concatenate(new)
 
     @property
     def is_recording(self) -> bool:
