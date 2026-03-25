@@ -110,13 +110,67 @@ class DontTypeAppDelegate(NSObject):
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
         self._overlay.setup()
 
+        # Step 1: Request mic permission with a test recording.
+        # This triggers the system prompt before we start listening for spacebar.
+        self._menubar.set_status_text("Requesting mic access…")
+        self._request_mic_permission()
+
+    def _request_mic_permission(self) -> None:
+        """Trigger mic permission prompt by attempting a short recording."""
+        import sounddevice as sd
+        from Foundation import NSTimer
+        try:
+            # Record 0.1s — just enough to trigger the permission prompt
+            sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
+            logger.info("Microphone access granted")
+            self._setup_event_tap()
+        except Exception as e:
+            logger.warning("Mic permission not yet granted: %s", e)
+            self._menubar.set_status_text("Grant mic access, then wait…")
+            # Retry every 2 seconds until mic works
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, "retryMicPermission:", None, False
+            )
+
+    def retryMicPermission_(self, timer) -> None:
+        """Retry mic access check."""
+        import sounddevice as sd
+        from Foundation import NSTimer
+        try:
+            sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
+            logger.info("Microphone access granted")
+            self._setup_event_tap()
+        except Exception:
+            logger.debug("Still waiting for mic permission")
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, "retryMicPermission:", None, False
+            )
+
+    def _setup_event_tap(self) -> None:
+        """Install the event tap after permissions are confirmed."""
         if not self._detector.install():
             self._show_accessibility_alert()
-            self._quit()
+            self._menubar.set_status_text("Grant accessibility, then wait…")
+            # Retry every 2 seconds
+            from Foundation import NSTimer
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, "retryEventTap:", None, False
+            )
             return
 
         logger.info("donttype ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
+
+    def retryEventTap_(self, timer) -> None:
+        """Retry event tap installation."""
+        if self._detector.install():
+            logger.info("donttype ready — hold spacebar to record")
+            self._menubar.set_status_text("Ready — hold spacebar")
+        else:
+            from Foundation import NSTimer
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, "retryEventTap:", None, False
+            )
 
     # ── hold callbacks (called on main thread) ──────────────
 
