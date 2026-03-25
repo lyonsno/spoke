@@ -6,7 +6,7 @@ Run with:  uv run donttype
 Configure via environment variables:
     DICTATE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
     DICTATE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
-    DICTATE_HOLD_MS        Hold threshold in ms (default: 400, must be > 0)
+    DICTATE_HOLD_MS        Hold threshold in ms (default: 250, must be > 0)
     DICTATE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
 """
 
@@ -51,7 +51,7 @@ class DontTypeAppDelegate(NSObject):
         model = os.environ.get(
             "DICTATE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-        hold_ms_raw = os.environ.get("DICTATE_HOLD_MS", "300")
+        hold_ms_raw = os.environ.get("DICTATE_HOLD_MS", "250")
         try:
             hold_ms = int(hold_ms_raw)
         except ValueError:
