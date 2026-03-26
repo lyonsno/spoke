@@ -56,6 +56,7 @@ class TestLocalTranscriptionClient:
         call_kwargs = mock_mlx_whisper.transcribe.call_args
         assert call_kwargs[1]["path_or_hf_repo"] == "test/model"
         assert call_kwargs[1]["language"] == "en"
+        assert call_kwargs[1]["decode_timeout"] == 30.0
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_strips_whitespace(self, mock_mlx_whisper):
