@@ -9,7 +9,7 @@ dependencies = [
     "sounddevice",
     "numpy",
     "httpx",
-    "mlx-whisper>=0.4.3",
+    "mlx-whisper @ git+https://github.com/lyonsno/mlx-whisper-patched.git",
     "mlx-qwen3-asr>=0.3.2",
 ]
 
@@ -25,6 +25,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]
