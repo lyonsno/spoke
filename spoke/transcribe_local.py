@@ -59,6 +59,7 @@ class LocalTranscriptionClient:
             audio,
             path_or_hf_repo=self._model,
             language="en",
+            decode_timeout=30.0,
         )
 
         text = result.get("text", "").strip()

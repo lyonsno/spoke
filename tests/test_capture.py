@@ -174,6 +174,39 @@ class TestStartStop:
         first_stream.close.assert_called_once()
 
     @patch("spoke.capture.sd")
+    def test_get_new_frames_returns_incremental(self, mock_sd):
+        """get_new_frames() should return only frames since last call."""
+        cap = AudioCapture()
+        chunk1 = np.ones(1024, dtype=np.float32)
+        chunk2 = np.ones(1024, dtype=np.float32) * 2
+
+        cap._frames = [chunk1]
+        frames1 = cap.get_new_frames()
+        assert len(frames1) == 1024
+        assert frames1[0] == 1.0
+
+        # Second call with no new frames
+        frames_empty = cap.get_new_frames()
+        assert frames_empty.size == 0
+
+        # Add another chunk
+        cap._frames.append(chunk2)
+        frames2 = cap.get_new_frames()
+        assert len(frames2) == 1024
+        assert frames2[0] == 2.0
+
+    @patch("spoke.capture.sd")
+    def test_get_new_frames_cursor_resets_on_start(self, mock_sd):
+        """start() should reset the read cursor."""
+        cap = AudioCapture()
+        cap._frames = [np.ones(1024, dtype=np.float32)]
+        cap.get_new_frames()  # advance cursor
+        assert cap._read_cursor == 1
+
+        cap.start()
+        assert cap._read_cursor == 0
+
+    @patch("spoke.capture.sd")
     def test_stop_without_start_clears_stale_frames(self, mock_sd):
         """stop() when stream is None should clear leftover frames and return
         empty bytes, not stale audio from a previous session."""

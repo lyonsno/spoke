@@ -274,16 +274,59 @@ class SpokeAppDelegate(NSObject):
             )
 
     def _preview_loop(self) -> None:
-        """Background thread: adaptive-interval preview transcription.
+        """Background thread: preview transcription during recording.
 
-        Sends the growing audio buffer, waits for the response, posts the
-        preview text to the main thread, then waits a minimum interval before
-        sending the next buffer. Stops when _preview_active is cleared.
+        Uses streaming (KV-cache reuse) when the client supports it,
+        falling back to full-buffer re-transcription otherwise.
         """
+        use_streaming = getattr(self._preview_client, 'supports_streaming', False)
+
+        if use_streaming:
+            self._preview_loop_streaming()
+        else:
+            self._preview_loop_batch()
+
+    def _preview_loop_streaming(self) -> None:
+        """Streaming preview: feed incremental audio chunks, read state.text."""
+        _FEED_INTERVAL = 0.15  # feed new audio every 150ms
+
+        # Wait for some audio to accumulate before first feed
+        time.sleep(0.4)
+
+        try:
+            self._preview_client.start_stream()
+        except Exception:
+            logger.exception("Failed to start streaming — falling back to batch")
+            self._preview_loop_batch()
+            return
+
+        while self._preview_active:
+            loop_start = time.monotonic()
+
+            frames = self._capture.get_new_frames()
+
+            try:
+                text = self._preview_client.feed(frames)
+            except Exception:
+                logger.debug("Streaming feed failed", exc_info=True)
+                time.sleep(0.5)
+                continue
+
+            if text and self._preview_active:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "previewTextUpdate:", text, False
+                )
+
+            elapsed = time.monotonic() - loop_start
+            remaining = _FEED_INTERVAL - elapsed
+            if remaining > 0 and self._preview_active:
+                time.sleep(remaining)
+
+    def _preview_loop_batch(self) -> None:
+        """Batch preview: re-transcribe the full buffer each tick."""
         _MIN_INTERVAL = 0.5 if self._local_mode else 0.75
         _INITIAL_DELAY = 0.4 if self._local_mode else 0.3
 
-        # Wait for some audio to accumulate before first preview
         time.sleep(_INITIAL_DELAY)
 
         while self._preview_active:
@@ -306,7 +349,6 @@ class SpokeAppDelegate(NSObject):
                     "previewTextUpdate:", text, False
                 )
 
-            # Enforce minimum interval between requests
             elapsed = time.monotonic() - loop_start
             remaining = _MIN_INTERVAL - elapsed
             if remaining > 0 and self._preview_active:
@@ -348,14 +390,19 @@ class SpokeAppDelegate(NSObject):
         thread.start()
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
-        """Background thread: send audio to Whisper, marshal result to main thread."""
-        # Wait for preview loop to finish so we don't hit the sidecar concurrently
+        """Background thread: finalize transcription and marshal result to main thread."""
+        # Wait for preview loop to finish so we don't hit the model concurrently
         if self._preview_thread is not None:
             self._preview_thread.join(timeout=2.0)
             self._preview_thread = None
 
         try:
-            text = self._client.transcribe(wav_bytes)
+            # If the preview client was streaming, finalize it for the final text
+            # (this runs the tail refinement pass with the existing KV cache)
+            if getattr(self._client, 'supports_streaming', False) and self._client._stream_state is not None:
+                text = self._client.finish_stream()
+            else:
+                text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
