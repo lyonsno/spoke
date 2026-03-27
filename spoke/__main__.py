@@ -368,8 +368,8 @@ class SpokeAppDelegate(NSObject):
 
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick."""
-        _MIN_INTERVAL = 0.3 if self._local_mode else 0.75
-        _INITIAL_DELAY = 0.2 if self._local_mode else 0.3
+        _MIN_INTERVAL = 0.2 if self._local_mode else 0.75
+        _INITIAL_DELAY = 0.15 if self._local_mode else 0.3
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
         try:
