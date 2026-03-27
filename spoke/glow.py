@@ -37,13 +37,13 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 # Glow appearance
-_GLOW_COLOR = (0.7, 0.92, 0.95)  # pale turquoise-white blue RGB
+_GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — SC2 Protoss energy field
 _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
-_GLOW_MAX_OPACITY = 1.0  # full brightness at peak to compensate for smaller size
-_GLOW_BASE_OPACITY = 0.10  # clear presence in silence
-_GLOW_PEAK_TARGET = 0.245
+_GLOW_MAX_OPACITY = 0.70  # 30% reduction — dim layer provides the contrast now
+_GLOW_BASE_OPACITY = 0.07  # clear presence in silence
+_GLOW_PEAK_TARGET = 0.17
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -51,6 +51,9 @@ _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corner
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "30.0"))
+_DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
+_DIM_OPACITY_DARK = 0.20  # dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.40  # dim on light/white backgrounds
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
@@ -59,6 +62,66 @@ _DECAY_FACTOR = 0.50  # very quick falloff between words
 # Fade timing
 _FADE_IN_S = 0.08
 _FADE_OUT_S = 0.2
+
+
+def _sample_screen_brightness(screen) -> float:
+    """Sample average brightness of the screen content below our window.
+
+    Returns 0.0 (black) to 1.0 (white). Captures once per call — intended
+    to be called at recording start, not per-frame.
+    """
+    try:
+        from Quartz import (
+            CGWindowListCreateImage,
+            kCGWindowListOptionOnScreenBelowWindow,
+            kCGNullWindowID,
+            CGRectNull,
+        )
+        frame = screen.frame()
+        rect = ((frame.origin.x, frame.origin.y),
+                (frame.size.width, frame.size.height))
+
+        # Capture everything below all windows at our level
+        image = CGWindowListCreateImage(
+            rect,
+            kCGWindowListOptionOnScreenBelowWindow,
+            kCGNullWindowID,
+            0,  # kCGWindowImageDefault
+        )
+        if image is None:
+            return 0.5  # fallback to mid-brightness
+
+        from Quartz import CGImageGetWidth, CGImageGetHeight, CGImageGetDataProvider, CGDataProviderCopyData
+        w = CGImageGetWidth(image)
+        h = CGImageGetHeight(image)
+        data = CGDataProviderCopyData(CGImageGetDataProvider(image))
+
+        if data is None or len(data) == 0:
+            return 0.5
+
+        # Sample a grid of pixels rather than reading every pixel
+        import struct
+        total = 0.0
+        samples = 0
+        bytes_per_pixel = len(data) // (w * h) if w * h > 0 else 4
+        step_x = max(w // 20, 1)
+        step_y = max(h // 20, 1)
+
+        for sy in range(0, h, step_y):
+            for sx in range(0, w, step_x):
+                offset = (sy * w + sx) * bytes_per_pixel
+                if offset + 3 <= len(data):
+                    # BGRA or RGBA — either way, first 3 bytes are color channels
+                    r, g, b = data[offset], data[offset + 1], data[offset + 2]
+                    # Perceived luminance
+                    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                    total += lum
+                    samples += 1
+
+        return total / samples if samples > 0 else 0.5
+    except Exception:
+        logger.debug("Screen brightness sampling failed", exc_info=True)
+        return 0.5
 
 
 def _compress_screen_glow_peak(opacity: float) -> float:
@@ -140,6 +203,17 @@ class GlowOverlay(NSObject):
         glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
         )
+
+        # ── Optional screen dim: subtle dark backdrop for glow contrast ──
+        self._dim_layer = None
+        if _DIM_SCREEN:
+            self._dim_layer = CALayer.alloc().init()
+            self._dim_layer.setFrame_(((0, 0), (w, h)))
+            self._dim_layer.setBackgroundColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 1.0).CGColor()
+            )
+            self._dim_layer.setOpacity_(0.0)
+            content.layer().addSublayer_(self._dim_layer)
 
         # ── Container layer: holds shadow + masked fill ──────────
         # We control opacity on this layer to drive the whole effect.
@@ -244,7 +318,7 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
-        # Reset color to default turquoise
+        # Reset color to default cornflower
         glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
         )
@@ -273,6 +347,27 @@ class GlowOverlay(NSObject):
         )
         self._glow_layer.setOpacity_(_GLOW_BASE_OPACITY)
         self._glow_layer.addAnimation_forKey_(anim, "fadeIn")
+
+        # Fade in screen dim — adaptive opacity based on screen brightness.
+        # Sample once per recording, not per-frame.
+        if self._dim_layer is not None:
+            brightness = _sample_screen_brightness(self._screen)
+            dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
+
+            pres = self._dim_layer.presentationLayer()
+            current_opacity = pres.opacity() if pres is not None else self._dim_layer.opacity()
+            self._dim_layer.removeAllAnimations()
+            self._dim_layer.setOpacity_(dim_target)
+            dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
+            dim_anim.setFromValue_(current_opacity)
+            dim_anim.setToValue_(dim_target)
+            dim_anim.setDuration_(3.6)
+            dim_anim.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeIn")
+            )
+            self._dim_layer.addAnimation_forKey_(dim_anim, "dimIn")
+
         logger.info("Glow show")
 
     def hide(self) -> None:
@@ -293,6 +388,22 @@ class GlowOverlay(NSObject):
             )
             self._glow_layer.setOpacity_(0.0)
             self._glow_layer.addAnimation_forKey_(anim, "fadeOut")
+
+            # Fade out screen dim — slow and sneaky so the brightness
+            # return is imperceptible while attention is on injected text
+            if self._dim_layer is not None:
+                pres = self._dim_layer.presentationLayer()
+                current_opacity = pres.opacity() if pres is not None else self._dim_layer.opacity()
+                self._dim_layer.removeAllAnimations()
+                self._dim_layer.setOpacity_(0.0)
+                dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
+                dim_anim.setFromValue_(current_opacity)
+                dim_anim.setToValue_(0.0)
+                dim_anim.setDuration_(8.0)
+                dim_anim.setTimingFunction_(
+                    CAMediaTimingFunction.functionWithName_("easeIn")
+                )
+                self._dim_layer.addAnimation_forKey_(dim_anim, "dimOut")
 
             # Order out after animation completes
             from Foundation import NSTimer

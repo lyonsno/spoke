@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
-_OVERLAY_BOTTOM_MARGIN = 120.0  # distance from bottom of screen
+_OVERLAY_BOTTOM_MARGIN = 195.0  # distance from bottom of screen
 _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 300.0  # max before text scrolls
 _FONT_SIZE = 16.0
@@ -54,11 +54,11 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.115)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
 
 # Inner glow — matches screen border glow, scaled to overlay size
-_GLOW_COLOR = (0.7, 0.92, 0.95)  # same as screen glow
+_GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — matches screen glow
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
-_OUTER_GLOW_PEAK_TARGET = 0.5
+_OUTER_GLOW_PEAK_TARGET = 0.35
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
