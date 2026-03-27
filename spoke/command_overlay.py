@@ -369,8 +369,34 @@ class CommandOverlay(NSObject):
         self._response_text += token
 
         if first_token:
-            # First token: full rebuild to lay out utterance + response
-            self._rebuild_attributed_text()
+            # First token: append separator + token to existing utterance
+            # (don't rebuild — that causes a flash)
+            from AppKit import (
+                NSMutableAttributedString as _NMAS_first,
+                NSForegroundColorAttributeName as _FG_first,
+                NSFontAttributeName as _Font_first,
+            )
+            sep = _NMAS_first.alloc().initWithString_("\n\n")
+            sep.addAttribute_value_range_(
+                _FG_first,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                (0, 2),
+            )
+            self._text_view.textStorage().appendAttributedString_(sep)
+
+            frag = _NMAS_first.alloc().initWithString_(token)
+            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
+            )
+            frag.addAttribute_value_range_(
+                _FG_first, response_color, (0, len(token))
+            )
+            frag.addAttribute_value_range_(
+                _Font_first,
+                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+                (0, len(token)),
+            )
+            self._text_view.textStorage().appendAttributedString_(frag)
         else:
             # Subsequent tokens: append in-place (no flicker)
             from AppKit import (
@@ -447,11 +473,10 @@ class CommandOverlay(NSObject):
     def finish(self) -> None:
         """Called when the response stream is complete. Start the linger timer."""
         self._streaming = False
-        # Stop pulse and thinking timer, leave text visible
+        # Stop pulse and thinking timer, leave text as-is (already correct
+        # from the last append_token — don't rebuild, that causes a flash)
         self._cancel_pulse()
         self._stop_thinking_timer()
-        # Rebuild with final attributed text (utterance dim, response bright)
-        self._rebuild_attributed_text()
         # Linger then fade
         self._linger_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _LINGER_S, self, "lingerDone:", None, False
