@@ -107,6 +107,7 @@ def _make_fake_appkit():
     a.NSFont = MagicMock()
     a.NSMutableParagraphStyle = MagicMock()
     a.NSTextField = MagicMock()
+    a.NSWorkspace = MagicMock()
     a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
     a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
     a.NSWindowCollectionBehaviorStationary = 1 << 4
@@ -189,6 +190,13 @@ def main_module(mock_pyobjc):
     for name in list(sys.modules):
         if name.startswith("spoke."):
             sys.modules.pop(name, None)
+
+    # Pre-install a fake focus_check module to avoid loading real ctypes/AX APIs
+    fake_focus_check = types.ModuleType("spoke.focus_check")
+    fake_focus_check.has_focused_text_input = MagicMock(return_value=True)
+    fake_focus_check._get_focused_role = MagicMock(return_value="AXTextField")
+    sys.modules["spoke.focus_check"] = fake_focus_check
+
     mod = importlib.import_module("spoke.__main__")
     yield mod
     for name in list(sys.modules):

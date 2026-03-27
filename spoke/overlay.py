@@ -74,6 +74,30 @@ _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
 
+# Recovery mode constants
+_RECOVERY_BG_ALPHA = 0.35  # more opaque than recording, but still ghostly
+_RECOVERY_TEXT_ALPHA = 0.80  # 80% — doesn't fully resolve
+_RECOVERY_HINT_ALPHA = 0.40  # small hint text below overlay
+_RECOVERY_HINT_FONT_SIZE = 11.0
+_RECOVERY_DIVIDER_ALPHA = 0.18  # subtle column dividers
+_RECOVERY_REJECT_DURATION = 0.3  # brief flash on Insert rejection
+_RECOVERY_LABEL_FONT_SIZE = 14.0
+_RECOVERY_PREVIEW_MAX_CHARS = 45  # truncate clipboard preview
+_RECOVERY_HINT_MARGIN = 8.0  # gap between overlay and hint
+_RECOVERY_HINT_HEIGHT = 20.0
+
+
+def _truncate_preview(text: str | None) -> str:
+    """Truncate text for clipboard preview display."""
+    if not text:
+        return "(empty)"
+    # Replace newlines with spaces for single-line display
+    text = text.replace("\n", " ").replace("\r", " ")
+    if len(text) > _RECOVERY_PREVIEW_MAX_CHARS:
+        return text[:_RECOVERY_PREVIEW_MAX_CHARS] + "…"
+    return text
+
+
 def _compress_outer_glow_peak(opacity: float) -> float:
     """Keep low-level glow response intact while capping the outer bloom."""
     return min(opacity, _OUTER_GLOW_PEAK_TARGET)
@@ -114,6 +138,17 @@ class TranscriptionOverlay(NSObject):
 
         # Text breathing — separate heavy smoothing so text doesn't flicker
         self._text_amplitude = 0.0
+
+        # Recovery mode state
+        self._recovery_mode = False
+        self._recovery_buttons: list[NSView] = []
+        self._recovery_labels: list[NSTextView] = []
+        self._recovery_dividers: list[NSView] = []
+        self._recovery_hint_window: NSWindow | None = None
+        self._recovery_reject_timer: NSTimer | None = None
+        self._on_dismiss_callback = None
+        self._on_insert_callback = None
+        self._on_clipboard_toggle_callback = None
         return self
 
     def setup(self) -> None:
@@ -279,6 +314,18 @@ class TranscriptionOverlay(NSObject):
         """Fade the overlay in."""
         if self._window is None:
             return
+        # If recovery mode is active, clean it up first
+        if self._recovery_mode:
+            self._recovery_mode = False
+            self._teardown_recovery_views()
+            if self._scroll_view is not None:
+                self._scroll_view.setHidden_(False)
+            self._window.setIgnoresMouseEvents_(True)
+            self._content_view.layer().setBackgroundColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    0.1, 0.1, 0.12, _BG_ALPHA_MIN
+                ).CGColor()
+            )
         self._cancel_fade()
         self._cancel_typewriter()
         self._visible = True
@@ -566,3 +613,311 @@ class TranscriptionOverlay(NSObject):
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
             pass
+
+    # ── recovery mode ────────────────────────────────────────
+
+    def show_recovery(self, text: str, on_dismiss=None, on_insert=None,
+                      on_clipboard_toggle=None) -> None:
+        """Enter recovery mode: three-column button layout.
+
+        The overlay becomes interactive (accepts mouse events) and shows
+        three equal columns: Dismiss | Insert | Clipboard.
+
+        Parameters
+        ----------
+        text : str
+            The transcribed text (displayed in Clipboard column after toggle).
+        on_dismiss : callable, optional
+            Called when Dismiss column is clicked.
+        on_insert : callable, optional
+            Called when Insert column is clicked.
+        on_clipboard_toggle : callable, optional
+            Called when Clipboard column is clicked.
+        """
+        if self._window is None:
+            return
+
+        # Clean up any existing recovery state
+        self._teardown_recovery_views()
+        self._cancel_fade()
+        self._cancel_typewriter()
+
+        self._recovery_mode = True
+        self._on_dismiss_callback = on_dismiss
+        self._on_insert_callback = on_insert
+        self._on_clipboard_toggle_callback = on_clipboard_toggle
+
+        # Hide the normal text/scroll views
+        if self._scroll_view is not None:
+            self._scroll_view.setHidden_(True)
+
+        # Make window interactive
+        self._window.setIgnoresMouseEvents_(False)
+
+        # Reset to default height
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        self._window.setFrame_display_animate_(
+            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
+            True, False
+        )
+        self._content_view.setFrame_(
+            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        )
+        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+
+        # Darken background for recovery mode
+        self._content_view.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
+            ).CGColor()
+        )
+
+        # Create three column buttons
+        col_w = _OVERLAY_WIDTH / 3.0
+        labels = ["Dismiss", "Insert", "Clipboard"]
+        callbacks = [self._dismiss_clicked, self._insert_clicked,
+                     self._clipboard_clicked]
+
+        for i, (label, callback) in enumerate(zip(labels, callbacks)):
+            btn_frame = NSMakeRect(col_w * i, 0, col_w, _OVERLAY_HEIGHT)
+            btn = _RecoveryButton.alloc().initWithFrame_callback_(btn_frame, callback)
+            btn.setWantsLayer_(True)
+            btn.layer().setBackgroundColor_(
+                NSColor.clearColor().CGColor()
+            )
+
+            # Label text view (centered in column)
+            label_frame = NSMakeRect(4, (_OVERLAY_HEIGHT - 24) / 2, col_w - 8, 24)
+            label_view = NSTextView.alloc().initWithFrame_(label_frame)
+            label_view.setEditable_(False)
+            label_view.setSelectable_(False)
+            label_view.setDrawsBackground_(False)
+            label_view.setAlignment_(1)  # NSTextAlignmentCenter
+            label_view.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
+                )
+            )
+            label_view.setFont_(
+                NSFont.systemFontOfSize_weight_(_RECOVERY_LABEL_FONT_SIZE, 0.3)
+            )
+            label_view.setString_(label)
+
+            btn.addSubview_(label_view)
+            self._content_view.addSubview_(btn)
+            self._recovery_buttons.append(btn)
+            self._recovery_labels.append(label_view)
+
+            # Add subtle divider between columns (not after last)
+            if i < len(labels) - 1:
+                div_x = col_w * (i + 1)
+                div_frame = NSMakeRect(div_x - 0.5, 8, 1, _OVERLAY_HEIGHT - 16)
+                div = NSView.alloc().initWithFrame_(div_frame)
+                div.setWantsLayer_(True)
+                div.layer().setBackgroundColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                        1.0, 1.0, 1.0, _RECOVERY_DIVIDER_ALPHA
+                    ).CGColor()
+                )
+                self._content_view.addSubview_(div)
+                self._recovery_dividers.append(div)
+
+        # Show hint window below overlay: "press spacebar to dismiss"
+        self._show_hint_window(sw)
+
+        # Make overlay visible immediately (no fade-in for recovery)
+        self._visible = True
+        self._window.setAlphaValue_(1.0)
+        self._window.orderFrontRegardless()
+
+        logger.info("Recovery overlay shown")
+
+    def dismiss_recovery(self) -> None:
+        """Exit recovery mode and hide the overlay."""
+        if not self._recovery_mode:
+            return
+        self._recovery_mode = False
+        self._teardown_recovery_views()
+
+        # Restore normal overlay state
+        if self._scroll_view is not None:
+            self._scroll_view.setHidden_(False)
+        self._window.setIgnoresMouseEvents_(True)
+
+        # Restore normal background alpha
+        self._content_view.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.1, 0.1, 0.12, _BG_ALPHA_MIN
+            ).CGColor()
+        )
+
+        self.hide()
+
+    def flash_insert_reject(self) -> None:
+        """Brief visual signal that Insert was rejected (no text field)."""
+        if not self._recovery_mode or len(self._recovery_buttons) < 2:
+            return
+
+        insert_btn = self._recovery_buttons[1]
+        insert_label = self._recovery_labels[1]
+
+        # Flash the insert column red briefly
+        insert_btn.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.8, 0.2, 0.2, 0.15
+            ).CGColor()
+        )
+
+        # Schedule reset
+        def _reset_flash(timer):
+            if insert_btn is not None:
+                insert_btn.layer().setBackgroundColor_(
+                    NSColor.clearColor().CGColor()
+                )
+
+        self._recovery_reject_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _RECOVERY_REJECT_DURATION,
+            _TimerCallback.alloc().initWithCallback_(_reset_flash),
+            "fire:",
+            None,
+            False,
+        )
+
+    def set_clipboard_preview(self, preview_text: str) -> None:
+        """Update the Clipboard column label to show a preview of swapped contents."""
+        if not self._recovery_mode or len(self._recovery_labels) < 3:
+            return
+        clipboard_label = self._recovery_labels[2]
+        truncated = _truncate_preview(preview_text)
+        clipboard_label.setString_(truncated)
+        clipboard_label.setFont_(
+            NSFont.systemFontOfSize_weight_(_RECOVERY_LABEL_FONT_SIZE - 2, 0.0)
+        )
+
+    def reset_clipboard_label(self) -> None:
+        """Reset the Clipboard column label back to 'Clipboard'."""
+        if not self._recovery_mode or len(self._recovery_labels) < 3:
+            return
+        clipboard_label = self._recovery_labels[2]
+        clipboard_label.setString_("Clipboard")
+        clipboard_label.setFont_(
+            NSFont.systemFontOfSize_weight_(_RECOVERY_LABEL_FONT_SIZE, 0.3)
+        )
+
+    # ── recovery internal helpers ────────────────────────────
+
+    def _dismiss_clicked(self) -> None:
+        if self._on_dismiss_callback is not None:
+            self._on_dismiss_callback()
+
+    def _insert_clicked(self) -> None:
+        if self._on_insert_callback is not None:
+            self._on_insert_callback()
+
+    def _clipboard_clicked(self) -> None:
+        if self._on_clipboard_toggle_callback is not None:
+            self._on_clipboard_toggle_callback()
+
+    def _show_hint_window(self, screen_width: float) -> None:
+        """Create a small hint window below the overlay."""
+        hint_y = _OVERLAY_BOTTOM_MARGIN - _RECOVERY_HINT_MARGIN - _RECOVERY_HINT_HEIGHT
+        hint_x = (screen_width - _OVERLAY_WIDTH) / 2
+        hint_frame = NSMakeRect(hint_x, hint_y, _OVERLAY_WIDTH, _RECOVERY_HINT_HEIGHT)
+
+        self._recovery_hint_window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            hint_frame, 0, NSBackingStoreBuffered, False
+        )
+        self._recovery_hint_window.setLevel_(25)
+        self._recovery_hint_window.setOpaque_(False)
+        self._recovery_hint_window.setBackgroundColor_(NSColor.clearColor())
+        self._recovery_hint_window.setIgnoresMouseEvents_(True)
+        self._recovery_hint_window.setHasShadow_(False)
+        self._recovery_hint_window.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+
+        hint_text = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _OVERLAY_WIDTH, _RECOVERY_HINT_HEIGHT)
+        )
+        hint_text.setEditable_(False)
+        hint_text.setSelectable_(False)
+        hint_text.setDrawsBackground_(False)
+        hint_text.setAlignment_(1)  # center
+        hint_text.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _RECOVERY_HINT_ALPHA
+            )
+        )
+        hint_text.setFont_(
+            NSFont.systemFontOfSize_weight_(_RECOVERY_HINT_FONT_SIZE, 0.0)
+        )
+        hint_text.setString_("press spacebar to dismiss")
+
+        wrapper = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _OVERLAY_WIDTH, _RECOVERY_HINT_HEIGHT)
+        )
+        wrapper.addSubview_(hint_text)
+        self._recovery_hint_window.setContentView_(wrapper)
+        self._recovery_hint_window.setAlphaValue_(1.0)
+        self._recovery_hint_window.orderFrontRegardless()
+
+    def _teardown_recovery_views(self) -> None:
+        """Remove all recovery-mode subviews and hint window."""
+        for btn in self._recovery_buttons:
+            btn.removeFromSuperview()
+        self._recovery_buttons.clear()
+        self._recovery_labels.clear()
+
+        for div in self._recovery_dividers:
+            div.removeFromSuperview()
+        self._recovery_dividers.clear()
+
+        if self._recovery_reject_timer is not None:
+            self._recovery_reject_timer.invalidate()
+            self._recovery_reject_timer = None
+
+        if self._recovery_hint_window is not None:
+            self._recovery_hint_window.orderOut_(None)
+            self._recovery_hint_window = None
+
+        self._on_dismiss_callback = None
+        self._on_insert_callback = None
+        self._on_clipboard_toggle_callback = None
+
+
+# ── helper NSView subclass for clickable recovery columns ────
+
+
+class _RecoveryButton(NSView):
+    """A transparent NSView that intercepts mouse clicks for recovery buttons."""
+
+    def initWithFrame_callback_(self, frame, callback):
+        self = objc.super(_RecoveryButton, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._callback = callback
+        return self
+
+    def mouseDown_(self, event):
+        if self._callback is not None:
+            self._callback()
+
+
+class _TimerCallback(NSObject):
+    """NSObject wrapper for NSTimer → Python callable bridge."""
+
+    def initWithCallback_(self, callback):
+        self = objc.super(_TimerCallback, self).init()
+        if self is None:
+            return None
+        self._callback = callback
+        return self
+
+    def fire_(self, timer):
+        self._callback(timer)

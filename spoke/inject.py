@@ -44,6 +44,32 @@ def _get_restore_delay() -> float:
     return ms / 1000.0
 
 
+def save_pasteboard() -> list[tuple[str, bytes]] | None:
+    """Save the current general pasteboard contents. Public API for recovery mode."""
+    pb = NSPasteboard.generalPasteboard()
+    return _save_pasteboard(pb)
+
+
+def restore_pasteboard(saved: list[tuple[str, bytes]] | None) -> None:
+    """Restore previously saved pasteboard contents. Public API for recovery mode."""
+    pb = NSPasteboard.generalPasteboard()
+    _restore_pasteboard(pb, saved)
+
+
+def set_pasteboard_only(text: str) -> None:
+    """Set pasteboard to *text* without pasting or scheduling a restore.
+
+    Used for recovery mode: the text stays on the clipboard for the user
+    to manually Cmd+V wherever they want.
+    """
+    if not text:
+        return
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    pb.setString_forType_(text, NSPasteboardTypeString)
+    logger.info("Pasteboard set (no paste) — %d chars for manual recovery", len(text))
+
+
 def _save_pasteboard(pb: NSPasteboard) -> list[tuple[str, bytes]] | None:
     """Save all items/types from the pasteboard. Returns None if empty."""
     items = pb.pasteboardItems()
