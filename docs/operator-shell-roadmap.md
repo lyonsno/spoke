@@ -200,6 +200,62 @@ transposed into a runtime state substrate.
    lifecycle management, intent layering, incoherence surfacing. Last because
    it requires all other layers to exist before it has something to govern.
 
+## Chat Management (Epispokesis)
+
+The ring buffer (V0.1) gives multi-turn context within a single session.
+Chat management extends this to persistent, named, switchable conversation
+strands — the runtime continuity substrate that Layer 6 describes in
+abstract terms.
+
+### V0.1 — Ring Buffer (exists)
+
+In-memory list of the last N command/response pairs, injected into the
+chat completions messages array. No persistence, no naming, no switching.
+The KV cache makes the stable prefix cheap. This is already working and
+surprisingly effective for conversational context.
+
+### V0.5 — Persistent Named Chats
+
+- **Auto-titling.** After each exchange, a cheap model call (0.8B, ~50ms)
+  generates a short title from the user query + assistant response. Stored
+  with the chat metadata.
+- **Persistent storage.** A JSON index file listing all chats (ID, title,
+  timestamps, status). Each chat's message history in a separate JSON file.
+  Location: `~/Library/Application Support/Spoke/chats/`.
+- **Explicit switching.** The user says "switch to [title]" or "bring up
+  [topic]" and the model resolves this against the chat index. The ring
+  buffer reloads with the selected chat's history.
+- **New chat.** A voice keyword or gesture starts a fresh chat. The previous
+  chat persists on disk and can be resumed later.
+- **Default behavior.** Without explicit switching, each shift-release
+  continues the current chat. New chats start only on explicit request.
+
+### V1.0 — Automatic Strand Routing
+
+- **0.8B pre-router** classifies whether an utterance is continuing the
+  current chat, referencing a previous chat, or starting a new topic.
+  Only runs when the utterance is ambiguous — most messages obviously
+  continue the current thread.
+- **Compressed manifests.** When the chat index grows large, the model
+  maintains a compressed summary of each chat for fast lookup. Same
+  Epistaxis pattern: compress signal, discard process.
+- **Lifecycle states.** Chats can be active, idle, or archived. Idle chats
+  are still quickly resumable. Archived chats are compressed to title +
+  summary only.
+
+### Design Notes
+
+- **Don't auto-detect new-vs-resume for V0.5.** Explicit switching first.
+  Observe what the user actually says during real use, then build auto-
+  detection from those patterns. Premature auto-detection that guesses
+  wrong is worse than no detection at all.
+- **The model is the index.** Chat lookup is a natural language operation
+  against the title/summary list, not a string match. The user says "that
+  conversation about the screenshot tool" and the model resolves it.
+- **The ring buffer stays as the runtime format.** Persistent storage is
+  for saving/loading. At runtime, the active chat is always a ring buffer
+  in the `CommandClient`. Switching chats swaps the buffer contents.
+
 ## Design Principles
 
 - **The body decides after speaking.** The recording flow is always the same.
