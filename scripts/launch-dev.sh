@@ -17,7 +17,7 @@ mkdir -p "$LOG_DIR"
   printf 'Launching Spoke from %s\n' "$REPO_ROOT"
 } >>"$LOG_FILE"
 
-nohup env -C "$REPO_ROOT" \
+env -C "$REPO_ROOT" \
   SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}" \
   SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}" \
   "$REPO_ROOT/.venv/bin/python" -m spoke \
