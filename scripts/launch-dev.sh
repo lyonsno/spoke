@@ -24,21 +24,27 @@ export SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whi
 "$REPO_ROOT/.venv/bin/python" - <<'PY'
 import os
 import subprocess
+import traceback
 from pathlib import Path
 
 repo_root = Path(os.environ["REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
 python_exe = repo_root / ".venv" / "bin" / "python"
 
-with log_file.open("ab", buffering=0) as log:
-    subprocess.Popen(
-        [str(python_exe), "-m", "spoke"],
-        cwd=repo_root,
-        env=os.environ.copy(),
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-        close_fds=True,
-    )
+with log_file.open("a", encoding="utf-8") as log:
+    try:
+        subprocess.Popen(
+            [str(python_exe), "-m", "spoke"],
+            cwd=repo_root,
+            env=os.environ.copy(),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        traceback.print_exc(file=log)
+        log.flush()
+        raise SystemExit(1)
 PY
