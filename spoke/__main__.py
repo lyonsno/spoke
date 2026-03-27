@@ -12,8 +12,11 @@ Configure via environment variables:
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+import json
 import logging
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -38,6 +41,9 @@ from .transcribe_local import LocalTranscriptionClient
 from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
+_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-large-v3-turbo"
 
 
 def _get_ram_gb() -> float:
@@ -65,9 +71,6 @@ class SpokeAppDelegate(NSObject):
             return None
 
         whisper_url = os.environ.get("SPOKE_WHISPER_URL", "")
-        model = os.environ.get(
-            "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
-        )
         hold_ms_raw = os.environ.get("SPOKE_HOLD_MS", "250")
         try:
             hold_ms = int(hold_ms_raw)
@@ -89,22 +92,14 @@ class SpokeAppDelegate(NSObject):
             )
             sys.exit(1)
 
+        self._whisper_url = whisper_url
+        self._preview_model_id, self._transcription_model_id = self._resolve_model_ids()
+        self._client_cache: dict[tuple[str, str], object] = {}
         self._capture = AudioCapture()
         self._capture.warmup()
-        if whisper_url:
-            logger.info("Using sidecar transcription: %s", whisper_url)
-            self._client = TranscriptionClient(base_url=whisper_url, model=model)
-            self._preview_client = TranscriptionClient(base_url=whisper_url, model=model)
-            self._local_mode = False
-        else:
-            if model.startswith("Qwen/"):
-                logger.info("Using local Qwen3 ASR: %s", model)
-                self._client = LocalQwenClient(model=model)
-            else:
-                logger.info("Using local transcription: %s", model)
-                self._client = LocalTranscriptionClient(model=model)
-            self._preview_client = self._client  # share model instance
-            self._local_mode = True
+        self._local_mode = not bool(whisper_url)
+        self._client = self._get_client(whisper_url, self._transcription_model_id)
+        self._preview_client = self._get_client(whisper_url, self._preview_model_id)
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
             self._on_hold_end,
@@ -117,8 +112,15 @@ class SpokeAppDelegate(NSObject):
         self._transcription_token = 0
         self._preview_active = False
         self._preview_thread: threading.Thread | None = None
+        self._preview_done = threading.Event()
+        self._preview_done.set()
+        self._preview_session_token = 0
+        self._local_inference_lock = threading.Lock()
         self._record_start_time: float = 0.0
         self._cap_fired = False
+        self._last_preview_text = ""
+        self._models_ready = False
+        self._warm_error: Exception | None = None
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -132,7 +134,7 @@ class SpokeAppDelegate(NSObject):
 
     def applicationDidFinishLaunching_(self, notification) -> None:
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
-            self._quit, self._select_model
+            self._quit, self._handle_model_menu_action
         )
         self._menubar.setup()
 
@@ -190,14 +192,31 @@ class SpokeAppDelegate(NSObject):
             )
             return
 
+        self._complete_event_tap_startup()
+
+    def _complete_event_tap_startup(self) -> None:
+        if self._menubar is not None:
+            self._menubar.set_status_text("Loading models…")
+        try:
+            self._prepare_clients()
+        except Exception as exc:
+            self._models_ready = False
+            self._warm_error = exc
+            logger.exception("Model preparation failed")
+            self._show_model_load_alert(exc)
+            if self._menubar is not None:
+                self._menubar.set_status_text("Model load failed — choose another model")
+            return
+
         logger.info("spoke ready — hold spacebar to record")
+        self._models_ready = True
+        self._warm_error = None
         self._menubar.set_status_text("Ready — hold spacebar")
 
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
         if self._detector.install():
-            logger.info("spoke ready — hold spacebar to record")
-            self._menubar.set_status_text("Ready — hold spacebar")
+            self._complete_event_tap_startup()
         else:
             from Foundation import NSTimer
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -207,6 +226,14 @@ class SpokeAppDelegate(NSObject):
     # ── hold callbacks (called on main thread) ──────────────
 
     def _on_hold_start(self) -> None:
+        if not getattr(self, "_models_ready", True):
+            logger.warning("Hold started before models were ready — ignoring")
+            if self._menubar is not None:
+                if getattr(self, "_warm_error", None) is not None:
+                    self._menubar.set_status_text("Model load failed — choose another model")
+                else:
+                    self._menubar.set_status_text("Loading models…")
+            return
         if self._transcribing:
             logger.warning("Hold started while transcription in flight — ignoring")
             return
@@ -222,10 +249,17 @@ class SpokeAppDelegate(NSObject):
         self._capture.start(amplitude_callback=self._on_amplitude)
         self._record_start_time = time.monotonic()
         self._cap_fired = False
+        self._last_preview_text = ""
+        self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
+        if getattr(self, "_preview_done", None) is not None:
+            self._preview_done.clear()
 
         # Start the adaptive preview loop
         self._preview_active = True
-        self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
+        token = self._preview_session_token
+        self._preview_thread = threading.Thread(
+            target=self._preview_loop, args=(token,), daemon=True
+        )
         self._preview_thread.start()
 
     def _on_amplitude(self, rms: float) -> None:
@@ -274,7 +308,7 @@ class SpokeAppDelegate(NSObject):
                 cap_factor=self._glow._cap_factor,
             )
 
-    def _preview_loop(self) -> None:
+    def _preview_loop(self, token: int | None = None) -> None:
         """Background thread: preview transcription during recording.
 
         Uses streaming (KV-cache reuse) when the client supports it,
@@ -283,80 +317,108 @@ class SpokeAppDelegate(NSObject):
         use_streaming = getattr(self._preview_client, 'supports_streaming', False)
 
         if use_streaming:
-            self._preview_loop_streaming()
+            self._preview_loop_streaming(token)
         else:
-            self._preview_loop_batch()
+            self._preview_loop_batch(token)
 
-    def _preview_loop_streaming(self) -> None:
+    def _preview_loop_streaming(self, token: int | None = None) -> None:
         """Streaming preview: feed incremental audio chunks, read state.text."""
         _FEED_INTERVAL = 0.15  # feed new audio every 150ms
-
-        # Wait for some audio to accumulate before first feed
-        time.sleep(0.4)
+        token = getattr(self, "_preview_session_token", 0) if token is None else token
+        delegated_to_batch = False
 
         try:
-            self._preview_client.start_stream()
-        except Exception:
-            logger.exception("Failed to start streaming — falling back to batch")
-            self._preview_loop_batch()
-            return
-
-        while self._preview_active:
-            loop_start = time.monotonic()
-
-            frames = self._capture.get_new_frames()
+            # Wait for some audio to accumulate before first feed
+            time.sleep(0.4)
 
             try:
-                text = self._preview_client.feed(frames)
+                with self._local_inference_context(self._preview_client):
+                    self._preview_client.start_stream()
             except Exception:
-                logger.debug("Streaming feed failed", exc_info=True)
-                time.sleep(0.5)
-                continue
+                logger.exception("Failed to start streaming — falling back to batch")
+                delegated_to_batch = True
+                self._preview_loop_batch(token)
+                return
 
-            if text and self._preview_active:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "previewTextUpdate:", text, False
-                )
+            while self._preview_active:
+                loop_start = time.monotonic()
 
-            elapsed = time.monotonic() - loop_start
-            remaining = _FEED_INTERVAL - elapsed
-            if remaining > 0 and self._preview_active:
-                time.sleep(remaining)
+                frames = self._capture.get_new_frames()
 
-    def _preview_loop_batch(self) -> None:
+                try:
+                    with self._local_inference_context(self._preview_client):
+                        text = self._preview_client.feed(frames)
+                except Exception:
+                    logger.debug("Streaming feed failed", exc_info=True)
+                    time.sleep(0.5)
+                    continue
+
+                if text and self._preview_active:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "previewTextUpdate:", {"token": token, "text": text}, False
+                    )
+
+                elapsed = time.monotonic() - loop_start
+                remaining = _FEED_INTERVAL - elapsed
+                if remaining > 0 and self._preview_active:
+                    time.sleep(remaining)
+        finally:
+            if not delegated_to_batch and getattr(self, "_preview_done", None) is not None:
+                self._preview_done.set()
+
+    def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick."""
         _MIN_INTERVAL = 0.5 if self._local_mode else 0.75
         _INITIAL_DELAY = 0.4 if self._local_mode else 0.3
+        token = getattr(self, "_preview_session_token", 0) if token is None else token
 
-        time.sleep(_INITIAL_DELAY)
+        try:
+            time.sleep(_INITIAL_DELAY)
 
-        while self._preview_active:
-            loop_start = time.monotonic()
+            while self._preview_active:
+                loop_start = time.monotonic()
 
-            wav_bytes = self._capture.get_buffer()
-            if not wav_bytes:
-                time.sleep(0.2)
-                continue
+                wav_bytes = self._capture.get_buffer()
+                if not wav_bytes:
+                    time.sleep(0.2)
+                    continue
 
-            try:
-                text = self._preview_client.transcribe(wav_bytes)
-            except Exception:
-                logger.debug("Preview transcription failed", exc_info=True)
-                time.sleep(0.5)
-                continue
+                try:
+                    with self._local_inference_context(self._preview_client):
+                        text = self._preview_client.transcribe(wav_bytes)
+                except Exception:
+                    logger.debug("Preview transcription failed", exc_info=True)
+                    time.sleep(0.5)
+                    continue
 
-            if text and self._preview_active:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "previewTextUpdate:", text, False
-                )
+                if text and self._preview_active:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "previewTextUpdate:",
+                        {"token": token, "text": text},
+                        False,
+                    )
 
-            elapsed = time.monotonic() - loop_start
-            remaining = _MIN_INTERVAL - elapsed
-            if remaining > 0 and self._preview_active:
-                time.sleep(remaining)
+                elapsed = time.monotonic() - loop_start
+                remaining = _MIN_INTERVAL - elapsed
+                if remaining > 0 and self._preview_active:
+                    time.sleep(remaining)
+        finally:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.set()
 
-    def previewTextUpdate_(self, text: str) -> None:
+    def previewTextUpdate_(self, payload) -> None:
         """Main thread: update the overlay with preview transcription text."""
+        if isinstance(payload, dict):
+            token = payload.get("token")
+            text = payload.get("text", "")
+        else:
+            token = None
+            text = payload
+        if token is not None and token != getattr(self, "_preview_session_token", token):
+            return
+        if not self._preview_active:
+            return
+        self._last_preview_text = text
         if self._overlay is not None:
             self._overlay.set_text(text)
 
@@ -392,18 +454,25 @@ class SpokeAppDelegate(NSObject):
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
-        # Wait for preview loop to finish so we don't hit the model concurrently
+        # Wait for preview loop to finish so we don't hit the model concurrently.
         if self._preview_thread is not None:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.wait(timeout=2.0)
             self._preview_thread.join(timeout=2.0)
             self._preview_thread = None
 
         try:
-            # If the preview client was streaming, finalize it for the final text
-            # (this runs the tail refinement pass with the existing KV cache)
-            if getattr(self._client, 'supports_streaming', False) and self._client._stream_state is not None:
-                text = self._client.finish_stream()
-            else:
-                text = self._client.transcribe(wav_bytes)
+            with self._local_inference_context(self._client):
+                # If the preview client was streaming, finalize it for the final text
+                # (this runs the tail refinement pass with the existing KV cache).
+                if (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "_stream_state", None) is not None
+                ):
+                    text = self._client.finish_stream()
+                else:
+                    text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -426,26 +495,9 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         text = payload["text"]
         if text:
-            def _on_clipboard_restored():
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
-
-            # Show final text in overlay briefly before fading
-            if self._overlay is not None:
-                self._overlay.set_text(text)
-
-            inject_text(text, on_restored=_on_clipboard_restored)
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info("Injected: %r (%.0fms)", text, elapsed_ms)
-            if self._menubar is not None:
-                self._menubar.set_status_text("Pasted!")
-
-            # Fade overlay out after a brief display of final text
-            if self._overlay is not None:
-                from Foundation import NSTimer
-                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    0.5, self, "hideOverlayAfterInject:", None, False
-                )
+            self._inject_result_text(text, "Pasted!")
             return
         if self._overlay is not None:
             self._overlay.hide()
@@ -457,6 +509,12 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return  # stale failure, ignore
         self._transcribing = False
+        if self._last_preview_text:
+            logger.warning(
+                "Final transcription failed — falling back to latest preview text"
+            )
+            self._inject_result_text(self._last_preview_text, "Pasted preview")
+            return
         logger.error("Transcription failed — no text injected")
         if self._overlay is not None:
             self._overlay.hide()
@@ -489,20 +547,249 @@ class SpokeAppDelegate(NSObject):
                 for mid, label in self._MODEL_OPTIONS
                 if self._model_allowed(mid)
             ]
-        if not self._model_allowed(model_id):
-            logger.warning("Model %s not available on this machine (%.0fGB RAM)", model_id, _RAM_GB)
+        current_preview = getattr(
+            self,
+            "_preview_model_id",
+            os.environ.get("SPOKE_PREVIEW_MODEL")
+            or os.environ.get("SPOKE_WHISPER_MODEL")
+            or _DEFAULT_PREVIEW_MODEL,
+        )
+        current_transcription = getattr(
+            self,
+            "_transcription_model_id",
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            or os.environ.get("SPOKE_WHISPER_MODEL")
+            or self._default_transcription_model(),
+        )
+        self._apply_model_selection(
+            preview_model=current_preview if model_id is None else model_id,
+            transcription_model=current_transcription if model_id is None else model_id,
+        )
+
+    def _handle_model_menu_action(self, selection):
+        """Menu callback for preview/transcription role-specific model choices."""
+        if selection is None:
+            return {
+                "transcription": {
+                    "selected": getattr(
+                        self, "_transcription_model_id", self._default_transcription_model()
+                    ),
+                    "models": self._select_model(None),
+                },
+                "preview": {
+                    "selected": getattr(
+                        self, "_preview_model_id", _DEFAULT_PREVIEW_MODEL
+                    ),
+                    "models": self._select_model(None),
+                },
+            }
+        if not isinstance(selection, tuple) or len(selection) != 2:
+            self._select_model(selection)
             return
-        current = os.environ.get("SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
-        if model_id == current:
-            return  # already active
-        logger.info("Switching model: %s → %s (relaunching)", current, model_id)
-        os.environ["SPOKE_WHISPER_MODEL"] = model_id
+        role, model_id = selection
+        if role not in {"preview", "transcription"}:
+            return
+        current_preview = getattr(
+            self,
+            "_preview_model_id",
+            os.environ.get("SPOKE_PREVIEW_MODEL")
+            or os.environ.get("SPOKE_WHISPER_MODEL")
+            or _DEFAULT_PREVIEW_MODEL,
+        )
+        current_transcription = getattr(
+            self,
+            "_transcription_model_id",
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            or os.environ.get("SPOKE_WHISPER_MODEL")
+            or self._default_transcription_model(),
+        )
+        preview_model = current_preview
+        transcription_model = current_transcription
+        if role == "preview":
+            preview_model = model_id
+        else:
+            transcription_model = model_id
+        self._apply_model_selection(preview_model, transcription_model)
+
+    def _apply_model_selection(self, preview_model: str, transcription_model: str) -> None:
+        if not self._model_allowed(preview_model):
+            logger.warning(
+                "Preview model %s not available on this machine (%.0fGB RAM)",
+                preview_model,
+                _RAM_GB,
+            )
+            return
+        if not self._model_allowed(transcription_model):
+            logger.warning(
+                "Transcription model %s not available on this machine (%.0fGB RAM)",
+                transcription_model,
+                _RAM_GB,
+            )
+            return
+        current_preview = getattr(
+            self,
+            "_preview_model_id",
+            os.environ.get("SPOKE_PREVIEW_MODEL")
+            or os.environ.get("SPOKE_WHISPER_MODEL")
+            or _DEFAULT_PREVIEW_MODEL,
+        )
+        current_transcription = getattr(
+            self,
+            "_transcription_model_id",
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            or os.environ.get("SPOKE_WHISPER_MODEL")
+            or self._default_transcription_model(),
+        )
+        if (
+            preview_model == current_preview
+            and transcription_model == current_transcription
+        ):
+            return
+        logger.info(
+            "Switching models (relaunching): preview %s → %s, transcription %s → %s",
+            current_preview,
+            preview_model,
+            current_transcription,
+            transcription_model,
+        )
+        self._save_model_preferences(preview_model, transcription_model)
+        os.environ["SPOKE_PREVIEW_MODEL"] = preview_model
+        os.environ["SPOKE_TRANSCRIPTION_MODEL"] = transcription_model
+        if preview_model == transcription_model:
+            os.environ["SPOKE_WHISPER_MODEL"] = preview_model
+        else:
+            os.environ.pop("SPOKE_WHISPER_MODEL", None)
         self._detector.uninstall()
         self._preview_active = False
-        self._client.close()
-        if self._preview_client is not None and self._preview_client is not self._client:
-            self._preview_client.close()
+        self._close_clients()
         os.execv(sys.executable, [sys.executable, "-m", "spoke"])
+
+    def _default_transcription_model(self) -> str:
+        if self._model_allowed(_DEFAULT_TRANSCRIPTION_MODEL):
+            return _DEFAULT_TRANSCRIPTION_MODEL
+        return _DEFAULT_PREVIEW_MODEL
+
+    def _resolve_model_ids(self) -> tuple[str, str]:
+        prefs = self._load_model_preferences()
+        legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
+        preview_model = (
+            os.environ.get("SPOKE_PREVIEW_MODEL")
+            or prefs.get("preview_model")
+            or legacy_model
+            or _DEFAULT_PREVIEW_MODEL
+        )
+        transcription_model = (
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            or prefs.get("transcription_model")
+            or legacy_model
+            or self._default_transcription_model()
+        )
+        return preview_model, transcription_model
+
+    def _preferences_path(self) -> Path:
+        override = os.environ.get("SPOKE_MODEL_PREFERENCES_PATH")
+        if override:
+            return Path(override).expanduser()
+        return Path.home() / "Library/Application Support/Spoke/model_preferences.json"
+
+    def _load_model_preferences(self) -> dict:
+        path = self._preferences_path()
+        try:
+            return json.loads(path.read_text())
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            logger.warning("Failed to read model preferences from %s", path, exc_info=True)
+            return {}
+
+    def _save_model_preferences(
+        self, preview_model: str, transcription_model: str
+    ) -> None:
+        path = self._preferences_path()
+        payload = {
+            "preview_model": preview_model,
+            "transcription_model": transcription_model,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2))
+        except Exception:
+            logger.warning("Failed to save model preferences to %s", path, exc_info=True)
+
+    def _get_client(self, whisper_url: str, model_id: str):
+        cache_key = (whisper_url, model_id)
+        if cache_key in self._client_cache:
+            return self._client_cache[cache_key]
+        client = self._build_client(whisper_url, model_id)
+        self._client_cache[cache_key] = client
+        return client
+
+    def _build_client(self, whisper_url: str, model_id: str):
+        if whisper_url:
+            logger.info("Using sidecar transcription: %s (%s)", whisper_url, model_id)
+            return TranscriptionClient(base_url=whisper_url, model=model_id)
+        if model_id.startswith("Qwen/"):
+            logger.info("Using local Qwen3 ASR: %s", model_id)
+            return LocalQwenClient(model=model_id)
+        logger.info("Using local transcription: %s", model_id)
+        return LocalTranscriptionClient(model=model_id)
+
+    def _prepare_clients(self) -> None:
+        seen_clients = []
+        ordered_clients = [
+            ("transcription", getattr(self, "_transcription_model_id", None), self._client),
+            ("preview", getattr(self, "_preview_model_id", None), self._preview_client),
+        ]
+        for role, model_id, client in ordered_clients:
+            if client is None or any(existing is client for existing in seen_clients):
+                continue
+            seen_clients.append(client)
+            if model_id is not None and not self._model_allowed(model_id):
+                raise RuntimeError(
+                    f"{role.title()} model {model_id} is not supported on this machine."
+                )
+            prepare = getattr(client, "prepare", None)
+            if callable(prepare):
+                with self._local_inference_context(client):
+                    prepare()
+
+    def _close_clients(self) -> None:
+        seen_clients = []
+        for client in list(getattr(self, "_client_cache", {}).values()) + [
+            getattr(self, "_client", None),
+            getattr(self, "_preview_client", None),
+        ]:
+            if client is None or any(existing is client for existing in seen_clients):
+                continue
+            seen_clients.append(client)
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    def _local_inference_context(self, client):
+        lock = getattr(self, "_local_inference_lock", None)
+        if lock is None or isinstance(client, TranscriptionClient):
+            return nullcontext()
+        return lock
+
+    def _inject_result_text(self, text: str, status_text: str) -> None:
+        def _on_clipboard_restored():
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+
+        if self._overlay is not None:
+            self._overlay.set_text(text)
+
+        inject_text(text, on_restored=_on_clipboard_restored)
+        if self._menubar is not None:
+            self._menubar.set_status_text(status_text)
+
+        if self._overlay is not None:
+            from Foundation import NSTimer
+
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.5, self, "hideOverlayAfterInject:", None, False
+            )
 
     @staticmethod
     def _model_allowed(model_id: str) -> bool:
@@ -514,9 +801,7 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         self._detector.uninstall()
         self._preview_active = False
-        self._client.close()
-        if self._preview_client is not None and self._preview_client is not self._client:
-            self._preview_client.close()
+        self._close_clients()
         NSApp.terminate_(None)
 
     def _show_accessibility_alert(self) -> None:
@@ -532,6 +817,18 @@ class SpokeAppDelegate(NSObject):
         alert.addButtonWithTitle_("OK")
         # Temporarily become a regular app so the alert is visible
         NSApp.setActivationPolicy_(1)  # NSApplicationActivationPolicyRegular
+        alert.runModal()
+
+    def _show_model_load_alert(self, error: Exception) -> None:
+        alert = NSAlert.new()
+        alert.setMessageText_("Model Load Failed")
+        alert.setInformativeText_(
+            "Spoke could not prepare the selected models.\n\n"
+            f"{error}\n\n"
+            "Choose a different model from the menu and Spoke will relaunch."
+        )
+        alert.addButtonWithTitle_("OK")
+        NSApp.setActivationPolicy_(1)
         alert.runModal()
 
 

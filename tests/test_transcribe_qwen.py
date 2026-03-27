@@ -116,6 +116,19 @@ class TestLocalQwenClient:
         client = LocalQwenClient()
         assert client.supports_streaming is True
 
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
+    def test_prepare_initializes_session_without_transcribing(self, mock_module):
+        from spoke.transcribe_qwen import LocalQwenClient
+
+        mock_session = MagicMock()
+        mock_module.Session.return_value = mock_session
+
+        client = LocalQwenClient(model="Qwen/Qwen3-ASR-0.6B")
+        client.prepare()
+
+        mock_module.Session.assert_called_once_with(model="Qwen/Qwen3-ASR-0.6B")
+        mock_session.transcribe.assert_not_called()
+
 
 class TestLocalQwenStreaming:
     """Test the streaming transcription API."""

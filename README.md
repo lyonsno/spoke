@@ -54,6 +54,8 @@ uv sync
 ### Default: local MLX Whisper
 
 If you do not set `SPOKE_WHISPER_URL`, `spoke` runs transcription locally with `mlx-whisper`.
+By default, preview uses Whisper `medium.en` while final transcription uses Whisper `large-v3-turbo`
+on machines that pass the existing RAM guard; otherwise both roles fall back to the lighter model.
 
 ```sh
 uv run spoke
@@ -96,11 +98,15 @@ Accessibility must be granted to the app that launches `spoke` if you run it fro
 ### Core environment variables
 
 The env var names use `WHISPER` for historical reasons — they control all backends, not just Whisper.
+Preview and final transcription can now be configured independently, and the menu persists those
+choices across relaunches.
 
 | Variable | Default | Description |
 |---|---|---|
 | `SPOKE_WHISPER_URL` | unset | Remote transcription server. When unset, transcription runs locally. |
-| `SPOKE_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | Model identifier. Use `Qwen/Qwen3-ASR-0.6B` or `Qwen/Qwen3-ASR-1.7B` for local Qwen3-ASR. |
+| `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override. When set, both preview and final use the same model. |
+| `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Preview model identifier. Use `Qwen/Qwen3-ASR-0.6B` for local streaming preview, or any menu-listed Whisper variant. |
+| `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-large-v3-turbo` | Final transcription model identifier. Use `Qwen/Qwen3-ASR-0.6B` or any menu-listed Whisper variant. |
 | `SPOKE_HOLD_MS` | `250` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
 

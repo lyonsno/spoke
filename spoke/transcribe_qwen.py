@@ -50,6 +50,10 @@ class LocalQwenClient:
         logger.info("Loading Qwen3 ASR model %s (first use may download ~1.2GB)", self._model)
         self._session = mlx_qwen3_asr.Session(model=self._model)
 
+    def prepare(self) -> None:
+        """Warm the Qwen session without starting a transcription."""
+        self._ensure_session()
+
     # ── Batch transcription ──────────────────────────────────
 
     def transcribe(self, wav_bytes: bytes) -> str:

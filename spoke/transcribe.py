@@ -64,5 +64,9 @@ class TranscriptionClient:
         logger.info("Transcription: %r (%d bytes audio)", text, len(wav_bytes))
         return text
 
+    def prepare(self) -> None:
+        """Remote transcription clients are ready once the HTTP client exists."""
+        return None
+
     def close(self) -> None:
         self._client.close()

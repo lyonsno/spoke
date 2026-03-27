@@ -1,5 +1,6 @@
 """Tests for the menubar status item."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 
@@ -53,3 +54,26 @@ class TestMenuBarIcon:
 
         icon.set_status_text("Recording…")
         mock_label.setTitle_.assert_called_with("Recording…")
+
+    def test_build_menu_shows_source_discriminant(self, menubar_module):
+        """setup() should show which checkout launched the running instance."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        expected_title = f"Source: {Path(menubar_module.__file__).resolve().parents[1].name}"
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == (expected_title, None, "") for call in calls)

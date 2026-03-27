@@ -7,6 +7,7 @@ Phase 2 will add amplitude-driven animation.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Callable
 
 from AppKit import (
@@ -20,6 +21,7 @@ import objc
 from Foundation import NSObject
 
 logger = logging.getLogger(__name__)
+_SOURCE_LABEL = f"Source: {Path(__file__).resolve().parents[1].name}"
 
 
 class MenuBarIcon(NSObject):
@@ -94,7 +96,6 @@ class MenuBarIcon(NSObject):
     # ── private ─────────────────────────────────────────────
 
     def _build_menu(self) -> None:
-        import os
         menu = NSMenu.new()
 
         self._status_item_label = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -103,22 +104,47 @@ class MenuBarIcon(NSObject):
         self._status_item_label.setEnabled_(False)
         menu.addItem_(self._status_item_label)
 
+        source_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            _SOURCE_LABEL, None, ""
+        )
+        source_item.setEnabled_(False)
+        menu.addItem_(source_item)
+
         menu.addItem_(NSMenuItem.separatorItem())
 
         # Model picker
         if getattr(self, '_on_select_model', None) is not None:
-            current_model = os.environ.get("SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
-            models = self._on_select_model(None)  # pass None to get model list
-            if models:
-                for model_id, label, enabled in models:
+            model_state = self._on_select_model(None)
+            if isinstance(model_state, dict):
+                transcription = model_state.get("transcription")
+                preview = model_state.get("preview")
+                if transcription:
+                    menu.addItem_(
+                        self._build_model_submenu_item(
+                            "Transcription",
+                            "transcription",
+                            transcription["selected"],
+                            transcription["models"],
+                        )
+                    )
+                if preview:
+                    menu.addItem_(
+                        self._build_model_submenu_item(
+                            "Preview",
+                            "preview",
+                            preview["selected"],
+                            preview["models"],
+                        )
+                    )
+                menu.addItem_(NSMenuItem.separatorItem())
+            elif model_state:
+                for model_id, label, enabled in model_state:
                     item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                         label, "selectModel:", ""
                     )
                     item.setTarget_(self)
                     item.setRepresentedObject_(model_id)
                     item.setEnabled_(enabled)
-                    if model_id == current_model:
-                        item.setState_(1)  # NSOnState — checkmark
                     menu.addItem_(item)
                 menu.addItem_(NSMenuItem.separatorItem())
 
@@ -130,10 +156,34 @@ class MenuBarIcon(NSObject):
 
         self._status_item.setMenu_(menu)
 
+    def _build_model_submenu_item(
+        self,
+        title: str,
+        role: str,
+        selected_model: str,
+        models,
+    ):
+        submenu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, None, ""
+        )
+        submenu = NSMenu.new()
+        for model_id, label, enabled in models:
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                label, "selectModel:", ""
+            )
+            item.setTarget_(self)
+            item.setRepresentedObject_((role, model_id))
+            item.setEnabled_(enabled)
+            if model_id == selected_model:
+                item.setState_(1)
+            submenu.addItem_(item)
+        submenu_item.setSubmenu_(submenu)
+        return submenu_item
+
     def selectModel_(self, sender) -> None:
-        model_id = sender.representedObject()
-        if model_id and getattr(self, '_on_select_model', None) is not None:
-            self._on_select_model(model_id)
+        selection = sender.representedObject()
+        if selection and getattr(self, '_on_select_model', None) is not None:
+            self._on_select_model(selection)
 
     def quitApp_(self, sender) -> None:
         self._on_quit()

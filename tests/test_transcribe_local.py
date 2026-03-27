@@ -7,6 +7,12 @@ import tempfile
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _mock_whisper_model_load():
+    with patch("spoke.transcribe_local.load_model", return_value=MagicMock()):
+        yield
+
+
 class TestLocalTranscriptionClient:
     """Test the in-process MLX Whisper client."""
 
@@ -141,6 +147,22 @@ class TestLocalTranscriptionClient:
 
         client = LocalTranscriptionClient()
         client.close()  # should not raise
+
+    @patch("spoke.transcribe_local.load_model")
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_prepare_loads_model_without_running_inference(
+        self, mock_mlx_whisper, mock_load_model
+    ):
+        """prepare() should warm the client without starting a transcription."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_load_model.return_value = MagicMock()
+        client = LocalTranscriptionClient(model="test/model")
+        client.prepare()
+
+        assert client._loaded is True
+        mock_load_model.assert_called_once()
+        mock_mlx_whisper.transcribe.assert_not_called()
 
 
 def _make_wav_bytes(n_samples=1000):

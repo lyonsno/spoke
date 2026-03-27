@@ -29,6 +29,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._record_start_time = 0.0
     delegate._cap_fired = False
     delegate._transcribe_start = time.monotonic()
+    delegate._last_preview_text = ""
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -195,6 +196,158 @@ class TestServerCrashResilience:
         assert call_args[0][0] == "transcriptionFailed:"
 
 
+class TestPreviewFinalizationContract:
+    """Test preview/final handoff behavior for dual-model mode."""
+
+    def test_preview_text_update_populates_last_preview_text(
+        self, main_module, monkeypatch
+    ):
+        """Accepted preview text should be stored for final-failure fallback."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = True
+
+        d.previewTextUpdate_("fresh preview")
+
+        assert d._last_preview_text == "fresh preview"
+        d._overlay.set_text.assert_called_once_with("fresh preview")
+
+    def test_preview_text_update_ignored_after_release(self, main_module, monkeypatch):
+        """Late preview text should not overwrite the post-release UI state."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = False
+
+        d.previewTextUpdate_("late preview")
+
+        d._overlay.set_text.assert_not_called()
+
+    def test_transcription_failed_uses_latest_preview_text_as_fallback(
+        self, main_module, monkeypatch
+    ):
+        """If final transcription fails, the latest preview text should be pasted."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 7
+        d._transcribing = True
+        d._last_preview_text = "usable preview text"
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionFailed_({"token": 7})
+
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == "usable preview text"
+        assert d._transcribing is False
+
+    def test_transcribe_worker_streaming_preview_to_batch_final_uses_batch_final(
+        self, main_module, monkeypatch
+    ):
+        """Streaming preview with a different batch final client should use batch finalization."""
+        d = _make_delegate(main_module, monkeypatch)
+        preview_thread = MagicMock()
+        d._preview_thread = preview_thread
+        d._preview_client = MagicMock(supports_streaming=True)
+        d._preview_client._stream_state = object()
+        d._client = MagicMock(supports_streaming=False)
+        d._client.transcribe.return_value = "batch final text"
+
+        d._transcribe_worker(b"wav", token=11)
+
+        preview_thread.join.assert_called_once_with(timeout=2.0)
+        d._preview_client.finish_stream.assert_not_called()
+        d._client.transcribe.assert_called_once_with(b"wav")
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "transcriptionComplete:"
+        assert call_args[0][1]["text"] == "batch final text"
+
+    def test_transcribe_worker_same_streaming_client_uses_finish_stream(
+        self, main_module, monkeypatch
+    ):
+        """Same-client streaming finalization should use finish_stream(), not batch transcribe."""
+        d = _make_delegate(main_module, monkeypatch)
+        preview_thread = MagicMock()
+        d._preview_thread = preview_thread
+        streaming_client = MagicMock(supports_streaming=True)
+        streaming_client._stream_state = object()
+        streaming_client.finish_stream.return_value = "stream final text"
+        d._client = streaming_client
+        d._preview_client = streaming_client
+
+        d._transcribe_worker(b"wav", token=12)
+
+        preview_thread.join.assert_called_once_with(timeout=2.0)
+        streaming_client.finish_stream.assert_called_once_with()
+        streaming_client.transcribe.assert_not_called()
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "transcriptionComplete:"
+        assert call_args[0][1]["text"] == "stream final text"
+
+
+class TestConcurrencyContract:
+    """Test thread handoff and local-inference serialization."""
+
+    def test_preview_loop_batch_uses_local_inference_lock_and_signals_done(
+        self, main_module, monkeypatch
+    ):
+        """Batch preview should serialize local inference and signal completion on exit."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._preview_active = True
+        d._capture.get_buffer.return_value = b"wav"
+        d._preview_done = MagicMock()
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=None)
+
+        def _transcribe(_wav_bytes):
+            d._preview_active = False
+            return "preview"
+
+        d._preview_client.transcribe.side_effect = _transcribe
+
+        with patch.object(main_module.time, "sleep"):
+            d._preview_loop_batch()
+
+        d._local_inference_lock.__enter__.assert_called_once()
+        d._preview_done.set.assert_called_once_with()
+
+    def test_preview_loop_batch_signals_done_when_transcription_raises(
+        self, main_module, monkeypatch
+    ):
+        """Preview completion should be signaled even if the last preview pass raises."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._preview_active = True
+        d._capture.get_buffer.return_value = b"wav"
+        d._preview_done = MagicMock()
+        d._preview_client.transcribe.side_effect = RuntimeError("preview failed")
+
+        def _sleep(_seconds):
+            d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_batch()
+
+        d._preview_done.set.assert_called_once_with()
+
+    def test_transcribe_worker_waits_for_preview_done_and_uses_inference_lock(
+        self, main_module, monkeypatch
+    ):
+        """Final transcription should wait for preview completion before local batch inference."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_thread = MagicMock()
+        d._preview_done = MagicMock()
+        d._preview_done.wait.return_value = True
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=None)
+        d._client = MagicMock(supports_streaming=False)
+        d._client.transcribe.return_value = "final text"
+
+        d._transcribe_worker(b"wav", token=3)
+
+        d._preview_done.wait.assert_called_once_with(timeout=2.0)
+        d._local_inference_lock.__enter__.assert_called_once()
+        d._client.transcribe.assert_called_once_with(b"wav")
+
+
 class TestHoldMsBounds:
     """Test that hold_ms rejects zero and negative values."""
 
@@ -253,12 +406,171 @@ class TestModelPicker:
         assert "mlx-community/whisper-large-v3-turbo" in model_ids
 
 
+class TestDualModelConfiguration:
+    """Test separate preview/final model selection and persistence hooks."""
+
+    def test_init_uses_separate_preview_and_transcription_model_env_vars(
+        self, main_module, monkeypatch
+    ):
+        """Role-specific env vars should create distinct clients when models differ."""
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-large-v3-turbo"
+        )
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._client is final_client
+        assert d._preview_client is preview_client
+        assert MockLocal.call_count == 2
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-large-v3-turbo"
+        )
+        assert (
+            MockLocal.call_args_list[1].kwargs["model"]
+            == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+
+    def test_init_shares_client_when_preview_and_transcription_models_match(
+        self, main_module, monkeypatch
+    ):
+        """Matching role-specific selections should reuse a single client instance."""
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            shared_client = MagicMock(name="shared_client")
+            MockLocal.return_value = shared_client
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._client is shared_client
+        assert d._preview_client is shared_client
+        MockLocal.assert_called_once_with(model="mlx-community/whisper-medium.en-mlx-8bit")
+
+    def test_init_loads_persisted_model_preferences_when_env_vars_absent(
+        self, main_module, monkeypatch
+    ):
+        """Persisted selections should be used when role-specific env vars are unset."""
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_model_preferences",
+            lambda self: {
+                "preview_model": "mlx-community/whisper-medium.en-mlx-8bit",
+                "transcription_model": "mlx-community/whisper-large-v3-turbo",
+            },
+            raising=False,
+        )
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._client is final_client
+        assert d._preview_client is preview_client
+        assert MockLocal.call_count == 2
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-large-v3-turbo"
+        )
+        assert (
+            MockLocal.call_args_list[1].kwargs["model"]
+            == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+
+
+class TestWarmupContract:
+    """Test explicit warm-before-ready behavior."""
+
+    def test_setup_event_tap_prepares_clients_before_ready(
+        self, main_module, monkeypatch
+    ):
+        """The app should warm selected clients before advertising readiness."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._detector.install.return_value = True
+        d._prepare_clients = MagicMock()
+
+        d._setup_event_tap()
+
+        d._prepare_clients.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_setup_event_tap_surfaces_prepare_failure(
+        self, main_module, monkeypatch
+    ):
+        """Warmup failures should block ready-state and surface a model error."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._detector.install.return_value = True
+        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+        d._show_model_load_alert = MagicMock()
+
+        d._setup_event_tap()
+
+        d._show_model_load_alert.assert_called_once()
+        d._menubar.set_status_text.assert_called_with(
+            "Model load failed — choose another model"
+        )
+
+    def test_prepare_failure_still_allows_model_selection_recovery(
+        self, main_module, monkeypatch
+    ):
+        """A failed warmup should still leave model selection available for recovery."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._detector.install.return_value = True
+        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+        d._show_model_load_alert = MagicMock()
+        monkeypatch.setenv(
+            "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
+        )
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._setup_event_tap()
+            d._select_model("Qwen/Qwen3-ASR-0.6B")
+
+        mock_execv.assert_called_once()
+
+
 class TestEnvValidation:
     """Test environment variable validation in SpokeAppDelegate.init."""
 
     def test_missing_whisper_url_uses_local(self, main_module, monkeypatch):
         """Missing SPOKE_WHISPER_URL should fall back to local transcription."""
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_model_preferences",
+            lambda self: {},
+            raising=False,
+        )
         d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         result = d.init()
         assert result is not None

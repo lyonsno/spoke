@@ -7,12 +7,15 @@ avoid requiring ffmpeg.
 
 from __future__ import annotations
 
+import importlib
 import io
 import logging
 import wave
 
+import mlx.core as mx
 import numpy as np
 import mlx_whisper
+from mlx_whisper.load_models import load_model
 
 from .dedup import truncate_repetition, is_hallucination
 
@@ -33,13 +36,29 @@ class LocalTranscriptionClient:
     def __init__(self, model: str = _DEFAULT_MODEL) -> None:
         self._model = model
         self._loaded = False
+        self._model_instance = None
 
     def _ensure_model(self) -> None:
         """Trigger model download if not cached."""
+        self.prepare()
+
+    def _install_model_holder(self) -> None:
+        """Point mlx-whisper's singleton cache at this client's loaded model."""
+        if self._model_instance is None:
+            raise RuntimeError("Whisper model was not loaded before installation")
+        transcribe_module = importlib.import_module("mlx_whisper.transcribe")
+        transcribe_module.ModelHolder.model = self._model_instance
+        transcribe_module.ModelHolder.model_path = self._model
+
+    def prepare(self) -> None:
+        """Warm the Whisper model cache without running a transcription."""
         if self._loaded:
+            self._install_model_holder()
             return
-        logger.info("Loading model %s (first use may download ~400MB)", self._model)
+        logger.info("Preloading Whisper model %s", self._model)
+        self._model_instance = load_model(self._model, dtype=mx.float16)
         self._loaded = True
+        self._install_model_holder()
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """Transcribe WAV audio bytes and return text.
@@ -51,6 +70,7 @@ class LocalTranscriptionClient:
             return ""
 
         self._ensure_model()
+        self._install_model_holder()
 
         # Decode WAV bytes to float32 numpy array — bypass ffmpeg entirely
         audio = self._decode_wav(wav_bytes)
