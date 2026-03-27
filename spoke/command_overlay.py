@@ -334,16 +334,89 @@ class CommandOverlay(NSObject):
         self._start_fade_out()
 
     def set_utterance(self, text: str) -> None:
-        """Show what the user said before the response streams in."""
+        """Show the user's utterance in the overlay at reduced opacity."""
         self._utterance_text = text
+        if self._text_view is None or not self._visible:
+            return
+        # Display the utterance immediately — dimmed to distinguish from response
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+        )
+        attr_str = NSMutableAttributedString.alloc().initWithString_(text)
+        utterance_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            1.0, 1.0, 1.0, 0.35
+        )
+        attr_str.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            utterance_color,
+            (0, len(text)),
+        )
+        self._text_view.textStorage().setAttributedString_(attr_str)
+        self._update_layout()
 
     def append_token(self, token: str) -> None:
-        """Append a streamed response token."""
+        """Append a streamed response token.
+
+        On the first token, rebuilds the text view with the utterance
+        (dimmed) above a separator and the response (bright) below.
+        Subsequent tokens append to the response portion.
+        """
         if self._text_view is None or not self._visible:
             return
         self._response_text += token
-        self._text_view.setString_(self._response_text)
+        self._rebuild_attributed_text()
         self._update_layout()
+
+    def _rebuild_attributed_text(self) -> None:
+        """Rebuild the overlay text with utterance (dim) + response (bright)."""
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        parts = NSMutableAttributedString.alloc().init()
+
+        if self._utterance_text:
+            utterance_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, 0.35
+            )
+            utt = NSMutableAttributedString.alloc().initWithString_(
+                self._utterance_text + "\n\n"
+            )
+            utt.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                utterance_color,
+                (0, len(self._utterance_text) + 2),
+            )
+            # Slightly smaller font for the utterance
+            utt.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(14.0, 0.0),
+                (0, len(self._utterance_text) + 2),
+            )
+            parts.appendAttributedString_(utt)
+
+        if self._response_text:
+            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
+            )
+            resp = NSMutableAttributedString.alloc().initWithString_(
+                self._response_text
+            )
+            resp.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                response_color,
+                (0, len(self._response_text)),
+            )
+            resp.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+                (0, len(self._response_text)),
+            )
+            parts.appendAttributedString_(resp)
+
+        self._text_view.textStorage().setAttributedString_(parts)
 
     def finish(self) -> None:
         """Called when the response stream is complete. Start the linger timer."""
@@ -351,11 +424,8 @@ class CommandOverlay(NSObject):
         # Stop pulse and thinking timer, leave text visible
         self._cancel_pulse()
         self._stop_thinking_timer()
-        # Set text to full brightness
-        if self._text_view is not None:
-            self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, _TEXT_ALPHA_MAX)
-            )
+        # Rebuild with final attributed text (utterance dim, response bright)
+        self._rebuild_attributed_text()
         # Linger then fade
         self._linger_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _LINGER_S, self, "lingerDone:", None, False
