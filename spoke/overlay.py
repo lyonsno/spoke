@@ -273,6 +273,7 @@ class TranscriptionOverlay(NSObject):
         )
         scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._scroll_view.setFrame_(scroll_frame)
+        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
@@ -466,6 +467,44 @@ class TranscriptionOverlay(NSObject):
             if hasattr(self._scroll_view, "reflectScrolledClipView_"):
                 self._scroll_view.reflectScrolledClipView_(clip_view)
 
+    def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
+        """Keep height-dependent overlay layers in sync with the current overlay size."""
+        f = _OUTER_FEATHER
+        w = _OVERLAY_WIDTH
+
+        if hasattr(self, '_inner_shadow'):
+            margin = _INNER_GLOW_DEPTH + 50
+            lw, lh = w + 2 * margin, visible_height + 2 * margin
+            from Quartz import CGPathAddPath, CGPathCreateMutableCopy
+
+            self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+            outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
+            inner = CGPathCreateWithRoundedRect(
+                ((margin, margin), (w, visible_height)),
+                _OVERLAY_CORNER_RADIUS,
+                _OVERLAY_CORNER_RADIUS,
+                None,
+            )
+            combined = CGPathCreateMutableCopy(outer)
+            CGPathAddPath(combined, None, inner)
+            self._inner_shadow.setPath_(combined)
+            mask = self._inner_shadow.mask()
+            if mask:
+                mask.setFrame_(((0, 0), (lw, lh)))
+                mask.setPath_(
+                    CGPathCreateWithRoundedRect(
+                        ((margin, margin), (w, visible_height)),
+                        _OVERLAY_CORNER_RADIUS,
+                        _OVERLAY_CORNER_RADIUS,
+                        None,
+                    )
+                )
+
+        if hasattr(self, '_outer_glow_tight'):
+            self._outer_glow_tight.setFrame_(((f, f), (w, visible_height)))
+        if hasattr(self, '_outer_glow_wide'):
+            self._outer_glow_wide.setFrame_(((f, f), (w, visible_height)))
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -490,33 +529,7 @@ class TranscriptionOverlay(NSObject):
                     NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
                 )
                 self._scroll_view.setFrame_(NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16))
-                # Rebuild inner shadow for new height
-                if hasattr(self, '_inner_shadow'):
-                    w, h = _OVERLAY_WIDTH, new_height
-                    margin = _INNER_GLOW_DEPTH + 50
-                    lw, lh = w + 2 * margin, h + 2 * margin
-                    from Quartz import CGPathCreateMutableCopy, CGPathAddPath
-                    self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
-                    outer = CGPathCreateWithRoundedRect(
-                        ((0, 0), (lw, lh)), 0, 0, None)
-                    inner = CGPathCreateWithRoundedRect(
-                        ((margin, margin), (w, h)),
-                        _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None)
-                    combined = CGPathCreateMutableCopy(outer)
-                    CGPathAddPath(combined, None, inner)
-                    self._inner_shadow.setPath_(combined)
-                    # Update mask too
-                    mask = self._inner_shadow.mask()
-                    if mask:
-                        mask.setFrame_(((0, 0), (lw, lh)))
-                        mask.setPath_(CGPathCreateWithRoundedRect(
-                            ((margin, margin), (w, h)),
-                            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None))
-                # Resize outer feather shadows
-                if hasattr(self, '_outer_glow_tight'):
-                    self._outer_glow_tight.setFrame_(((f, f), (w, new_height)))
-                if hasattr(self, '_outer_glow_wide'):
-                    self._outer_glow_wide.setFrame_(((f, f), (w, new_height)))
+                self._reset_overlay_chrome_geometry(new_height)
 
             self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)

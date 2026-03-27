@@ -97,6 +97,32 @@ class _FakeTextView:
         return self._text_container
 
 
+class _FakeLayer:
+    def __init__(self, frame):
+        self._frame = frame
+        self._mask = None
+        self._path = None
+
+    def setFrame_(self, frame):
+        if isinstance(frame, tuple):
+            origin, size = frame
+            self._frame = _make_rect(origin[0], origin[1], size[0], size[1])
+            return
+        self._frame = frame
+
+    def frame(self):
+        return self._frame
+
+    def setMask_(self, mask):
+        self._mask = mask
+
+    def mask(self):
+        return self._mask
+
+    def setPath_(self, path):
+        self._path = path
+
+
 class _FakeScrollView:
     def __init__(self, frame, text_view, y_offset):
         self._frame = frame
@@ -153,3 +179,61 @@ def test_show_resets_stale_scroll_and_document_height(mock_pyobjc, monkeypatch):
         1.0e7,
     )
     assert overlay._scroll_view.contentView().bounds().origin.y == 0.0
+
+
+def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+
+    stale_text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, 220.0),
+        "old session text that forced the overlay to grow tall",
+    )
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(_make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, 220.0))
+    overlay._text_view = stale_text_view
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, 204.0),
+        stale_text_view,
+        y_offset=128.0,
+    )
+
+    f = overlay_module._OUTER_FEATHER
+    margin = overlay_module._INNER_GLOW_DEPTH + 50
+    stale_inner_shadow = _FakeLayer(
+        _make_rect(
+            f - margin,
+            f - margin,
+            overlay_module._OVERLAY_WIDTH + 2 * margin,
+            220.0 + 2 * margin,
+        )
+    )
+    stale_inner_mask = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * margin,
+            220.0 + 2 * margin,
+        )
+    )
+    stale_inner_shadow.setMask_(stale_inner_mask)
+    overlay._inner_shadow = stale_inner_shadow
+    overlay._outer_glow_tight = _FakeLayer(
+        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, 220.0)
+    )
+    overlay._outer_glow_wide = _FakeLayer(
+        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, 220.0)
+    )
+
+    overlay.show()
+
+    default_height = overlay_module._OVERLAY_HEIGHT
+    expected_window_height = default_height + 2 * overlay_module._OUTER_FEATHER
+    assert overlay._window.frame().size.height == expected_window_height
+    assert overlay._content_view.frame().size.height == default_height
+    assert overlay._inner_shadow.frame().size.height == default_height + 2 * margin
+    assert overlay._inner_shadow.mask().frame().size.height == default_height + 2 * margin
+    assert overlay._outer_glow_tight.frame().size.height == default_height
+    assert overlay._outer_glow_wide.frame().size.height == default_height
