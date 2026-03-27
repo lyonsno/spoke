@@ -50,12 +50,12 @@ def test_launch_script_preserves_startup_logs():
     assert "traceback.print_exc(file=log)" in text
 
 
-def test_launch_script_preserves_dual_model_defaults():
-    """The launcher should not collapse preview/final back to one legacy model."""
+def test_launch_script_does_not_override_persisted_model_preferences():
+    """The launcher should not export model env vars that clobber saved prefs."""
     text = _script_text()
 
-    assert 'SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"' in text
-    assert 'SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}"' in text
+    assert 'SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"' not in text
+    assert 'SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}"' not in text
     assert 'SPOKE_WHISPER_MODEL="${SPOKE_WHISPER_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"' not in text
 
 
@@ -89,6 +89,42 @@ def test_inline_launcher_routes_child_output_into_log(tmp_path):
         time.sleep(0.02)
     else:
         raise AssertionError("expected detached child output to reach launch log")
+
+
+def test_inline_launcher_strips_model_override_env_vars(tmp_path, monkeypatch):
+    """Detached launch should drop model env vars so saved prefs can win."""
+    repo_root = tmp_path / "repo"
+    python_exe = repo_root / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text(
+        "#!/bin/sh\n"
+        "printf 'preview=%s\\n' \"${SPOKE_PREVIEW_MODEL:-}\"\n"
+        "printf 'transcription=%s\\n' \"${SPOKE_TRANSCRIPTION_MODEL:-}\"\n"
+        "printf 'legacy=%s\\n' \"${SPOKE_WHISPER_MODEL:-}\"\n"
+    )
+    python_exe.chmod(0o755)
+
+    monkeypatch.setenv("SPOKE_PREVIEW_MODEL", "preview-override")
+    monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "transcription-override")
+    monkeypatch.setenv("SPOKE_WHISPER_MODEL", "legacy-override")
+
+    log_file = tmp_path / "launch.log"
+    result = _run_inline_launcher(repo_root, log_file)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "legacy=" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach launch log")
+
+    log_text = log_file.read_text()
+    assert "preview=\n" in log_text
+    assert "transcription=\n" in log_text
+    assert "legacy=\n" in log_text
 
 
 def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):

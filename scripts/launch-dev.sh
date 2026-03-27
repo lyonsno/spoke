@@ -18,10 +18,11 @@ mkdir -p "$LOG_DIR"
 } >>"$LOG_FILE"
 
 export REPO_ROOT LOG_FILE
-export SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"
-export SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}"
 export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
 export UV_BIN="${UV_BIN:-/Users/noahlyons/.pyenv/shims/uv}"
+unset SPOKE_PREVIEW_MODEL
+unset SPOKE_TRANSCRIPTION_MODEL
+unset SPOKE_WHISPER_MODEL
 
 /usr/bin/python3 - <<'PY'
 import os
@@ -33,6 +34,10 @@ repo_root = Path(os.environ["REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
 python_exe = Path(os.environ.get("VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python")))
 uv_bin = Path(os.environ.get("UV_BIN", "/Users/noahlyons/.pyenv/shims/uv"))
+child_env = os.environ.copy()
+child_env.pop("SPOKE_PREVIEW_MODEL", None)
+child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
+child_env.pop("SPOKE_WHISPER_MODEL", None)
 
 with log_file.open("a", encoding="utf-8") as log:
     try:
@@ -50,7 +55,7 @@ with log_file.open("a", encoding="utf-8") as log:
         subprocess.Popen(
             command,
             cwd=repo_root,
-            env=os.environ.copy(),
+            env=child_env,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
