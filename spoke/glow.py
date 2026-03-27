@@ -70,6 +70,7 @@ _FADE_IN_S = 0.08
 _FADE_OUT_S = 0.2
 _GLOW_SHOW_FADE_S = 0.2
 _GLOW_HIDE_FADE_S = 0.6
+_GLOW_SHOW_TIMING = "easeIn"
 _DIM_SHOW_FADE_S = 1.08
 _DIM_HIDE_FADE_S = 2.4
 _WINDOW_TEARDOWN_CUSHION_S = 0.05
@@ -388,7 +389,7 @@ class GlowOverlay(NSObject):
         anim.setToValue_(self._glow_base_opacity)
         anim.setDuration_(_GLOW_SHOW_FADE_S)
         anim.setTimingFunction_(
-            CAMediaTimingFunction.functionWithName_("easeOut")
+            CAMediaTimingFunction.functionWithName_(_GLOW_SHOW_TIMING)
         )
         self._glow_layer.setOpacity_(self._glow_base_opacity)
         self._glow_layer.addAnimation_forKey_(anim, "fadeIn")

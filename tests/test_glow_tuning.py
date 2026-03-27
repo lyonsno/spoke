@@ -40,6 +40,7 @@ class TestGlowTuning:
         try:
             assert mod._DIM_SHOW_FADE_S == pytest.approx(1.08)
             assert mod._DIM_HIDE_FADE_S == pytest.approx(2.4)
+            assert mod._GLOW_SHOW_TIMING == "easeIn"
         finally:
             sys.modules.pop("spoke.glow", None)
 
