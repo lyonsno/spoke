@@ -265,9 +265,9 @@ class TranscriptionOverlay(NSObject):
         self._content_view.setFrame_(
             NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
-        self._scroll_view.setFrame_(
-            NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
-        )
+        scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+        self._scroll_view.setFrame_(scroll_frame)
+        self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
 
@@ -438,6 +438,27 @@ class TranscriptionOverlay(NSObject):
 
     # ── layout helpers ───────────────────────────────────────
 
+    def _reset_text_geometry(self, visible_height: float, scroll_to_top: bool = False) -> None:
+        """Keep the document view and clip view in sync with the current overlay size."""
+        if self._text_view is None or self._scroll_view is None:
+            return
+
+        doc_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, visible_height)
+        self._text_view.setFrame_(doc_frame)
+
+        container = self._text_view.textContainer()
+        if container is not None and hasattr(container, "setContainerSize_"):
+            container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
+
+        clip_view = self._scroll_view.contentView() if hasattr(self._scroll_view, "contentView") else None
+        if clip_view is not None and scroll_to_top:
+            if hasattr(clip_view, "scrollToPoint_"):
+                clip_view.scrollToPoint_((0, 0))
+            elif hasattr(clip_view, "setBoundsOrigin_"):
+                clip_view.setBoundsOrigin_((0, 0))
+            if hasattr(self._scroll_view, "reflectScrolledClipView_"):
+                self._scroll_view.reflectScrolledClipView_(clip_view)
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -461,9 +482,7 @@ class TranscriptionOverlay(NSObject):
                 self._content_view.setFrame_(
                     NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
                 )
-                self._scroll_view.setFrame_(
-                    NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
-                )
+                self._scroll_view.setFrame_(NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16))
                 # Rebuild inner shadow for new height
                 if hasattr(self, '_inner_shadow'):
                     w, h = _OVERLAY_WIDTH, new_height
@@ -492,6 +511,7 @@ class TranscriptionOverlay(NSObject):
                 if hasattr(self, '_outer_glow_wide'):
                     self._outer_glow_wide.setFrame_(((f, f), (w, new_height)))
 
+            self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
