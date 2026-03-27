@@ -47,13 +47,19 @@ def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
-# Soft violet — distinct from input cornflower, same organism
-_GLOW_COLOR = (
-    _env("SPOKE_COMMAND_GLOW_R", 0.6),
-    _env("SPOKE_COMMAND_GLOW_G", 0.4),
-    _env("SPOKE_COMMAND_GLOW_B", 0.9),
-)
-_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.5)
+# Color oscillation endpoints — violet and warm amber
+_COLOR_A = (
+    _env("SPOKE_COMMAND_COLOR_A_R", 0.6),
+    _env("SPOKE_COMMAND_COLOR_A_G", 0.4),
+    _env("SPOKE_COMMAND_COLOR_A_B", 0.9),
+)  # soft violet
+_COLOR_B = (
+    _env("SPOKE_COMMAND_COLOR_B_R", 0.85),
+    _env("SPOKE_COMMAND_COLOR_B_G", 0.6),
+    _env("SPOKE_COMMAND_COLOR_B_B", 0.3),
+)  # warm amber
+_GLOW_COLOR = _COLOR_A  # initial color for setup
+_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.75)  # higher floor — always readable
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # seconds per cycle
@@ -380,28 +386,52 @@ class CommandOverlay(NSObject):
                 self._window.setAlphaValue_(1.0)
 
     def pulseStep_(self, timer) -> None:
-        """Animate the text opacity with a smooth ease-in/ease-out pulse."""
+        """Animate text opacity and glow color with asymmetric ease.
+
+        The pulse spends more time opaque and quick-dips to transparent:
+        a power curve biases the phase so the "transparent" trough is
+        narrow and the "opaque" plateau is wide.  Color oscillates between
+        violet (_COLOR_A) and warm amber (_COLOR_B) on the same cadence.
+        """
         if not self._streaming or self._text_view is None:
             return
         self._pulse_phase += (1.0 / _PULSE_HZ) / _PULSE_PERIOD
         if self._pulse_phase > 1.0:
             self._pulse_phase -= 1.0
 
-        # Smooth sine pulse: 0→1→0 over one period
-        pulse = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
+        # Raw sine: 0→1→0 over one period
+        raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
+
+        # Asymmetric ease: power curve makes the dip narrow and the
+        # plateau wide.  raw^0.3 spends most of its range near 1.0 and
+        # only briefly dips toward 0.0.
+        pulse = raw ** 0.3
+
         alpha = _TEXT_ALPHA_MIN + pulse * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+
+        # Color oscillation: lerp between violet and amber on the same phase
+        r = _COLOR_A[0] + raw * (_COLOR_B[0] - _COLOR_A[0])
+        g = _COLOR_A[1] + raw * (_COLOR_B[1] - _COLOR_A[1])
+        b = _COLOR_A[2] + raw * (_COLOR_B[2] - _COLOR_A[2])
 
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
         )
 
-        # Pulse the glow too
+        # Pulse the glow with the oscillating color
+        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
         glow_opacity = 0.5 + 0.3 * pulse
         if hasattr(self, '_inner_shadow'):
+            self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
+            self._inner_shadow.setFillColor_(
+                glow_nscolor.colorWithAlphaComponent_(0.12).CGColor()
+            )
             self._inner_shadow.setShadowOpacity_(glow_opacity)
         if hasattr(self, '_outer_glow_tight'):
+            self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
             self._outer_glow_tight.setShadowOpacity_(min(glow_opacity * 0.4, _OUTER_GLOW_PEAK_TARGET))
         if hasattr(self, '_outer_glow_wide'):
+            self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
             self._outer_glow_wide.setShadowOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
 
     def lingerDone_(self, timer) -> None:
