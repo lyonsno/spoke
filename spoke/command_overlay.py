@@ -485,9 +485,10 @@ class CommandOverlay(NSObject):
             # Glowing number: violet text on transparent background
             self._thinking_label.setTextColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.4
+                    _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.7
                 )
             )
+        logger.info("Thinking timer started")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )
