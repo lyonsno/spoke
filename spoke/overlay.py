@@ -39,7 +39,7 @@ _FONT_SIZE = 16.0
 _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.18
 _FADE_STEPS = 12  # number of steps for manual fade animation
-_TYPEWRITER_INTERVAL = 0.03  # seconds between characters (~33 chars/sec)
+_TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
@@ -58,6 +58,12 @@ _GLOW_COLOR = (0.7, 0.92, 0.95)  # same as screen glow
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
+_OUTER_GLOW_PEAK_TARGET = 0.5
+
+
+def _compress_outer_glow_peak(opacity: float) -> float:
+    """Keep low-level glow response intact while capping the outer bloom."""
+    return min(opacity, _OUTER_GLOW_PEAK_TARGET)
 
 
 class TranscriptionOverlay(NSObject):
@@ -429,12 +435,13 @@ class TranscriptionOverlay(NSObject):
             cap_floor = 0.25
             scale = cap_floor + (1.0 - cap_floor) * cap_factor
             opacity *= scale
+        outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowOpacity_(opacity)
         if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(opacity * 0.5)
+            self._outer_glow_tight.setShadowOpacity_(outer_opacity * 0.5)
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(opacity * 0.8)
+            self._outer_glow_wide.setShadowOpacity_(outer_opacity * 0.8)
 
     # ── layout helpers ───────────────────────────────────────
 

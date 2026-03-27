@@ -313,7 +313,7 @@ class TestConcurrencyContract:
             ):
                 d._preview_loop_batch()
 
-        assert sleeps[:2] == [0.2, 0.3]
+        assert sleeps[:2] == [0.15, 0.2]
 
     def test_preview_loop_batch_uses_local_inference_lock_and_signals_done(
         self, main_module, monkeypatch

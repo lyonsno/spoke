@@ -40,9 +40,10 @@ logger = logging.getLogger(__name__)
 _GLOW_COLOR = (0.7, 0.92, 0.95)  # pale turquoise-white blue RGB
 _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
-_GLOW_SHADOW_RADIUS = 30.0  # tighter bloom — stays near the edge
+_GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # full brightness at peak to compensate for smaller size
 _GLOW_BASE_OPACITY = 0.10  # clear presence in silence
+_GLOW_PEAK_TARGET = 0.245
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -58,6 +59,11 @@ _DECAY_FACTOR = 0.50  # very quick falloff between words
 # Fade timing
 _FADE_IN_S = 0.08
 _FADE_OUT_S = 0.2
+
+
+def _compress_screen_glow_peak(opacity: float) -> float:
+    """Keep quiet glow intact while capping only the top end."""
+    return min(opacity, _GLOW_PEAK_TARGET)
 
 
 def _rounded_rect_path(x, y, w, h, top_radius, bottom_radius):
@@ -343,10 +349,14 @@ class GlowOverlay(NSObject):
         # before "rendering" — the display gamma, essentially.
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
         opacity = _GLOW_BASE_OPACITY + amplitude_opacity * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
+        opacity = _compress_screen_glow_peak(opacity)
 
         # Apply recording-cap countdown: shift color from turquoise to amber
         # as the cap approaches — passive visual warning visible at any opacity.
         if self._cap_factor < 1.0:
+            cap_floor = 0.25
+            scale = cap_floor + (1.0 - cap_floor) * self._cap_factor
+            opacity *= scale
             t = 1.0 - self._cap_factor  # 0→1 as cap approaches
             r = _GLOW_COLOR[0] + t * (_GLOW_CAP_COLOR[0] - _GLOW_COLOR[0])
             g = _GLOW_COLOR[1] + t * (_GLOW_CAP_COLOR[1] - _GLOW_COLOR[1])
