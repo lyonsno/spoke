@@ -6,7 +6,6 @@ microphone input, with fast rise and slow decay for a breathing effect.
 """
 
 from __future__ import annotations
-
 import logging
 import math
 import os
@@ -43,13 +42,13 @@ _GLOW_COLOR_LIGHT = (0.34, 0.50, 1.0)  # more electric cornflower on lighter bac
 _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
-_GLOW_MAX_OPACITY = 0.70  # 30% reduction — dim layer provides the contrast now
+_GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
 _GLOW_BASE_OPACITY = 0.07  # clear presence in silence
 _GLOW_PEAK_TARGET = 0.17
 _GLOW_BASE_OPACITY_DARK = 0.06
 _GLOW_BASE_OPACITY_LIGHT = 0.09
 _GLOW_PEAK_TARGET_DARK = 0.15
-_GLOW_PEAK_TARGET_LIGHT = 0.22
+_GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -60,7 +59,6 @@ _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "30.0"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.20  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.40  # dim on light/white backgrounds
-
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words
@@ -348,23 +346,8 @@ class GlowOverlay(NSObject):
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
-    def show(self) -> None:
-        """Fade the glow window in to base opacity."""
-        if self._window is None:
-            return
-        self._cancel_pending_hide()
-        self._hide_generation += 1
-        self._visible = True
-        self._smoothed_amplitude = 0.0
-        self._update_count = 0
-        self._noise_floor = 0.0
-        self._cap_factor = 1.0
-        brightness = _sample_screen_brightness(self._screen)
-        self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
-        # Reset color to default cornflower
-        glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            self._glow_color[0], self._glow_color[1], self._glow_color[2], 1.0
-        )
+    def _apply_glow_color(self, glow_color) -> None:
+        """Push the current glow color through the bloom and gradient layers."""
         if hasattr(self, '_shadow_shape'):
             self._shadow_shape.setShadowColor_(glow_color.CGColor())
             self._shadow_shape.setFillColor_(
@@ -378,6 +361,24 @@ class GlowOverlay(NSObject):
             colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
             for gl in self._gradient_layers:
                 gl.setColors_(colors)
+
+    def show(self) -> None:
+        """Fade the glow window in to base opacity."""
+        if self._window is None:
+            return
+        self._cancel_pending_hide()
+        self._hide_generation += 1
+        self._visible = True
+        self._smoothed_amplitude = 0.0
+        self._update_count = 0
+        self._noise_floor = 0.0
+        self._cap_factor = 1.0
+        brightness = _sample_screen_brightness(self._screen)
+        self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
+        glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            self._glow_color[0], self._glow_color[1], self._glow_color[2], 1.0
+        )
+        self._apply_glow_color(glow_color)
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -528,18 +529,7 @@ class GlowOverlay(NSObject):
             g = self._glow_color[1] + t * (_GLOW_CAP_COLOR[1] - self._glow_color[1])
             b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
             cap_color = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-            cap_cgcolor = cap_color.CGColor()
-            self._shadow_shape.setShadowColor_(cap_cgcolor)
-            self._shadow_shape.setFillColor_(
-                cap_color.colorWithAlphaComponent_(0.05).CGColor()
-            )
-            edge = cap_color
-            mid = cap_color.colorWithAlphaComponent_(0.25)
-            faint = cap_color.colorWithAlphaComponent_(0.06)
-            clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
-            colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
-            for gl in self._gradient_layers:
-                gl.setColors_(colors)
+            self._apply_glow_color(cap_color)
 
         self._glow_layer.setOpacity_(opacity)
 

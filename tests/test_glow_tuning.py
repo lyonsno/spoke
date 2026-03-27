@@ -1,5 +1,4 @@
 """Contract tests for screen-edge glow tuning."""
-
 import importlib
 import sys
 from unittest.mock import MagicMock
@@ -54,6 +53,8 @@ class TestGlowTuning:
 
             assert light_base > dark_base
             assert light_peak > dark_peak
+            assert dark_peak == pytest.approx(mod._GLOW_PEAK_TARGET_DARK)
+            assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
             assert (light_color[2] - light_color[0]) > (dark_color[2] - dark_color[0])
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -197,6 +198,15 @@ class TestGlowTuning:
         mod = importlib.import_module("spoke.glow")
         try:
             assert mod._GLOW_SHADOW_RADIUS == 60.0
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_white_backgrounds_can_drive_the_glow_to_full_opacity(self, mock_pyobjc):
+        """Bright scenes should be allowed to push the glow all the way to full strength."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            assert mod._GLOW_MAX_OPACITY == pytest.approx(1.0)
         finally:
             sys.modules.pop("spoke.glow", None)
 
