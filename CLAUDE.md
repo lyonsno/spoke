@@ -4,7 +4,7 @@
 
 The canonical repo and product name is `spoke`.
 
-When writing or updating docs, reviews, Epistaxis notes, PR text, release notes, or other outward-facing references for this repo, use `spoke` rather than `donttype`.
+When writing or updating docs, reviews, Epistaxis notes, PR text, release notes, or other outward-facing references for this repo, use `spoke` rather than `donttype` or `dictate`.
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 

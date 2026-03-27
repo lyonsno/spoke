@@ -28,6 +28,7 @@ usage() {
     echo "  --gif-width N      GIF width (default: 960)"
     echo "  --gif-fps N        GIF frame rate (default: 30)"
     echo "  --no-mp4           Skip MP4, only produce GIF"
+    echo "  --slices           Extract detail crops: left-edge glow + overlay"
     echo "  -o, --output DIR   Output directory (default: same as input)"
     exit 1
 }
@@ -45,6 +46,7 @@ START=""
 DURATION=""
 MAKE_GIF=false
 MAKE_MP4=true
+MAKE_SLICES=false
 GIF_WIDTH=960
 GIF_FPS=30
 OUTPUT_DIR="$(dirname "$INPUT")"
@@ -61,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --gif-width)   GIF_WIDTH="$2"; MAKE_GIF=true; shift 2 ;;
         --gif-fps)     GIF_FPS="$2"; MAKE_GIF=true; shift 2 ;;
         --no-mp4)      MAKE_MP4=false; MAKE_GIF=true; shift ;;
+        --slices)      MAKE_SLICES=true; shift ;;
         -o|--output)   OUTPUT_DIR="$2"; shift 2 ;;
         *)             echo "Unknown option: $1"; usage ;;
     esac
@@ -128,6 +131,47 @@ if $MAKE_GIF; then
         echo "  ⚠ GIF is over 10MB — may not render on GitHub."
         echo "    Try: --gif-fps 20, --gif-width 720, or shorter --duration"
     fi
+fi
+
+# --- Detail slices (optional, --slices flag) ---
+if $MAKE_SLICES; then
+    echo "→ Extracting detail slices..."
+
+    # Get video dimensions
+    eval "$(ffprobe -v quiet -select_streams v:0 \
+        -show_entries stream=width,height -of csv=p=0 "$INPUT" \
+        | awk -F, '{printf "VW=%s; VH=%s", $1, $2}')"
+
+    SLICE_DIR="$OUTPUT_DIR/slices"
+    mkdir -p "$SLICE_DIR"
+
+    # Left-edge glow: 144x144 (~1 inch at 2x Retina), vertically centered
+    GLOW_SIZE=144
+    GLOW_Y=$(( (VH - GLOW_SIZE) / 2 ))
+    GLOW_OUT="$SLICE_DIR/${BASENAME}-glow.mp4"
+    echo "  → Left-edge glow (${GLOW_SIZE}x${GLOW_SIZE} at 0,${GLOW_Y})..."
+    ffmpeg -y $TRIM_ARGS -i "$INPUT" \
+        -vf "crop=${GLOW_SIZE}:${GLOW_SIZE}:0:${GLOW_Y}" \
+        -c:v libx264 -preset slow -crf "$CRF" -r 60 \
+        -an -movflags +faststart -pix_fmt yuv420p \
+        "$GLOW_OUT" 2>/dev/null
+    echo "  ✓ $GLOW_OUT ($(du -h "$GLOW_OUT" | cut -f1 | xargs))"
+
+    # Overlay: 680x160 centered horizontally, 120px from bottom
+    # overlay.py: 600px wide + 40px feather each side = 680px
+    # 80px tall + 40px feather each side = 160px, bottom at 80px (120 - 40 feather)
+    OVL_W=680
+    OVL_H=200
+    OVL_X=$(( (VW - OVL_W) / 2 ))
+    OVL_Y=$(( VH - 120 - OVL_H + 40 ))  # screen coords: bottom-up in overlay, top-down in ffmpeg
+    OVL_OUT="$SLICE_DIR/${BASENAME}-overlay.mp4"
+    echo "  → Overlay (${OVL_W}x${OVL_H} centered, near bottom)..."
+    ffmpeg -y $TRIM_ARGS -i "$INPUT" \
+        -vf "crop=${OVL_W}:${OVL_H}:${OVL_X}:${OVL_Y}" \
+        -c:v libx264 -preset slow -crf "$CRF" -r 60 \
+        -an -movflags +faststart -pix_fmt yuv420p \
+        "$OVL_OUT" 2>/dev/null
+    echo "  ✓ $OVL_OUT ($(du -h "$OVL_OUT" | cut -f1 | xargs))"
 fi
 
 echo ""

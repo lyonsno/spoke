@@ -243,8 +243,7 @@ class TestPreviewFinalizationContract:
         d = _make_delegate(main_module, monkeypatch)
         preview_thread = MagicMock()
         d._preview_thread = preview_thread
-        d._preview_client = MagicMock(supports_streaming=True)
-        d._preview_client._stream_state = object()
+        d._preview_client = MagicMock(supports_streaming=True, has_active_stream=True)
         d._client = MagicMock(supports_streaming=False)
         d._client.transcribe.return_value = "batch final text"
 
@@ -264,8 +263,7 @@ class TestPreviewFinalizationContract:
         d = _make_delegate(main_module, monkeypatch)
         preview_thread = MagicMock()
         d._preview_thread = preview_thread
-        streaming_client = MagicMock(supports_streaming=True)
-        streaming_client._stream_state = object()
+        streaming_client = MagicMock(supports_streaming=True, has_active_stream=True)
         streaming_client.finish_stream.return_value = "stream final text"
         d._client = streaming_client
         d._preview_client = streaming_client

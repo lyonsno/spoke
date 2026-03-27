@@ -363,8 +363,19 @@ class SpokeAppDelegate(NSObject):
                 if remaining > 0 and self._preview_active:
                     time.sleep(remaining)
         finally:
-            if not delegated_to_batch and getattr(self, "_preview_done", None) is not None:
-                self._preview_done.set()
+            if not delegated_to_batch:
+                # Clean up streaming state if preview client differs from final client,
+                # so the upstream library doesn't hold stale KV cache / session state.
+                if (
+                    self._preview_client is not self._client
+                    and getattr(self._preview_client, "has_active_stream", False)
+                ):
+                    try:
+                        self._preview_client.finish_stream()
+                    except Exception:
+                        logger.debug("Preview stream cleanup failed", exc_info=True)
+                if getattr(self, "_preview_done", None) is not None:
+                    self._preview_done.set()
 
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick."""
@@ -468,7 +479,7 @@ class SpokeAppDelegate(NSObject):
                 if (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
-                    and getattr(self._client, "_stream_state", None) is not None
+                    and getattr(self._client, "has_active_stream", False)
                 ):
                     text = self._client.finish_stream()
                 else:
@@ -714,7 +725,9 @@ class SpokeAppDelegate(NSObject):
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, indent=2))
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2))
+            tmp.rename(path)
         except Exception:
             logger.warning("Failed to save model preferences to %s", path, exc_info=True)
 

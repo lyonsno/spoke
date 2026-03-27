@@ -143,6 +143,11 @@ class LocalQwenClient:
         return text
 
     @property
+    def has_active_stream(self) -> bool:
+        """Whether a streaming session is currently in progress."""
+        return self._stream_state is not None
+
+    @property
     def supports_streaming(self) -> bool:
         """Whether this client supports incremental streaming."""
         return True
