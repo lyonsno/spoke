@@ -87,13 +87,19 @@ class LocalTranscriptionClient:
         transcribe_module.ModelHolder.model = self._model_instance
         transcribe_module.ModelHolder.model_path = self._model
 
+    def _load_dtype(self):
+        """Choose the MLX dtype implied by the selected Whisper repo."""
+        if self._model.endswith("-mlx"):
+            return mx.bfloat16
+        return mx.float16
+
     def prepare(self) -> None:
         """Warm the Whisper model cache without running a transcription."""
         if self._loaded:
             self._install_model_holder()
             return
         logger.info("Preloading Whisper model %s", self._model)
-        self._model_instance = load_model(self._model, dtype=mx.float16)
+        self._model_instance = load_model(self._model, dtype=self._load_dtype())
         self._loaded = True
         self._install_model_holder()
 

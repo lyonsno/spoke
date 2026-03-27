@@ -211,6 +211,34 @@ class TestLocalTranscriptionClient:
         mock_load_model.assert_called_once()
         mock_mlx_whisper.transcribe.assert_not_called()
 
+    @patch("spoke.transcribe_local.load_model")
+    def test_prepare_uses_bfloat16_for_bf16_whisper_repos(self, mock_load_model):
+        """Unquantized `-mlx` Whisper repos should warm with bfloat16."""
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
+
+        mock_load_model.return_value = MagicMock()
+        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx")
+        client.prepare()
+
+        mock_load_model.assert_called_once_with(
+            "mlx-community/whisper-small.en-mlx",
+            dtype=mx.bfloat16,
+        )
+
+    @patch("spoke.transcribe_local.load_model")
+    def test_prepare_keeps_float16_for_quantized_whisper_repos(self, mock_load_model):
+        """Quantized Whisper repos should keep the float16 warmup path."""
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
+
+        mock_load_model.return_value = MagicMock()
+        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx-8bit")
+        client.prepare()
+
+        mock_load_model.assert_called_once_with(
+            "mlx-community/whisper-small.en-mlx-8bit",
+            dtype=mx.float16,
+        )
+
 
 def _make_wav_bytes(n_samples=1000):
     """Helper: create valid mono 16-bit WAV bytes."""

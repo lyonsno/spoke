@@ -717,7 +717,10 @@ class SpokeAppDelegate(NSObject):
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
+        ("mlx-community/whisper-tiny.en-mlx", "Tiny.en (bf16)"),
+        ("mlx-community/whisper-base.en-mlx", "Base.en (bf16)"),
         ("mlx-community/whisper-base.en-mlx-8bit", "Base.en (8bit)"),
+        ("mlx-community/whisper-small.en-mlx", "Small.en (bf16)"),
         ("mlx-community/whisper-small.en-mlx-8bit", "Small.en (8bit)"),
         ("mlx-community/whisper-medium.en-mlx-4bit", "Medium.en (4bit)"),
         ("mlx-community/whisper-medium.en-mlx-8bit", "Medium.en (8bit)"),

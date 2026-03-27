@@ -463,11 +463,27 @@ class TestModelPicker:
         monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         models = d._select_model(None)
         model_ids = [m[0] for m in models]
+        assert "mlx-community/whisper-tiny.en-mlx" in model_ids
+        assert "mlx-community/whisper-base.en-mlx" in model_ids
         assert "mlx-community/whisper-base.en-mlx-8bit" in model_ids
+        assert "mlx-community/whisper-small.en-mlx" in model_ids
         assert "mlx-community/whisper-small.en-mlx-8bit" in model_ids
         assert "mlx-community/whisper-medium.en-mlx-8bit" in model_ids
         assert "Qwen/Qwen3-ASR-0.6B" in model_ids
         assert "mlx-community/whisper-large-v3-turbo" not in model_ids
+
+    def test_select_model_none_exposes_bf16_laptop_tiers_with_labels(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        models = d._select_model(None)
+
+        labels_by_id = {model_id: label for model_id, label, _enabled in models}
+
+        assert labels_by_id["mlx-community/whisper-tiny.en-mlx"] == "Tiny.en (bf16)"
+        assert labels_by_id["mlx-community/whisper-base.en-mlx"] == "Base.en (bf16)"
+        assert labels_by_id["mlx-community/whisper-small.en-mlx"] == "Small.en (bf16)"
 
     def test_select_model_none_includes_large_on_high_ram(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -519,6 +535,35 @@ class TestDualModelConfiguration:
         assert (
             MockLocal.call_args_list[1].kwargs["model"]
             == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+
+    def test_init_accepts_new_bf16_whisper_model_ids(
+        self, main_module, monkeypatch
+    ):
+        """New tiny/base/small bf16 IDs should flow through the normal local init path."""
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.setenv("SPOKE_PREVIEW_MODEL", "mlx-community/whisper-small.en-mlx")
+        monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-tiny.en-mlx")
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._client is final_client
+        assert d._preview_client is preview_client
+        assert MockLocal.call_count == 2
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-tiny.en-mlx"
+        )
+        assert (
+            MockLocal.call_args_list[1].kwargs["model"]
+            == "mlx-community/whisper-small.en-mlx"
         )
 
     def test_init_loads_persisted_local_whisper_preferences_when_env_vars_absent(
