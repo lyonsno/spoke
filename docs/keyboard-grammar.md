@@ -107,6 +107,65 @@ Three interactive columns in the recovery overlay:
 - **Insert flash**: Insert column flashes red (0.3s) on rejection.
 - **Entrance pop**: scale 1.015 → 1.0 (200ms) on first appearance.
 
+## Staging mode (planned)
+
+Entered by releasing spacebar with shift held after a recording (the same
+gesture that currently routes to the command pathway for long holds, and
+recall for short holds). Instead of immediately pasting or sending to the
+assistant, the transcribed text stays in the overlay for the user to decide
+what to do with it.
+
+### Staging mode entry
+
+| Current state | Gesture | Result |
+|---|---|---|
+| Recording | Release spacebar while shift held (≥ 800ms) | Enter staging with transcribed text |
+
+### Staging mode gestures
+
+| Gesture | Result |
+|---|---|
+| Spacebar tap | Insert text into focused text field |
+| Spacebar hold | Start a new recording (replaces staged text) |
+| Enter | Send staged text to assistant |
+| Shift tap | Cancel/dismiss staging |
+
+### Staging mode state persistence
+
+- **Staged text persists** until consumed (inserted into field or sent to
+  assistant) or replaced (new recording).
+- **Dismissing staging** (shift tap) puts the text aside — re-entering staging
+  without an intervening dictation or recording restores it.
+- **Normal dictation** (hold spacebar without shift, paste into field) clears
+  the staged text. The staged text is "the last thing that didn't go where
+  you wanted it." Once you've successfully dictated something else, that
+  context is gone.
+
+### Cancel gesture (during recording or staging)
+
+| Gesture | Result |
+|---|---|
+| Tap shift while spacebar held | Cancel recording, discard audio |
+| Tap shift (in staging, no spacebar) | Cancel/dismiss staging |
+
+The shift-tap cancel is the universal "abort" — same gesture in both contexts.
+It requires no hand repositioning since shift is adjacent to spacebar.
+
+### Relationship to recovery mode
+
+Recovery mode (triggered by OCR paste verification failure) is a subset of
+staging mode. When staging mode ships, recovery mode becomes "staging mode
+entered automatically because the paste failed" rather than a separate state.
+The gestures and overlay layout are the same.
+
+### Text editing in staging (future)
+
+A separate hotkey (TBD — acceptable because text editing requires a keyboard)
+could switch the overlay to editable mode where the keyboard types into the
+staged text. In editable mode, spacebar types spaces rather than triggering
+insert. Enter would send to the assistant (unchanged). The exit gesture from
+editable mode is TBD.
+
 ## Recording cap
 
 On machines with < 36GB RAM running local inference: 20-second maximum
