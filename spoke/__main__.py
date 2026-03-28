@@ -148,7 +148,6 @@ class SpokeAppDelegate(NSObject):
         self._tts_client = TTSClient.from_env()
         if self._tts_client is not None:
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
-            self._tts_client.warm()
 
         # Recovery mode state
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -282,6 +281,11 @@ class SpokeAppDelegate(NSObject):
         self._models_ready = True
         self._warm_error = None
         self._menubar.set_status_text("Ready — hold spacebar")
+
+        # Warm TTS after Whisper is loaded to avoid Metal GPU contention
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            tts.warm()
 
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
