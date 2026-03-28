@@ -62,7 +62,10 @@ _GLOW_COLOR = _COLOR_A  # initial color for setup
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
-_PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # seconds per cycle
+_PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
+_PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
+_PULSE_PERIOD_ASST = _PULSE_PERIOD * 0.8  # assistant text: 20% faster
+_PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
 _OUTER_FEATHER = 40.0
@@ -96,7 +99,8 @@ class CommandOverlay(NSObject):
 
         # Pulse state
         self._pulse_timer: NSTimer | None = None
-        self._pulse_phase = 0.0
+        self._pulse_phase_asst = 0.0
+        self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
 
         # Linger timer
         self._linger_timer: NSTimer | None = None
@@ -315,7 +319,8 @@ class CommandOverlay(NSObject):
         )
 
         # Start pulse animation
-        self._pulse_phase = 0.0
+        self._pulse_phase_asst = 0.0
+        self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -552,70 +557,79 @@ class CommandOverlay(NSObject):
                 self._window.setAlphaValue_(1.0)
 
     def pulseStep_(self, timer) -> None:
-        """Animate text opacity and glow color with asymmetric ease.
+        """Dual-phase pulse: user and assistant text breathe independently.
 
-        The pulse spends more time opaque and quick-dips to transparent:
-        a power curve biases the phase so the "transparent" trough is
-        narrow and the "opaque" plateau is wide.  Color oscillates between
-        violet (_COLOR_A) and warm amber (_COLOR_B) on the same cadence.
+        Assistant text: faster period (0.8x base), double-smoothstep for
+        extra-aggressive easing, violet-amber color oscillation.
+        User text: slower period (1.5x base), single smoothstep, blue
+        color shift, phase-offset by 0.3 and diverging naturally.
         """
         if not self._streaming or self._text_view is None:
             return
-        self._pulse_phase += (1.0 / _PULSE_HZ) / _PULSE_PERIOD
-        if self._pulse_phase > 1.0:
-            self._pulse_phase -= 1.0
+        dt = 1.0 / _PULSE_HZ
 
-        # Raw sine: 0→1→0 over one period
-        raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
+        # Advance both phases at their own rates
+        self._pulse_phase_asst += dt / _PULSE_PERIOD_ASST
+        if self._pulse_phase_asst > 1.0:
+            self._pulse_phase_asst -= 1.0
+        self._pulse_phase_user += dt / _PULSE_PERIOD_USER
+        if self._pulse_phase_user > 1.0:
+            self._pulse_phase_user -= 1.0
 
-        # Aggressive ease: smoothstep-style curve snaps quickly between
-        # opaque and transparent with sharp ease-in/ease-out at both ends.
-        # 3x^2 - 2x^3 (Hermite smoothstep) gives punchy transitions while
-        # keeping the same overall cadence.
-        pulse = raw * raw * (3.0 - 2.0 * raw)
+        # Assistant: raw sine → double smoothstep (extra aggressive)
+        raw_a = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_asst))
+        ss_a = raw_a * raw_a * (3.0 - 2.0 * raw_a)  # first smoothstep
+        pulse_a = ss_a * ss_a * (3.0 - 2.0 * ss_a)   # second smoothstep (40% more aggressive)
+        alpha_a = _TEXT_ALPHA_MIN + pulse_a * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
 
-        alpha = _TEXT_ALPHA_MIN + pulse * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        # User: raw sine → single smoothstep (same aggressiveness as before)
+        raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
+        pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
+        utt_alpha = 0.2 + 0.25 * pulse_u
 
-        # Color oscillation: lerp between violet and amber on the same phase
-        r = _COLOR_A[0] + raw * (_COLOR_B[0] - _COLOR_A[0])
-        g = _COLOR_A[1] + raw * (_COLOR_B[1] - _COLOR_A[1])
-        b = _COLOR_A[2] + raw * (_COLOR_B[2] - _COLOR_A[2])
+        # Color oscillation on assistant phase (violet ↔ amber)
+        r = _COLOR_A[0] + raw_a * (_COLOR_B[0] - _COLOR_A[0])
+        g = _COLOR_A[1] + raw_a * (_COLOR_B[1] - _COLOR_A[1])
+        b = _COLOR_A[2] + raw_a * (_COLOR_B[2] - _COLOR_A[2])
 
-        # Update text alpha per-range to preserve utterance/response distinction
+        # Update text alpha per-range
         from AppKit import NSForegroundColorAttributeName as _FG_pulse
         ts = self._text_view.textStorage()
         total_len = ts.length() if hasattr(ts, 'length') else 0
         if total_len > 0 and self._utterance_text:
             utt_len = min(len(self._utterance_text), total_len)
-            # User text: dimmer, breathing with the pulse but at lower amplitude
-            utt_alpha = 0.2 + 0.25 * pulse
+            # User text: blue-tinted breathing at its own phase
             try:
+                # Subtle blue shift on user text (cornflower tint)
+                ur = 0.85 + 0.15 * pulse_u  # slightly less than pure white
+                ug = 0.9 + 0.1 * pulse_u
+                ub = 1.0
                 ts.addAttribute_value_range_(
                     _FG_pulse,
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, utt_alpha),
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, ub, utt_alpha),
                     (0, utt_len),
                 )
             except Exception:
                 pass
-            # Response text: full pulse
+            # Response text: full pulse at assistant phase
             resp_start = utt_len + 2  # skip \n\n separator
             if resp_start < total_len:
                 try:
                     ts.addAttribute_value_range_(
                         _FG_pulse,
-                        NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha),
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha_a),
                         (resp_start, total_len - resp_start),
                     )
                 except Exception:
                     pass
         else:
             self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha_a)
             )
 
-        # Pulse the glow with the oscillating color
+        # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-        glow_opacity = 0.5 + 0.3 * pulse
+        glow_opacity = 0.5 + 0.3 * pulse_a
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
             self._inner_shadow.setFillColor_(
