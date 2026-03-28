@@ -911,17 +911,28 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._glow is not None:
-            self._glow.hide()  # dimmer recedes when generation finishes
         if self._command_overlay is not None:
             self._command_overlay.finish()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
-        # Autoplay response via TTS if enabled
+        # Autoplay response via TTS if enabled — keep glow alive for amplitude
         response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
         if response and tts is not None:
-            tts.speak_async(response)
+            tts.speak_async(
+                response,
+                amplitude_callback=self._on_amplitude,
+                done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "ttsFinished:", None, False
+                ),
+            )
+        elif self._glow is not None:
+            self._glow.hide()
+
+    def ttsFinished_(self, _) -> None:
+        """Main thread: TTS playback ended — hide glow."""
+        if self._glow is not None:
+            self._glow.hide()
 
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""
