@@ -1103,6 +1103,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """A failed save should not be masked by relaunching into env-only model state."""
+
         monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
         monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
         monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
@@ -1126,6 +1127,52 @@ class TestDualModelConfiguration:
         assert "SPOKE_PREVIEW_MODEL" not in os.environ
         assert "SPOKE_TRANSCRIPTION_MODEL" not in os.environ
         assert "SPOKE_WHISPER_MODEL" not in os.environ
+
+    def test_reselecting_current_models_repairs_stale_qwen_preferences(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Re-selecting the current runtime models should heal stale on-disk Qwen prefs."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "preview_model": "Qwen/Qwen3-ASR-0.6B",\n'
+            '  "transcription_model": "Qwen/Qwen3-ASR-0.6B"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._preview_model_id = "mlx-community/whisper-base.en-mlx-8bit"
+        d._transcription_model_id = "mlx-community/whisper-medium.en-mlx-8bit"
+        d._save_model_preferences = main_module.SpokeAppDelegate._save_model_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_model_preferences = main_module.SpokeAppDelegate._load_model_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._relaunch = MagicMock()
+
+        d._apply_model_selection(
+            "mlx-community/whisper-base.en-mlx-8bit",
+            "mlx-community/whisper-medium.en-mlx-8bit",
+        )
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["preview_model"] == "mlx-community/whisper-base.en-mlx-8bit"
+        assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx-8bit"
+        d._relaunch.assert_not_called()
 
 
 class TestWarmupContract:

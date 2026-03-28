@@ -1149,6 +1149,17 @@ class SpokeAppDelegate(NSObject):
             preview_model == current_preview
             and transcription_model == current_transcription
         ):
+            prefs = self._load_model_preferences()
+            if (
+                prefs.get("preview_model") != preview_model
+                or prefs.get("transcription_model") != transcription_model
+            ):
+                logger.info(
+                    "Repairing stale model preferences without relaunch: preview=%s, transcription=%s",
+                    preview_model,
+                    transcription_model,
+                )
+                self._save_model_preferences(preview_model, transcription_model)
             return
         logger.info(
             "Switching models (relaunching): preview %s → %s, transcription %s → %s",
