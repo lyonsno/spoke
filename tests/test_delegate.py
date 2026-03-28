@@ -40,7 +40,6 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_saved_clipboard = None
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
-    delegate._recovery_previous_app = None
     delegate._recovery_pending_insert = None
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()

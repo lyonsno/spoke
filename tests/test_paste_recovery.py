@@ -37,7 +37,6 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_saved_clipboard = None
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
-    delegate._recovery_previous_app = None
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
 
@@ -144,7 +143,6 @@ class TestRecoveryInsert:
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_text = "transcribed text"
         d._recovery_saved_clipboard = [("public.utf8-plain-text", b"old")]
-        d._recovery_previous_app = None
 
         d._on_recovery_insert()
 

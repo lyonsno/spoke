@@ -152,7 +152,6 @@ class SpokeAppDelegate(NSObject):
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
         self._recovery_text: str | None = None
         self._recovery_clipboard_state: str = "idle"
-        self._recovery_previous_app: object | None = None
         self._recovery_pending_insert = None
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
@@ -1402,8 +1401,6 @@ class SpokeAppDelegate(NSObject):
 
     def _enter_recovery_mode(self, text: str) -> None:
         """Show the recovery overlay with Dismiss / Insert / Clipboard buttons."""
-        from AppKit import NSWorkspace
-
         # Use pre-saved clipboard if available (from _inject_result_text).
         # _pre_paste_clipboard is _NOT_CAPTURED when not set, and None when
         # the clipboard was empty — both are valid states. Only fall back to
@@ -1416,12 +1413,6 @@ class SpokeAppDelegate(NSObject):
         self._pre_paste_clipboard = _NOT_CAPTURED
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
-
-        # Capture the frontmost app so Insert can re-activate it
-        try:
-            self._recovery_previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        except Exception:
-            self._recovery_previous_app = None
 
         # Put transcription on pasteboard for manual paste
         set_pasteboard_only(text)
@@ -1455,27 +1446,21 @@ class SpokeAppDelegate(NSObject):
         text = self._recovery_text or ""
         saved = self._recovery_saved_clipboard
 
-        # Dismiss the overlay FIRST so it's not stealing focus
+        # Dismiss the overlay so it's gone before the paste.
         if self._overlay is not None:
             self._overlay.dismiss_recovery()
 
-        # Re-activate the previous app so it regains focus.
-        # Use NSApplicationActivateIgnoringOtherApps (1 << 1 = 2) to force
-        # activation even though Spoke is currently frontmost.
-        if self._recovery_previous_app is not None:
-            try:
-                self._recovery_previous_app.activateWithOptions_(2)
-            except Exception:
-                logger.debug("Failed to re-activate previous app", exc_info=True)
-
-        # Schedule the actual paste after a delay to let the target app
-        # regain focus and re-establish the text field as first responder.
-        # 300ms is needed because the app activation + window focus
-        # restoration takes longer than a simple window order change.
+        # Don't force-activate a captured previous app — the user may have
+        # switched to a different app since recovery started. Whatever is
+        # currently frontmost is where they want to paste. The NSPanel
+        # overlay doesn't steal activation, so the frontmost app should
+        # still be the right target.
+        #
+        # Short delay to let the overlay fully dismiss before pasting.
         self._recovery_pending_insert = (text, saved)
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.3, self, "doRecoveryInsert:", None, False
+            0.15, self, "doRecoveryInsert:", None, False
         )
 
     def doRecoveryInsert_(self, timer) -> None:
@@ -1542,7 +1527,6 @@ class SpokeAppDelegate(NSObject):
         self._recovery_saved_clipboard = None
         self._recovery_text = None
         self._recovery_clipboard_state = "idle"
-        self._recovery_previous_app = None
         self._recovery_pending_insert = None
 
     @staticmethod
