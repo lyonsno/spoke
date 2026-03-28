@@ -1435,19 +1435,23 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.dismiss_recovery()
 
-        # Re-activate the previous app so it regains focus
+        # Re-activate the previous app so it regains focus.
+        # Use NSApplicationActivateIgnoringOtherApps (1 << 1 = 2) to force
+        # activation even though Spoke is currently frontmost.
         if self._recovery_previous_app is not None:
             try:
-                self._recovery_previous_app.activateWithOptions_(0)
+                self._recovery_previous_app.activateWithOptions_(2)
             except Exception:
                 logger.debug("Failed to re-activate previous app", exc_info=True)
 
-        # Schedule the actual paste after a short delay to let the target
-        # app regain focus and re-establish the text field as first responder.
+        # Schedule the actual paste after a delay to let the target app
+        # regain focus and re-establish the text field as first responder.
+        # 300ms is needed because the app activation + window focus
+        # restoration takes longer than a simple window order change.
         self._recovery_pending_insert = (text, saved)
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.15, self, "doRecoveryInsert:", None, False
+            0.3, self, "doRecoveryInsert:", None, False
         )
 
     def doRecoveryInsert_(self, timer) -> None:
