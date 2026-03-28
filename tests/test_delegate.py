@@ -30,6 +30,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._cap_fired = False
     delegate._transcribe_start = time.monotonic()
     delegate._last_preview_text = ""
+    delegate._command_client = None
+    delegate._command_overlay = None
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
