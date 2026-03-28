@@ -481,7 +481,8 @@ class SpokeAppDelegate(NSObject):
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
-        if self._glow is not None:
+        # Glow/dimmer: hide immediately for text insertion, persist for commands
+        if not shift_held and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_recording(False)
@@ -713,6 +714,8 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        if self._glow is not None:
+            self._glow.hide()  # dimmer recedes when generation finishes
         if self._command_overlay is not None:
             self._command_overlay.finish()
         if self._menubar is not None:
@@ -725,6 +728,8 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         error = payload.get("error", "Unknown error")
         logger.error("Command pathway error: %s", error)
+        if self._glow is not None:
+            self._glow.hide()  # dimmer recedes on error too
         if self._overlay is not None:
             self._overlay.hide()
         if self._command_overlay is not None:
