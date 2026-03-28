@@ -509,10 +509,10 @@ class CommandOverlay(NSObject):
 
     # ── TTS amplitude ─────────────────────────────────────────
 
-    _TTS_RISE = 0.90      # near-instant attack (matches edge glow)
-    _TTS_DECAY = 0.50     # fast falloff between words
-    _TTS_MULTIPLIER = 30.0
-    _TTS_ALPHA_MIN = 0.25  # visible but subdued in silence
+    _TTS_RISE = 0.70      # fast but not instant — avoids harsh pop-in
+    _TTS_DECAY = 0.82     # gentle falloff — no clipping between words
+    _TTS_MULTIPLIER = 25.0
+    _TTS_ALPHA_MIN = 0.45  # clearly visible even in pauses
     _TTS_ALPHA_MAX = 1.0   # full brightness on voice peaks
 
     def update_tts_amplitude(self, rms: float) -> None:
