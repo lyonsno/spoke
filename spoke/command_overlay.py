@@ -3,8 +3,11 @@
 A semi-transparent overlay for displaying streamed command responses. Visually
 kin to the transcription overlay (same ethereal transparency, same floating
 treatment) but differentiated by color and rhythm. The input overlay breathes
-with voice amplitude. The output overlay pulses with a steady ease-in/ease-out
-rhythm — mechanical but gentle, distinct from the organic input.
+with voice amplitude. The output overlay pulses with a slow ease-in/ease-out
+rhythm — mechanical but gentle, distinct from the organic input. Color is a
+slow full-spectrum hue rotation (~6s cycle with velocity undulation), so the
+overlay always appears to be roughly one color but you can never quite pin
+down which one.
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@
 ## Product (v1.1+)
 
 - [ ] **Menubar source toggles** — Independent selection of preview and transcription backends. Previews: local | sidecar | off. Transcription: local | sidecar.
-- [ ] **Paste-failure recovery** — When no text field is focused (e.g., modal dialog), keep text in overlay with copy/insert affordances instead of silently failing.
+- [x] **Paste-failure recovery** — Shipped. Recovery overlay with retry/dismiss/clipboard columns, OCR verification, bounce animation on failure.
 - [ ] **Toggle mode** — Press-to-start/press-to-stop as alternative to hold-to-record. Configurable hotkey via menubar dropdown. For accessibility and workflows where holding is impractical.
 - [ ] **Bundle size optimization** — torch is ~245MB of dead weight (only needed by mlx_whisper's unused torch_whisper.py). Investigate dropping without breaking metallib resolution.
 
@@ -25,5 +25,6 @@
 
 ## Known issues
 
+- [ ] **Command overlay text direction** — Both user utterance and assistant response currently extrude upward out of the top of the overlay. Intended behavior: user utterance stays pinned at the top of the overlay, assistant response ascends underneath it. Long responses should scroll upward beneath the fixed utterance header.
 - [ ] **Glow corner intensity** — Linear gradients produce slightly lower intensity at rounded corners where they overlap. Proper fix requires radial/path gradient or CGImage-based rendering.
 - [ ] **TCC permission fragility** — Ad-hoc signing means every rebuild changes binary identity, invalidating Accessibility/Microphone grants. Proper fix is Developer ID certificate (covered above).

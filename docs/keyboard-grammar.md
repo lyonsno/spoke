@@ -118,76 +118,111 @@ Three interactive columns in the recovery overlay:
 
 ## Staging mode (planned)
 
-Entered by releasing spacebar with shift held after a recording (the same
-gesture that currently routes to the command pathway for long holds, and
-recall for short holds). Instead of immediately pasting or sending to the
-assistant, the transcribed text stays in the overlay for the user to decide
-what to do with it.
+Entered by releasing spacebar while shift is held during any recording. Instead
+of immediately pasting or sending to the assistant, the transcribed text stays
+in the overlay for the user to decide what to do with it. There is no duration
+gate — any recording that ends with shift held enters staging.
 
-### Staging mode entry
+### Why staging exists
 
-| Current state | Gesture | Result |
+Staging solves three problems with one state:
+
+1. **Preview before commit.** You can see what was transcribed before it goes
+   anywhere — into a text field or to the assistant.
+2. **Cancel path.** If you're recording and realize you don't want to land the
+   text, shift+release takes you to staging, then dismiss from staging. No
+   audio is wasted on a command or pasted somewhere wrong.
+3. **Recovery unification.** Recovery mode (paste failed, no focused text field)
+   becomes "staging entered automatically" rather than a separate state with
+   its own gesture vocabulary.
+
+### Staging entry
+
+| Context | Gesture | Result |
 |---|---|---|
-| Recording | Release spacebar while shift held (≥ 800ms) | Enter staging with transcribed text |
+| Recording | Release spacebar while shift held | Enter staging with transcription |
+| Recording (short, < 800ms) | Release spacebar while shift held | Recall last Q&A into staging |
+| Paste failure | *(automatic)* | Enter staging with transcribed text |
 
-### Staging mode gestures
+### Staging gestures (spacebar + shift only)
 
 | Gesture | Result |
 |---|---|
-| Spacebar tap | Insert text into focused text field |
-| Spacebar hold | Start a new recording (replaces staged text) |
-| Enter | Send staged text to assistant |
-| Shift tap | Cancel/dismiss staging |
+| Spacebar tap (no shift) | Insert text into focused text field |
+| Spacebar hold (no shift) | Start a new recording (replaces staged text) |
+| Shift + spacebar tap | Send staged text to assistant |
+| Shift tap (no spacebar) | Dismiss staging |
 
-### Staging mode state persistence
+The grammar stays on two keys. Spacebar = "do the thing." Shift = "not the
+default thing." Shift alone = back out.
 
-- **Staged text persists** until consumed (inserted into field or sent to
-  assistant) or replaced (new recording).
+### Hold-through fast path (shift spring)
+
+When shift is still held after spacebar release, the staging overlay appears
+but the system starts a ~400ms commit timer. If shift stays held through the
+timer, the text auto-sends to the assistant — same end result as the current
+direct command path, with a brief preview window for free.
+
+If shift is released before the timer fires, the spring relaxes and you stay
+in staging to decide manually.
+
+**Spring animation:** While the commit timer runs, the staging overlay drifts
+downward with an ease-out curve (fast start, decelerating — like pulling a
+spring). Maximum displacement is small (~8–10pt over 400ms). When the timer
+fires, the overlay flicks upward and the text sends to the assistant. The
+upward flick is the universal "sent to assistant" visual signature.
+
+The same pull-and-flick animation plays on a manual send from staging
+(shift+spacebar tap), just with a shorter, sharper pullback (~100ms). This
+way "sent" always looks the same — the hold-through version just has a longer
+windup.
+
+If shift is released before the timer, the overlay eases back to its resting
+position (spring relaxing, no flick).
+
+**Timing with transcription:** The commit timer begins when spacebar comes up,
+not when transcription completes. If the user holds shift through the timer
+but transcription is still running, the hold-through is treated as
+pre-authorization: the text sends as soon as transcription finishes. The
+spring animation still plays during the wait — the user sees the overlay
+loading (partials still streaming) while it physically winds up.
+
+### State persistence
+
+- **Staged text persists** until consumed (inserted or sent) or replaced
+  (new recording).
 - **Dismissing staging** (shift tap) puts the text aside — re-entering staging
-  without an intervening dictation or recording restores it.
-- **Normal dictation** (hold spacebar without shift, paste into field) clears
-  the staged text. The staged text is "the last thing that didn't go where
-  you wanted it." Once you've successfully dictated something else, that
-  context is gone.
-
-### Cancel gesture (during recording or staging)
-
-| Gesture | Result |
-|---|---|
-| Tap shift while spacebar held | Cancel recording, discard audio |
-| Tap shift (in staging, no spacebar) | Cancel/dismiss staging |
-
-The shift-tap cancel is the universal "abort" — same gesture in both contexts.
-It requires no hand repositioning since shift is adjacent to spacebar.
+  without an intervening dictation restores it.
+- **Successful dictation** (hold spacebar, paste succeeds) clears the staged
+  text. Staged text is "the last thing that didn't land." Once something
+  else lands successfully, that context is gone.
 
 ### Migration from current command pathway
 
-Currently, shift+release after a long hold (≥ 800ms) routes directly to the
-command pathway (transcribe → stream to assistant). With staging mode, this
-gesture enters staging instead. The command pathway moves to Enter from
-within staging. This means:
+| Flow | Before staging | After staging |
+|---|---|---|
+| Fast command | shift+release → assistant | shift+release → hold shift 400ms → assistant |
+| Deliberate command | *(same as fast)* | shift+release → release shift → staging → shift+space → assistant |
+| Cancel recording | *(no clean path)* | shift+release → staging → shift tap → dismissed |
+| Preview before paste | *(no path)* | shift+release → staging → spacebar tap → paste |
 
-- **Before staging**: shift+release = send to assistant immediately
-- **After staging**: shift+release = enter staging, then Enter = send to assistant
-
-This adds one keystroke to the command flow but gains the ability to preview,
-edit, or redirect the transcription before committing. The short shift-hold
-recall gesture (< 800ms) may also need to be re-evaluated — it could become
-a direct entry to staging with the last Q&A pair pre-loaded.
+The fast command path adds ~400ms of shift-hold after release. During that
+time the user sees their transcription and the spring winding up — it is
+preview time, not dead time.
 
 ### Relationship to recovery mode
 
-Recovery mode (triggered by OCR paste verification failure) is a subset of
-staging mode. When staging mode ships, recovery mode becomes "staging mode
-entered automatically because the paste failed" rather than a separate state.
-The gestures and overlay layout are the same.
+Recovery mode becomes staging mode entered automatically when paste
+verification fails. The overlay, gestures, and state persistence are
+identical. The only difference is the entry trigger: manual (shift+release)
+vs automatic (OCR failure).
 
 ### Text editing in staging (future)
 
-A separate hotkey (TBD — acceptable because text editing requires a keyboard)
-could switch the overlay to editable mode where the keyboard types into the
-staged text. In editable mode, spacebar types spaces rather than triggering
-insert. Enter would send to the assistant (unchanged). The exit gesture from
+A separate hotkey (TBD — acceptable per the design principle, since text
+editing inherently requires a keyboard) could switch the overlay to editable
+mode where the keyboard types into the staged text. In editable mode,
+spacebar types spaces rather than triggering insert. The exit gesture from
 editable mode is TBD.
 
 ## Recording cap
@@ -205,7 +240,7 @@ recording force-stops. No cap in sidecar mode.
 | Transcribing | preview holds | fading | filled mic |
 | Recovery | three-column interactive | off | unfilled mic |
 | Staging (planned) | same as recovery + pop entrance | off | unfilled mic |
-| Command streaming | command overlay (violet, pulsing) | off | filled mic |
+| Command streaming | command overlay (slow full-spectrum hue rotation, pulsing) | off | filled mic |
 
 ## Key source files
 
