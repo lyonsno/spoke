@@ -40,6 +40,7 @@ class TTSClient:
         temperature: float = _DEFAULT_TEMPERATURE,
         top_k: int = _DEFAULT_TOP_K,
         top_p: float = _DEFAULT_TOP_P,
+        gpu_lock: threading.Lock | None = None,
     ):
         self._model_id = model_id
         self._voice = voice
@@ -49,6 +50,7 @@ class TTSClient:
         self._model = None
         self._cancelled = False
         self._lock = threading.Lock()
+        self._gpu_lock = gpu_lock
         self._stream: sd.OutputStream | None = None
 
     @classmethod
@@ -76,30 +78,48 @@ class TTSClient:
 
     def warm(self) -> None:
         """Pre-load the model in a background thread so first speak() is fast."""
-        threading.Thread(target=self._ensure_model, daemon=True).start()
+        def _warm():
+            from contextlib import nullcontext
+            lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
+            with lock_ctx:
+                self._ensure_model()
+        threading.Thread(target=_warm, daemon=True).start()
 
     def speak(self, text: str) -> None:
         """Generate speech and play it synchronously.  Blocks until done.
 
-        Uses a dedicated OutputStream so cancel() only kills TTS playback
-        without interfering with microphone recording via sounddevice.
+        Holds gpu_lock during model.generate() to prevent concurrent MLX
+        inference (which crashes Metal).  Releases the lock before audio
+        playback so Whisper can proceed while audio plays.
         """
         if not text:
             return
         if self._cancelled:
             return
 
-        self._ensure_model()
-
         import numpy as np
+        from contextlib import nullcontext
 
-        for result in self._model.generate(
-            text=text,
-            voice=self._voice,
-            temperature=self._temperature,
-            top_k=self._top_k,
-            top_p=self._top_p,
-        ):
+        lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
+
+        with lock_ctx:
+            self._ensure_model()
+            if self._cancelled:
+                return
+            # Generate audio while holding the GPU lock
+            results = []
+            for result in self._model.generate(
+                text=text,
+                voice=self._voice,
+                temperature=self._temperature,
+                top_k=self._top_k,
+                top_p=self._top_p,
+            ):
+                if self._cancelled:
+                    return
+                results.append(result)
+        # GPU lock released — play audio without blocking Whisper
+        for result in results:
             if self._cancelled:
                 return
             audio = np.array(result.audio, dtype=np.float32)
@@ -115,7 +135,6 @@ class TTSClient:
             self._stream = stream
             stream.start()
             stream.write(audio)
-            # Wait for playback to finish or cancellation
             while not done.is_set():
                 if self._cancelled:
                     break
