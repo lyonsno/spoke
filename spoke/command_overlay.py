@@ -47,18 +47,9 @@ def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
-# Color oscillation endpoints — violet and warm amber
-_COLOR_A = (
-    _env("SPOKE_COMMAND_COLOR_A_R", 0.6),
-    _env("SPOKE_COMMAND_COLOR_A_G", 0.4),
-    _env("SPOKE_COMMAND_COLOR_A_B", 0.9),
-)  # soft violet
-_COLOR_B = (
-    _env("SPOKE_COMMAND_COLOR_B_R", 0.85),
-    _env("SPOKE_COMMAND_COLOR_B_G", 0.6),
-    _env("SPOKE_COMMAND_COLOR_B_B", 0.3),
-)  # warm amber
-_GLOW_COLOR = _COLOR_A  # initial color for setup
+# Assistant glow: full spectrum rotation (slow, dwells in each color)
+_COLOR_CYCLE_PERIOD = _env("SPOKE_COMMAND_COLOR_PERIOD", 15.0)  # seconds per full hue rotation
+_GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
@@ -101,6 +92,7 @@ class CommandOverlay(NSObject):
         self._pulse_timer: NSTimer | None = None
         self._pulse_phase_asst = 0.0
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
+        self._color_phase = 0.0
 
         # Linger timer
         self._linger_timer: NSTimer | None = None
@@ -321,6 +313,7 @@ class CommandOverlay(NSObject):
         # Start pulse animation
         self._pulse_phase_asst = 0.0
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
+        self._color_phase = 0.0
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -587,10 +580,29 @@ class CommandOverlay(NSObject):
         pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
         utt_alpha = 0.2 + 0.25 * pulse_u
 
-        # Color oscillation on assistant phase (violet ↔ amber)
-        r = _COLOR_A[0] + raw_a * (_COLOR_B[0] - _COLOR_A[0])
-        g = _COLOR_A[1] + raw_a * (_COLOR_B[1] - _COLOR_A[1])
-        b = _COLOR_A[2] + raw_a * (_COLOR_B[2] - _COLOR_A[2])
+        # Full spectrum hue rotation — slow cycle, dwells in each color
+        self._color_phase += dt / _COLOR_CYCLE_PERIOD
+        if self._color_phase > 1.0:
+            self._color_phase -= 1.0
+        hue = self._color_phase
+        # HSV to RGB (saturation=0.6, value=0.9 for soft vivid colors)
+        s, v = 0.6, 0.9
+        c = v * s
+        x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
+        m = v - c
+        h6 = hue * 6.0
+        if h6 < 1:
+            r, g, b = c + m, x + m, m
+        elif h6 < 2:
+            r, g, b = x + m, c + m, m
+        elif h6 < 3:
+            r, g, b = m, c + m, x + m
+        elif h6 < 4:
+            r, g, b = m, x + m, c + m
+        elif h6 < 5:
+            r, g, b = x + m, m, c + m
+        else:
+            r, g, b = c + m, m, x + m
 
         # Update text alpha per-range
         from AppKit import NSForegroundColorAttributeName as _FG_pulse
