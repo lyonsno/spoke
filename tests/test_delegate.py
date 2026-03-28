@@ -899,6 +899,82 @@ class TestEnvValidation:
         )
 
 
+class TestRecordingCap:
+    """Test the recording cap countdown and force_end trigger."""
+
+    def test_cap_fires_after_max_seconds(self, main_module, monkeypatch):
+        """When elapsed >= _MAX_RECORD_SECS, cap should fire and call force_end."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._cap_fired = False
+        d._record_start_time = time.monotonic() - 21.0  # 21s elapsed, cap is 20s
+        d._glow._cap_factor = 1.0
+        d._glow._smoothed_amplitude = 0.0
+
+        # Patch module-level _MAX_RECORD_SECS
+        monkeypatch.setattr(main_module, "_MAX_RECORD_SECS", 20.0)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        assert d._cap_fired is True
+        d._detector.force_end.assert_called_once()
+
+    def _setup_glow_mock(self, d):
+        """Configure glow mock so amplitudeUpdate_ doesn't crash past the cap check."""
+        d._glow._cap_factor = 1.0
+        d._glow._smoothed_amplitude = 0.0
+        glow_layer = MagicMock()
+        glow_layer.opacity.return_value = 0.1
+        d._glow._glow_layer = glow_layer
+
+    def test_cap_ramps_glow_in_last_3_seconds(self, main_module, monkeypatch):
+        """In the last 3s before cap, _cap_factor should ramp from 1.0 toward 0.0."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._cap_fired = False
+        # 18.5s elapsed — 1.5s into the 3s warning window (cap at 20s)
+        d._record_start_time = time.monotonic() - 18.5
+        self._setup_glow_mock(d)
+
+        monkeypatch.setattr(main_module, "_MAX_RECORD_SECS", 20.0)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        # 1.5s into 3s warning = 50% progress, cap_factor should be ~0.5
+        assert d._glow._cap_factor < 0.6
+        assert d._glow._cap_factor > 0.4
+        assert d._cap_fired is False
+
+    def test_cap_noop_when_already_fired(self, main_module, monkeypatch):
+        """Once cap has fired, subsequent amplitude updates should not re-fire."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._cap_fired = True  # already fired
+        d._record_start_time = time.monotonic() - 25.0
+        self._setup_glow_mock(d)
+
+        monkeypatch.setattr(main_module, "_MAX_RECORD_SECS", 20.0)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        d._detector.force_end.assert_not_called()
+
+    def test_cap_noop_in_sidecar_mode(self, main_module, monkeypatch):
+        """Recording cap should not fire in sidecar mode (inference is remote)."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = False  # sidecar
+        d._cap_fired = False
+        d._record_start_time = time.monotonic() - 25.0
+        self._setup_glow_mock(d)
+
+        monkeypatch.setattr(main_module, "_MAX_RECORD_SECS", 20.0)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        d._detector.force_end.assert_not_called()
+        assert d._cap_fired is False
+
+
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 

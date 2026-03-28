@@ -243,6 +243,115 @@ class TestRecoveryClipboardToggle:
             assert d._recovery_clipboard_state == "transcription_on_clipboard"
 
 
+class TestSentinelClipboardPreservation:
+    """Test _NOT_CAPTURED sentinel distinguishes 'never captured' from 'empty clipboard'."""
+
+    def test_none_clipboard_preserved_as_none(self, main_module, monkeypatch):
+        """When _pre_paste_clipboard is None (clipboard was empty), recovery
+        should use None — not fall back to save_pasteboard()."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._pre_paste_clipboard = None  # clipboard was empty at capture time
+
+        with patch("spoke.__main__.save_pasteboard") as mock_save, \
+             patch("spoke.__main__.set_pasteboard_only"):
+            d._enter_recovery_mode("test text")
+
+        # Should NOT have called save_pasteboard — we already have the saved state (None)
+        mock_save.assert_not_called()
+        assert d._recovery_saved_clipboard is None
+
+    def test_not_captured_falls_back_to_save(self, main_module, monkeypatch):
+        """When _pre_paste_clipboard is _NOT_CAPTURED, recovery should
+        call save_pasteboard() as fallback."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._pre_paste_clipboard = main_module._NOT_CAPTURED
+
+        saved = [("public.utf8-plain-text", b"current clipboard")]
+        with patch("spoke.__main__.save_pasteboard", return_value=saved) as mock_save, \
+             patch("spoke.__main__.set_pasteboard_only"):
+            d._enter_recovery_mode("test text")
+
+        mock_save.assert_called_once()
+        assert d._recovery_saved_clipboard == saved
+
+    def test_concrete_clipboard_preserved(self, main_module, monkeypatch):
+        """When _pre_paste_clipboard has concrete saved data, recovery uses it directly."""
+        d = _make_delegate(main_module, monkeypatch)
+        saved = [("public.utf8-plain-text", b"original")]
+        d._pre_paste_clipboard = saved
+
+        with patch("spoke.__main__.save_pasteboard") as mock_save, \
+             patch("spoke.__main__.set_pasteboard_only"):
+            d._enter_recovery_mode("test text")
+
+        mock_save.assert_not_called()
+        assert d._recovery_saved_clipboard is saved
+
+    def test_sentinel_reset_after_recovery_entry(self, main_module, monkeypatch):
+        """_pre_paste_clipboard should be reset to _NOT_CAPTURED after entering recovery."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._pre_paste_clipboard = None
+
+        with patch("spoke.__main__.set_pasteboard_only"):
+            d._enter_recovery_mode("test text")
+
+        assert d._pre_paste_clipboard is main_module._NOT_CAPTURED
+
+
+class TestOCRVerifyRetry:
+    """Test OCR verification retry path and stale-text guard."""
+
+    def test_attempt_0_schedules_retry(self, main_module, monkeypatch):
+        """First failed OCR check should schedule a retry, not enter recovery."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "hello world"
+        d._verify_paste_attempt = 0
+
+        d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 0})
+
+        # Should schedule retry timer, not enter recovery
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
+        # Timer delay should be 0.2s
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.2
+        # Attempt counter should be incremented
+        assert d._verify_paste_attempt == 1
+        # Should NOT have entered recovery
+        d._overlay.show_recovery.assert_not_called()
+
+    def test_stale_text_discarded(self, main_module, monkeypatch):
+        """If verify text changed (new recording started), discard the result."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "new text"  # changed since verification started
+
+        d.verifyPasteResult_({"found": False, "text": "old text", "attempt": 1})
+
+        # Should silently discard — no recovery, no retry
+        d._overlay.show_recovery.assert_not_called()
+        assert d._verify_paste_text == "new text"  # unchanged
+
+    def test_stale_text_discarded_on_success(self, main_module, monkeypatch):
+        """Even successful results for stale text should be discarded."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "new text"
+
+        d.verifyPasteResult_({"found": True, "text": "old text", "attempt": 0})
+
+        # verify_paste_text should NOT be cleared — it belongs to a different paste
+        assert d._verify_paste_text == "new text"
+
+    def test_cleared_text_discarded(self, main_module, monkeypatch):
+        """If verify text is None (cleared by new hold), discard the result."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = None
+
+        d.verifyPasteResult_({"found": False, "text": "some text", "attempt": 1})
+
+        d._overlay.show_recovery.assert_not_called()
+
+
 class TestSetPasteboardOnly:
     """Test inject.set_pasteboard_only function."""
 

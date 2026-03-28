@@ -412,3 +412,88 @@ class TestShiftReleaseRouting:
         result = det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
         assert result is True  # suppressed — recording starts
         assert det._state == mod._State.WAITING
+
+
+class TestCommandThinking:
+    """Test SPOKE_COMMAND_THINKING toggle."""
+
+    def _make_client(self, **kwargs):
+        from spoke.command import CommandClient
+        defaults = {
+            "base_url": "http://localhost:9999",
+            "model": "test-model",
+            "api_key": "test-key",
+            "max_history": 5,
+        }
+        defaults.update(kwargs)
+        return CommandClient(**defaults)
+
+    def test_thinking_enabled_by_default(self):
+        """Default: thinking is enabled, no chat_template_kwargs in body."""
+        client = self._make_client()
+        assert client._enable_thinking is True
+
+    def test_thinking_disabled_with_env(self, monkeypatch):
+        """SPOKE_COMMAND_THINKING=0 should disable thinking."""
+        monkeypatch.setenv("SPOKE_COMMAND_THINKING", "0")
+        client = self._make_client()
+        assert client._enable_thinking is False
+
+    def test_thinking_disabled_adds_template_kwargs(self, monkeypatch):
+        """When thinking is disabled, stream_command body should include
+        chat_template_kwargs with enable_thinking: False."""
+        monkeypatch.setenv("SPOKE_COMMAND_THINKING", "0")
+        client = self._make_client()
+
+        # Capture the request body by mocking urlopen
+        import urllib.request
+        captured_body = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured_body["data"] = json.loads(req.data)
+            # Return a fake empty SSE response
+            return MagicMock(
+                __enter__=lambda s: MagicMock(
+                    __iter__=lambda s: iter([]),
+                    read=lambda: b"",
+                ),
+                __exit__=lambda s, *a: None,
+            )
+
+        with patch.object(urllib.request, "urlopen", fake_urlopen):
+            # Consume the generator
+            try:
+                for _ in client.stream_command("test"):
+                    pass
+            except Exception:
+                pass
+
+        assert "chat_template_kwargs" in captured_body["data"]
+        assert captured_body["data"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+    def test_thinking_enabled_omits_template_kwargs(self):
+        """When thinking is enabled (default), body should NOT include
+        chat_template_kwargs."""
+        client = self._make_client()
+
+        import urllib.request
+        captured_body = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured_body["data"] = json.loads(req.data)
+            return MagicMock(
+                __enter__=lambda s: MagicMock(
+                    __iter__=lambda s: iter([]),
+                    read=lambda: b"",
+                ),
+                __exit__=lambda s, *a: None,
+            )
+
+        with patch.object(urllib.request, "urlopen", fake_urlopen):
+            try:
+                for _ in client.stream_command("test"):
+                    pass
+            except Exception:
+                pass
+
+        assert "chat_template_kwargs" not in captured_body["data"]
