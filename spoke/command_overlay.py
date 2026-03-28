@@ -232,7 +232,7 @@ class CommandOverlay(NSObject):
         )
         self._utterance_label.setStringValue_("")
         self._utterance_label.setHidden_(True)
-        self._utterance_label.setLineBreakMode_(5)  # NSLineBreakByTruncatingTail
+        self._utterance_label.cell().setLineBreakMode_(5)  # NSLineBreakByTruncatingTail
         content.addSubview_(self._utterance_label)
 
         # Scroll view for response text — below the pinned utterance
