@@ -440,3 +440,47 @@ class TestRestorePasteboardPublic:
 
         mock_pb.clearContents.assert_called_once()
         mock_pb.writeObjects_.assert_called_once()
+
+
+class TestTruncatePreview:
+    """Test the _truncate_preview utility for clipboard preview display."""
+
+    def test_none_returns_empty(self, mock_pyobjc):
+        import importlib, sys
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        assert mod._truncate_preview(None) == "(empty)"
+
+    def test_empty_string_returns_empty(self, mock_pyobjc):
+        import importlib, sys
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        assert mod._truncate_preview("") == "(empty)"
+
+    def test_short_text_unchanged(self, mock_pyobjc):
+        import importlib, sys
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        assert mod._truncate_preview("hello") == "hello"
+
+    def test_newlines_replaced_with_spaces(self, mock_pyobjc):
+        import importlib, sys
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        assert mod._truncate_preview("line1\nline2\rline3") == "line1 line2 line3"
+
+    def test_long_text_truncated_with_ellipsis(self, mock_pyobjc):
+        import importlib, sys
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        long_text = "a" * 100
+        result = mod._truncate_preview(long_text)
+        assert len(result) == 46  # 45 chars + ellipsis
+        assert result.endswith("…")
+
+    def test_exact_max_length_not_truncated(self, mock_pyobjc):
+        import importlib, sys
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        exact = "a" * 45
+        assert mod._truncate_preview(exact) == exact

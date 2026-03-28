@@ -262,3 +262,195 @@ class TestForwardingRecovery:
         result = det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
         assert result is True  # suppressed — recording starts
         assert det._state == mod._State.WAITING
+
+
+class TestForceEnd:
+    """Test programmatic hold termination (e.g. recording cap)."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._tap = None
+        det._tap_source = None
+        return det, on_start, on_end
+
+    def test_force_end_during_recording(self, input_tap_module):
+        """force_end while RECORDING should transition to IDLE and call on_hold_end."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det._state == mod._State.RECORDING
+
+        det.force_end()
+        assert det._state == mod._State.IDLE
+        on_end.assert_called_once_with(shift_held=False)
+
+    def test_force_end_while_idle_is_noop(self, input_tap_module):
+        """force_end while IDLE should do nothing."""
+        det, _, on_end = self._make_detector(input_tap_module)
+        assert det._state == input_tap_module._State.IDLE
+
+        det.force_end()
+        assert det._state == input_tap_module._State.IDLE
+        on_end.assert_not_called()
+
+    def test_force_end_while_waiting_is_noop(self, input_tap_module):
+        """force_end while WAITING should do nothing."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        det.force_end()
+        assert det._state == mod._State.WAITING
+        on_end.assert_not_called()
+
+
+class TestUninstall:
+    """Test event tap teardown and cleanup."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._tap = MagicMock()
+        det._tap_source = MagicMock()
+        return det, on_start, on_end
+
+    def test_uninstall_resets_state_to_idle(self, input_tap_module):
+        """uninstall should leave the detector in IDLE state."""
+        mod = input_tap_module
+        det, _, _ = self._make_detector(input_tap_module)
+
+        # Put into RECORDING state
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det._state == mod._State.RECORDING
+
+        det.uninstall()
+        assert det._state == mod._State.IDLE
+
+    def test_uninstall_nullifies_tap(self, input_tap_module):
+        """uninstall should clear the tap and source references."""
+        det, _, _ = self._make_detector(input_tap_module)
+        assert det._tap is not None
+
+        det.uninstall()
+        assert det._tap is None
+        assert det._tap_source is None
+
+    def test_uninstall_clears_forwarding(self, input_tap_module):
+        """uninstall should clear the _forwarding flag."""
+        det, _, _ = self._make_detector(input_tap_module)
+        det._forwarding = True
+
+        det.uninstall()
+        assert det._forwarding is False
+
+    def test_uninstall_clears_global_detector(self, input_tap_module):
+        """uninstall should clear the module-level _active_detector."""
+        mod = input_tap_module
+        det, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        det.uninstall()
+        assert mod._active_detector is None
+
+
+class TestShiftLateLatching:
+    """Test shift detection via kCGEventFlagsChanged (late-latch path)."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._tap = None
+        det._tap_source = None
+        det._shift_latched = False
+        return det, on_start, on_end
+
+    def test_flags_changed_latches_shift_during_recording(self, input_tap_module):
+        """Shift pressed after keyDown (during RECORDING) should latch."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        # Enter RECORDING
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det._state == mod._State.RECORDING
+        assert det._shift_latched is False
+
+        # Simulate shift press via flagsChanged
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        assert det._shift_latched is True
+
+    def test_flags_changed_latches_shift_during_waiting(self, input_tap_module):
+        """Shift pressed during WAITING should also latch."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        assert det._shift_latched is True
+
+    def test_flags_changed_ignores_shift_during_idle(self, input_tap_module):
+        """Shift pressed while IDLE should NOT latch."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _ = self._make_detector(input_tap_module)
+        det._shift_latched = False
+        mod._active_detector = det
+
+        assert det._state == mod._State.IDLE
+
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        assert det._shift_latched is False

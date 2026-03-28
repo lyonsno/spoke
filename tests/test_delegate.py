@@ -1428,3 +1428,210 @@ class TestResultInjection:
             d._inject_result_text("hello", "Ready")
 
         d._overlay.order_out.assert_called()
+
+
+class TestHoldStartDuringTranscription:
+    """Test interrupt-and-restart when hold starts during active transcription."""
+
+    def test_hold_during_transcription_increments_token(self, main_module, monkeypatch):
+        """Starting a new hold while transcribing should invalidate the old generation."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._transcription_token = 5
+        d._models_ready = True
+
+        d._on_hold_start()
+
+        assert d._transcription_token == 6
+        assert d._transcribing is False
+        # Should have fallen through to start recording
+        d._capture.start.assert_called_once()
+
+    def test_hold_during_transcription_starts_new_recording(self, main_module, monkeypatch):
+        """After cancelling the old transcription, recording should proceed normally."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._transcription_token = 0
+        d._models_ready = True
+
+        d._on_hold_start()
+
+        d._menubar.set_recording.assert_called_with(True)
+        d._glow.show.assert_called_once()
+
+
+class TestShortShiftHold:
+    """Test the instant recall/dismiss path for short shift-holds."""
+
+    def test_short_shift_hold_discards_audio(self, main_module, monkeypatch):
+        """Shift-release under 800ms should force empty-audio path."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"real-audio-data"
+        d._record_start_time = time.monotonic() - 0.3  # 300ms ago
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._command_overlay = MagicMock(_visible=False)
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end(shift_held=True)
+
+        # Should not spawn transcription thread — audio was discarded
+        MockThread.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_long_shift_hold_keeps_audio(self, main_module, monkeypatch):
+        """Shift-release over 800ms should proceed to transcription."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"real-audio-data"
+        d._record_start_time = time.monotonic() - 1.0  # 1s ago
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+            d._on_hold_end(shift_held=True)
+
+        MockThread.assert_called_once()
+        mock_thread.start.assert_called_once()
+
+    def test_short_shift_hold_recalls_last_response(self, main_module, monkeypatch):
+        """Short shift-hold with history should recall last response."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._on_hold_end(shift_held=True)
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("hello")
+        d._command_overlay.finish.assert_called_once()
+
+
+class TestCoerceSettings:
+    """Test _coerce_decode_timeout_setting and _coerce_eager_eval_setting parsers."""
+
+    def test_decode_timeout_none_returns_default(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting(None) == 30.0
+
+    def test_decode_timeout_positive_int(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting(15) == 15.0
+
+    def test_decode_timeout_zero_disables(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting(0) is None
+
+    def test_decode_timeout_negative_disables(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting(-1) is None
+
+    def test_decode_timeout_positive_float(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting(20.5) == 20.5
+
+    def test_decode_timeout_string_off_disables(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("off") is None
+
+    def test_decode_timeout_string_none_disables(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("none") is None
+
+    def test_decode_timeout_string_false_disables(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("false") is None
+
+    def test_decode_timeout_string_default_returns_default(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("default") == 30.0
+
+    def test_decode_timeout_empty_string_returns_default(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("") == 30.0
+
+    def test_decode_timeout_numeric_string_parsed(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("15.5") == 15.5
+
+    def test_decode_timeout_invalid_string_returns_default(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("xyz") == 30.0
+
+    def test_decode_timeout_string_zero_disables(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("0") is None
+
+    def test_decode_timeout_whitespace_stripped(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_decode_timeout_setting("  OFF  ") is None
+
+    def test_eager_eval_none_returns_default(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_eager_eval_setting(None) is False
+
+    def test_eager_eval_bool_passthrough(self, main_module):
+        assert main_module.SpokeAppDelegate._coerce_eager_eval_setting(True) is True
+        assert main_module.SpokeAppDelegate._coerce_eager_eval_setting(False) is False
+
+    def test_eager_eval_string_true_variants(self, main_module):
+        for val in ("1", "true", "yes", "on", "  TRUE  ", "On"):
+            assert main_module.SpokeAppDelegate._coerce_eager_eval_setting(val) is True
+
+    def test_eager_eval_string_false_variants(self, main_module):
+        for val in ("0", "false", "no", "off", "", "anything"):
+            assert main_module.SpokeAppDelegate._coerce_eager_eval_setting(val) is False
+
+
+class TestBuildClientRouting:
+    """Test _build_client client-type routing."""
+
+    def test_sidecar_url_returns_transcription_client(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        client = d._build_client("http://localhost:8000", "any-model")
+        assert isinstance(client, main_module.TranscriptionClient)
+
+    def test_qwen_prefix_returns_local_qwen_client(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        client = d._build_client("", "Qwen/Qwen3-ASR-0.6B")
+        assert isinstance(client, main_module.LocalQwenClient)
+
+    def test_default_returns_local_transcription_client(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        client = d._build_client("", "mlx-community/whisper-base.en-mlx-8bit")
+        assert isinstance(client, main_module.LocalTranscriptionClient)
+
+    def test_sidecar_takes_precedence_over_qwen_prefix(self, main_module, monkeypatch):
+        """When URL is set, sidecar wins even if model starts with Qwen/."""
+        d = _make_delegate(main_module, monkeypatch)
+        client = d._build_client("http://localhost:8000", "Qwen/Qwen3-ASR-0.6B")
+        assert isinstance(client, main_module.TranscriptionClient)
+
+
+class TestGetClipboardPreviewText:
+    """Test _get_clipboard_preview_text extraction."""
+
+    def test_none_returns_empty(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        assert d._get_clipboard_preview_text(None) == "(empty)"
+
+    def test_empty_list_returns_empty(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        assert d._get_clipboard_preview_text([]) == "(empty)"
+
+    def test_utf8_text_decoded(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        saved = [("public.utf8-plain-text", b"hello world")]
+        assert d._get_clipboard_preview_text(saved) == "hello world"
+
+    def test_string_ptype_decoded(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        saved = [("NSStringPboardType", b"test")]
+        assert d._get_clipboard_preview_text(saved) == "test"
+
+    def test_non_text_content(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        saved = [("public.png", b"\x89PNG")]
+        assert d._get_clipboard_preview_text(saved) == "(non-text)"
+
+    def test_invalid_utf8_falls_through(self, main_module, monkeypatch):
+        """Invalid UTF-8 in first text item should try next, then return non-text."""
+        d = _make_delegate(main_module, monkeypatch)
+        saved = [("public.utf8-plain-text", b"\xff\xfe")]
+        assert d._get_clipboard_preview_text(saved) == "(non-text)"
+
+    def test_first_invalid_second_valid(self, main_module, monkeypatch):
+        """Should skip invalid UTF-8 and return the next valid text item."""
+        d = _make_delegate(main_module, monkeypatch)
+        saved = [
+            ("public.utf8-plain-text", b"\xff\xfe"),
+            ("NSStringPboardType", b"fallback"),
+        ]
+        assert d._get_clipboard_preview_text(saved) == "fallback"
