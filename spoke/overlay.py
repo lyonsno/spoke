@@ -17,6 +17,7 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSColor,
     NSFont,
+    NSPanel,
     NSScreen,
     NSScrollView,
     NSTextView,
@@ -25,6 +26,7 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
+    NSWindowStyleMaskNonactivatingPanel,
 )
 from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
@@ -165,7 +167,7 @@ class TranscriptionOverlay(NSObject):
         frame = NSMakeRect(x, y, win_w, win_h)
 
         self._window = _ClickableWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame, 0, NSBackingStoreBuffered, False
+            frame, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered, False
         )
         self._window.setLevel_(25)  # above other windows
         self._window.setOpaque_(False)
@@ -894,13 +896,13 @@ class TranscriptionOverlay(NSObject):
 # ── helper NSView subclass for clickable recovery columns ────
 
 
-class _ClickableWindow(NSWindow):
-    """Borderless window that accepts mouse events without stealing focus.
+class _ClickableWindow(NSPanel):
+    """Non-activating panel that accepts mouse events without stealing focus.
 
-    canBecomeKeyWindow returns False to prevent the window from taking
-    key status away from the target app. Mouse events are still delivered
-    because the window does not ignore mouse events (setIgnoresMouseEvents_
-    is set to False in recovery mode).
+    Uses NSWindowStyleMaskNonactivatingPanel so clicks on the overlay
+    do not activate the Spoke application or deactivate the target app.
+    The user's text field keeps first responder status while they click
+    recovery buttons.
     """
 
     def canBecomeKeyWindow(self):
