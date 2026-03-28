@@ -154,6 +154,7 @@ class SpokeAppDelegate(NSObject):
         self._recovery_clipboard_state: str = "idle"
         self._recovery_pending_insert = None
         self._recovery_hold_active: bool = False
+        self._recovery_retry_pending: bool = False
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -895,9 +896,17 @@ class SpokeAppDelegate(NSObject):
         if getattr(self, "_verify_paste_text", None) != text:
             return
 
+        is_retry = getattr(self, "_recovery_retry_pending", False)
+
         if found:
             logger.info("Paste verified by OCR (attempt %d)", attempt + 1)
             self._verify_paste_text = None
+            if is_retry:
+                # Retry succeeded — clear recovery state
+                self._recovery_retry_pending = False
+                self._clear_recovery_state()
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Pasted!")
             return
 
         if attempt == 0:
@@ -910,10 +919,17 @@ class SpokeAppDelegate(NSObject):
             )
             return
 
-        # Second check also failed — paste didn't land, enter recovery
-        logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+        # Second check also failed
         self._verify_paste_text = None
-        self._enter_recovery_mode(text)
+        if is_retry:
+            # Retry from recovery failed — bounce the overlay back
+            logger.warning("Recovery retry not verified by OCR — bouncing back")
+            self._recovery_retry_pending = False
+            self._enter_recovery_mode(text)
+        else:
+            # Normal paste failed — enter recovery for the first time
+            logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+            self._enter_recovery_mode(text)
 
     # ── helpers ─────────────────────────────────────────────
 
@@ -1449,32 +1465,41 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("No text field — ⌘V to paste")
 
     def _recovery_retry_insert(self) -> None:
-        """Spacebar retry: attempt Insert from recovery, bounce on failure."""
+        """Spacebar retry: attempt Insert from recovery, OCR verify after.
+
+        Always attempts the paste (just like the normal flow), then uses
+        OCR to verify. If it didn't land, bounces the overlay back.
+        If it landed, clears recovery state.
+        """
         if self._recovery_text is None:
             return
 
-        text = self._recovery_text or ""
-        saved = self._recovery_saved_clipboard
-
-        # Try to paste directly — overlay stays up, no dismiss first
+        # No focused element at all → bounce immediately, don't waste time
         if not has_focused_text_input():
-            logger.info("Recovery retry — no text field, bouncing")
+            logger.info("Recovery retry — no focused element, bouncing")
             if self._overlay is not None:
                 self._overlay.bounce()
             return
 
-        # Text field available — dismiss and paste
+        text = self._recovery_text or ""
+
+        # Dismiss overlay so it doesn't appear in the OCR screenshot
         if self._overlay is not None:
-            self._overlay.dismiss_recovery()
+            self._overlay.order_out()
 
-        def _on_restored():
-            if self._menubar is not None:
-                self._menubar.set_status_text("Ready — hold spacebar")
+        # Paste
+        inject_text(text)
 
-        inject_text(text, on_restored=_on_restored)
-        if self._menubar is not None:
-            self._menubar.set_status_text("Pasted!")
-        self._clear_recovery_state()
+        # OCR verify — reuse the same verification pipeline
+        self._verify_paste_text = text
+        self._verify_paste_attempt = 0
+        # Override the verify result handler to bounce-back on failure
+        # instead of entering recovery (we're already in recovery)
+        self._recovery_retry_pending = True
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.15, self, "verifyPaste:", None, False
+        )
 
     def _on_recovery_dismiss(self) -> None:
         """Dismiss button: restore clipboard and hide overlay."""

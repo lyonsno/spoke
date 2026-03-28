@@ -179,8 +179,10 @@ class TestRecoveryInsert:
         # Should NOT have dismissed
         d._overlay.dismiss_recovery.assert_not_called()
 
-    def test_retry_pastes_when_text_field_available(self, main_module, monkeypatch):
-        """Retry should paste and dismiss when a text field is focused."""
+    def test_retry_pastes_and_schedules_verify_when_text_field(self, main_module, monkeypatch):
+        """Retry should paste and schedule OCR verification when a text field is focused."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_text = "transcribed text"
 
@@ -189,7 +191,36 @@ class TestRecoveryInsert:
             d._recovery_retry_insert()
 
         mock_inject.assert_called_once()
-        d._overlay.dismiss_recovery.assert_called_once()
+        # Should schedule OCR verification, not dismiss immediately
+        assert d._recovery_retry_pending is True
+        assert d._verify_paste_text == "transcribed text"
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
+
+    def test_retry_verify_success_clears_recovery(self, main_module, monkeypatch):
+        """OCR verification success after retry should clear recovery state."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "transcribed text"
+        d._recovery_retry_pending = True
+        d._recovery_text = "transcribed text"
+
+        d.verifyPasteResult_({"found": True, "text": "transcribed text", "attempt": 0})
+
+        assert d._recovery_retry_pending is False
+        assert d._recovery_text is None  # cleared
+
+    def test_retry_verify_failure_reenters_recovery(self, main_module, monkeypatch):
+        """OCR verification failure after retry should re-enter recovery."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "transcribed text"
+        d._recovery_retry_pending = True
+        d._pre_paste_clipboard = None
+
+        with patch("spoke.__main__.set_pasteboard_only"), \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
+            d.verifyPasteResult_({"found": False, "text": "transcribed text", "attempt": 1})
+
+        assert d._recovery_retry_pending is False
+        d._overlay.show_recovery.assert_called_once()
 
     def test_delayed_insert_reenters_recovery_when_no_text_field(self, main_module, monkeypatch):
         """doRecoveryInsert_ should re-enter recovery if target didn't refocus."""
