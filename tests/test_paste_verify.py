@@ -113,3 +113,37 @@ class TestTextAppearsOnScreen:
             expected,
             f"some chrome {visible} more stuff"
         ) is True
+
+    def test_distinctive_word_fallback_matches(self):
+        """Even one distinctive word on screen should confirm paste success."""
+        mod = _import_module()
+        # Most of the text is not visible, but one distinctive word is
+        assert mod.text_appears_on_screen(
+            "The preliminary investigation revealed surprising results",
+            "totally unrelated screen content surprising more unrelated"
+        ) is True
+
+    def test_stopwords_only_do_not_match(self):
+        """Common words alone should not trigger a false positive."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "The quick brown fox jumps over the lazy dog",
+            "the and is to for with from that this"
+        ) is False
+
+    def test_distinctive_word_must_be_long_enough(self):
+        """Very short words (< 3 chars) should not count as distinctive."""
+        mod = _import_module()
+        # "go" and "do" are too short; no distinctive words overlap
+        assert mod._has_distinctive_word_match(
+            "we should go and do it now",
+            "go do it the and is to for"
+        ) is False
+
+    def test_url_bar_overflow_with_one_word_visible(self):
+        """Long text pasted into URL bar — most clipped, one word visible."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "Please navigate to the authentication dashboard and check credentials",
+            "chrome tabs authentication other browser stuff"
+        ) is True

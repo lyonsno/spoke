@@ -127,4 +127,41 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
             end = min(len(screen_norm), best.b + best.size + 20)
             logger.debug("  best match region: %r", screen_norm[start:end])
 
-    return coverage >= _MATCH_THRESHOLD
+    if coverage >= _MATCH_THRESHOLD:
+        return True
+
+    # Fallback: if even one distinctive word from the expected text appears
+    # on screen, the paste almost certainly went through — the rest is just
+    # scrolled, clipped, or at screen edges the OCR can't read.
+    return _has_distinctive_word_match(expected_norm, screen_norm)
+
+
+# Words too common to be a reliable signal that paste succeeded.
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "it", "in", "on", "to", "of", "or", "and",
+    "for", "at", "by", "so", "if", "as", "be", "do", "he", "we", "my",
+    "no", "up", "am", "me", "us", "was", "are", "has", "had", "his",
+    "her", "its", "our", "but", "not", "can", "did", "may", "all",
+    "you", "she", "him", "who", "how", "get", "got", "let", "say",
+    "this", "that", "with", "from", "have", "will", "been", "them",
+    "they", "than", "then", "what", "when", "just", "also", "like",
+    "some", "into", "each", "only", "very", "much", "such", "here",
+    "i", "oh", "ok", "um", "uh", "yeah", "well", "okay",
+})
+
+# Minimum word length to consider distinctive (skips "I", "a", etc.)
+_MIN_WORD_LENGTH = 3
+
+
+def _has_distinctive_word_match(expected: str, screen: str) -> bool:
+    """Check if any distinctive word from expected appears in screen text."""
+    screen_words = set(screen.split())
+    for word in expected.split():
+        if len(word) < _MIN_WORD_LENGTH:
+            continue
+        if word in _STOPWORDS:
+            continue
+        if word in screen_words:
+            logger.info("Paste verify: distinctive word match '%s'", word)
+            return True
+    return False
