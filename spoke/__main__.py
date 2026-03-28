@@ -143,7 +143,13 @@ class SpokeAppDelegate(NSObject):
             self._command_client = None
             self._command_overlay = None
 
-        # Recovery mode state
+        # Staging mode state — subsumes recovery mode.
+        # Staging is entered by shift+release during recording, or automatically
+        # when paste verification fails (the old "recovery mode").
+        self._staging_text: str | None = None
+        self._staging_active: bool = False
+
+        # Recovery mode state (implementation detail of staging)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
         # "captured but clipboard was empty (None)".
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
@@ -307,12 +313,17 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        # If recovery overlay is active, don't start recording.
-        # The hold-end handler will check shift state and either:
-        #   - Spacebar alone: retry Insert
-        #   - Shift+Space: dismiss recovery
+        # Staging/recovery overlay intercept.
+        # If staging is active (includes recovery mode), a spacebar hold
+        # dismisses staging and starts a new recording. The staged text will
+        # be replaced by whatever comes out of this new recording.
         self._verify_paste_text = None
-        if getattr(self, "_recovery_text", None) is not None:
+        if getattr(self, "_staging_active", False):
+            logger.info("Hold started during staging — dismissing staging, starting new recording")
+            self._cancel_recovery()
+            self._staging_active = False
+            # Fall through to start recording
+        elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
             logger.info("Hold started during recovery — waiting for release")
             return
@@ -521,41 +532,51 @@ class SpokeAppDelegate(NSObject):
             self._overlay.set_text(text)
 
     def _on_hold_end(self, shift_held: bool = False) -> None:
-        # Recovery overlay intercept: spacebar retries Insert, shift+space sends to assistant
+        # ── Staging/recovery intercept ──
+        # When staging is active, gestures route through the staging handler.
+        staging_active = getattr(self, "_staging_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
-        if recovery_active or getattr(self, "_recovery_hold_active", False):
+        if staging_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
-                if self._command_client is not None and self._recovery_text:
-                    # Send the recovery text to the command pathway as an utterance
-                    logger.info("Shift+space during recovery — sending to assistant: %r",
-                                self._recovery_text[:50])
-                    text = self._recovery_text
+                # Shift+space from staging = send staged text to assistant
+                staged = getattr(self, "_staging_text", None) or getattr(self, "_recovery_text", None)
+                if self._command_client is not None and staged:
+                    logger.info("Shift+space during staging — sending to assistant: %r",
+                                staged[:50])
+                    text = staged
                     self._cancel_recovery()
+                    self._staging_text = None
+                    self._staging_active = False
                     self._send_text_as_command(text)
                 else:
-                    logger.info("Shift+space during recovery — dismissing (no command client)")
+                    logger.info("Shift+space during staging — dismissing (no command client or no text)")
                     self._cancel_recovery()
+                    self._staging_text = None
+                    self._staging_active = False
                     if self._menubar is not None:
                         self._menubar.set_status_text("Ready — hold spacebar")
             else:
-                logger.info("Spacebar during recovery — retrying Insert")
+                # Spacebar from staging = insert text at cursor
+                logger.info("Spacebar during staging — inserting text")
+                self._staging_active = False
                 self._recovery_retry_insert()
             return
 
-        logger.info("Hold ended — %s", "command" if shift_held else "transcribing")
+        # ── Normal recording end ──
+        logger.info("Hold ended — %s", "staging" if shift_held else "transcribing")
         self._preview_active = False
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
-        # Short shift-hold (under 800ms of recording) = instant recall/dismiss
+        # Short shift-hold (under 800ms of recording) = instant recall into staging
         # The user didn't have time to say anything meaningful
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
         if shift_held and elapsed < 0.8:
             logger.info("Short shift-hold (%.0fms) — treating as instant", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
 
-        # Glow/dimmer: hide immediately for text insertion, persist for commands
+        # Glow/dimmer: hide immediately for text insertion, persist for staging
         if not shift_held and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
@@ -574,18 +595,14 @@ class SpokeAppDelegate(NSObject):
             )
 
             if shift_held and not command_visible and self._command_client is not None:
-                # Shift + empty recording + no overlay = recall last response
+                # Shift + empty recording = recall last response into staging
                 history = self._command_client.history
                 if history:
                     last_utterance, last_response = history[-1]
-                    logger.info("Shift+empty — recalling last response")
-                    if self._command_overlay is not None:
-                        self._command_overlay.show()
-                        self._command_overlay.set_utterance(last_utterance)
-                        # Append the full response at once
-                        for token in last_response:
-                            self._command_overlay.append_token(token)
-                        self._command_overlay.finish()
+                    logger.info("Shift+empty — recalling last response into staging")
+                    recall_text = f"{last_utterance}\n\n{last_response}"
+                    self._enter_staging_mode(recall_text)
+                    return
                 else:
                     logger.info("Shift+empty — no history to recall")
             elif command_visible:
@@ -604,12 +621,13 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = True
         self._transcribe_start = time.monotonic()
 
-        if shift_held and self._command_client is not None:
-            # Command pathway: transcribe then send to OMLX
+        if shift_held:
+            # Staging pathway: transcribe, then enter staging with the result
             if self._menubar is not None:
-                self._menubar.set_status_text("Transcribing command…")
+                self._menubar.set_status_text("Transcribing…")
+            self._staging_active = True
             thread = threading.Thread(
-                target=self._command_transcribe_worker,
+                target=self._staging_transcribe_worker,
                 args=(wav_bytes, token),
                 daemon=True,
             )
@@ -744,12 +762,117 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None and not self._transcribing:
             self._menubar.set_status_text("Ready — hold spacebar")
 
+    # ── staging mode ──────────────────────────────────────
+
+    def _staging_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+        """Background thread: transcribe audio, then enter staging on main thread."""
+        # Wait for preview loop to finish
+        if self._preview_thread is not None:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.wait(timeout=2.0)
+            self._preview_thread.join(timeout=2.0)
+            self._preview_thread = None
+
+        try:
+            with self._local_inference_context(self._client):
+                if (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    text = self._client.finish_stream()
+                else:
+                    text = self._client.transcribe(wav_bytes)
+        except Exception:
+            logger.exception("Staging transcription failed")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "stagingTranscriptionFailed:", {"token": token}, False
+            )
+            return
+
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "stagingTranscriptionComplete:",
+            {"token": token, "text": text},
+            False,
+        )
+
+    def stagingTranscriptionComplete_(self, payload: dict) -> None:
+        """Main thread: transcription done — enter staging with the text."""
+        if payload["token"] != self._transcription_token:
+            logger.info("Discarding stale staging transcription (token %d)", payload["token"])
+            return
+        self._transcribing = False
+        text = payload["text"]
+        if not text:
+            logger.info("Staging transcription returned empty — dismissing")
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            self._staging_active = False
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
+        self._enter_staging_mode(text)
+
+    def stagingTranscriptionFailed_(self, payload: dict) -> None:
+        """Main thread: staging transcription failed — fall back to preview text."""
+        if payload["token"] != self._transcription_token:
+            return
+        self._transcribing = False
+        if self._last_preview_text:
+            logger.warning("Staging transcription failed — using preview text")
+            self._enter_staging_mode(self._last_preview_text)
+            return
+        logger.error("Staging transcription failed — no text")
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+        self._staging_active = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Error — try again")
+
+    def _enter_staging_mode(self, text: str) -> None:
+        """Enter staging mode with the given text.
+
+        Shows the staging overlay (reuses recovery overlay for now) and sets
+        staging state. The user can then insert, send to assistant, re-record,
+        or dismiss.
+        """
+        self._staging_text = text
+        self._staging_active = True
+
+        # Reuse recovery overlay infrastructure
+        self._recovery_text = text
+        self._recovery_clipboard_state = "idle"
+
+        if self._glow is not None:
+            self._glow.hide()
+
+        if self._overlay is not None:
+            self._overlay.show_recovery(
+                text,
+                on_dismiss=self._on_recovery_dismiss,
+                on_insert=self._on_recovery_insert,
+                on_clipboard_toggle=self._on_recovery_clipboard_toggle,
+            )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Staging — hold spacebar to re-record")
+
+    def _dismiss_staging(self) -> None:
+        """Dismiss staging overlay but keep staged text for potential re-entry."""
+        self._staging_active = False
+        self._cancel_recovery()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
     # ── command pathway ────────────────────────────────────
 
     def _send_text_as_command(self, text: str) -> None:
         """Send pre-transcribed text to the command pathway.
 
-        Used when shift+space is pressed during recovery — the text is
+        Used when shift+space is pressed during staging — the text is
         already transcribed, so we skip the audio transcription step and
         go straight to OMLX streaming.
         """
@@ -1483,6 +1606,9 @@ class SpokeAppDelegate(NSObject):
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
+        # Successful text pathway paste clears any staged text
+        self._staging_text = None
+
         # Remove the overlay from screen so it doesn't appear in the
         # verification screenshot or mask the focused element.
         if self._overlay is not None:
@@ -1511,7 +1637,11 @@ class SpokeAppDelegate(NSObject):
         )
 
     def _enter_recovery_mode(self, text: str) -> None:
-        """Show the recovery overlay with Dismiss / Insert / Clipboard buttons."""
+        """Show the recovery overlay with Dismiss / Insert / Clipboard buttons.
+
+        Recovery mode is staging entered automatically when paste verification
+        fails. Sets staging state so the staging gesture handlers apply.
+        """
         # Use pre-saved clipboard if available (from _inject_result_text).
         # _pre_paste_clipboard is _NOT_CAPTURED when not set, and None when
         # the clipboard was empty — both are valid states. Only fall back to
@@ -1524,6 +1654,10 @@ class SpokeAppDelegate(NSObject):
         self._pre_paste_clipboard = _NOT_CAPTURED
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
+
+        # Set staging state — recovery is staging entered automatically
+        self._staging_text = text
+        self._staging_active = True
 
         # Put transcription on pasteboard for manual paste
         set_pasteboard_only(text)

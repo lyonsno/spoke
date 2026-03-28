@@ -1697,8 +1697,8 @@ class TestShortShiftHold:
         MockThread.assert_called_once()
         mock_thread.start.assert_called_once()
 
-    def test_short_shift_hold_recalls_last_response(self, main_module, monkeypatch):
-        """Short shift-hold with history should recall last response."""
+    def test_short_shift_hold_recalls_into_staging(self, main_module, monkeypatch):
+        """Short shift-hold with history should enter staging with recalled Q&A."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
@@ -1708,9 +1708,11 @@ class TestShortShiftHold:
 
         d._on_hold_end(shift_held=True)
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("hello")
-        d._command_overlay.finish.assert_called_once()
+        # Should enter staging mode, not command overlay directly
+        assert d._staging_active is True
+        assert d._staging_text is not None
+        # The staging overlay (recovery overlay) should be shown
+        d._overlay.show_recovery.assert_called_once()
 
 
 class TestCoerceSettings:
