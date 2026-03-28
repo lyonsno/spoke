@@ -49,6 +49,7 @@ class TTSClient:
         self._model = None
         self._cancelled = False
         self._lock = threading.Lock()
+        self._stream: sd.OutputStream | None = None
 
     @classmethod
     def from_env(cls) -> Optional["TTSClient"]:
@@ -78,13 +79,19 @@ class TTSClient:
         threading.Thread(target=self._ensure_model, daemon=True).start()
 
     def speak(self, text: str) -> None:
-        """Generate speech and play it synchronously.  Blocks until done."""
+        """Generate speech and play it synchronously.  Blocks until done.
+
+        Uses a dedicated OutputStream so cancel() only kills TTS playback
+        without interfering with microphone recording via sounddevice.
+        """
         if not text:
             return
         if self._cancelled:
             return
 
         self._ensure_model()
+
+        import numpy as np
 
         for result in self._model.generate(
             text=text,
@@ -95,8 +102,27 @@ class TTSClient:
         ):
             if self._cancelled:
                 return
-            sd.play(result.audio, result.sample_rate)
-            sd.wait()
+            audio = np.array(result.audio, dtype=np.float32)
+            if audio.ndim == 1:
+                audio = audio.reshape(-1, 1)
+            done = threading.Event()
+            stream = sd.OutputStream(
+                samplerate=result.sample_rate,
+                channels=audio.shape[1],
+                dtype="float32",
+                finished_callback=lambda: done.set(),
+            )
+            self._stream = stream
+            stream.start()
+            stream.write(audio)
+            # Wait for playback to finish or cancellation
+            while not done.is_set():
+                if self._cancelled:
+                    break
+                done.wait(timeout=0.05)
+            stream.stop()
+            stream.close()
+            self._stream = None
 
     def speak_async(self, text: str) -> threading.Thread:
         """Generate and play speech on a background daemon thread."""
@@ -106,6 +132,15 @@ class TTSClient:
         return t
 
     def cancel(self) -> None:
-        """Cancel any in-flight or future speak() call and stop playback."""
+        """Cancel any in-flight or future speak() call and stop playback.
+
+        Only stops the TTS output stream — does not touch global sounddevice
+        state, so microphone recording is unaffected.
+        """
         self._cancelled = True
-        sd.stop()
+        stream = self._stream
+        if stream is not None:
+            try:
+                stream.abort()
+            except sd.PortAudioError:
+                pass

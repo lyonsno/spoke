@@ -6,6 +6,27 @@ from unittest.mock import patch, MagicMock, call
 import pytest
 
 
+def _fake_result():
+    """Create a fake GenerationResult with real audio data."""
+    r = MagicMock()
+    r.audio = [0.1, 0.2, 0.3]
+    r.sample_rate = 24000
+    return r
+
+
+def _setup_stream_mock(mock_sd):
+    """Configure mock_sd.OutputStream to simulate instant playback."""
+    fake_stream = MagicMock()
+    def write_side_effect(data):
+        for call_args in mock_sd.OutputStream.call_args_list:
+            cb = call_args[1].get("finished_callback")
+            if cb:
+                cb()
+    fake_stream.write = MagicMock(side_effect=write_side_effect)
+    mock_sd.OutputStream.return_value = fake_stream
+    return fake_stream
+
+
 class TestTTSClient:
     """Test TTSClient model loading, generation, playback, and cancellation."""
 
@@ -21,13 +42,11 @@ class TestTTSClient:
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
     def test_speak_generates_and_plays_audio(self, mock_load, mock_sd):
-        """speak() calls model.generate() and plays the result via sounddevice."""
-        fake_result = MagicMock()
-        fake_result.audio = MagicMock()
-        fake_result.sample_rate = 24000
+        """speak() calls model.generate() and plays via a dedicated OutputStream."""
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([fake_result])
+        fake_model.generate.return_value = iter([_fake_result()])
         mock_load.return_value = fake_model
+        fake_stream = _setup_stream_mock(mock_sd)
 
         client = self._make_client()
         client.speak("Hello world")
@@ -36,18 +55,20 @@ class TestTTSClient:
             text="Hello world", voice="casual_female",
             temperature=0.5, top_k=50, top_p=0.95,
         )
-        mock_sd.play.assert_called_once_with(fake_result.audio, 24000)
-        mock_sd.wait.assert_called_once()
+        mock_sd.OutputStream.assert_called_once()
+        fake_stream.start.assert_called_once()
+        fake_stream.write.assert_called_once()
+        fake_stream.stop.assert_called_once()
+        fake_stream.close.assert_called_once()
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
     def test_speak_respects_voice_parameter(self, mock_load, mock_sd):
         """Voice parameter is forwarded to model.generate()."""
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([
-            MagicMock(audio=MagicMock(), sample_rate=24000)
-        ])
+        fake_model.generate.return_value = iter([_fake_result()])
         mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
 
         client = self._make_client(voice="neutral_male")
         client.speak("test")
@@ -57,16 +78,21 @@ class TestTTSClient:
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
-    def test_cancel_stops_playback(self, mock_load, mock_sd):
-        """cancel() calls sd.stop() and sets the cancelled flag."""
+    def test_cancel_sets_flag_and_aborts_stream(self, mock_load, mock_sd):
+        """cancel() sets the cancelled flag and aborts the active stream."""
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([])
         mock_load.return_value = fake_model
 
         client = self._make_client()
+        fake_stream = MagicMock()
+        client._stream = fake_stream
+
         client.cancel()
 
-        mock_sd.stop.assert_called_once()
+        assert client._cancelled is True
+        fake_stream.abort.assert_called_once()
+        # sd.stop() should NOT be called — only the dedicated stream is affected
+        mock_sd.stop.assert_not_called()
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
@@ -83,17 +109,16 @@ class TestTTSClient:
         client.cancel()  # cancel before speak
         client.speak("Hello world")
 
-        mock_sd.play.assert_not_called()
+        mock_sd.OutputStream.assert_not_called()
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
     def test_model_loaded_lazily_on_first_speak(self, mock_load, mock_sd):
         """Model is not loaded at construction time — only on first speak()."""
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([
-            MagicMock(audio=MagicMock(), sample_rate=24000)
-        ])
+        fake_model.generate.return_value = iter([_fake_result()])
         mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
 
         client = self._make_client()
         mock_load.assert_not_called()
@@ -108,10 +133,9 @@ class TestTTSClient:
     def test_model_loaded_only_once(self, mock_load, mock_sd):
         """Second speak() reuses the already-loaded model."""
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([
-            MagicMock(audio=MagicMock(), sample_rate=24000)
-        ])
+        fake_model.generate.side_effect = lambda **kw: iter([_fake_result()])
         mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
 
         client = self._make_client()
         client.speak("first")
@@ -135,12 +159,10 @@ class TestTTSClient:
     @patch("spoke.tts.tts_load")
     def test_speak_async_runs_in_background(self, mock_load, mock_sd):
         """speak_async() returns immediately and plays in a background thread."""
-        fake_result = MagicMock()
-        fake_result.audio = MagicMock()
-        fake_result.sample_rate = 24000
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([fake_result])
+        fake_model.generate.return_value = iter([_fake_result()])
         mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
 
         client = self._make_client()
         thread = client.speak_async("hello")
@@ -148,7 +170,7 @@ class TestTTSClient:
         assert isinstance(thread, threading.Thread)
         thread.join(timeout=5)
         assert not thread.is_alive()
-        mock_sd.play.assert_called_once()
+        mock_sd.OutputStream.assert_called_once()
 
 
 class TestTTSConfig:
