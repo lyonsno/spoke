@@ -147,6 +147,7 @@ class SpokeAppDelegate(NSObject):
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
         self._tts_client = TTSClient.from_env()
         if self._tts_client is not None:
+            self._tts_client._gpu_lock = self._local_inference_lock
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
 
         # Recovery mode state
