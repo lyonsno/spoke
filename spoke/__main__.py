@@ -257,19 +257,15 @@ class SpokeAppDelegate(NSObject):
                 else:
                     self._menubar.set_status_text("Loading models…")
             return
-        # Dismiss visible command overlay or cancel in-flight work,
-        # then fall through to start recording immediately
-        command_visible = (
-            self._command_overlay is not None
-            and getattr(self._command_overlay, '_visible', False)
-        )
-        if self._transcribing or command_visible:
-            logger.info("Hold — dismissing command overlay, starting new recording")
+        # If a command is actively streaming, cancel it
+        if self._transcribing:
+            logger.info("Hold during active stream — cancelling")
             self._transcription_token += 1
             self._transcribing = False
-            if self._command_overlay is not None:
-                self._command_overlay.cancel_dismiss()
-            # Don't return — fall through to start recording
+            # Fall through to start recording
+        # Note: if command overlay is visible but finished, leave it up.
+        # It will be dismissed if the user says nothing (empty recording)
+        # or replaced if they send a new command.
 
         logger.info("Hold started — recording")
         if self._menubar is not None:
@@ -488,6 +484,16 @@ class SpokeAppDelegate(NSObject):
             logger.warning("No audio captured")
             if self._overlay is not None:
                 self._overlay.hide()
+            # Empty recording with command overlay visible = dismiss
+            command_visible = (
+                self._command_overlay is not None
+                and getattr(self._command_overlay, '_visible', False)
+            )
+            if command_visible:
+                logger.info("Empty recording — dismissing command overlay")
+                self._command_overlay.cancel_dismiss()
+                if self._glow is not None:
+                    self._glow.hide()
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
