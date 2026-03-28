@@ -43,8 +43,8 @@ from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
-_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-large-v3-turbo"
+_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx"
+_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
@@ -717,6 +717,7 @@ class SpokeAppDelegate(NSObject):
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
+        ("mlx-community/whisper-base.en-mlx", "Base.en (bf16)"),
         ("mlx-community/whisper-base.en-mlx-8bit", "Base.en (8bit)"),
         ("mlx-community/whisper-small.en-mlx-8bit", "Small.en (8bit)"),
         ("mlx-community/whisper-medium.en-mlx-4bit", "Medium.en (4bit)"),
