@@ -582,29 +582,29 @@ class CommandOverlay(NSObject):
             self._pulse_phase_user -= 1.0
 
         # Assistant: two layered wink pulses, composited
-        # Layer 1: primary (faster, stronger)
+        # Layer 1: primary (slower at 2.4s, stronger — 150% amplitude)
         p1 = self._pulse_phase_asst
         if p1 < 0.7:
             t = p1 / 0.7
             wink1 = 0.95 + 0.05 * math.cos(2.0 * math.pi * t)
         elif p1 < 0.85:
             t = (p1 - 0.7) / 0.15
-            wink1 = 1.0 - 0.65 * (t * t * t)
+            wink1 = 1.0 - 0.95 * (t * t * t)  # deep dip (150%)
         else:
             t = (p1 - 0.85) / 0.15
-            wink1 = 0.35 + 0.65 * (t * t * t)
+            wink1 = 0.05 + 0.95 * (t * t * t)
 
-        # Layer 2: secondary (slower, gentler, offset)
+        # Layer 2: secondary (2.6s, gentler — 80% amplitude)
         p2 = self._pulse_phase_asst2
         if p2 < 0.7:
             t = p2 / 0.7
             wink2 = 0.97 + 0.03 * math.cos(2.0 * math.pi * t)
         elif p2 < 0.85:
             t = (p2 - 0.7) / 0.15
-            wink2 = 1.0 - 0.4 * (t * t * t)
+            wink2 = 1.0 - 0.32 * (t * t * t)  # shallower dip (80%)
         else:
             t = (p2 - 0.85) / 0.15
-            wink2 = 0.6 + 0.4 * (t * t * t)
+            wink2 = 0.68 + 0.32 * (t * t * t)
 
         # Composite: multiply the two layers, then reduce to 30% intensity
         # (the deviation from 1.0 is scaled to 30%)
@@ -630,7 +630,7 @@ class CommandOverlay(NSObject):
             self._color_phase -= 1.0
         hue = self._color_phase
         # HSV to RGB (saturation=0.6, value=0.9 for soft vivid colors)
-        s, v = 0.92, 0.95  # vivid — each color immediately recognizable
+        s, v = 1.0, 1.0  # maximum saturation and brightness
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
