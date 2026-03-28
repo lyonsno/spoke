@@ -257,24 +257,19 @@ class SpokeAppDelegate(NSObject):
                 else:
                     self._menubar.set_status_text("Loading models…")
             return
-        # Dismiss visible command overlay or cancel in-flight work
+        # Dismiss visible command overlay or cancel in-flight work,
+        # then fall through to start recording immediately
         command_visible = (
             self._command_overlay is not None
             and getattr(self._command_overlay, '_visible', False)
         )
         if self._transcribing or command_visible:
-            logger.info("Hold — dismissing command overlay")
+            logger.info("Hold — dismissing command overlay, starting new recording")
             self._transcription_token += 1
             self._transcribing = False
-            if self._overlay is not None:
-                self._overlay.hide()
-            if self._glow is not None:
-                self._glow.hide()
             if self._command_overlay is not None:
                 self._command_overlay.cancel_dismiss()
-            if self._menubar is not None:
-                self._menubar.set_status_text("Ready — hold spacebar")
-            return
+            # Don't return — fall through to start recording
 
         logger.info("Hold started — recording")
         if self._menubar is not None:
