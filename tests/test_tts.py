@@ -33,7 +33,8 @@ class TestTTSClient:
         client.speak("Hello world")
 
         fake_model.generate.assert_called_once_with(
-            text="Hello world", voice="casual_female"
+            text="Hello world", voice="casual_female",
+            temperature=0.5, top_k=50, top_p=0.95,
         )
         mock_sd.play.assert_called_once_with(fake_result.audio, 24000)
         mock_sd.wait.assert_called_once()

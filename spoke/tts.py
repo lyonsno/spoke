@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_ID = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
 _DEFAULT_VOICE = "casual_female"
+_DEFAULT_TEMPERATURE = 0.5
+_DEFAULT_TOP_K = 50
+_DEFAULT_TOP_P = 0.95
 
 
 def tts_load(model_id: str):
@@ -34,9 +37,15 @@ class TTSClient:
         self,
         model_id: str = _DEFAULT_MODEL_ID,
         voice: str = _DEFAULT_VOICE,
+        temperature: float = _DEFAULT_TEMPERATURE,
+        top_k: int = _DEFAULT_TOP_K,
+        top_p: float = _DEFAULT_TOP_P,
     ):
         self._model_id = model_id
         self._voice = voice
+        self._temperature = temperature
+        self._top_k = top_k
+        self._top_p = top_p
         self._model = None
         self._cancelled = False
         self._lock = threading.Lock()
@@ -52,7 +61,10 @@ class TTSClient:
         if not voice:
             return None
         model_id = os.environ.get("SPOKE_TTS_MODEL", _DEFAULT_MODEL_ID)
-        return cls(model_id=model_id, voice=voice)
+        temperature = float(os.environ.get("SPOKE_TTS_TEMPERATURE", str(_DEFAULT_TEMPERATURE)))
+        top_k = int(os.environ.get("SPOKE_TTS_TOP_K", str(_DEFAULT_TOP_K)))
+        top_p = float(os.environ.get("SPOKE_TTS_TOP_P", str(_DEFAULT_TOP_P)))
+        return cls(model_id=model_id, voice=voice, temperature=temperature, top_k=top_k, top_p=top_p)
 
     def _ensure_model(self):
         """Load the model on first use."""
@@ -74,7 +86,13 @@ class TTSClient:
 
         self._ensure_model()
 
-        for result in self._model.generate(text=text, voice=self._voice):
+        for result in self._model.generate(
+            text=text,
+            voice=self._voice,
+            temperature=self._temperature,
+            top_k=self._top_k,
+            top_p=self._top_p,
+        ):
             if self._cancelled:
                 return
             sd.play(result.audio, result.sample_rate)
