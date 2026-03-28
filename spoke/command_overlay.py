@@ -47,8 +47,11 @@ def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
-# Assistant glow: full spectrum rotation (slow, dwells in each color)
+# Assistant glow: full spectrum rotation with velocity undulation
 _COLOR_CYCLE_PERIOD = _env("SPOKE_COMMAND_COLOR_PERIOD", 15.0)  # seconds per full hue rotation
+_COLOR_VELOCITY_PERIOD = 7.0  # velocity oscillation period (out of phase with everything)
+_COLOR_VELOCITY_MIN = 0.3  # slowest speed multiplier (dwells)
+_COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
@@ -93,6 +96,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_asst = 0.0
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.0
+        self._color_velocity_phase = 0.0
 
         # Linger timer
         self._linger_timer: NSTimer | None = None
@@ -314,6 +318,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_asst = 0.0
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.0
+        self._color_velocity_phase = 0.0
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -322,13 +327,14 @@ class CommandOverlay(NSObject):
         self._start_thinking_timer()
 
     def hide(self) -> None:
-        """Fade out and stop all animation."""
+        """Fade out — pulse continues during fade for visual continuity."""
         if self._window is None:
             return
         self._visible = False
         self._streaming = False
-        self._cancel_pulse()
         self._cancel_linger()
+        # Don't cancel pulse here — let it continue during fade-out.
+        # It will be cancelled when the fade completes (window ordered out).
         self._start_fade_out()
 
     def set_utterance(self, text: str) -> None:
@@ -546,6 +552,7 @@ class CommandOverlay(NSObject):
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
                 self._window.orderOut_(None)
+                self._cancel_pulse()  # now kill the pulse
             else:
                 self._window.setAlphaValue_(1.0)
 
@@ -557,7 +564,7 @@ class CommandOverlay(NSObject):
         User text: slower period (1.5x base), single smoothstep, blue
         color shift, phase-offset by 0.3 and diverging naturally.
         """
-        if not self._streaming or self._text_view is None:
+        if self._text_view is None:
             return
         dt = 1.0 / _PULSE_HZ
 
@@ -579,8 +586,15 @@ class CommandOverlay(NSObject):
         pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
         utt_alpha = 0.2 + 0.25 * pulse_u
 
-        # Full spectrum hue rotation — slow cycle, dwells in each color
-        self._color_phase += dt / _COLOR_CYCLE_PERIOD
+        # Full spectrum hue rotation with velocity undulation
+        # The speed varies sinusoidally so it dwells in some colors and
+        # glides through others — always moving, never truly paused.
+        self._color_velocity_phase += dt / _COLOR_VELOCITY_PERIOD
+        if self._color_velocity_phase > 1.0:
+            self._color_velocity_phase -= 1.0
+        vel_raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._color_velocity_phase))
+        vel = _COLOR_VELOCITY_MIN + vel_raw * (_COLOR_VELOCITY_MAX - _COLOR_VELOCITY_MIN)
+        self._color_phase += (dt / _COLOR_CYCLE_PERIOD) * vel
         if self._color_phase > 1.0:
             self._color_phase -= 1.0
         hue = self._color_phase
