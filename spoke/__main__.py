@@ -525,10 +525,18 @@ class SpokeAppDelegate(NSObject):
         if getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
-                logger.info("Shift+space during recovery — dismissing")
-                self._cancel_recovery()
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
+                if self._command_client is not None and self._recovery_text:
+                    # Send the recovery text to the command pathway as an utterance
+                    logger.info("Shift+space during recovery — sending to assistant: %r",
+                                self._recovery_text[:50])
+                    text = self._recovery_text
+                    self._cancel_recovery()
+                    self._send_text_as_command(text)
+                else:
+                    logger.info("Shift+space during recovery — dismissing (no command client)")
+                    self._cancel_recovery()
+                    if self._menubar is not None:
+                        self._menubar.set_status_text("Ready — hold spacebar")
             else:
                 logger.info("Spacebar during recovery — retrying Insert")
                 self._recovery_retry_insert()
@@ -736,6 +744,52 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Ready — hold spacebar")
 
     # ── command pathway ────────────────────────────────────
+
+    def _send_text_as_command(self, text: str) -> None:
+        """Send pre-transcribed text to the command pathway.
+
+        Used when shift+space is pressed during recovery — the text is
+        already transcribed, so we skip the audio transcription step and
+        go straight to OMLX streaming.
+        """
+        self._transcription_token += 1
+        token = self._transcription_token
+        self._transcribing = True
+        self._transcribe_start = time.monotonic()
+
+        if self._menubar is not None:
+            self._menubar.set_status_text("Sending to assistant…")
+
+        # Dispatch utterance to the main thread for overlay setup
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "commandUtteranceReady:",
+            {"token": token, "utterance": text},
+            False,
+        )
+
+        # Stream the command in a background thread
+        def _stream():
+            try:
+                for content_token in self._command_client.stream_command(text):
+                    if token != self._transcription_token:
+                        break  # stale
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandToken:",
+                        {"token": token, "text": content_token},
+                        False,
+                    )
+            except Exception:
+                logger.exception("Command stream failed")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandFailed:", {"token": token, "error": "Command failed"}, False
+                )
+                return
+
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandComplete:", {"token": token}, False
+            )
+
+        threading.Thread(target=_stream, daemon=True).start()
 
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe then send command to OMLX."""

@@ -117,11 +117,26 @@ class TestRecoveryDismiss:
         assert d._recovery_hold_active is True
         d._capture.start.assert_not_called()
 
-    def test_shift_space_release_dismisses_recovery(self, main_module, monkeypatch):
-        """Shift+space release during recovery should dismiss it."""
+    def test_shift_space_sends_to_command(self, main_module, monkeypatch):
+        """Shift+space during recovery should send text to command pathway."""
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_text = "some text"
         d._recovery_hold_active = True
+        d._command_client = MagicMock()
+
+        with patch("spoke.__main__.restore_pasteboard"), \
+             patch.object(d, "_send_text_as_command") as mock_send:
+            d._on_hold_end(shift_held=True)
+
+        mock_send.assert_called_once_with("some text")
+        assert d._recovery_text is None  # recovery cleared
+
+    def test_shift_space_dismisses_when_no_command_client(self, main_module, monkeypatch):
+        """Shift+space without command client should just dismiss recovery."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "some text"
+        d._recovery_hold_active = True
+        d._command_client = None
 
         with patch("spoke.__main__.restore_pasteboard"):
             d._on_hold_end(shift_held=True)
