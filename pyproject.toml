@@ -17,6 +17,11 @@ dependencies = [
 [project.scripts]
 spoke = "spoke.__main__:main"
 
+[project.optional-dependencies]
+tts = [
+    "mlx-audio[tts]",
+]
+
 [dependency-groups]
 dev = [
     "py2app>=0.28.10",
