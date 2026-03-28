@@ -15,6 +15,7 @@ def _make_fake_quartz():
     """Create a fake Quartz module with all constants and functions used."""
     q = types.ModuleType("Quartz")
     # Constants — use actual macOS values where it matters for logic
+    q.kCGEventFlagsChanged = 12
     q.kCGEventKeyDown = 10
     q.kCGEventKeyUp = 11
     q.kCGEventFlagMaskCommand = 0x00100000

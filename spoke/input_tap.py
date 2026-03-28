@@ -36,6 +36,7 @@ from Quartz import (
     kCGEventFlagMaskCommand,
     kCGEventFlagMaskControl,
     kCGEventFlagMaskShift,
+    kCGEventFlagsChanged,
     kCGEventKeyDown,
     kCGEventKeyUp,
     kCGEventTapOptionDefault,
@@ -93,6 +94,8 @@ class SpacebarHoldDetector(NSObject):
         self._hold_s = hold_ms / 1000.0
 
         self._state = _State.IDLE
+        self._shift_at_press = False
+        self._shift_latched = False  # True if shift was seen during WAITING/RECORDING
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
@@ -105,7 +108,11 @@ class SpacebarHoldDetector(NSObject):
 
     def install(self) -> bool:
         """Install the global event tap. Returns False if permission denied."""
-        event_mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp)
+        event_mask = (
+            CGEventMaskBit(kCGEventKeyDown)
+            | CGEventMaskBit(kCGEventKeyUp)
+            | CGEventMaskBit(kCGEventFlagsChanged)
+        )
 
         # Store self on the module so the C callback can reach it.
         # CGEventTap refcon in PyObjC is unreliable, so we use a module global.
@@ -168,6 +175,8 @@ class SpacebarHoldDetector(NSObject):
 
         if self._state == _State.IDLE:
             self._state = _State.WAITING
+            self._shift_at_press = bool(flags & kCGEventFlagMaskShift)
+            self._shift_latched = self._shift_at_press
             self._start_hold_timer()
             return True  # suppress the space
 
@@ -189,16 +198,24 @@ class SpacebarHoldDetector(NSObject):
             return False
 
         if self._state == _State.WAITING:
-            # Released before hold threshold — forward a normal space
+            # Released before hold threshold
             self._cancel_hold_timer()
             self._state = _State.IDLE
-            self._forward_space()
-            return True  # suppress the original keyUp, we'll synth our own
+            shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
+            self._shift_latched = False
+            if shift_held:
+                # Shift + quick tap = signal for recall/dismiss (no space)
+                self._on_hold_end(shift_held=True)
+            else:
+                # Normal quick tap = forward a space
+                self._forward_space()
+            return True
 
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
             self._state = _State.IDLE
-            shift_held = bool(flags & kCGEventFlagMaskShift)
+            shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
+            self._shift_latched = False
             self._on_hold_end(shift_held=shift_held)
             return True
 
@@ -315,5 +332,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
         if det.handle_key_up(keycode, flags=flags):
             return None  # suppress
+    elif event_type == kCGEventFlagsChanged:
+        # Latch shift if it arrives while we're in WAITING or RECORDING
+        flags = CGEventGetFlags(event)
+        if flags & kCGEventFlagMaskShift:
+            if det._state in (_State.WAITING, _State.RECORDING):
+                if not det._shift_latched:
+                    logger.info("Shift latched during %s", det._state)
+                det._shift_latched = True
 
     return event

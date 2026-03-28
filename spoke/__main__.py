@@ -43,8 +43,8 @@ from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx"
-_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx"
+_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
+_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
@@ -267,7 +267,8 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        logger.info("Hold started — recording")
+        shift_at_press = getattr(self._detector, '_shift_at_press', False)
+        logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -474,6 +475,13 @@ class SpokeAppDelegate(NSObject):
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
+        # Short shift-hold (under 800ms of recording) = instant recall/dismiss
+        # The user didn't have time to say anything meaningful
+        elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
+        if shift_held and elapsed < 0.8:
+            logger.info("Short shift-hold (%.0fms) — treating as instant", elapsed * 1000)
+            wav_bytes = b""  # force the empty-audio path
+
         # Glow/dimmer: hide immediately for text insertion, persist for commands
         if not shift_held and self._glow is not None:
             self._glow.hide()
@@ -481,7 +489,7 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_recording(False)
 
         if not wav_bytes:
-            logger.warning("No audio captured")
+            logger.info("No audio — instant path (shift=%s)", shift_held)
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
@@ -629,6 +637,35 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.hide()
 
+    def _recallLastResponse_(self, payload) -> None:
+        """Main thread: recall the last command/response from history."""
+        if payload["token"] != self._transcription_token:
+            return
+        self._transcribing = False
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+
+        if self._command_client is not None:
+            history = self._command_client.history
+            if history:
+                last_utterance, last_response = history[-1]
+                logger.info("Recalling last response: %r", last_utterance[:50])
+                if self._command_overlay is not None:
+                    self._command_overlay.show()
+                    self._command_overlay.set_utterance(last_utterance)
+                    for ch in last_response:
+                        self._command_overlay.append_token(ch)
+                    self._command_overlay.finish()
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Ready — hold spacebar")
+                return
+
+        logger.info("No history to recall")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
         if self._menubar is not None and not self._transcribing:
@@ -664,8 +701,9 @@ class SpokeAppDelegate(NSObject):
             return
 
         if not utterance:
+            # No speech with shift held = recall last response
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "commandFailed:", {"token": token, "error": "No speech detected"}, False
+                "_recallLastResponse:", {"token": token}, False
             )
             return
 
