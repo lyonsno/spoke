@@ -491,7 +491,17 @@ class SpokeAppDelegate(NSObject):
             logger.info("No audio — instant path (shift=%s)", shift_held)
             if self._overlay is not None:
                 self._overlay.hide()
-            if self._glow is not None:
+            # Shift+empty: flash the glow before hiding (pseudo-haptic)
+            if shift_held and self._glow is not None:
+                self._glow._smoothed_amplitude = 1.0
+                self._glow._glow_layer.setOpacity_(1.0)
+                self._glow.show()
+                # Brief flash then hide after 150ms
+                from Foundation import NSTimer as _NSTimer
+                _NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    0.15, self, "_hideGlowAfterFlash:", None, False
+                )
+            elif self._glow is not None:
                 self._glow.hide()
 
             command_visible = (
@@ -664,6 +674,11 @@ class SpokeAppDelegate(NSObject):
         logger.info("No history to recall")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _hideGlowAfterFlash_(self, timer) -> None:
+        """Hide the glow after the shift pseudo-haptic flash."""
+        if self._glow is not None:
+            self._glow.hide()
 
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
