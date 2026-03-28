@@ -167,30 +167,23 @@ class TestRecoveryInsert:
         mock_recovery.assert_called_once_with("transcribed text")
 
 
-class TestInsertClipboardRestore:
-    """Verify Insert path restores original clipboard, not transcription."""
+class TestInsertPaste:
+    """Verify Insert path calls inject_text with the transcription."""
 
-    def test_delayed_insert_restores_original_clipboard_before_paste(self, main_module, monkeypatch):
-        """doRecoveryInsert_ should restore original clipboard before inject_text."""
+    def test_delayed_insert_calls_inject_text(self, main_module, monkeypatch):
+        """doRecoveryInsert_ should call inject_text with the transcription text."""
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_pending_insert = (
             "transcribed text",
             [("public.utf8-plain-text", b"original")],
         )
 
-        restore_calls = []
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
-             patch("spoke.__main__.inject_text") as mock_inject, \
-             patch("spoke.__main__.restore_pasteboard") as mock_restore:
-            mock_restore.side_effect = lambda saved: restore_calls.append(("restore", saved))
-            mock_inject.side_effect = lambda text, on_restored=None: restore_calls.append(("inject", text))
+             patch("spoke.__main__.inject_text") as mock_inject:
             d.doRecoveryInsert_(None)
 
-        # restore_pasteboard must be called BEFORE inject_text
-        assert len(restore_calls) == 2
-        assert restore_calls[0][0] == "restore"
-        assert restore_calls[1][0] == "inject"
-        assert restore_calls[0][1] == [("public.utf8-plain-text", b"original")]
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == "transcribed text"
 
 
 class TestRecoveryClipboardToggle:

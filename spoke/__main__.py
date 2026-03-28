@@ -305,9 +305,18 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        # Cancel any active recovery overlay or pending verification
+        # Cancel any active recovery overlay or pending verification.
+        # If recovery was active, just dismiss it and return — don't start
+        # a new recording. The brief spacebar press to dismiss would
+        # otherwise capture silence and produce hallucinations like "The."
         self._verify_paste_text = None
+        was_recovering = getattr(self, "_recovery_text", None) is not None
         self._cancel_recovery()
+        if was_recovering:
+            logger.info("Hold dismissed recovery overlay — not recording")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
         logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
@@ -1477,10 +1486,6 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Insert failed — target app did not refocus, re-entering recovery")
             self._enter_recovery_mode(text)
             return
-
-        # Restore original clipboard BEFORE calling inject_text so that
-        # inject_text's save/restore cycle preserves the original contents.
-        restore_pasteboard(saved)
 
         def _on_restored():
             if self._menubar is not None:
