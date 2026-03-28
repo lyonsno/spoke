@@ -484,16 +484,34 @@ class SpokeAppDelegate(NSObject):
             logger.warning("No audio captured")
             if self._overlay is not None:
                 self._overlay.hide()
-            # Empty recording with command overlay visible = dismiss
+            if self._glow is not None:
+                self._glow.hide()
+
             command_visible = (
                 self._command_overlay is not None
                 and getattr(self._command_overlay, '_visible', False)
             )
-            if command_visible:
+
+            if shift_held and not command_visible and self._command_client is not None:
+                # Shift + empty recording + no overlay = recall last response
+                history = self._command_client.history
+                if history:
+                    last_utterance, last_response = history[-1]
+                    logger.info("Shift+empty — recalling last response")
+                    if self._command_overlay is not None:
+                        self._command_overlay.show()
+                        self._command_overlay.set_utterance(last_utterance)
+                        # Append the full response at once
+                        for token in last_response:
+                            self._command_overlay.append_token(token)
+                        self._command_overlay.finish()
+                else:
+                    logger.info("Shift+empty — no history to recall")
+            elif command_visible:
+                # Empty recording with overlay visible = dismiss
                 logger.info("Empty recording — dismissing command overlay")
                 self._command_overlay.cancel_dismiss()
-                if self._glow is not None:
-                    self._glow.hide()
+
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return

@@ -1,0 +1,33 @@
+{
+  "machine": {
+    "hostname": "MacBook-Pro-2.local",
+    "chip": "Apple M4 Max",
+    "ram_gb": 128,
+    "platform": "macOS-15.6-arm64-arm-64bit-Mach-O"
+  },
+  "audio": {
+    "path": "speech_3min.m4a",
+    "duration_sec": 184.9,
+    "sha256": "05450b24de7cc86b8e97646e4490845fc18b92813caa2f456a3a510edc4c1d85"
+  },
+  "results": [
+    {
+      "model": "mlx-community/whisper-medium.en-mlx-4bit",
+      "duration_sec": 5.0,
+      "n_runs": 2,
+      "sync_times_ms": [
+        176.82470800355077,
+        175.86237500654534
+      ],
+      "async_times_ms": [
+        168.71204199560452,
+        169.17704200022854
+      ],
+      "sync_steady_mean_ms": 176.3,
+      "async_steady_mean_ms": 168.9,
+      "diff_ms": 7.4,
+      "diff_pct": 4.4,
+      "direction": "slower"
+    }
+  ]
+}

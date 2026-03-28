@@ -1,0 +1,31 @@
+[project]
+name = "donttype"
+version = "0.1.0"
+description = "Global hold-to-dictate for macOS — spacebar → record → transcribe → paste"
+requires-python = ">=3.13"
+dependencies = [
+    "pyobjc-framework-Cocoa",
+    "pyobjc-framework-Quartz",
+    "sounddevice",
+    "numpy",
+    "httpx",
+    "mlx-whisper>=0.4.3",
+    "mlx-qwen3-asr>=0.3.2",
+]
+
+[project.scripts]
+donttype = "donttype.__main__:main"
+
+[dependency-groups]
+dev = [
+    "py2app>=0.28.10",
+    "pyinstaller>=6.19.0",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
