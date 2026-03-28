@@ -114,29 +114,40 @@ class TestTextAppearsOnScreen:
             f"some chrome {visible} more stuff"
         ) is True
 
-    def test_bigram_fallback_matches(self):
-        """Adjacent word pair from expected on screen should confirm paste."""
+    def test_word_with_context_matches(self):
+        """Distinctive word + adjacent character from expected confirms paste."""
         mod = _import_module()
+        # "surprising results" — "g r" context around "results" confirms
         assert mod.text_appears_on_screen(
             "The preliminary investigation revealed surprising results",
             "totally unrelated surprising results more unrelated"
         ) is True
 
     def test_single_chrome_word_does_not_match(self):
-        """A single word matching UI chrome should NOT confirm paste."""
+        """A single word matching UI chrome without context should NOT confirm."""
         mod = _import_module()
-        # "settings" appears in chrome but not as part of a bigram from the expected text
+        # "settings" appears in chrome but without the adjacent chars from dictation
         assert mod._has_distinctive_word_match(
             "please open the settings panel and adjust volume",
             "system settings general about privacy security"
         ) is False
 
-    def test_bigram_with_context_does_match(self):
-        """Same word but with adjacent context from the dictation should match."""
+    def test_word_with_right_context_matches(self):
+        """Word + one char of right context from expected should match."""
         mod = _import_module()
+        # "settings p" (word + space + first char of next word) is in screen
         assert mod._has_distinctive_word_match(
             "please open the settings panel and adjust volume",
             "other stuff settings panel more stuff"
+        ) is True
+
+    def test_word_with_left_context_matches(self):
+        """One char of left context + word from expected should match."""
+        mod = _import_module()
+        # "e settings" (last char of prev word + space + word) is in screen
+        assert mod._has_distinctive_word_match(
+            "please open the settings panel and adjust volume",
+            "other stuff e settings more stuff"
         ) is True
 
     def test_stopwords_only_do_not_match(self):
@@ -147,18 +158,8 @@ class TestTextAppearsOnScreen:
             "the and is to for with from that this"
         ) is False
 
-    def test_short_text_uses_single_word_fallback(self):
-        """Very short text (< 4 words) falls back to single word match."""
-        mod = _import_module()
-        # 3 words — too short for reliable bigrams, uses single word fallback
-        # but also under _MIN_VERIFY_LENGTH so auto-passes
-        assert mod._has_distinctive_word_match(
-            "surprising results here",
-            "unrelated surprising content"
-        ) is True
-
-    def test_url_bar_overflow_with_bigram_visible(self):
-        """Long text pasted into URL bar — most clipped, one bigram visible."""
+    def test_url_bar_overflow_with_context_visible(self):
+        """Long text pasted into URL bar — most clipped, word+context visible."""
         mod = _import_module()
         assert mod.text_appears_on_screen(
             "Please navigate to the authentication dashboard and check credentials",

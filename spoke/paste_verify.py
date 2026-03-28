@@ -154,44 +154,58 @@ _MIN_WORD_LENGTH = 3
 
 
 def _has_distinctive_word_match(expected: str, screen: str) -> bool:
-    """Check if a distinctive phrase from expected appears in screen text.
+    """Check if a distinctive word with adjacent context appears in screen text.
 
-    Uses sliding bigram windows: if any two adjacent words (where at least
-    one is distinctive) appear together in the screen text, the paste is
-    confirmed. A single word like "settings" could match UI chrome, but
-    "adjust settings" or "settings panel" is specific enough to confirm
-    the paste landed.
+    For each distinctive word in the expected text, check whether the word
+    plus at least one character of its surrounding context from the expected
+    text appears in the screen text. This prevents false positives from UI
+    chrome (e.g., "Settings" in a menu bar) while being flexible enough to
+    handle OCR word-splitting and partial visibility.
 
-    Falls back to single distinctive words only if the expected text is
-    very short (< 4 words) and there aren't enough words for bigrams.
+    For a word at position i in the expected string, we check:
+      - left context:  expected[i-2:i] + word  (char before the space + space + word)
+      - right context: word + expected[j:j+2]  (word + space + char after the space)
+
+    Either match confirms the paste.
     """
-    expected_words = expected.split()
-    screen_words_set = set(screen.split())
+    for match_start in _iter_distinctive_word_positions(expected):
+        word_end = expected.index(" ", match_start) if " " in expected[match_start:] else len(expected)
+        word = expected[match_start:word_end]
 
-    # Build bigrams from expected text
-    if len(expected_words) >= 2:
-        for i in range(len(expected_words) - 1):
-            w1, w2 = expected_words[i], expected_words[i + 1]
-            # At least one word in the bigram must be distinctive
-            w1_distinctive = len(w1) >= _MIN_WORD_LENGTH and w1 not in _STOPWORDS
-            w2_distinctive = len(w2) >= _MIN_WORD_LENGTH and w2 not in _STOPWORDS
-            if not (w1_distinctive or w2_distinctive):
-                continue
-            # Check if the bigram appears as adjacent words in screen text
-            bigram = f"{w1} {w2}"
-            if bigram in screen:
-                logger.info("Paste verify: bigram match '%s'", bigram)
+        # Left context: one char before the space that precedes this word
+        if match_start >= 2:
+            left_probe = expected[match_start - 2:word_end]
+            if left_probe in screen:
+                logger.info("Paste verify: word+left context match '%s'", left_probe)
                 return True
 
-    # Short text fallback: single distinctive word match
-    if len(expected_words) < 4:
-        for word in expected_words:
-            if len(word) < _MIN_WORD_LENGTH:
-                continue
-            if word in _STOPWORDS:
-                continue
-            if word in screen_words_set:
-                logger.info("Paste verify: single word match '%s' (short text)", word)
+        # Right context: one char after the space that follows this word
+        if word_end + 2 <= len(expected):
+            right_probe = expected[match_start:word_end + 2]
+            if right_probe in screen:
+                logger.info("Paste verify: word+right context match '%s'", right_probe)
                 return True
+
+        # Edge case: word is at the very start or end of the text.
+        # Only has context on one side. If it's a boundary word and
+        # appears on screen, accept it — it can't be chrome because
+        # chrome wouldn't have the same boundary.
+        if match_start == 0 and word in screen:
+            # Check it's not just a substring of a longer screen word
+            # by verifying a space or boundary follows it in screen
+            for probe in [word + " ", " " + word]:
+                if probe in screen:
+                    logger.info("Paste verify: boundary word match '%s'", word)
+                    return True
 
     return False
+
+
+def _iter_distinctive_word_positions(text: str):
+    """Yield the start positions of distinctive words in text."""
+    pos = 0
+    for word in text.split():
+        start = text.index(word, pos)
+        if len(word) >= _MIN_WORD_LENGTH and word not in _STOPWORDS:
+            yield start
+        pos = start + len(word)
