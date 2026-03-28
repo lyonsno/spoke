@@ -629,6 +629,35 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.hide()
 
+    def _recallLastResponse_(self, payload) -> None:
+        """Main thread: recall the last command/response from history."""
+        if payload["token"] != self._transcription_token:
+            return
+        self._transcribing = False
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+
+        if self._command_client is not None:
+            history = self._command_client.history
+            if history:
+                last_utterance, last_response = history[-1]
+                logger.info("Recalling last response: %r", last_utterance[:50])
+                if self._command_overlay is not None:
+                    self._command_overlay.show()
+                    self._command_overlay.set_utterance(last_utterance)
+                    for ch in last_response:
+                        self._command_overlay.append_token(ch)
+                    self._command_overlay.finish()
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Ready — hold spacebar")
+                return
+
+        logger.info("No history to recall")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
         if self._menubar is not None and not self._transcribing:
@@ -664,8 +693,9 @@ class SpokeAppDelegate(NSObject):
             return
 
         if not utterance:
+            # No speech with shift held = recall last response
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "commandFailed:", {"token": token, "error": "No speech detected"}, False
+                "_recallLastResponse:", {"token": token}, False
             )
             return
 
