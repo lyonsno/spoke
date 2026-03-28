@@ -517,10 +517,10 @@ class SpokeAppDelegate(NSObject):
                     logger.info("Shift+empty — recalling: %r", last_utterance[:50])
                     if self._command_overlay is not None:
                         self._command_overlay.show()
-                        self._command_overlay._stop_thinking_timer()  # not thinking, recalling
+                        self._command_overlay._stop_thinking_timer()
                         self._command_overlay.set_utterance(last_utterance)
-                        for ch in last_response:
-                            self._command_overlay.append_token(ch)
+                        # Append entire response at once (not char by char)
+                        self._command_overlay.append_token(last_response)
                         self._command_overlay.finish()
                 else:
                     logger.info("Shift+empty — no content in history to recall")
@@ -670,8 +670,7 @@ class SpokeAppDelegate(NSObject):
                     self._command_overlay.show()
                     self._command_overlay._stop_thinking_timer()
                     self._command_overlay.set_utterance(last_utterance)
-                    for ch in last_response:
-                        self._command_overlay.append_token(ch)
+                    self._command_overlay.append_token(last_response)
                     self._command_overlay.finish()
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
