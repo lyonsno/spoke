@@ -228,7 +228,11 @@ class TestCommandCompletionAutoplay:
 
         delegate.commandComplete_({"token": 1, "response": "Hello there"})
 
-        tts.speak_async.assert_called_once_with("Hello there")
+        tts.speak_async.assert_called_once()
+        args, kwargs = tts.speak_async.call_args
+        assert args[0] == "Hello there"
+        assert kwargs.get("amplitude_callback") is not None
+        assert kwargs.get("done_callback") is not None
 
     def test_command_complete_no_tts_when_disabled(self, main_module):
         """When TTS client is None, commandComplete_ works normally without TTS."""

@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
+import numpy as np
 import sounddevice as sd
 
 logger = logging.getLogger(__name__)
@@ -85,19 +86,26 @@ class TTSClient:
                 self._ensure_model()
         threading.Thread(target=_warm, daemon=True).start()
 
-    def speak(self, text: str) -> None:
+    def speak(
+        self,
+        text: str,
+        amplitude_callback: Callable[[float], None] | None = None,
+    ) -> None:
         """Generate speech and play it synchronously.  Blocks until done.
 
         Holds gpu_lock during model.generate() to prevent concurrent MLX
         inference (which crashes Metal).  Releases the lock before audio
         playback so Whisper can proceed while audio plays.
+
+        If amplitude_callback is provided, it is called with the RMS value
+        of each ~64ms audio chunk during playback (same interface as the
+        microphone amplitude callback used by the glow overlay).
         """
         if not text:
             return
         if self._cancelled:
             return
 
-        import numpy as np
         from contextlib import nullcontext
 
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
@@ -125,16 +133,35 @@ class TTSClient:
             audio = np.array(result.audio, dtype=np.float32)
             if audio.ndim == 1:
                 audio = audio.reshape(-1, 1)
+
+            sr = result.sample_rate
+            # ~64ms chunks for amplitude updates (matches mic capture cadence)
+            chunk_size = int(sr * 0.064)
+
             done = threading.Event()
             stream = sd.OutputStream(
-                samplerate=result.sample_rate,
+                samplerate=sr,
                 channels=audio.shape[1],
                 dtype="float32",
                 finished_callback=lambda: done.set(),
             )
             self._stream = stream
             stream.start()
-            stream.write(audio)
+
+            # Write in chunks, emitting RMS for each
+            offset = 0
+            while offset < len(audio):
+                if self._cancelled:
+                    break
+                end = min(offset + chunk_size, len(audio))
+                chunk = audio[offset:end]
+                stream.write(chunk)
+                if amplitude_callback is not None:
+                    rms = float(np.sqrt(np.mean(chunk ** 2)))
+                    amplitude_callback(rms)
+                offset = end
+
+            # Wait for remaining audio to finish playing
             while not done.is_set():
                 if self._cancelled:
                     break
@@ -143,10 +170,23 @@ class TTSClient:
             stream.close()
             self._stream = None
 
-    def speak_async(self, text: str) -> threading.Thread:
+            # Signal zero amplitude when playback ends
+            if amplitude_callback is not None:
+                amplitude_callback(0.0)
+
+    def speak_async(
+        self,
+        text: str,
+        amplitude_callback: Callable[[float], None] | None = None,
+        done_callback: Callable[[], None] | None = None,
+    ) -> threading.Thread:
         """Generate and play speech on a background daemon thread."""
         self._cancelled = False
-        t = threading.Thread(target=self.speak, args=(text,), daemon=True)
+        def _run():
+            self.speak(text, amplitude_callback=amplitude_callback)
+            if done_callback is not None:
+                done_callback()
+        t = threading.Thread(target=_run, daemon=True)
         t.start()
         return t
 
