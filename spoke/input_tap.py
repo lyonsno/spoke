@@ -189,11 +189,17 @@ class SpacebarHoldDetector(NSObject):
             return False
 
         if self._state == _State.WAITING:
-            # Released before hold threshold — forward a normal space
+            # Released before hold threshold
             self._cancel_hold_timer()
             self._state = _State.IDLE
-            self._forward_space()
-            return True  # suppress the original keyUp, we'll synth our own
+            shift_held = bool(flags & kCGEventFlagMaskShift)
+            if shift_held:
+                # Shift + quick tap = signal for recall/dismiss (no space)
+                self._on_hold_end(shift_held=True)
+            else:
+                # Normal quick tap = forward a space
+                self._forward_space()
+            return True
 
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
