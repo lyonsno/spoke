@@ -328,6 +328,189 @@ class TestPreviewFinalizationContract:
         assert call_args[0][1]["text"] == "batch final text"
 
 
+class TestPreviewStreamCleanup:
+    """Test preview loop streaming cleanup paths (dual-model findings 4-6)."""
+
+    def test_preview_loop_streaming_calls_finish_stream_on_separate_preview_client(
+        self, main_module, monkeypatch
+    ):
+        """When preview and final clients differ, the preview loop's finally
+        block should call finish_stream() on the preview client."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = True
+        d._preview_done = MagicMock()
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=None)
+
+        preview_client = MagicMock(supports_streaming=True, has_active_stream=True)
+        preview_client.feed.return_value = "preview text"
+        final_client = MagicMock(supports_streaming=False)
+        d._preview_client = preview_client
+        d._client = final_client
+        d._capture.get_new_frames.return_value = b"\x00" * 100
+
+        call_count = 0
+
+        def _feed(_frames):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                d._preview_active = False
+            return "preview"
+
+        preview_client.feed.side_effect = _feed
+
+        with patch.object(main_module.time, "sleep"):
+            d._preview_loop_streaming()
+
+        preview_client.finish_stream.assert_called_once()
+        d._preview_done.set.assert_called_once()
+
+    def test_preview_loop_streaming_calls_cancel_stream_on_release(
+        self, main_module, monkeypatch
+    ):
+        """When _preview_cancelled_on_release is True, the finally block
+        should call cancel_stream() instead of finish_stream()."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = True
+        d._preview_cancelled_on_release = True
+        d._preview_done = MagicMock()
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=None)
+
+        preview_client = MagicMock(supports_streaming=True, has_active_stream=True)
+        final_client = MagicMock(supports_streaming=False)
+        d._preview_client = preview_client
+        d._client = final_client
+        d._capture.get_new_frames.return_value = b"\x00" * 100
+
+        def _feed(_frames):
+            d._preview_active = False
+            return "preview"
+
+        preview_client.feed.side_effect = _feed
+
+        with patch.object(main_module.time, "sleep"):
+            d._preview_loop_streaming()
+
+        preview_client.cancel_stream.assert_called_once()
+        preview_client.finish_stream.assert_not_called()
+        d._preview_done.set.assert_called_once()
+
+    def test_preview_loop_streaming_skips_cleanup_when_same_client(
+        self, main_module, monkeypatch
+    ):
+        """When preview and final are the same client, the finally block
+        should NOT call finish_stream() — the transcribe worker handles it."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = True
+        d._preview_done = MagicMock()
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=None)
+
+        shared_client = MagicMock(supports_streaming=True, has_active_stream=True)
+        d._preview_client = shared_client
+        d._client = shared_client
+        d._capture.get_new_frames.return_value = b"\x00" * 100
+
+        def _feed(_frames):
+            d._preview_active = False
+            return "preview"
+
+        shared_client.feed.side_effect = _feed
+
+        with patch.object(main_module.time, "sleep"):
+            d._preview_loop_streaming()
+
+        shared_client.finish_stream.assert_not_called()
+        shared_client.cancel_stream.assert_not_called()
+        d._preview_done.set.assert_called_once()
+
+    def test_preview_loop_streaming_signals_done_on_start_failure(
+        self, main_module, monkeypatch
+    ):
+        """If start_stream() raises, the finally block should still signal done
+        (via the batch fallback's finally)."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = False  # Batch fallback exits immediately
+        d._preview_done = MagicMock()
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=None)
+
+        preview_client = MagicMock(supports_streaming=True)
+        preview_client.start_stream.side_effect = RuntimeError("backend unavailable")
+        d._preview_client = preview_client
+        d._client = MagicMock(supports_streaming=False)
+
+        with patch.object(main_module.time, "sleep"):
+            d._preview_loop_streaming()
+
+        # Even though streaming failed, the batch fallback's finally should signal done
+        d._preview_done.set.assert_called()
+
+
+class TestModelPreferencePersistence:
+    """Test model preference save/load round-trip (dual-model finding 5)."""
+
+    def test_save_and_load_model_preferences_round_trip(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Saving model preferences should create a file that loads back correctly."""
+        prefs_file = tmp_path / "model_preferences.json"
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d._save_model_preferences(
+            "mlx-community/whisper-base.en-mlx",
+            "mlx-community/whisper-medium.en-mlx-8bit",
+        )
+
+        assert prefs_file.exists()
+        loaded = d._load_model_preferences()
+        assert loaded["preview_model"] == "mlx-community/whisper-base.en-mlx"
+        assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx-8bit"
+
+    def test_save_model_preferences_uses_atomic_write(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Preferences should be written via tmp+rename for atomicity."""
+        prefs_file = tmp_path / "model_preferences.json"
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d._save_model_preferences("model-a", "model-b")
+
+        # The .tmp file should not linger after a successful write
+        assert not prefs_file.with_suffix(".tmp").exists()
+        assert prefs_file.exists()
+
+    def test_save_preserves_existing_local_whisper_preferences(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Saving model prefs should not clobber co-located local Whisper prefs."""
+        import json
+
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(json.dumps({
+            "local_whisper_decode_timeout": 30.0,
+            "local_whisper_eager_eval": True,
+        }))
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d._save_model_preferences("model-a", "model-b")
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["preview_model"] == "model-a"
+        assert loaded["transcription_model"] == "model-b"
+        assert loaded["local_whisper_decode_timeout"] == 30.0
+        assert loaded["local_whisper_eager_eval"] is True
+
+
 class TestConcurrencyContract:
     """Test thread handoff and local-inference serialization."""
 

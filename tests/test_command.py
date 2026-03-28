@@ -7,6 +7,19 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 
+def _make_sse_response(chunks):
+    """Build a fake HTTP response that yields SSE lines."""
+    lines = []
+    for chunk in chunks:
+        lines.append(f"data: {json.dumps(chunk)}\n\n".encode())
+    lines.append(b"data: [DONE]\n\n")
+    body = b"".join(lines)
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=io.BytesIO(body))
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
 class TestCommandClient:
     """Test CommandClient message assembly and ring buffer."""
 
@@ -52,15 +65,17 @@ class TestCommandClient:
         user_msgs = [m["content"] for m in msgs if m["role"] == "user"]
         assert user_msgs == ["q1", "q2", "q3", "q4"]
 
-    def test_ring_buffer_bounded(self):
-        """History should not exceed max_history entries."""
+    def test_ring_buffer_bounded_via_stream(self):
+        """stream_command should evict the oldest entry when history exceeds max_history."""
         client = self._make_client(max_history=3)
         for i in range(5):
-            client._history.append((f"q{i}", f"a{i}"))
-            if len(client._history) > client._max_history:
-                client._history.pop(0)
+            chunks = [{"choices": [{"index": 0, "delta": {"content": f"a{i}"}}]}]
+            fake_resp = _make_sse_response(chunks)
+            with patch("urllib.request.urlopen", return_value=fake_resp):
+                list(client.stream_command(f"q{i}"))
         assert len(client._history) == 3
         assert client._history[0] == ("q2", "a2")
+        assert client._history[2] == ("q4", "a4")
 
     def test_history_property_returns_copy(self):
         """history property should return a copy, not a reference."""
@@ -100,18 +115,6 @@ class TestCommandClient:
 class TestStreamCommand:
     """Test streaming command dispatch with mocked HTTP."""
 
-    def _make_sse_response(self, chunks):
-        """Build a fake HTTP response that yields SSE lines."""
-        lines = []
-        for chunk in chunks:
-            lines.append(f"data: {json.dumps(chunk)}\n\n".encode())
-        lines.append(b"data: [DONE]\n\n")
-        body = b"".join(lines)
-        resp = MagicMock()
-        resp.__enter__ = MagicMock(return_value=io.BytesIO(body))
-        resp.__exit__ = MagicMock(return_value=False)
-        return resp
-
     def _content_chunk(self, token):
         return {
             "choices": [{"index": 0, "delta": {"content": token}}]
@@ -140,7 +143,7 @@ class TestStreamCommand:
             self._content_chunk("Hello"),
             self._content_chunk(" world"),
         ]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("test"))
         assert tokens == ["Hello", " world"]
@@ -159,7 +162,7 @@ class TestStreamCommand:
             self._reasoning_chunk("2+2=4"),
             self._content_chunk("The answer is 4."),
         ]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("what is 2+2"))
         assert tokens == ["The answer is 4."]
@@ -176,7 +179,7 @@ class TestStreamCommand:
             self._content_chunk("Hi"),
             self._content_chunk(" there"),
         ]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("hello"))
         assert client._history == [("hello", "Hi there")]
@@ -193,7 +196,7 @@ class TestStreamCommand:
             self._reasoning_chunk("thinking hard..."),
             self._content_chunk("done"),
         ]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("do it"))
         assert client._history == [("do it", "done")]
@@ -209,7 +212,7 @@ class TestStreamCommand:
         )
         for i in range(3):
             chunks = [self._content_chunk(f"answer{i}")]
-            fake_resp = self._make_sse_response(chunks)
+            fake_resp = _make_sse_response(chunks)
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 2
@@ -225,7 +228,7 @@ class TestStreamCommand:
             api_key="secret123",
         )
         chunks = [self._content_chunk("ok")]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
             list(client.stream_command("test"))
             req = mock_open.call_args[0][0]
@@ -240,7 +243,7 @@ class TestStreamCommand:
             api_key="key",
         )
         chunks = [self._content_chunk("ok")]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
             list(client.stream_command("do something"))
             req = mock_open.call_args[0][0]
@@ -259,7 +262,7 @@ class TestStreamCommand:
         )
         client._history = [("prev question", "prev answer")]
         chunks = [self._content_chunk("ok")]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
             list(client.stream_command("new question"))
             req = mock_open.call_args[0][0]
@@ -272,17 +275,6 @@ class TestStreamCommand:
 
 class TestStreamErrorHandling:
     """Test error paths in stream_command."""
-
-    def _make_sse_response(self, chunks):
-        lines = []
-        for chunk in chunks:
-            lines.append(f"data: {json.dumps(chunk)}\n\n".encode())
-        lines.append(b"data: [DONE]\n\n")
-        body = b"".join(lines)
-        resp = MagicMock()
-        resp.__enter__ = MagicMock(return_value=io.BytesIO(body))
-        resp.__exit__ = MagicMock(return_value=False)
-        return resp
 
     def test_stream_connection_error_raises(self):
         """URLError on connection should propagate to caller."""
@@ -327,7 +319,7 @@ class TestStreamErrorHandling:
         )
         # Only role chunk + done, no content
         chunks = [{"choices": [{"index": 0, "delta": {"role": "assistant"}}]}]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("hello"))
         assert tokens == []
@@ -345,11 +337,87 @@ class TestStreamErrorHandling:
             {"choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}}]},
             {"choices": [{"index": 0, "delta": {"reasoning_content": "still thinking..."}}]},
         ]
-        fake_resp = self._make_sse_response(chunks)
+        fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("think hard"))
         assert tokens == []
         assert client._history == [("think hard", "")]
+
+
+class TestStreamCleanup:
+    """Test HTTP connection cleanup and history invariants on partial consumption."""
+
+    def test_partial_consumption_does_not_append_history(self):
+        """If the caller breaks mid-stream, history should remain unchanged."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "tok2"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "tok3"}}]},
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            gen = client.stream_command("test")
+            first = next(gen)
+            assert first == "tok1"
+            # Abandon the generator mid-stream
+            gen.close()
+        assert client._history == []
+
+    def test_partial_consumption_closes_http_response(self):
+        """Abandoning a stream mid-flight should exit the HTTP context manager."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "tok2"}}]},
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            gen = client.stream_command("test")
+            next(gen)
+            gen.close()
+        # The mock context manager's __exit__ should have been called
+        fake_resp.__exit__.assert_called_once()
+
+    def test_second_stream_after_partial_has_clean_state(self):
+        """A new stream after a partial consumption should start with empty response."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        # First stream: partial consumption
+        chunks1 = [
+            {"choices": [{"index": 0, "delta": {"content": "partial"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "-data"}}]},
+        ]
+        fake_resp1 = _make_sse_response(chunks1)
+        with patch("urllib.request.urlopen", return_value=fake_resp1):
+            gen = client.stream_command("first")
+            next(gen)
+            gen.close()
+
+        # Second stream: full consumption
+        chunks2 = [
+            {"choices": [{"index": 0, "delta": {"content": "clean"}}]},
+        ]
+        fake_resp2 = _make_sse_response(chunks2)
+        with patch("urllib.request.urlopen", return_value=fake_resp2):
+            tokens = list(client.stream_command("second"))
+        assert tokens == ["clean"]
+        # Only the completed stream should be in history
+        assert client._history == [("second", "clean")]
 
 
 class TestShiftReleaseRouting:
