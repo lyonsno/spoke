@@ -568,10 +568,11 @@ class CommandOverlay(NSObject):
         # Raw sine: 0→1→0 over one period
         raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
 
-        # Asymmetric ease: power curve makes the dip narrow and the
-        # plateau wide.  raw^0.5 (sqrt) gives a visible dip while still
-        # spending more time near opaque than transparent.
-        pulse = raw ** 0.5
+        # Aggressive ease: smoothstep-style curve snaps quickly between
+        # opaque and transparent with sharp ease-in/ease-out at both ends.
+        # 3x^2 - 2x^3 (Hermite smoothstep) gives punchy transitions while
+        # keeping the same overall cadence.
+        pulse = raw * raw * (3.0 - 2.0 * raw)
 
         alpha = _TEXT_ALPHA_MIN + pulse * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
 
@@ -580,9 +581,37 @@ class CommandOverlay(NSObject):
         g = _COLOR_A[1] + raw * (_COLOR_B[1] - _COLOR_A[1])
         b = _COLOR_A[2] + raw * (_COLOR_B[2] - _COLOR_A[2])
 
-        self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
-        )
+        # Update text alpha per-range to preserve utterance/response distinction
+        from AppKit import NSForegroundColorAttributeName as _FG_pulse
+        ts = self._text_view.textStorage()
+        total_len = ts.length() if hasattr(ts, 'length') else 0
+        if total_len > 0 and self._utterance_text:
+            utt_len = min(len(self._utterance_text), total_len)
+            # User text: dimmer, breathing with the pulse but at lower amplitude
+            utt_alpha = 0.2 + 0.25 * pulse
+            try:
+                ts.addAttribute_value_range_(
+                    _FG_pulse,
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, utt_alpha),
+                    (0, utt_len),
+                )
+            except Exception:
+                pass
+            # Response text: full pulse
+            resp_start = utt_len + 2  # skip \n\n separator
+            if resp_start < total_len:
+                try:
+                    ts.addAttribute_value_range_(
+                        _FG_pulse,
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha),
+                        (resp_start, total_len - resp_start),
+                    )
+                except Exception:
+                    pass
+        else:
+            self._text_view.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
+            )
 
         # Pulse the glow with the oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
