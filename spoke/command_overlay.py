@@ -432,7 +432,7 @@ class CommandOverlay(NSObject):
         glow = NSShadow.alloc().init()
         glow.setShadowColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(
-                _COLOR_A[0], _COLOR_A[1], _COLOR_A[2], 0.6
+                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.6
             )
         )
         glow.setShadowOffset_((0, 0))
@@ -569,10 +569,9 @@ class CommandOverlay(NSObject):
         if self._pulse_phase_user > 1.0:
             self._pulse_phase_user -= 1.0
 
-        # Assistant: raw sine → double smoothstep (extra aggressive)
+        # Assistant: raw sine → smoothstep (punchy but visible)
         raw_a = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_asst))
-        ss_a = raw_a * raw_a * (3.0 - 2.0 * raw_a)  # first smoothstep
-        pulse_a = ss_a * ss_a * (3.0 - 2.0 * ss_a)   # second smoothstep (40% more aggressive)
+        pulse_a = raw_a * raw_a * (3.0 - 2.0 * raw_a)
         alpha_a = _TEXT_ALPHA_MIN + pulse_a * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
