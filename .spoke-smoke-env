@@ -1,0 +1,4 @@
+# Smoke-test env for voxtral-autoplay branch.
+# Sourced by launch-smoke.sh when this worktree is the smoke target.
+export SPOKE_COMMAND_URL="http://localhost:8001"
+export SPOKE_TTS_VOICE="casual_female"
