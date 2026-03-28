@@ -919,6 +919,11 @@ class SpokeAppDelegate(NSObject):
         response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
         if response and tts is not None:
+            # Reset glow state for TTS — the noise floor has adapted up during
+            # command streaming and would eat the TTS signal otherwise
+            if self._glow is not None:
+                self._glow._noise_floor = 0.0
+                self._glow._smoothed_amplitude = 0.0
             tts.speak_async(
                 response,
                 amplitude_callback=self._on_amplitude,
