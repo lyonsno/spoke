@@ -217,25 +217,8 @@ class CommandOverlay(NSObject):
         wrapper.addSubview_(content)
         self._content_view = content
 
-        # Pinned utterance label at the top — does not scroll
-        from AppKit import NSTextField
-        _UTT_HEIGHT = 24.0
-        utt_frame = NSMakeRect(12, _OVERLAY_HEIGHT - _UTT_HEIGHT - 4, _OVERLAY_WIDTH - 24, _UTT_HEIGHT)
-        self._utterance_label = NSTextField.alloc().initWithFrame_(utt_frame)
-        self._utterance_label.setEditable_(False)
-        self._utterance_label.setSelectable_(False)
-        self._utterance_label.setBezeled_(False)
-        self._utterance_label.setDrawsBackground_(False)
-        self._utterance_label.setFont_(NSFont.systemFontOfSize_weight_(14.0, 0.0))
-        self._utterance_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0)
-        )
-        self._utterance_label.setStringValue_("")
-        self._utterance_label.setHidden_(True)
-        content.addSubview_(self._utterance_label)
-
-        # Scroll view for response text — below the pinned utterance
-        scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - _UTT_HEIGHT - 12)
+        # Scroll view with text view for response text
+        scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
         self._scroll_view.setHasVerticalScroller_(False)
         self._scroll_view.setHasHorizontalScroller_(False)
@@ -409,18 +392,22 @@ class CommandOverlay(NSObject):
         self._start_fade_out()
 
     def set_utterance(self, text: str) -> None:
-        """Show the user's utterance in the pinned header label."""
+        """Show the user's utterance in the text view at reduced opacity."""
         self._utterance_text = text
-        if self._utterance_label is None or not self._visible:
+        if self._text_view is None or not self._visible:
             return
-        self._utterance_label.setHidden_(False)
-        self._utterance_label.setStringValue_(text)
-        self._utterance_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.4)
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
         )
-        # Clear the main text view — response will go there
-        if self._text_view is not None:
-            self._text_view.setString_("")
+        attr_str = NSMutableAttributedString.alloc().initWithString_(text)
+        attr_str.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.4),
+            (0, len(text)),
+        )
+        self._text_view.textStorage().setAttributedString_(attr_str)
+        self._update_layout()
         glow.setShadowBlurRadius_(3.0)
         attr_str.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(text))
@@ -429,14 +416,25 @@ class CommandOverlay(NSObject):
         self._update_layout()
 
     def append_token(self, token: str) -> None:
-        """Append a streamed response token to the scroll view.
-
-        The utterance is in the pinned header label, so this only
-        handles response text. All tokens append in-place.
-        """
+        """Append a streamed response token."""
         if self._text_view is None or not self._visible:
             return
+        first_token = len(self._response_text) == 0
         self._response_text += token
+
+        if first_token and self._utterance_text:
+            # Add separator between utterance and response
+            from AppKit import (
+                NSMutableAttributedString,
+                NSForegroundColorAttributeName,
+            )
+            sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+            sep.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                (0, 2),
+            )
+            self._text_view.textStorage().appendAttributedString_(sep)
 
         frag = self._make_response_fragment(token)
         self._text_view.textStorage().appendAttributedString_(frag)
@@ -534,13 +532,21 @@ class CommandOverlay(NSObject):
             eased = progress * progress
             alpha = self._fade_from * (1.0 - eased)
 
-            # Fade utterance label at double rate
-            if self._utterance_label is not None and self._utterance_text:
+            # Fade utterance at double rate
+            if self._text_view is not None and self._utterance_text:
+                from AppKit import NSForegroundColorAttributeName
                 utt_progress = min(progress * 2.0, 1.0)
                 utt_alpha = 0.35 * (1.0 - utt_progress * utt_progress)
-                self._utterance_label.setTextColor_(
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, utt_alpha)
-                )
+                utt_len = min(len(self._utterance_text), self._text_view.textStorage().length() if hasattr(self._text_view.textStorage(), 'length') else 0)
+                if utt_len > 0:
+                    try:
+                        self._text_view.textStorage().addAttribute_value_range_(
+                            NSForegroundColorAttributeName,
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, utt_alpha),
+                            (0, utt_len),
+                        )
+                    except Exception:
+                        pass
 
         self._window.setAlphaValue_(alpha)
 
@@ -616,28 +622,39 @@ class CommandOverlay(NSObject):
         else:
             r, g, b = c + m, m, x + m
 
-        # Update utterance label (pinned header) — blue breathing
-        if self._utterance_label is not None and self._utterance_text:
-            ur = 0.85 + 0.15 * pulse_u
-            ug = 0.9 + 0.1 * pulse_u
-            self._utterance_label.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, 1.0, utt_alpha)
-            )
-
-        # Update response text — takes on the current hue color
+        # Update text colors per-range
         if self._text_view is not None:
             from AppKit import NSForegroundColorAttributeName as _FG_pulse
             ts = self._text_view.textStorage()
             total_len = ts.length() if hasattr(ts, 'length') else 0
-            if total_len > 0:
+            if total_len > 0 and self._utterance_text:
+                utt_len = min(len(self._utterance_text), total_len)
+                # User text: white with blue tint, breathing
                 try:
+                    ur = 0.85 + 0.15 * pulse_u
+                    ug = 0.9 + 0.1 * pulse_u
                     ts.addAttribute_value_range_(
                         _FG_pulse,
-                        NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a),
-                        (0, total_len),
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, 1.0, utt_alpha),
+                        (0, utt_len),
                     )
                 except Exception:
                     pass
+                # Response text: current hue color
+                resp_start = utt_len + 2
+                if resp_start < total_len:
+                    try:
+                        ts.addAttribute_value_range_(
+                            _FG_pulse,
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a),
+                            (resp_start, total_len - resp_start),
+                        )
+                    except Exception:
+                        pass
+            elif total_len > 0:
+                self._text_view.setTextColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a)
+                )
 
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
