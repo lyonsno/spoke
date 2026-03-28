@@ -410,6 +410,8 @@ class CommandOverlay(NSObject):
 
     def append_token(self, token: str) -> None:
         """Append a streamed response token."""
+        logger.info("append_token: %d chars, first_token=%s, visible=%s",
+                     len(token), len(self._response_text) == 0, self._visible)
         if self._text_view is None or not self._visible:
             return
         first_token = len(self._response_text) == 0
