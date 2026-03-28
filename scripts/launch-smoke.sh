@@ -44,6 +44,14 @@ unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
 unset SPOKE_WHISPER_MODEL
 
+# Source per-branch env overrides from the smoke target if present.
+# Each worktree can drop a .spoke-smoke-env to set feature flags
+# (e.g. SPOKE_TTS_VOICE, SPOKE_COMMAND_URL) without editing this script.
+if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.spoke-smoke-env"
+fi
+
 /usr/bin/python3 - <<'PY'
 import os
 import subprocess
