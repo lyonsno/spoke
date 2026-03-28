@@ -329,6 +329,71 @@ class CommandOverlay(NSObject):
         # Start thinking timer (glowing number mode)
         self._start_thinking_timer()
 
+    def cancel_dismiss(self) -> None:
+        """Pseudo-haptic cancel: swell to bright → hold → snap off.
+
+        Visual confirmation feedback that the cancel was received:
+        500ms ease-out swell to full opacity, 500ms hold, 250ms snap to zero.
+        """
+        if self._window is None:
+            return
+        self._cancel_all_timers()
+        self._streaming = False
+        self._visible = True  # keep visible for the animation
+
+        # Swell phase: ease-out to full brightness over 500ms
+        self._cancel_step = 0
+        self._cancel_phase = "swell"  # swell → hold → snap
+        _CANCEL_SWELL_STEPS = 15  # 500ms at 30fps
+        self._cancel_swell_steps = _CANCEL_SWELL_STEPS
+        self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 30.0, self, "_cancelAnimStep:", None, True
+        )
+
+    def _cancelAnimStep_(self, timer) -> None:
+        """Animate the cancel dismiss sequence."""
+        self._cancel_step += 1
+
+        if self._cancel_phase == "swell":
+            # Ease-out swell to full brightness
+            progress = min(self._cancel_step / 15.0, 1.0)
+            eased = 1.0 - (1.0 - progress) * (1.0 - progress)  # ease-out
+            self._window.setAlphaValue_(eased)
+            # Swell the tight glow
+            if hasattr(self, '_inner_shadow'):
+                self._inner_shadow.setShadowOpacity_(eased)
+            if hasattr(self, '_outer_glow_tight'):
+                self._outer_glow_tight.setShadowOpacity_(eased * 0.8)
+            # Brighten all text to full
+            if self._text_view is not None:
+                self._text_view.setTextColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, eased)
+                )
+            if self._cancel_step >= 15:
+                self._cancel_step = 0
+                self._cancel_phase = "hold"
+
+        elif self._cancel_phase == "hold":
+            # Hold at full brightness for 500ms (15 steps at 30fps)
+            if self._cancel_step >= 15:
+                self._cancel_step = 0
+                self._cancel_phase = "snap"
+
+        elif self._cancel_phase == "snap":
+            # Snap off: ease-out to zero over 250ms (~8 steps at 30fps)
+            progress = min(self._cancel_step / 8.0, 1.0)
+            eased = progress * progress  # ease-in (accelerating disappearance)
+            alpha = 1.0 - eased
+            self._window.setAlphaValue_(alpha)
+            if self._cancel_step >= 8:
+                if self._cancel_timer_anim is not None:
+                    self._cancel_timer_anim.invalidate()
+                    self._cancel_timer_anim = None
+                self._window.setAlphaValue_(0.0)
+                self._window.orderOut_(None)
+                self._visible = False
+                self._cancel_pulse()
+
     def hide(self) -> None:
         """Fade out — pulse continues during fade for visual continuity."""
         if self._window is None:
