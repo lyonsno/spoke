@@ -274,9 +274,9 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Recording…")
         if self._glow is not None:
             if shift_at_press:
-                # Shift pseudo-haptic: spike the glow to signal shift registered
+                # Shift pseudo-haptic: spike the glow to max to signal shift registered
                 self._glow.show()
-                self._glow.update_amplitude(0.5)  # bright spike
+                self._glow.update_amplitude(1.0)  # full brightness spike
             else:
                 self._glow.show()
         if self._overlay is not None:
