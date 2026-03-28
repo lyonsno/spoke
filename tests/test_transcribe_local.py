@@ -63,6 +63,53 @@ class TestLocalTranscriptionClient:
         assert call_kwargs[1]["path_or_hf_repo"] == "test/model"
         assert call_kwargs[1]["language"] == "en"
         assert call_kwargs[1]["decode_timeout"] == 30.0
+        assert call_kwargs[1]["eager_eval"] is False
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_uses_custom_decode_controls(self, mock_mlx_whisper):
+        """Custom local Whisper guards should flow through to mlx_whisper."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
+        client = LocalTranscriptionClient(
+            model="test/model",
+            decode_timeout=None,
+            eager_eval=True,
+        )
+
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "hello world"
+        call_kwargs = mock_mlx_whisper.transcribe.call_args
+        assert call_kwargs[1]["decode_timeout"] is None
+        assert call_kwargs[1]["eager_eval"] is True
+
+    @patch("spoke.transcribe_local.supports_eager_eval", return_value=False)
+    @patch("spoke.transcribe_local.logger")
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_omits_unsupported_eager_eval_and_warns_once(
+        self, mock_mlx_whisper, mock_logger, _mock_supports_eager_eval
+    ):
+        """Unsupported eager_eval should be ignored without pretending it ran."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
+        client = LocalTranscriptionClient(
+            model="test/model",
+            decode_timeout=30.0,
+            eager_eval=True,
+        )
+
+        first = client.transcribe(_make_wav_bytes())
+        second = client.transcribe(_make_wav_bytes())
+
+        assert first == "hello world"
+        assert second == "hello world"
+        first_call = mock_mlx_whisper.transcribe.call_args_list[0]
+        second_call = mock_mlx_whisper.transcribe.call_args_list[1]
+        assert "eager_eval" not in first_call.kwargs
+        assert "eager_eval" not in second_call.kwargs
+        mock_logger.warning.assert_called_once()
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_strips_whitespace(self, mock_mlx_whisper):

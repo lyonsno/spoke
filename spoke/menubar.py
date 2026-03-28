@@ -136,6 +136,15 @@ class MenuBarIcon(NSObject):
                             preview["models"],
                         )
                     )
+                local_whisper = model_state.get("local_whisper")
+                if local_whisper:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            local_whisper["title"],
+                            "local_whisper",
+                            local_whisper["items"],
+                        )
+                    )
                 menu.addItem_(NSMenuItem.separatorItem())
             elif model_state:
                 for model_id, label, enabled in model_state:
@@ -176,6 +185,28 @@ class MenuBarIcon(NSObject):
             item.setEnabled_(enabled)
             if model_id == selected_model:
                 item.setState_(1)
+            submenu.addItem_(item)
+        submenu_item.setSubmenu_(submenu)
+        return submenu_item
+
+    def _build_toggle_submenu_item(self, title: str, role: str, items):
+        submenu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, None, ""
+        )
+        submenu = NSMenu.new()
+        for item_spec in items:
+            if len(item_spec) == 3:
+                key, label, selected = item_spec
+                enabled = True
+            else:
+                key, label, selected, enabled = item_spec
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                label, "selectModel:", ""
+            )
+            item.setTarget_(self)
+            item.setRepresentedObject_((role, key))
+            item.setState_(1 if selected else 0)
+            item.setEnabled_(enabled)
             submenu.addItem_(item)
         submenu_item.setSubmenu_(submenu)
         return submenu_item

@@ -38,13 +38,15 @@ from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
-from .transcribe_local import LocalTranscriptionClient
+from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-large-v3-turbo"
+_DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
+_DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
 
 def _get_ram_gb() -> float:
@@ -99,6 +101,10 @@ class SpokeAppDelegate(NSObject):
         self._capture = AudioCapture()
         self._capture.warmup()
         self._local_mode = not bool(whisper_url)
+        (
+            self._local_whisper_decode_timeout,
+            self._local_whisper_eager_eval,
+        ) = self._resolve_local_whisper_settings()
         self._client = self._get_client(whisper_url, self._transcription_model_id)
         self._preview_client = self._get_client(whisper_url, self._preview_model_id)
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
@@ -267,6 +273,7 @@ class SpokeAppDelegate(NSObject):
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
+        self._preview_cancelled_on_release = False
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
         if getattr(self, "_preview_done", None) is not None:
             self._preview_done.clear()
@@ -388,7 +395,12 @@ class SpokeAppDelegate(NSObject):
                     and getattr(self._preview_client, "has_active_stream", False)
                 ):
                     try:
-                        self._preview_client.finish_stream()
+                        if getattr(self, "_preview_cancelled_on_release", False):
+                            cancel_stream = getattr(self._preview_client, "cancel_stream", None)
+                            if callable(cancel_stream):
+                                cancel_stream()
+                        else:
+                            self._preview_client.finish_stream()
                     except Exception:
                         logger.debug("Preview stream cleanup failed", exc_info=True)
                 if getattr(self, "_preview_done", None) is not None:
@@ -453,6 +465,7 @@ class SpokeAppDelegate(NSObject):
     def _on_hold_end(self, shift_held: bool = False) -> None:
         logger.info("Hold ended — %s", "command" if shift_held else "transcribing")
         self._preview_active = False
+        self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
         if self._glow is not None:
@@ -495,8 +508,12 @@ class SpokeAppDelegate(NSObject):
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
-        # Wait for preview loop to finish so we don't hit the model concurrently.
-        if self._preview_thread is not None:
+        release_cutover = getattr(self, "_preview_cancelled_on_release", False)
+
+        # Normally we wait for preview shutdown before the final pass. On release
+        # cutover, stop blocking on preview wind-down and let the local inference
+        # lock serialize any in-flight work that still needs to exit.
+        if self._preview_thread is not None and not release_cutover:
             if getattr(self, "_preview_done", None) is not None:
                 self._preview_done.wait(timeout=2.0)
             self._preview_thread.join(timeout=2.0)
@@ -507,6 +524,16 @@ class SpokeAppDelegate(NSObject):
                 # If the preview client was streaming, finalize it for the final text
                 # (this runs the tail refinement pass with the existing KV cache).
                 if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._client.transcribe(wav_bytes)
+                elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
                     and getattr(self._client, "has_active_stream", False)
@@ -732,7 +759,7 @@ class SpokeAppDelegate(NSObject):
     def _handle_model_menu_action(self, selection):
         """Menu callback for preview/transcription role-specific model choices."""
         if selection is None:
-            return {
+            state = {
                 "transcription": {
                     "selected": getattr(
                         self, "_transcription_model_id", self._default_transcription_model()
@@ -746,10 +773,50 @@ class SpokeAppDelegate(NSObject):
                     "models": self._select_model(None),
                 },
             }
+            if self._local_whisper_controls_available():
+                eager_eval_available = self._local_whisper_eager_eval_available()
+                state["local_whisper"] = {
+                    "title": "Local Whisper",
+                    "items": [
+                        (
+                            "decode_timeout",
+                            "Decode timeout guard (30s)",
+                            getattr(
+                                self,
+                                "_local_whisper_decode_timeout",
+                                _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT,
+                            )
+                            is not None,
+                            True,
+                        ),
+                        (
+                            "eager_eval",
+                            (
+                                "Stability mode (eager eval)"
+                                if eager_eval_available
+                                else "Stability mode (eager eval) [mlx-whisper update needed]"
+                            ),
+                            (
+                                getattr(
+                                    self,
+                                    "_local_whisper_eager_eval",
+                                    _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
+                                )
+                                if eager_eval_available
+                                else False
+                            ),
+                            eager_eval_available,
+                        ),
+                    ],
+                }
+            return state
         if not isinstance(selection, tuple) or len(selection) != 2:
             self._select_model(selection)
             return
         role, model_id = selection
+        if role == "local_whisper":
+            self._toggle_local_whisper_setting(model_id)
+            return
         if role not in {"preview", "transcription"}:
             return
         current_preview = getattr(
@@ -822,10 +889,7 @@ class SpokeAppDelegate(NSObject):
             os.environ["SPOKE_WHISPER_MODEL"] = preview_model
         else:
             os.environ.pop("SPOKE_WHISPER_MODEL", None)
-        self._detector.uninstall()
-        self._preview_active = False
-        self._close_clients()
-        os.execv(sys.executable, [sys.executable, "-m", "spoke"])
+        self._relaunch()
 
     def _default_transcription_model(self) -> str:
         if self._model_allowed(_DEFAULT_TRANSCRIPTION_MODEL):
@@ -849,13 +913,41 @@ class SpokeAppDelegate(NSObject):
         )
         return preview_model, transcription_model
 
+    def _resolve_local_whisper_settings(self) -> tuple[float | None, bool]:
+        prefs = self._load_local_whisper_preferences()
+        decode_timeout_raw = os.environ.get("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT")
+        if decode_timeout_raw is None and "decode_timeout" in prefs:
+            decode_timeout = prefs["decode_timeout"]
+        else:
+            if decode_timeout_raw is None:
+                decode_timeout_raw = _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+            decode_timeout = self._coerce_decode_timeout_setting(decode_timeout_raw)
+
+        eager_eval_raw = os.environ.get("SPOKE_LOCAL_WHISPER_EAGER_EVAL")
+        if eager_eval_raw is None:
+            if "eager_eval" in prefs:
+                eager_eval_raw = prefs["eager_eval"]
+            else:
+                eager_eval_raw = _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
+        eager_eval = self._coerce_eager_eval_setting(eager_eval_raw)
+        return decode_timeout, eager_eval
+
+    def _load_local_whisper_preferences(self) -> dict:
+        raw_prefs = self._load_preferences()
+        prefs = {}
+        if "local_whisper_decode_timeout" in raw_prefs:
+            prefs["decode_timeout"] = raw_prefs["local_whisper_decode_timeout"]
+        if "local_whisper_eager_eval" in raw_prefs:
+            prefs["eager_eval"] = raw_prefs["local_whisper_eager_eval"]
+        return prefs
+
     def _preferences_path(self) -> Path:
         override = os.environ.get("SPOKE_MODEL_PREFERENCES_PATH")
         if override:
             return Path(override).expanduser()
         return Path.home() / "Library/Application Support/Spoke/model_preferences.json"
 
-    def _load_model_preferences(self) -> dict:
+    def _load_preferences(self) -> dict:
         path = self._preferences_path()
         try:
             return json.loads(path.read_text())
@@ -865,14 +957,31 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Failed to read model preferences from %s", path, exc_info=True)
             return {}
 
+    def _load_model_preferences(self) -> dict:
+        prefs = self._load_preferences()
+        return {
+            "preview_model": prefs.get("preview_model"),
+            "transcription_model": prefs.get("transcription_model"),
+        }
+
     def _save_model_preferences(
         self, preview_model: str, transcription_model: str
     ) -> None:
+        payload = self._load_preferences()
+        payload["preview_model"] = preview_model
+        payload["transcription_model"] = transcription_model
+        self._save_preferences(payload)
+
+    def _save_local_whisper_preferences(
+        self, decode_timeout: float | None, eager_eval: bool
+    ) -> None:
+        payload = self._load_preferences()
+        payload["local_whisper_decode_timeout"] = decode_timeout
+        payload["local_whisper_eager_eval"] = eager_eval
+        self._save_preferences(payload)
+
+    def _save_preferences(self, payload: dict) -> None:
         path = self._preferences_path()
-        payload = {
-            "preview_model": preview_model,
-            "transcription_model": transcription_model,
-        }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
@@ -897,7 +1006,19 @@ class SpokeAppDelegate(NSObject):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
         logger.info("Using local transcription: %s", model_id)
-        return LocalTranscriptionClient(model=model_id)
+        return LocalTranscriptionClient(
+            model=model_id,
+            decode_timeout=getattr(
+                self,
+                "_local_whisper_decode_timeout",
+                _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT,
+            ),
+            eager_eval=getattr(
+                self,
+                "_local_whisper_eager_eval",
+                _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
+            ),
+        )
 
     def _prepare_clients(self) -> None:
         seen_clients = []
@@ -930,6 +1051,136 @@ class SpokeAppDelegate(NSObject):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    def _local_whisper_controls_available(self) -> bool:
+        if not getattr(self, "_local_mode", False):
+            return False
+        model_ids = [
+            getattr(
+                self,
+                "_preview_model_id",
+                os.environ.get("SPOKE_PREVIEW_MODEL")
+                or os.environ.get("SPOKE_WHISPER_MODEL")
+                or _DEFAULT_PREVIEW_MODEL,
+            ),
+            getattr(
+                self,
+                "_transcription_model_id",
+                os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+                or os.environ.get("SPOKE_WHISPER_MODEL")
+                or self._default_transcription_model(),
+            ),
+        ]
+        return any(model_id and not model_id.startswith("Qwen/") for model_id in model_ids)
+
+    def _local_whisper_eager_eval_available(self) -> bool:
+        return self._local_whisper_controls_available() and supports_eager_eval()
+
+    def _toggle_local_whisper_setting(self, setting: str) -> None:
+        if not self._local_whisper_controls_available():
+            return
+        if setting == "eager_eval" and not self._local_whisper_eager_eval_available():
+            logger.info(
+                "Ignoring eager_eval toggle because the installed mlx-whisper build does not support it yet"
+            )
+            return
+        decode_timeout = getattr(
+            self,
+            "_local_whisper_decode_timeout",
+            _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT,
+        )
+        eager_eval = getattr(
+            self,
+            "_local_whisper_eager_eval",
+            _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
+        )
+        if setting == "decode_timeout":
+            decode_timeout = (
+                None
+                if decode_timeout is not None
+                else _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+            )
+        elif setting == "eager_eval":
+            eager_eval = not eager_eval
+        else:
+            return
+        self._apply_local_whisper_settings(decode_timeout, eager_eval)
+
+    def _apply_local_whisper_settings(
+        self, decode_timeout: float | None, eager_eval: bool
+    ) -> None:
+        current_timeout = getattr(
+            self,
+            "_local_whisper_decode_timeout",
+            _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT,
+        )
+        current_eager = getattr(
+            self,
+            "_local_whisper_eager_eval",
+            _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
+        )
+        if decode_timeout == current_timeout and eager_eval == current_eager:
+            return
+        logger.info(
+            "Switching local Whisper settings (relaunching): decode_timeout %s -> %s, eager_eval %s -> %s",
+            current_timeout,
+            decode_timeout,
+            current_eager,
+            eager_eval,
+        )
+        self._local_whisper_decode_timeout = decode_timeout
+        self._local_whisper_eager_eval = eager_eval
+        self._save_local_whisper_preferences(decode_timeout, eager_eval)
+        os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] = self._format_decode_timeout_env(
+            decode_timeout
+        )
+        os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] = "1" if eager_eval else "0"
+        self._relaunch()
+
+    @staticmethod
+    def _coerce_decode_timeout_setting(value) -> float | None:
+        if value is None:
+            return _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        if isinstance(value, (int, float)):
+            return None if value <= 0 else float(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"", "default"}:
+            return _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        if normalized in {"off", "none", "false"}:
+            return None
+        try:
+            timeout = float(normalized)
+        except ValueError:
+            logger.warning(
+                "Invalid SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT=%r; using default %.1fs",
+                value,
+                _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT,
+            )
+            return _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        return None if timeout <= 0 else timeout
+
+    @staticmethod
+    def _coerce_eager_eval_setting(value) -> bool:
+        if value is None:
+            return _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _format_decode_timeout_env(value: float | None) -> str:
+        if value is None:
+            return "off"
+        value = float(value)
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _relaunch(self) -> None:
+        self._detector.uninstall()
+        self._preview_active = False
+        self._close_clients()
+        os.execv(sys.executable, [sys.executable, "-m", "spoke"])
 
     def _local_inference_context(self, client):
         lock = getattr(self, "_local_inference_lock", None)

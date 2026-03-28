@@ -59,6 +59,7 @@ class TestHoldCallbacks:
         MockThread.assert_called_once()
         mock_thread.start.assert_called_once()
         assert d._transcribing is True
+        assert d._preview_cancelled_on_release is True
 
     def test_hold_end_with_empty_audio_skips_transcription(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -256,6 +257,23 @@ class TestPreviewFinalizationContract:
         assert call_args[0][0] == "transcriptionComplete:"
         assert call_args[0][1]["text"] == "batch final text"
 
+    def test_transcribe_worker_release_cutover_skips_preview_wait_and_join(
+        self, main_module, monkeypatch
+    ):
+        """Release-time cutover should not block on preview thread shutdown."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_cancelled_on_release = True
+        d._preview_thread = MagicMock()
+        d._preview_done = MagicMock()
+        d._client = MagicMock(supports_streaming=False)
+        d._client.transcribe.return_value = "final text"
+
+        d._transcribe_worker(b"wav", token=21)
+
+        d._preview_done.wait.assert_not_called()
+        d._preview_thread.join.assert_not_called()
+        d._client.transcribe.assert_called_once_with(b"wav")
+
     def test_transcribe_worker_same_streaming_client_uses_finish_stream(
         self, main_module, monkeypatch
     ):
@@ -276,6 +294,27 @@ class TestPreviewFinalizationContract:
         call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
         assert call_args[0][0] == "transcriptionComplete:"
         assert call_args[0][1]["text"] == "stream final text"
+
+    def test_transcribe_worker_release_cutover_cancels_shared_preview_stream(
+        self, main_module, monkeypatch
+    ):
+        """Release-time cutover should cancel the shared preview stream and run batch finalization."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_cancelled_on_release = True
+        d._preview_thread = MagicMock()
+        streaming_client = MagicMock(supports_streaming=True, has_active_stream=True)
+        streaming_client.transcribe.return_value = "batch final text"
+        d._client = streaming_client
+        d._preview_client = streaming_client
+
+        d._transcribe_worker(b"wav", token=22)
+
+        streaming_client.cancel_stream.assert_called_once_with()
+        streaming_client.finish_stream.assert_not_called()
+        streaming_client.transcribe.assert_called_once_with(b"wav")
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "transcriptionComplete:"
+        assert call_args[0][1]["text"] == "batch final text"
 
 
 class TestConcurrencyContract:
@@ -446,6 +485,14 @@ class TestDualModelConfiguration:
     ):
         """Role-specific env vars should create distinct clients when models differ."""
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_local_whisper_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.setenv(
             "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
         )
@@ -474,11 +521,148 @@ class TestDualModelConfiguration:
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
 
+    def test_init_loads_persisted_local_whisper_preferences_when_env_vars_absent(
+        self, main_module, monkeypatch
+    ):
+        """Persisted local Whisper controls should restore when env vars are unset."""
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_local_whisper_preferences",
+            lambda self: {
+                "decode_timeout": None,
+                "eager_eval": True,
+            },
+            raising=False,
+        )
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        result = d.init()
+
+        assert result is not None
+        assert d._local_whisper_decode_timeout is None
+        assert d._local_whisper_eager_eval is True
+
+    def test_handle_model_menu_none_exposes_local_whisper_settings_in_local_mode(
+        self, main_module, monkeypatch
+    ):
+        """Local mode should surface local Whisper guard/affordance controls."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._local_whisper_decode_timeout = 30.0
+        d._local_whisper_eager_eval = False
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["local_whisper"]["title"] == "Local Whisper"
+        assert model_state["local_whisper"]["items"] == [
+            ("decode_timeout", "Decode timeout guard (30s)", True, True),
+            ("eager_eval", "Stability mode (eager eval)", False, True),
+        ]
+
+    def test_handle_model_menu_none_marks_eager_eval_unavailable_when_backend_lacks_it(
+        self, main_module, monkeypatch
+    ):
+        """Unsupported eager_eval should render as disabled instead of looking live."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._local_whisper_decode_timeout = 30.0
+        d._local_whisper_eager_eval = True
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["local_whisper"]["items"] == [
+            ("decode_timeout", "Decode timeout guard (30s)", True, True),
+            (
+                "eager_eval",
+                "Stability mode (eager eval) [mlx-whisper update needed]",
+                False,
+                False,
+            ),
+        ]
+
+    def test_handle_model_menu_none_hides_local_whisper_settings_in_sidecar_mode(
+        self, main_module, monkeypatch
+    ):
+        """Remote sidecar mode should not show local-only Whisper controls."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = False
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert "local_whisper" not in model_state
+
+    def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        """Toggling eager-eval should persist, update env, and relaunch."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._local_whisper_decode_timeout = 30.0
+        d._local_whisper_eager_eval = False
+        d._save_local_whisper_preferences = MagicMock()
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("local_whisper", "eager_eval"))
+
+        d._save_local_whisper_preferences.assert_called_once_with(30.0, True)
+        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "1"
+        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "30"
+        mock_execv.assert_called_once()
+
+    def test_toggle_local_whisper_eager_eval_is_ignored_when_backend_lacks_support(
+        self, main_module, monkeypatch
+    ):
+        """Unsupported eager_eval should not relaunch or mutate persisted settings."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._local_whisper_decode_timeout = 30.0
+        d._local_whisper_eager_eval = False
+        d._save_local_whisper_preferences = MagicMock()
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: False)
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("local_whisper", "eager_eval"))
+
+        d._save_local_whisper_preferences.assert_not_called()
+        mock_execv.assert_not_called()
+
+    def test_toggle_local_whisper_decode_timeout_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        """Toggling the timeout guard should flip between default and disabled."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._local_whisper_decode_timeout = 30.0
+        d._local_whisper_eager_eval = False
+        d._save_local_whisper_preferences = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("local_whisper", "decode_timeout"))
+
+        d._save_local_whisper_preferences.assert_called_once_with(None, False)
+        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "off"
+        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "0"
+        mock_execv.assert_called_once()
+
     def test_init_shares_client_when_preview_and_transcription_models_match(
         self, main_module, monkeypatch
     ):
         """Matching role-specific selections should reuse a single client instance."""
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_local_whisper_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.setenv(
             "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
         )
@@ -496,13 +680,25 @@ class TestDualModelConfiguration:
         assert result is not None
         assert d._client is shared_client
         assert d._preview_client is shared_client
-        MockLocal.assert_called_once_with(model="mlx-community/whisper-medium.en-mlx-8bit")
+        MockLocal.assert_called_once_with(
+            model="mlx-community/whisper-medium.en-mlx-8bit",
+            decode_timeout=30.0,
+            eager_eval=False,
+        )
 
     def test_init_loads_persisted_model_preferences_when_env_vars_absent(
         self, main_module, monkeypatch
     ):
         """Persisted selections should be used when role-specific env vars are unset."""
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_local_whisper_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
         monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
         monkeypatch.setattr(

@@ -142,6 +142,14 @@ class LocalQwenClient:
         logger.info("Qwen3 stream finalized: %r", text)
         return text
 
+    def cancel_stream(self) -> None:
+        """Abandon any active streaming session without a tail refinement pass."""
+        if self._stream_state is None:
+            return
+        logger.info("Qwen3 stream cancelled")
+        self._stream_state = None
+        self._last_preview_text = ""
+
     @property
     def has_active_stream(self) -> bool:
         """Whether a streaming session is currently in progress."""

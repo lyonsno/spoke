@@ -238,6 +238,25 @@ class TestLocalQwenStreaming:
         assert client.finish_stream() == ""
 
     @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
+    def test_cancel_stream_clears_active_state_and_preview_text(self, mock_module):
+        from spoke.transcribe_qwen import LocalQwenClient
+
+        mock_session = MagicMock()
+        mock_state = MagicMock()
+        mock_session.init_streaming.return_value = mock_state
+        mock_module.Session.return_value = mock_session
+
+        client = LocalQwenClient()
+        client.start_stream()
+        client._last_preview_text = "partial preview"
+
+        client.cancel_stream()
+
+        assert client._stream_state is None
+        assert client._last_preview_text == ""
+        assert client.has_active_stream is False
+
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_close_clears_stream_state(self, mock_module):
         from spoke.transcribe_qwen import LocalQwenClient
 

@@ -77,3 +77,66 @@ class TestMenuBarIcon:
         expected_title = f"Source: {Path(menubar_module.__file__).resolve().parents[1].name}"
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
         assert any(call.args == (expected_title, None, "") for call in calls)
+
+    def test_build_menu_shows_local_whisper_submenu(self, menubar_module):
+        """Local-mode callback state should build a Local Whisper submenu."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(
+            return_value={
+                "transcription": {
+                    "selected": "mlx-community/whisper-large-v3-turbo",
+                    "models": [
+                        (
+                            "mlx-community/whisper-large-v3-turbo",
+                            "Whisper Large",
+                            True,
+                        )
+                    ],
+                },
+                "preview": {
+                    "selected": "mlx-community/whisper-medium.en-mlx-8bit",
+                    "models": [
+                        (
+                            "mlx-community/whisper-medium.en-mlx-8bit",
+                            "Whisper Medium",
+                            True,
+                        )
+                    ],
+                },
+                "local_whisper": {
+                    "title": "Local Whisper",
+                    "items": [
+                        ("decode_timeout", "Decode timeout guard (30s)", True, True),
+                        (
+                            "eager_eval",
+                            "Stability mode (eager eval) [mlx-whisper update needed]",
+                            False,
+                            False,
+                        ),
+                    ],
+                },
+            }
+        )
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Local Whisper", None, "") for call in calls)
+        assert any(call.args == ("Decode timeout guard (30s)", "selectModel:", "") for call in calls)
+        assert any(
+            call.args
+            == ("Stability mode (eager eval) [mlx-whisper update needed]", "selectModel:", "")
+            for call in calls
+        )

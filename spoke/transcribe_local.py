@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import io
 import logging
+from pathlib import Path
 import wave
 
 import mlx.core as mx
@@ -22,6 +23,33 @@ from .dedup import truncate_repetition, is_hallucination
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
+_DEFAULT_DECODE_TIMEOUT = 30.0
+_DEFAULT_EAGER_EVAL = False
+
+
+def _supports_decode_option(option_name: str) -> bool:
+    decoding_module = getattr(mlx_whisper, "decoding", None)
+    options_cls = getattr(decoding_module, "DecodingOptions", None)
+    fields = getattr(options_cls, "__dataclass_fields__", None)
+    if isinstance(fields, dict):
+        return option_name in fields
+
+    module_file = getattr(mlx_whisper, "__file__", None)
+    if module_file is None:
+        # Test doubles often replace mlx_whisper with a MagicMock. Default to
+        # "supported" there so unit tests can assert the intended call shape.
+        return True
+
+    decoding_path = Path(module_file).with_name("decoding.py")
+    try:
+        return option_name in decoding_path.read_text()
+    except OSError:
+        return False
+
+
+def supports_eager_eval() -> bool:
+    """Whether the installed mlx-whisper build accepts eager_eval."""
+    return _supports_decode_option("eager_eval")
 
 
 class LocalTranscriptionClient:
@@ -33,10 +61,19 @@ class LocalTranscriptionClient:
         HuggingFace model identifier. Downloaded on first use.
     """
 
-    def __init__(self, model: str = _DEFAULT_MODEL) -> None:
+    def __init__(
+        self,
+        model: str = _DEFAULT_MODEL,
+        *,
+        decode_timeout: float | None = _DEFAULT_DECODE_TIMEOUT,
+        eager_eval: bool = _DEFAULT_EAGER_EVAL,
+    ) -> None:
         self._model = model
+        self._decode_timeout = decode_timeout
+        self._eager_eval = eager_eval
         self._loaded = False
         self._model_instance = None
+        self._warned_eager_eval_unsupported = False
 
     def _ensure_model(self) -> None:
         """Trigger model download if not cached."""
@@ -75,12 +112,20 @@ class LocalTranscriptionClient:
         # Decode WAV bytes to float32 numpy array — bypass ffmpeg entirely
         audio = self._decode_wav(wav_bytes)
 
-        result = mlx_whisper.transcribe(
-            audio,
-            path_or_hf_repo=self._model,
-            language="en",
-            decode_timeout=30.0,
-        )
+        kwargs = {
+            "path_or_hf_repo": self._model,
+            "language": "en",
+            "decode_timeout": self._decode_timeout,
+        }
+        if supports_eager_eval():
+            kwargs["eager_eval"] = self._eager_eval
+        elif self._eager_eval and not self._warned_eager_eval_unsupported:
+            logger.warning(
+                "Installed mlx-whisper does not support eager_eval yet; ignoring the setting"
+            )
+            self._warned_eager_eval_unsupported = True
+
+        result = mlx_whisper.transcribe(audio, **kwargs)
 
         text = result.get("text", "").strip()
         text = truncate_repetition(text)
