@@ -58,8 +58,7 @@ _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
-_PULSE_PERIOD_ASST = _PULSE_PERIOD * 1.2  # assistant text: primary layer, 20% slower
-_PULSE_PERIOD_ASST2 = _PULSE_PERIOD * 1.3  # assistant text: secondary layer, slower + offset
+_PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
 _PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
@@ -95,7 +94,7 @@ class CommandOverlay(NSObject):
         # Pulse state
         self._pulse_timer: NSTimer | None = None
         self._pulse_phase_asst = 0.0
-        self._pulse_phase_asst2 = 0.37  # second layer, offset
+
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.0
         self._color_velocity_phase = 0.0
@@ -318,7 +317,7 @@ class CommandOverlay(NSObject):
 
         # Start pulse animation
         self._pulse_phase_asst = 0.0
-        self._pulse_phase_asst2 = 0.37  # second layer, offset
+
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.0
         self._color_velocity_phase = 0.0
@@ -635,47 +634,20 @@ class CommandOverlay(NSObject):
             return
         dt = 1.0 / _PULSE_HZ
 
-        # Advance all phases
+        # Advance phases
         self._pulse_phase_asst += dt / _PULSE_PERIOD_ASST
         if self._pulse_phase_asst > 1.0:
             self._pulse_phase_asst -= 1.0
-        self._pulse_phase_asst2 += dt / _PULSE_PERIOD_ASST2
-        if self._pulse_phase_asst2 > 1.0:
-            self._pulse_phase_asst2 -= 1.0
         self._pulse_phase_user += dt / _PULSE_PERIOD_USER
         if self._pulse_phase_user > 1.0:
             self._pulse_phase_user -= 1.0
 
-        # Assistant: two layered wink pulses, composited
-        # Layer 1: primary (slower at 2.4s, stronger — 150% amplitude)
-        p1 = self._pulse_phase_asst
-        if p1 < 0.7:
-            t = p1 / 0.7
-            wink1 = 0.95 + 0.05 * math.cos(2.0 * math.pi * t)
-        elif p1 < 0.85:
-            t = (p1 - 0.7) / 0.15
-            wink1 = 1.0 - 0.95 * (t * t * t)  # deep dip (150%)
-        else:
-            t = (p1 - 0.85) / 0.15
-            wink1 = 0.05 + 0.95 * (t * t * t)
-
-        # Layer 2: secondary (2.6s, gentler — 80% amplitude)
-        p2 = self._pulse_phase_asst2
-        if p2 < 0.7:
-            t = p2 / 0.7
-            wink2 = 0.97 + 0.03 * math.cos(2.0 * math.pi * t)
-        elif p2 < 0.85:
-            t = (p2 - 0.7) / 0.15
-            wink2 = 1.0 - 0.32 * (t * t * t)  # shallower dip (80%)
-        else:
-            t = (p2 - 0.85) / 0.15
-            wink2 = 0.68 + 0.32 * (t * t * t)
-
-        # Composite: multiply the two layers, then reduce to 30% intensity
-        # (the deviation from 1.0 is scaled to 30%)
-        raw_composite = wink1 * wink2
-        pulse_a = 1.0 - (1.0 - raw_composite) * 0.30
-        alpha_a = _TEXT_ALPHA_MIN + pulse_a * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        # Assistant: one slow breath, 5 seconds. Asymmetric:
+        # ease-out toward bright (lingers near peak), ease-in back to dim
+        # (dips quickly). Raw sine → squared so it spends more time high.
+        raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
+        breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
+        alpha_a = 0.55 + 0.30 * breath
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))

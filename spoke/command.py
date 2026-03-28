@@ -139,6 +139,16 @@ class CommandClient:
                     if token is not None:
                         full_response += token
                         yield token
+                    # Surface tool calls as visible text
+                    tool_calls = delta.get("tool_calls")
+                    if tool_calls:
+                        for tc in tool_calls:
+                            fn = tc.get("function", {})
+                            name = fn.get("name")
+                            if name:
+                                tool_text = f"\n[calling {name}…]\n"
+                                full_response += tool_text
+                                yield tool_text
         except urllib.error.URLError as exc:
             logger.error("Command request failed: %s", exc)
             raise
