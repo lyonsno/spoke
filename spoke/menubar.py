@@ -216,5 +216,11 @@ class MenuBarIcon(NSObject):
         if selection and getattr(self, '_on_select_model', None) is not None:
             self._on_select_model(selection)
 
+    def cleanup(self) -> None:
+        """Remove the status item from the menu bar."""
+        if self._status_item is not None:
+            NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
+            self._status_item = None
+
     def quitApp_(self, sender) -> None:
         self._on_quit()

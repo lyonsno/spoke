@@ -131,6 +131,7 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._models_ready = False
         self._warm_error: Exception | None = None
+        self._mic_probe_in_flight = False
 
         # Command pathway — initialized if SPOKE_COMMAND_URL is configured
         command_url = os.environ.get("SPOKE_COMMAND_URL", "")
@@ -188,35 +189,58 @@ class SpokeAppDelegate(NSObject):
         self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:
-        """Trigger mic permission prompt by attempting a short recording."""
+        """Trigger mic permission prompt by attempting a short recording.
+
+        The sd.rec(blocking=True) call can deadlock the main thread if PortAudio
+        hits a hardware error or the mic permission prompt is pending.  Run the
+        probe on a background thread and dispatch the result back to the main
+        thread so the NSRunLoop stays responsive.
+        """
+        if self._mic_probe_in_flight:
+            return
+        self._mic_probe_in_flight = True
+        threading.Thread(
+            target=self._probe_mic_permission, daemon=True, name="mic-probe"
+        ).start()
+
+    def _probe_mic_permission(self) -> None:
+        """Background-thread mic probe — dispatches result to main thread."""
         import sounddevice as sd
-        from Foundation import NSTimer
         try:
-            # Record 0.1s — just enough to trigger the permission prompt
             sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
             logger.info("Microphone access granted")
-            self._setup_event_tap()
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micPermissionGranted:", None, False
+            )
         except Exception as e:
             logger.warning("Mic permission not yet granted: %s", e)
-            self._menubar.set_status_text("Grant mic access, then wait…")
-            # Retry every 2 seconds until mic works
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                2.0, self, "retryMicPermission:", None, False
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micPermissionDenied:", None, False
             )
 
-    def retryMicPermission_(self, timer) -> None:
-        """Retry mic access check."""
-        import sounddevice as sd
+    def micPermissionGranted_(self, _sender) -> None:
+        """Main-thread callback after mic probe succeeds."""
+        self._mic_probe_in_flight = False
+        self._setup_event_tap()
+
+    def micPermissionDenied_(self, _sender) -> None:
+        """Main-thread callback after mic probe fails — schedule retry."""
         from Foundation import NSTimer
-        try:
-            sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
-            logger.info("Microphone access granted")
-            self._setup_event_tap()
-        except Exception:
-            logger.debug("Still waiting for mic permission")
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                2.0, self, "retryMicPermission:", None, False
-            )
+        self._mic_probe_in_flight = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Grant mic access, then wait…")
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            2.0, self, "retryMicPermission:", None, False
+        )
+
+    def retryMicPermission_(self, timer) -> None:
+        """Retry mic access check — dispatches to background thread."""
+        if self._mic_probe_in_flight:
+            return
+        self._mic_probe_in_flight = True
+        threading.Thread(
+            target=self._probe_mic_permission, daemon=True, name="mic-probe-retry"
+        ).start()
 
     def _setup_event_tap(self) -> None:
         """Install the event tap after permissions are confirmed."""
@@ -1637,11 +1661,13 @@ def main() -> None:
     delegate = SpokeAppDelegate.alloc().init()
     app.setDelegate_(delegate)
 
-    # Clean shutdown on SIGTERM — uninstall event tap before dying
-    # so we don't leave a zombie tap that eats keyboard events
+    # Clean shutdown on SIGTERM — uninstall event tap and remove status item
+    # before dying so we don't leave a zombie tap or ghost menu bar icon
     def _handle_sigterm(signum, frame):
         logger.info("Received SIGTERM — cleaning up")
         delegate._detector.uninstall()
+        if delegate._menubar is not None:
+            delegate._menubar.cleanup()
         NSApp.terminate_(None)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
