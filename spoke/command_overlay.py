@@ -556,6 +556,7 @@ class CommandOverlay(NSObject):
                 self._window.setAlphaValue_(1.0)
 
     def pulseStep_(self, timer) -> None:
+        logger.info("PULSE TICK hue=%.3f", getattr(self, '_color_phase', -1))
         """Dual-phase pulse: user and assistant text breathe independently.
 
         Assistant text: faster period (0.8x base), double-smoothstep for
