@@ -5,6 +5,7 @@ generation-based stale result rejection, and env var validation.
 """
 
 import os
+import json
 import time
 from unittest.mock import MagicMock, patch
 
@@ -972,6 +973,132 @@ class TestDualModelConfiguration:
             MockLocal.call_args_list[1].kwargs["model"]
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
+
+    def test_switching_away_from_qwen_persists_models_across_relaunch(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Switching away from Qwen should survive relaunch and re-enable local Whisper controls."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "preview_model": "Qwen/Qwen3-ASR-0.6B",\n'
+            '  "transcription_model": "Qwen/Qwen3-ASR-0.6B"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._preview_model_id = "Qwen/Qwen3-ASR-0.6B"
+        d._transcription_model_id = "Qwen/Qwen3-ASR-0.6B"
+        d._local_mode = True
+        d._save_model_preferences = main_module.SpokeAppDelegate._save_model_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._relaunch = MagicMock()
+
+        d._apply_model_selection(
+            "mlx-community/whisper-base.en-mlx-8bit",
+            "mlx-community/whisper-medium.en-mlx-8bit",
+        )
+
+        assert d._relaunch.called
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            relaunched = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = relaunched.init()
+
+        assert result is not None
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+        assert (
+            MockLocal.call_args_list[1].kwargs["model"]
+            == "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        assert relaunched._local_whisper_controls_available() is True
+
+    def test_sequential_model_switches_persist_across_multiple_relaunches(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """A series of menu-driven model changes should survive each relaunch boundary."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "preview_model": "Qwen/Qwen3-ASR-0.6B",\n'
+            '  "transcription_model": "Qwen/Qwen3-ASR-0.6B"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+
+        def _fresh_delegate():
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            d._capture = MagicMock()
+            d._client_cache = {}
+            d._local_inference_lock = MagicMock()
+            d._local_mode = True
+            d._command_client = None
+            d._preview_done = MagicMock()
+            d._preview_done.set = MagicMock()
+            d._preview_active = False
+            d._preview_thread = None
+            d._transcribing = False
+            d._detector = MagicMock()
+            d._close_clients = MagicMock()
+            return d
+
+        # Step 1: switch transcription off Qwen.
+        first = _fresh_delegate()
+        first.init()
+        with patch.object(main_module.os, "execv"):
+            first._handle_model_menu_action(
+                ("transcription", "mlx-community/whisper-small.en-mlx")
+            )
+
+        # Step 2: relaunch and switch preview off Qwen.
+        second = _fresh_delegate()
+        second.init()
+        with patch.object(main_module.os, "execv"):
+            second._handle_model_menu_action(
+                ("preview", "mlx-community/whisper-tiny.en-mlx")
+            )
+
+        # Step 3: relaunch and switch transcription again.
+        third = _fresh_delegate()
+        third.init()
+        with patch.object(main_module.os, "execv"):
+            third._handle_model_menu_action(
+                ("transcription", "mlx-community/whisper-medium.en-mlx")
+            )
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["preview_model"] == "mlx-community/whisper-tiny.en-mlx"
+        assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx"
 
 
 class TestWarmupContract:
