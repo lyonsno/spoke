@@ -274,9 +274,10 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Recording…")
         if self._glow is not None:
             if shift_at_press:
-                # Shift pseudo-haptic: spike the glow to max to signal shift registered
+                # Shift pseudo-haptic: spike glow directly to max, bypassing smoothing
                 self._glow.show()
-                self._glow.update_amplitude(1.0)  # full brightness spike
+                self._glow._smoothed_amplitude = 1.0
+                self._glow._glow_layer.setOpacity_(1.0)
             else:
                 self._glow.show()
         if self._overlay is not None:
@@ -487,7 +488,7 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_recording(False)
 
         if not wav_bytes:
-            logger.warning("No audio captured")
+            logger.info("No audio — instant path (shift=%s)", shift_held)
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
