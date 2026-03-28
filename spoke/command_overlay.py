@@ -105,6 +105,10 @@ class CommandOverlay(NSObject):
         # Linger timer
         self._linger_timer: NSTimer | None = None
 
+        # TTS amplitude state — drives window opacity during speech playback
+        self._tts_amplitude = 0.0
+        self._tts_active = False
+
         # Thinking timer state
         self._thinking_timer: NSTimer | None = None
         self._thinking_seconds = 0.0
@@ -510,6 +514,45 @@ class CommandOverlay(NSObject):
         self._streaming = False
         self._stop_thinking_timer()
         # Pulse keeps running — the overlay is alive until dismissed
+
+    # ── TTS amplitude ─────────────────────────────────────────
+
+    _TTS_RISE = 0.90      # near-instant attack (matches edge glow)
+    _TTS_DECAY = 0.50     # fast falloff between words
+    _TTS_MULTIPLIER = 30.0
+    _TTS_ALPHA_MIN = 0.25  # visible but subdued in silence
+    _TTS_ALPHA_MAX = 1.0   # full brightness on voice peaks
+
+    def update_tts_amplitude(self, rms: float) -> None:
+        """Drive window opacity from TTS audio RMS.
+
+        Uses the edge glow's aggressive attack/decay so the overlay
+        visibly breathes with the assistant's voice.
+        Must be called on the main thread.
+        """
+        if self._window is None or not self._visible:
+            return
+
+        if rms > self._tts_amplitude:
+            self._tts_amplitude += (rms - self._tts_amplitude) * self._TTS_RISE
+        else:
+            self._tts_amplitude *= self._TTS_DECAY
+
+        scaled = min(self._tts_amplitude * self._TTS_MULTIPLIER, 1.0)
+        alpha = self._TTS_ALPHA_MIN + scaled * (self._TTS_ALPHA_MAX - self._TTS_ALPHA_MIN)
+        self._window.setAlphaValue_(alpha)
+
+    def tts_start(self) -> None:
+        """Prepare overlay for TTS-driven amplitude."""
+        self._tts_active = True
+        self._tts_amplitude = 0.0
+
+    def tts_stop(self) -> None:
+        """Restore overlay to full opacity after TTS ends."""
+        self._tts_active = False
+        self._tts_amplitude = 0.0
+        if self._window is not None and self._visible:
+            self._window.setAlphaValue_(1.0)
 
     # ── animation ───────────────────────────────────────────
 

@@ -921,17 +921,13 @@ class SpokeAppDelegate(NSObject):
         response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
         if response and tts is not None:
-            # Reset glow state for TTS — the noise floor has adapted up during
-            # command streaming and would eat the TTS signal otherwise.
-            # Also raise the peak target so the glow is fully visible.
             if self._glow is not None:
-                self._glow._noise_floor = 0.0
-                self._glow._smoothed_amplitude = 0.0
-                self._glow._tts_peak_save = self._glow._glow_peak_target
-                self._glow._glow_peak_target = 1.0
+                self._glow.hide()
+            if self._command_overlay is not None:
+                self._command_overlay.tts_start()
             tts.speak_async(
                 response,
-                amplitude_callback=self._on_amplitude,
+                amplitude_callback=self._on_tts_amplitude,
                 done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "ttsFinished:", None, False
                 ),
@@ -939,13 +935,23 @@ class SpokeAppDelegate(NSObject):
         elif self._glow is not None:
             self._glow.hide()
 
+    def _on_tts_amplitude(self, rms: float) -> None:
+        """Called from TTS thread — marshal to main thread."""
+        from Foundation import NSNumber
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "ttsAmplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
+        )
+
+    def ttsAmplitudeUpdate_(self, rms_number) -> None:
+        """Main thread: forward TTS amplitude to command overlay."""
+        rms = float(rms_number)
+        if self._command_overlay is not None:
+            self._command_overlay.update_tts_amplitude(rms)
+
     def ttsFinished_(self, _) -> None:
-        """Main thread: TTS playback ended — restore glow peak and hide."""
-        if self._glow is not None:
-            saved = getattr(self._glow, "_tts_peak_save", None)
-            if saved is not None:
-                self._glow._glow_peak_target = saved
-            self._glow.hide()
+        """Main thread: TTS playback ended — restore overlay opacity."""
+        if self._command_overlay is not None:
+            self._command_overlay.tts_stop()
 
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""
