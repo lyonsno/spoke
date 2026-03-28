@@ -498,15 +498,17 @@ class SpokeAppDelegate(NSObject):
             logger.info("No audio — instant path (shift=%s)", shift_held)
             if self._overlay is not None:
                 self._overlay.hide()
-            # Shift+empty: flash the glow before hiding (pseudo-haptic)
+            # Shift+empty: always do the same glow flash (pseudo-haptic)
             if shift_held and self._glow is not None:
+                # Hide first to reset, then spike, so flash is visible
+                # even if glow was already showing from RECORDING path
+                self._glow.hide()
                 self._glow._smoothed_amplitude = 1.0
                 self._glow._glow_layer.setOpacity_(1.0)
                 self._glow.show()
-                # Brief flash then hide after 150ms
                 from Foundation import NSTimer as _NSTimer
                 _NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    0.15, self, "_hideGlowAfterFlash:", None, False
+                    0.2, self, "_hideGlowAfterFlash:", None, False
                 )
             elif self._glow is not None:
                 self._glow.hide()
