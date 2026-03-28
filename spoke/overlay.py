@@ -753,6 +753,29 @@ class TranscriptionOverlay(NSObject):
 
         logger.info("Recovery overlay shown")
 
+    def bounce(self) -> None:
+        """Subtle scale bounce — shrink to 97% then back to 100%.
+
+        Used when spacebar retry fails (no text field). The overlay
+        briefly contracts and snaps back, signalling "I tried but
+        there's nowhere to paste."
+        """
+        if self._window is None or not self._recovery_mode:
+            return
+
+        from Quartz import CABasicAnimation
+
+        content_layer = self._content_view.layer()
+
+        # Shrink phase
+        shrink = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        shrink.setFromValue_(1.0)
+        shrink.setToValue_(0.97)
+        shrink.setDuration_(0.08)
+        shrink.setAutoreverses_(True)
+        shrink.setRemovedOnCompletion_(True)
+        content_layer.addAnimation_forKey_(shrink, "bounce")
+
     def dismiss_recovery(self) -> None:
         """Exit recovery mode and hide the overlay."""
         if not self._recovery_mode:
@@ -874,7 +897,7 @@ class TranscriptionOverlay(NSObject):
         hint_text.setFont_(
             NSFont.systemFontOfSize_weight_(_RECOVERY_HINT_FONT_SIZE, 0.0)
         )
-        hint_text.setString_("press spacebar to dismiss")
+        hint_text.setString_("spacebar to retry  ·  shift+space to dismiss")
 
         wrapper = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, _OVERLAY_WIDTH, _RECOVERY_HINT_HEIGHT)

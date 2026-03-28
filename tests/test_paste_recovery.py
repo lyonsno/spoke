@@ -105,19 +105,39 @@ class TestRecoveryFlowBranching:
 class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
-    def test_spacebar_hold_dismisses_recovery(self, main_module, monkeypatch):
-        """Starting a new recording should dismiss recovery overlay."""
+    def test_spacebar_during_recovery_sets_hold_active(self, main_module, monkeypatch):
+        """Spacebar hold during recovery should set _recovery_hold_active, not record."""
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_text = "some text"
-        d._overlay._recovery_mode = True
+        d._recovery_hold_active = False
+
+        d._on_hold_start()
+
+        # Should mark recovery hold active but not start recording
+        assert d._recovery_hold_active is True
+        d._capture.start.assert_not_called()
+
+    def test_shift_space_release_dismisses_recovery(self, main_module, monkeypatch):
+        """Shift+space release during recovery should dismiss it."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "some text"
+        d._recovery_hold_active = True
 
         with patch("spoke.__main__.restore_pasteboard"):
-            d._on_hold_start()
+            d._on_hold_end(shift_held=True)
 
-        # Recovery state should be cleared
         assert d._recovery_text is None
-        # Overlay should have dismiss_recovery called
-        d._overlay.dismiss_recovery.assert_called_once()
+
+    def test_space_release_retries_insert(self, main_module, monkeypatch):
+        """Spacebar release during recovery should retry Insert."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "some text"
+        d._recovery_hold_active = True
+
+        with patch.object(d, "_recovery_retry_insert") as mock_retry:
+            d._on_hold_end(shift_held=False)
+
+        mock_retry.assert_called_once()
 
     def test_dismiss_button_restores_clipboard(self, main_module, monkeypatch):
         """Dismiss callback should restore original clipboard and hide overlay."""

@@ -153,6 +153,7 @@ class SpokeAppDelegate(NSObject):
         self._recovery_text: str | None = None
         self._recovery_clipboard_state: str = "idle"
         self._recovery_pending_insert = None
+        self._recovery_hold_active: bool = False
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -305,18 +306,16 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        # Cancel any active recovery overlay or pending verification.
-        # If recovery was active, just dismiss it and return — don't start
-        # a new recording. The brief spacebar press to dismiss would
-        # otherwise capture silence and produce hallucinations like "The."
+        # If recovery overlay is active, don't start recording.
+        # The hold-end handler will check shift state and either:
+        #   - Spacebar alone: retry Insert
+        #   - Shift+Space: dismiss recovery
         self._verify_paste_text = None
-        was_recovering = getattr(self, "_recovery_text", None) is not None
-        self._cancel_recovery()
-        if was_recovering:
-            logger.info("Hold dismissed recovery overlay — not recording")
-            if self._menubar is not None:
-                self._menubar.set_status_text("Ready — hold spacebar")
+        if getattr(self, "_recovery_text", None) is not None:
+            self._recovery_hold_active = True
+            logger.info("Hold started during recovery — waiting for release")
             return
+        self._recovery_hold_active = False
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
         logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
@@ -521,6 +520,19 @@ class SpokeAppDelegate(NSObject):
             self._overlay.set_text(text)
 
     def _on_hold_end(self, shift_held: bool = False) -> None:
+        # Recovery overlay intercept: spacebar retries Insert, shift+space dismisses
+        if getattr(self, "_recovery_hold_active", False):
+            self._recovery_hold_active = False
+            if shift_held:
+                logger.info("Shift+space during recovery — dismissing")
+                self._cancel_recovery()
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Ready — hold spacebar")
+            else:
+                logger.info("Spacebar during recovery — retrying Insert")
+                self._recovery_retry_insert()
+            return
+
         logger.info("Hold ended — %s", "command" if shift_held else "transcribing")
         self._preview_active = False
         self._preview_cancelled_on_release = True
@@ -1435,6 +1447,34 @@ class SpokeAppDelegate(NSObject):
             )
         if self._menubar is not None:
             self._menubar.set_status_text("No text field — ⌘V to paste")
+
+    def _recovery_retry_insert(self) -> None:
+        """Spacebar retry: attempt Insert from recovery, bounce on failure."""
+        if self._recovery_text is None:
+            return
+
+        text = self._recovery_text or ""
+        saved = self._recovery_saved_clipboard
+
+        # Try to paste directly — overlay stays up, no dismiss first
+        if not has_focused_text_input():
+            logger.info("Recovery retry — no text field, bouncing")
+            if self._overlay is not None:
+                self._overlay.bounce()
+            return
+
+        # Text field available — dismiss and paste
+        if self._overlay is not None:
+            self._overlay.dismiss_recovery()
+
+        def _on_restored():
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+
+        inject_text(text, on_restored=_on_restored)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Pasted!")
+        self._clear_recovery_state()
 
     def _on_recovery_dismiss(self) -> None:
         """Dismiss button: restore clipboard and hide overlay."""
