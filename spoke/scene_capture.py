@@ -1,0 +1,598 @@
+"""Scene capture for screen context.
+
+Captures the frontmost app's active window (or full screen as fallback),
+runs OCR to extract text blocks with bounding boxes, optionally collects
+shallow AX hints, and stores the result as a local SceneCapture artifact
+with stable refs that downstream tools can resolve to exact text.
+
+See docs/screen-context-v1.md for the design.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+import uuid
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Literal
+
+logger = logging.getLogger(__name__)
+
+# ── Default configuration ────────────────────────────────────────
+
+# Linear scale factor for model-facing image (0.5 = half each dimension).
+_DEFAULT_SCALE = 0.5
+
+# Minimum dimension (px) below which we skip downsampling.
+_MIN_DOWNSAMPLE_DIM = 800
+
+# Hard timeout for AX queries (seconds).
+_AX_TIMEOUT = 0.5
+
+# Default max cached captures.
+_DEFAULT_MAX_CAPTURES = 10
+
+
+# ── Dataclasses ──────────────────────────────────────────────────
+
+
+@dataclass
+class OCRBlock:
+    """A single OCR-recognized text region."""
+
+    ref: str
+    text: str
+    bbox: tuple[float, float, float, float]  # (x, y, width, height) in pixels
+    confidence: float | None = None
+
+
+@dataclass
+class AXHint:
+    """A shallow accessibility hint for the focused element."""
+
+    ref: str
+    role: str
+    label: str | None = None
+    value: str | None = None
+
+
+@dataclass
+class SceneCapture:
+    """A captured scene with OCR blocks and optional AX hints."""
+
+    scene_ref: str
+    created_at: float
+    scope: Literal["active_window", "screen"]
+    app_name: str | None
+    bundle_id: str | None
+    window_title: str | None
+    image_path: str
+    image_size: tuple[int, int]
+    model_image_size: tuple[int, int]
+    ocr_text: str
+    ocr_blocks: list[OCRBlock]
+    ax_hints: list[AXHint]
+
+
+# ── Scene ref generation ─────────────────────────────────────────
+
+
+def _generate_scene_ref() -> str:
+    """Generate a unique scene ref."""
+    return f"scene-{uuid.uuid4().hex[:8]}"
+
+
+# ── OCR extraction ───────────────────────────────────────────────
+
+
+def _extract_ocr_blocks(
+    observations: list,
+    scene_ref: str,
+    image_width: int,
+    image_height: int,
+) -> list[OCRBlock]:
+    """Convert Vision VNRecognizedTextObservation results to OCRBlocks.
+
+    Vision returns bounding boxes in normalized coordinates (0-1, origin
+    at bottom-left). We convert to pixel coordinates (origin top-left)
+    for the consumer.
+    """
+    blocks: list[OCRBlock] = []
+    for i, obs in enumerate(observations):
+        candidates = obs.topCandidates_(1)
+        if not candidates:
+            continue
+
+        candidate = candidates[0]
+        text = candidate.string()
+        confidence = candidate.confidence()
+
+        # Bounding box: normalized, bottom-left origin
+        bbox = obs.boundingBox()
+        nx, ny, nw, nh = (
+            bbox.origin.x,
+            bbox.origin.y,
+            bbox.size.width,
+            bbox.size.height,
+        )
+
+        # Convert to pixel coords, top-left origin
+        px = nx * image_width
+        py = (1.0 - ny - nh) * image_height  # flip Y
+        pw = nw * image_width
+        ph = nh * image_height
+
+        blocks.append(
+            OCRBlock(
+                ref=f"{scene_ref}:block-{i}",
+                text=text,
+                bbox=(px, py, pw, ph),
+                confidence=confidence,
+            )
+        )
+
+    return blocks
+
+
+def _run_ocr(cg_image, image_width: int, image_height: int, scene_ref: str):
+    """Run Vision OCR on a CGImage and return (ocr_text, ocr_blocks).
+
+    Returns ("", []) on any failure.
+    """
+    try:
+        from Vision import (
+            VNImageRequestHandler,
+            VNRecognizeTextRequest,
+            VNRequestTextRecognitionLevelAccurate,
+        )
+
+        handler = VNImageRequestHandler.alloc().initWithCGImage_options_(
+            cg_image, None
+        )
+        request = VNRecognizeTextRequest.alloc().init()
+        # Use accurate level for block-level detail (slightly slower than
+        # fast, but V1 captures once per request so this is fine).
+        request.setRecognitionLevel_(VNRequestTextRecognitionLevelAccurate)
+        request.setUsesLanguageCorrection_(True)
+
+        success, error = handler.performRequests_error_([request], None)
+        if not success:
+            logger.warning("Vision OCR failed: %s", error)
+            return "", []
+
+        results = request.results() or []
+        blocks = _extract_ocr_blocks(results, scene_ref, image_width, image_height)
+        ocr_text = " ".join(b.text for b in blocks)
+        return ocr_text, blocks
+
+    except Exception:
+        logger.warning("OCR extraction failed", exc_info=True)
+        return "", []
+
+
+# ── AX hints ─────────────────────────────────────────────────────
+
+
+def _get_focused_ax_info() -> tuple[str, str | None, str | None] | None:
+    """Return (role, label, value) of the focused AX element, or None.
+
+    Reuses the ctypes AX bindings from focus_check.py.
+    """
+    from spoke.focus_check import (
+        _cf,
+        _cfstr,
+        _cfstr_to_python,
+        _hi,
+        _kAXErrorSuccess,
+    )
+
+    if _cf is None or _hi is None:
+        return None
+
+    system_wide = _hi.AXUIElementCreateSystemWide()
+    if not system_wide:
+        return None
+
+    import ctypes
+
+    try:
+        focus_attr = _cfstr(b"AXFocusedUIElement")
+        if not focus_attr:
+            return None
+        try:
+            focused = ctypes.c_void_p()
+            err = _hi.AXUIElementCopyAttributeValue(
+                system_wide, focus_attr, ctypes.byref(focused)
+            )
+            if err != _kAXErrorSuccess or not focused.value:
+                return None
+
+            try:
+                role = _ax_get_string(focused, b"AXRole")
+                if not role:
+                    return None
+                label = _ax_get_string(focused, b"AXDescription") or _ax_get_string(
+                    focused, b"AXTitle"
+                )
+                value = _ax_get_string(focused, b"AXValue")
+                return (role, label, value)
+            finally:
+                _cf.CFRelease(focused)
+        finally:
+            _cf.CFRelease(focus_attr)
+    finally:
+        _cf.CFRelease(system_wide)
+
+
+def _ax_get_string(element, attr_name: bytes) -> str | None:
+    """Get a string attribute from an AX element. Returns None on failure."""
+    import ctypes
+
+    from spoke.focus_check import (
+        _cf,
+        _cfstr,
+        _cfstr_to_python,
+        _hi,
+        _kAXErrorSuccess,
+    )
+
+    attr = _cfstr(attr_name)
+    if not attr:
+        return None
+    try:
+        value = ctypes.c_void_p()
+        err = _hi.AXUIElementCopyAttributeValue(element, attr, ctypes.byref(value))
+        if err != _kAXErrorSuccess or not value.value:
+            return None
+        try:
+            return _cfstr_to_python(value)
+        except Exception:
+            return None
+        finally:
+            _cf.CFRelease(value)
+    finally:
+        _cf.CFRelease(attr)
+
+
+def _collect_ax_hints(scene_ref: str, timeout: float = _AX_TIMEOUT) -> list[AXHint]:
+    """Collect shallow AX hints with a hard timeout.
+
+    Best-effort: returns [] on any failure or timeout. Must never block
+    the capture.
+    """
+    result: list[AXHint] = []
+    exc_holder: list[BaseException] = []
+
+    def _query():
+        try:
+            info = _get_focused_ax_info()
+            if info is not None:
+                role, label, value = info
+                result.append(
+                    AXHint(
+                        ref=f"{scene_ref}:focus",
+                        role=role,
+                        label=label,
+                        value=value,
+                    )
+                )
+        except Exception as e:
+            exc_holder.append(e)
+
+    t = threading.Thread(target=_query, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        logger.debug("AX hint collection timed out after %.1fs", timeout)
+        return []
+
+    if exc_holder:
+        logger.debug("AX hint collection failed: %s", exc_holder[0])
+        return []
+
+    return result
+
+
+# ── Downsampling ─────────────────────────────────────────────────
+
+
+def _downsample_size(
+    width: int, height: int, scale: float = _DEFAULT_SCALE
+) -> tuple[int, int]:
+    """Compute the downsampled image size.
+
+    If the image is already small (both dimensions below _MIN_DOWNSAMPLE_DIM),
+    returns the original size to avoid unnecessary quality loss.
+    """
+    if width <= _MIN_DOWNSAMPLE_DIM and height <= _MIN_DOWNSAMPLE_DIM:
+        return (width, height)
+
+    return (int(width * scale), int(height * scale))
+
+
+# ── Image capture ────────────────────────────────────────────────
+
+
+def _capture_active_window():
+    """Capture the frontmost app's active window as a CGImage.
+
+    Returns (cg_image, app_name, bundle_id, window_title) or None on failure.
+    """
+    try:
+        from AppKit import NSWorkspace
+        from Quartz import (
+            CGRectNull,
+            CGWindowListCopyWindowInfo,
+            CGWindowListCreateImage,
+            kCGWindowImageBoundsIgnoreFraming,
+            kCGWindowListExcludeDesktopElements,
+            kCGWindowListOptionIncludingWindow,
+            kCGWindowListOptionOnScreenOnly,
+        )
+
+        # Get frontmost app info
+        workspace = NSWorkspace.sharedWorkspace()
+        front_app = workspace.frontmostApplication()
+        if front_app is None:
+            return None
+
+        app_name = front_app.localizedName()
+        bundle_id = front_app.bundleIdentifier()
+        app_pid = front_app.processIdentifier()
+
+        # Find the frontmost app's main window
+        window_list = CGWindowListCopyWindowInfo(
+            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+            0,  # kCGNullWindowID
+        )
+        if not window_list:
+            return None
+
+        target_window = None
+        for win in window_list:
+            if win.get("kCGWindowOwnerPID") == app_pid:
+                # Skip windows with no bounds (menubar items, etc.)
+                bounds = win.get("kCGWindowBounds")
+                if bounds and bounds.get("Height", 0) > 50:
+                    target_window = win
+                    break
+
+        if target_window is None:
+            return None
+
+        window_id = target_window.get("kCGWindowNumber", 0)
+        window_title = target_window.get("kCGWindowName")
+
+        # Capture just this window
+        image = CGWindowListCreateImage(
+            CGRectNull,
+            kCGWindowListOptionIncludingWindow,
+            window_id,
+            kCGWindowImageBoundsIgnoreFraming,
+        )
+        if image is None:
+            return None
+
+        return (image, app_name, bundle_id, window_title)
+
+    except Exception:
+        logger.warning("Active window capture failed", exc_info=True)
+        return None
+
+
+def _capture_screen():
+    """Capture the full main screen as a CGImage.
+
+    Returns (cg_image, None, None, None) or None on failure.
+    """
+    try:
+        from Quartz import (
+            CGRectInfinite,
+            CGWindowListCreateImage,
+            kCGNullWindowID,
+            kCGWindowListOptionOnScreenOnly,
+        )
+
+        image = CGWindowListCreateImage(
+            CGRectInfinite, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, 0
+        )
+        if image is None:
+            return None
+
+        return (image, None, None, None)
+
+    except Exception:
+        logger.warning("Screen capture failed", exc_info=True)
+        return None
+
+
+def _save_image(cg_image, path: str) -> bool:
+    """Save a CGImage to a PNG file. Returns True on success."""
+    try:
+        from Quartz import (
+            CGImageDestinationAddImage,
+            CGImageDestinationCreateWithURL,
+            CGImageDestinationFinalize,
+        )
+        from Foundation import NSURL
+
+        url = NSURL.fileURLWithPath_(path)
+        dest = CGImageDestinationCreateWithURL(url, "public.png", 1, None)
+        if dest is None:
+            return False
+        CGImageDestinationAddImage(dest, cg_image, None)
+        return CGImageDestinationFinalize(dest)
+
+    except Exception:
+        logger.warning("Failed to save image to %s", path, exc_info=True)
+        return False
+
+
+def _image_dimensions(cg_image) -> tuple[int, int]:
+    """Return (width, height) of a CGImage."""
+    from Quartz import CGImageGetWidth, CGImageGetHeight
+
+    return (CGImageGetWidth(cg_image), CGImageGetHeight(cg_image))
+
+
+# ── Cache ────────────────────────────────────────────────────────
+
+
+class SceneCaptureCache:
+    """In-memory cache of recent SceneCapture artifacts.
+
+    Bounded by max_captures; evicts oldest-first when full.
+    """
+
+    def __init__(self, max_captures: int = _DEFAULT_MAX_CAPTURES):
+        self._max = max_captures
+        self._captures: OrderedDict[str, SceneCapture] = OrderedDict()
+
+    def store(self, capture: SceneCapture) -> None:
+        """Store a capture, evicting the oldest if at capacity."""
+        if capture.scene_ref in self._captures:
+            self._captures.move_to_end(capture.scene_ref)
+            self._captures[capture.scene_ref] = capture
+            return
+
+        while len(self._captures) >= self._max:
+            evicted_ref, evicted = self._captures.popitem(last=False)
+            # Clean up the image file
+            try:
+                if os.path.exists(evicted.image_path):
+                    os.remove(evicted.image_path)
+            except OSError:
+                pass
+            logger.debug("Evicted scene capture %s", evicted_ref)
+
+        self._captures[capture.scene_ref] = capture
+
+    def get(self, scene_ref: str) -> SceneCapture | None:
+        """Retrieve a capture by scene_ref."""
+        return self._captures.get(scene_ref)
+
+    def list_refs(self) -> list[str]:
+        """List all cached scene refs, oldest first."""
+        return list(self._captures.keys())
+
+    def resolve_block(self, block_ref: str) -> str | None:
+        """Resolve a scene_block ref to its OCR text.
+
+        block_ref format: "scene-abc:block-N"
+        """
+        # Split into scene ref and block part
+        parts = block_ref.rsplit(":", 1)
+        if len(parts) != 2:
+            return None
+
+        scene_ref = parts[0]
+        capture = self._captures.get(scene_ref)
+        if capture is None:
+            return None
+
+        for block in capture.ocr_blocks:
+            if block.ref == block_ref:
+                return block.text
+
+        return None
+
+    def resolve_ax_hint(self, hint_ref: str) -> str | None:
+        """Resolve an ax_hint ref to its text (value preferred, then label).
+
+        hint_ref format: "scene-abc:focus" (or other hint identifiers)
+        """
+        parts = hint_ref.rsplit(":", 1)
+        if len(parts) != 2:
+            return None
+
+        scene_ref = parts[0]
+        capture = self._captures.get(scene_ref)
+        if capture is None:
+            return None
+
+        for hint in capture.ax_hints:
+            if hint.ref == hint_ref:
+                return hint.value or hint.label
+
+        return None
+
+
+# ── Top-level capture entry point ────────────────────────────────
+
+
+def capture_context(
+    scope: Literal["active_window", "screen"] = "active_window",
+    cache: SceneCaptureCache | None = None,
+    cache_dir: str | None = None,
+) -> SceneCapture | None:
+    """Capture a scene and return a SceneCapture artifact.
+
+    Tries active_window first (if scope="active_window"), falling back
+    to full screen on failure. Runs OCR and collects AX hints.
+
+    Returns None if capture fails entirely.
+    """
+    if cache_dir is None:
+        cache_dir = os.path.join(
+            os.path.expanduser("~/Library/Application Support/Spoke"), "scene_cache"
+        )
+    os.makedirs(cache_dir, exist_ok=True)
+
+    scene_ref = _generate_scene_ref()
+
+    # Capture
+    result = None
+    actual_scope: Literal["active_window", "screen"] = scope
+
+    if scope == "active_window":
+        result = _capture_active_window()
+
+    if result is None:
+        result = _capture_screen()
+        actual_scope = "screen"
+
+    if result is None:
+        logger.warning("All capture methods failed")
+        return None
+
+    cg_image, app_name, bundle_id, window_title = result
+
+    # Dimensions and downsampling
+    width, height = _image_dimensions(cg_image)
+    model_w, model_h = _downsample_size(width, height)
+
+    # Save image
+    image_path = os.path.join(cache_dir, f"{scene_ref}.png")
+    if not _save_image(cg_image, image_path):
+        logger.warning("Failed to save capture image")
+        return None
+
+    # OCR
+    ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
+
+    # AX hints (best-effort, with timeout)
+    ax_hints = _collect_ax_hints(scene_ref)
+
+    capture = SceneCapture(
+        scene_ref=scene_ref,
+        created_at=time.time(),
+        scope=actual_scope,
+        app_name=app_name,
+        bundle_id=bundle_id,
+        window_title=window_title,
+        image_path=image_path,
+        image_size=(width, height),
+        model_image_size=(model_w, model_h),
+        ocr_text=ocr_text,
+        ocr_blocks=ocr_blocks,
+        ax_hints=ax_hints,
+    )
+
+    if cache is not None:
+        cache.store(capture)
+
+    return capture
