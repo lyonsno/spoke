@@ -91,6 +91,8 @@ mlx-audio-server --host 0.0.0.0 --port 8000
 
 When `SPOKE_COMMAND_URL` is set, Shift+Space activates the command pathway instead of dictation. Spoken input is sent to a local LLM (OpenAI-compatible chat completions API) and the streamed response appears in a dedicated overlay.
 
+Once the assistant pathway has been configured, the menu bar persists both the assistant model and the assistant backend (`Local OMLX` vs `Sidecar OMLX`) across relaunches. Use `Assistant Backend -> Set Sidecar URL…` once to save a remote OMLX endpoint without editing env vars; environment variables remain available as an override/bootstrap path.
+
 ```sh
 SPOKE_COMMAND_URL=http://localhost:8001 uv run spoke
 ```
@@ -118,13 +120,11 @@ choices across relaunches.
 | `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override. When set, both preview and final use the same model. |
 | `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Preview model identifier. Use `Qwen/Qwen3-ASR-0.6B` for local streaming preview, or any menu-listed Whisper variant. |
 | `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-large-v3-turbo` | Final transcription model identifier. Use `Qwen/Qwen3-ASR-0.6B` or any menu-listed Whisper variant. |
-| `SPOKE_COMMAND_URL` | unset | OpenAI-compatible OMLX chat endpoint used by the assistant command pathway. |
+| `SPOKE_COMMAND_URL` | unset | OpenAI-compatible OMLX chat endpoint used by the assistant command pathway. Menu-bar backend selection can persist a local/sidecar choice on top of the launch default. |
 | `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Initial assistant model identifier. When the command pathway is enabled, the menu bar persists the selected assistant model across relaunches. |
 | `SPOKE_COMMAND_MODEL_DIR` | `~/.lmstudio/models` | Optional local model inventory scanned to seed extra Assistant menu entries in `org/model` form alongside the server-reported `/v1/models` list. |
 | `SPOKE_HOLD_MS` | `200` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
-| `SPOKE_COMMAND_URL` | unset | Local LLM server for voice commands (Shift+Space). Chat completions endpoint. |
-| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model name sent in command requests. |
 
 ### UI tuning
 

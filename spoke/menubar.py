@@ -125,6 +125,7 @@ class MenuBarIcon(NSObject):
             model_state = self._on_select_model(None)
             if isinstance(model_state, dict):
                 assistant = model_state.get("assistant")
+                assistant_backend = model_state.get("assistant_backend")
                 transcription = model_state.get("transcription")
                 preview = model_state.get("preview")
                 if assistant:
@@ -134,6 +135,14 @@ class MenuBarIcon(NSObject):
                             "assistant",
                             assistant["selected"],
                             assistant["models"],
+                        )
+                    )
+                if assistant_backend:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            assistant_backend["title"],
+                            "assistant_backend",
+                            assistant_backend["items"],
                         )
                     )
                 if transcription:
