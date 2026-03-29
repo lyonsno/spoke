@@ -104,6 +104,7 @@ class SpacebarHoldDetector(NSObject):
         self._forwarding_timer: NSTimer | None = None
         self._tap = None
         self._tap_source = None
+        self._awaiting_space_release = False
 
         # Tray mode support — set by the delegate when tray is active.
         # When True, quick spacebar taps call on_hold_end instead of
@@ -163,6 +164,7 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
             self._state = _State.IDLE
+            self._awaiting_space_release = True
             self._on_hold_end(
                 shift_held=False,
                 enter_held=getattr(self, '_enter_held', False),
@@ -179,6 +181,7 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_forwarding_timer()
         self._forwarding = False
         self._enter_held = False
+        self._awaiting_space_release = False
         self.tray_active = False
         self._state = _State.IDLE
 
@@ -192,6 +195,9 @@ class SpacebarHoldDetector(NSObject):
         """Handle a keyDown event. Returns True to suppress, False to pass through."""
         if keycode != SPACEBAR_KEYCODE:
             return False
+
+        if getattr(self, "_awaiting_space_release", False):
+            return True
 
         # Pass through if any modifier is held (Cmd+Space, etc.)
         if flags & _MODIFIER_MASK:
@@ -222,6 +228,10 @@ class SpacebarHoldDetector(NSObject):
         """
         if keycode != SPACEBAR_KEYCODE:
             return False
+
+        if getattr(self, "_awaiting_space_release", False):
+            self._awaiting_space_release = False
+            return True
 
         if self._state == _State.WAITING:
             # Released before hold threshold
@@ -311,6 +321,7 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             logger.warning("Safety timeout — auto-stopping recording")
             self._state = _State.IDLE
+            self._awaiting_space_release = True
             self._on_hold_end(
                 shift_held=False,
                 enter_held=getattr(self, '_enter_held', False),

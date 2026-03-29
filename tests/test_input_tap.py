@@ -22,6 +22,7 @@ class TestSpacebarStateMachine:
         det._forwarding_timer = None
         det._tap = None
         det._tap_source = None
+        det._awaiting_space_release = False
         return det, on_start, on_end
 
     def test_tap_spacebar_passes_through_on_quick_release(self, input_tap_module):
@@ -295,7 +296,28 @@ class TestForceEnd:
 
         det.force_end()
         assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is True
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
+    def test_force_end_requires_release_before_new_hold(self, input_tap_module):
+        """force_end should swallow repeated keyDowns until the physical release arrives."""
+        mod = input_tap_module
+        det, on_start, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        det.force_end()
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det._state == mod._State.IDLE
+        on_start.assert_called_once()
+        on_end.assert_called_once()
+
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det._awaiting_space_release is False
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det._state == mod._State.WAITING
 
     def test_force_end_while_idle_is_noop(self, input_tap_module):
         """force_end while IDLE should do nothing."""
