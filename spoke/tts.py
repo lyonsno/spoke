@@ -166,6 +166,16 @@ class TTSClient:
                 if self._cancelled:
                     break
                 done.wait(timeout=0.05)
+
+            # Fade out over ~50ms if cancelled mid-playback
+            if self._cancelled and not done.is_set():
+                fade_samples = int(sr * 0.05)
+                fade_ramp = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                try:
+                    stream.write(fade_ramp * 0.0)  # silence ramp
+                except Exception:
+                    pass
+
             stream.stop()
             stream.close()
             self._stream = None
@@ -191,15 +201,10 @@ class TTSClient:
         return t
 
     def cancel(self) -> None:
-        """Cancel any in-flight or future speak() call and stop playback.
+        """Cancel any in-flight or future speak() call.
 
-        Only stops the TTS output stream — does not touch global sounddevice
-        state, so microphone recording is unaffected.
+        Sets the cancelled flag so the playback loop writes a short fade-out
+        and exits cleanly. Does not call stream.abort() — avoids racing with
+        the fade-out write on the playback thread.
         """
         self._cancelled = True
-        stream = self._stream
-        if stream is not None:
-            try:
-                stream.abort()
-            except sd.PortAudioError:
-                pass
