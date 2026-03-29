@@ -167,6 +167,10 @@ def _execute_read_aloud(
     # Speak via TTS if available
     if tts_client is not None:
         try:
+            speak_async = getattr(tts_client, "speak_async", None)
+            if callable(speak_async):
+                speak_async(text)
+                return f"Speaking: {text}"
             tts_client.speak(text)
         except Exception:
             logger.warning("TTS playback failed", exc_info=True)

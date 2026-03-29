@@ -192,6 +192,21 @@ class TestExecuteTool:
         )
         assert "hello world" in result
 
+    def test_execute_read_aloud_uses_async_tts_when_available(self):
+        """read_aloud should not block the tool round when background TTS is available."""
+        mod = _import_tools()
+        tts_client = MagicMock()
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "literal:hello world"},
+            tts_client=tts_client,
+        )
+
+        tts_client.speak_async.assert_called_once_with("hello world")
+        tts_client.speak.assert_not_called()
+        assert result == "Speaking: hello world"
+
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""
         mod = _import_tools()
