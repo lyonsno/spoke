@@ -63,6 +63,24 @@ class CommandClient:
     def history(self) -> list[tuple[str, str]]:
         return list(self._history)
 
+    def list_models(self) -> list[str]:
+        """Return model ids exposed by the OMLX OpenAI-compatible endpoint."""
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        req = urllib.request.Request(
+            f"{self._base_url}/v1/models",
+            headers=headers,
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return [
+            model["id"]
+            for model in payload.get("data", [])
+            if isinstance(model, dict) and model.get("id")
+        ]
+
     def _build_messages(self, utterance: str) -> list[dict]:
         """Assemble the messages array: system + history + current utterance.
 
