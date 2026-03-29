@@ -942,29 +942,38 @@ class SpokeAppDelegate(NSObject):
         if not self._tray_active or not self._tray_stack:
             return
         text = self._tray_stack[self._tray_index]
-        self._recovery_text = text
 
-        # Check for focused text input
-        if not has_focused_text_input():
-            logger.info("Tray insert — no focused element, bouncing")
-            if self._overlay is not None:
-                self._overlay.bounce()
-            return
-
-        # Dismiss tray overlay and inject
-        if self._overlay is not None:
-            self._overlay.order_out()
-
-        inject_text(text)
+        # Dismiss tray first, then inject. Dismissing before inject ensures
+        # the tray overlay doesn't interfere with focus on the target app.
+        self._tray_active = False
+        self._detector.tray_active = False
 
         # Remove consumed entry from stack
         del self._tray_stack[self._tray_index]
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
 
-        self._tray_active = False
-        self._detector.tray_active = False
         self._cancel_recovery()
+        if self._overlay is not None:
+            self._overlay.hide()
+
+        # Small delay to let focus settle after overlay dismissal,
+        # then inject the text
+        self._tray_pending_inject = text
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.05, self, "trayInjectDelayed:", None, False
+        )
+
+    def trayInjectDelayed_(self, timer) -> None:
+        """Inject tray text after a short delay for focus to settle."""
+        text = getattr(self, "_tray_pending_inject", None)
+        self._tray_pending_inject = None
+        if not text:
+            return
+
+        inject_text(text)
+        logger.info("Tray injected: %r", text[:50])
         if self._menubar is not None:
             self._menubar.set_status_text("Pasted!")
 
