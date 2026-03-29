@@ -57,7 +57,7 @@ _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
-_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.55)
+_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
 _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
@@ -104,6 +104,11 @@ class CommandOverlay(NSObject):
 
         # Linger timer
         self._linger_timer: NSTimer | None = None
+
+        # TTS amplitude state — drives window opacity during speech playback
+        self._tts_amplitude = 0.0
+        self._tts_active = False
+        self._tts_blend = 0.0  # 0.0 = pure pulse, 1.0 = pure TTS
 
         # Thinking timer state
         self._thinking_timer: NSTimer | None = None
@@ -511,6 +516,37 @@ class CommandOverlay(NSObject):
         self._stop_thinking_timer()
         # Pulse keeps running — the overlay is alive until dismissed
 
+    # ── TTS amplitude ─────────────────────────────────────────
+
+    _TTS_RISE = 0.70      # fast but not instant — avoids harsh pop-in
+    _TTS_DECAY = 0.82     # gentle falloff — no clipping between words
+    _TTS_MULTIPLIER = 25.0
+    _TTS_ALPHA_MIN = 0.45  # clearly visible even in pauses
+    _TTS_ALPHA_MAX = 1.0   # full brightness on voice peaks
+
+    def update_tts_amplitude(self, rms: float) -> None:
+        """Update smoothed TTS amplitude from audio RMS.
+
+        The pulse step reads _tts_amplitude when _tts_active is True to
+        drive the response text alpha — no window alpha manipulation here,
+        so there's no fighting between pulse and TTS updates.
+        Must be called on the main thread.
+        """
+        if rms > self._tts_amplitude:
+            self._tts_amplitude += (rms - self._tts_amplitude) * self._TTS_RISE
+        else:
+            self._tts_amplitude *= self._TTS_DECAY
+
+    def tts_start(self) -> None:
+        """Prepare overlay for TTS-driven amplitude."""
+        self._tts_active = True
+        self._tts_amplitude = 0.0
+
+    def tts_stop(self) -> None:
+        """Return to pulse-driven alpha after TTS ends."""
+        self._tts_active = False
+        self._tts_amplitude = 0.0
+
     # ── animation ───────────────────────────────────────────
 
     def fadeStep_(self, timer) -> None:
@@ -587,12 +623,28 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
-        alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
+        pulse_alpha_a = 0.52 + 0.325 * breath  # 130% brighter floor and ceiling
+
+        # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
+        # _tts_blend ramps toward 1.0 when TTS is active, toward 0.0 when not.
+        # At 30Hz pulse rate, 0.06 per tick ≈ 0.55s full ramp.
+        _BLEND_RATE = 0.06
+        if self._tts_active:
+            self._tts_blend = min(self._tts_blend + _BLEND_RATE, 1.0)
+        else:
+            self._tts_blend = max(self._tts_blend - _BLEND_RATE, 0.0)
+
+        if self._tts_blend > 0.0:
+            tts_scaled = min(self._tts_amplitude * self._TTS_MULTIPLIER, 1.0)
+            tts_alpha = self._TTS_ALPHA_MIN + tts_scaled * (self._TTS_ALPHA_MAX - self._TTS_ALPHA_MIN)
+            alpha_a = pulse_alpha_a * (1.0 - self._tts_blend) + tts_alpha * self._tts_blend
+        else:
+            alpha_a = pulse_alpha_a
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
         pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
-        utt_alpha = 0.2 + 0.25 * pulse_u
+        utt_alpha = 0.325 + 0.125 * pulse_u
 
         # Full spectrum hue rotation with velocity undulation
         # The speed varies sinusoidally so it dwells in some colors and
@@ -612,7 +664,7 @@ class CommandOverlay(NSObject):
         self._color_log_counter += 1
         if self._color_log_counter % 30 == 0:
             logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
-        s, v = 0.38, 0.81  # soft pastel — readable, not neon
+        s, v = 0.228, 0.81  # desaturated — legible, ambient, not neon
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c

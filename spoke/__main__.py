@@ -41,6 +41,7 @@ from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_qwen import LocalQwenClient
+from .tts import TTSClient
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,12 @@ class SpokeAppDelegate(NSObject):
         else:
             self._command_client = None
             self._command_overlay = None
+
+        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
+        self._tts_client = TTSClient.from_env()
+        if self._tts_client is not None:
+            self._tts_client._gpu_lock = self._local_inference_lock
+            logger.info("TTS enabled: voice=%s", self._tts_client._voice)
 
         # Recovery mode state
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -276,6 +283,11 @@ class SpokeAppDelegate(NSObject):
         self._warm_error = None
         self._menubar.set_status_text("Ready — hold spacebar")
 
+        # Warm TTS after Whisper is loaded to avoid Metal GPU contention
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            tts.warm()
+
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
         if self._detector.install():
@@ -306,6 +318,11 @@ class SpokeAppDelegate(NSObject):
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
+
+        # Cancel any in-flight TTS playback
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            tts.cancel()
 
         # If recovery overlay is active, don't start recording.
         # The hold-end handler will check shift state and either:
@@ -839,10 +856,12 @@ class SpokeAppDelegate(NSObject):
         )
 
         # Step 2: Stream the command response
+        full_response = ""
         try:
             for content_token in self._command_client.stream_command(utterance):
                 if token != self._transcription_token:
                     break  # stale
+                full_response += content_token
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "commandToken:",
                     {"token": token, "text": content_token},
@@ -856,7 +875,7 @@ class SpokeAppDelegate(NSObject):
             return
 
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "commandComplete:", {"token": token}, False
+            "commandComplete:", {"token": token, "response": full_response}, False
         )
 
     def commandUtteranceReady_(self, payload: dict) -> None:
@@ -894,12 +913,45 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._glow is not None:
-            self._glow.hide()  # dimmer recedes when generation finishes
         if self._command_overlay is not None:
             self._command_overlay.finish()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+        # Autoplay response via TTS if enabled — keep glow alive for amplitude
+        response = payload.get("response", "")
+        tts = getattr(self, "_tts_client", None)
+        if response and tts is not None:
+            if self._glow is not None:
+                self._glow.hide()
+            if self._command_overlay is not None:
+                self._command_overlay.tts_start()
+            tts.speak_async(
+                response,
+                amplitude_callback=self._on_tts_amplitude,
+                done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "ttsFinished:", None, False
+                ),
+            )
+        elif self._glow is not None:
+            self._glow.hide()
+
+    def _on_tts_amplitude(self, rms: float) -> None:
+        """Called from TTS thread — marshal to main thread."""
+        from Foundation import NSNumber
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "ttsAmplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
+        )
+
+    def ttsAmplitudeUpdate_(self, rms_number) -> None:
+        """Main thread: forward TTS amplitude to command overlay."""
+        rms = float(rms_number)
+        if self._command_overlay is not None:
+            self._command_overlay.update_tts_amplitude(rms)
+
+    def ttsFinished_(self, _) -> None:
+        """Main thread: TTS playback ended — restore overlay opacity."""
+        if self._command_overlay is not None:
+            self._command_overlay.tts_stop()
 
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""

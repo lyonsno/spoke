@@ -57,12 +57,12 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.10)
-_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
+_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
-_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.115)
-_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
+_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
+_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -71,7 +71,7 @@ _GLOW_COLOR = _scale_color_saturation(
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
-_OUTER_GLOW_PEAK_TARGET = 0.35
+_OUTER_GLOW_PEAK_TARGET = 0.70
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -521,15 +521,36 @@ class TranscriptionOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
         )
 
+        # Darken background at saturation: 325% of base at full amplitude
+        bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
+        if hasattr(self, '_content_view') and self._content_view is not None:
+            self._content_view.layer().setBackgroundColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
+            )
+
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.
 
         opacity should be the screen glow's current opacity (0.0–1.0).
         cap_factor scales the glow down during the recording cap countdown
         (1.0 = full, ramps toward 0.25 near the cap).
+
+        Has its own smoothing (60% of screen glow's attack speed) so the
+        overlay glow responds more gently than the screen edge.
         """
         if not self._visible:
             return
+        # Independent smoothing — 60% of the screen glow's attack
+        _OVERLAY_GLOW_RISE = 0.54   # 60% of screen glow's 0.90
+        _OVERLAY_GLOW_DECAY = 0.70  # 60% blend toward screen glow's 0.50
+        if not hasattr(self, '_smoothed_glow_opacity'):
+            self._smoothed_glow_opacity = 0.0
+        if opacity > self._smoothed_glow_opacity:
+            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * _OVERLAY_GLOW_RISE
+        else:
+            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * (1.0 - _OVERLAY_GLOW_DECAY)
+        opacity = self._smoothed_glow_opacity
+
         # Apply recording-cap countdown scaling
         if cap_factor < 1.0:
             cap_floor = 0.25
@@ -537,11 +558,11 @@ class TranscriptionOverlay(NSObject):
             opacity *= scale
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(opacity)
+            self._inner_shadow.setShadowOpacity_(min(opacity * 1.4, 1.0))
         if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(outer_opacity * 0.5)
+            self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(outer_opacity * 0.8)
+            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * 1.12, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
