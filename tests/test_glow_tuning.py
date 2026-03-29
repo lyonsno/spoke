@@ -123,6 +123,17 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_smoke_preview_drive_lifts_idle_visibility_without_clipping_peak(self, mock_pyobjc):
+        """The branch-local smoke remap should make idle texture visible while leaving the top end intact."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            assert mod._smoke_preview_drive(0.0) == pytest.approx(0.5)
+            assert mod._smoke_preview_drive(0.5) == pytest.approx(0.75)
+            assert mod._smoke_preview_drive(1.0) == pytest.approx(1.0)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_edge_mix_gives_light_backgrounds_extra_subtractive_presence(self, mock_pyobjc):
         """Bright scenes should get a modest subtractive boost so the edge treatment stays visible."""
         sys.modules.pop("spoke.glow", None)
@@ -250,6 +261,26 @@ class TestGlowTuning:
             glow.hide()
 
             texture_timer.invalidate.assert_called_once_with()
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_update_amplitude_keeps_idle_glow_above_base_for_smoke(self, mock_pyobjc, monkeypatch):
+        """Zero signal should still render above the cached base opacity during the smoke pass."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._brightness = 0.5
+            glow._additive_mix = 1.0
+            glow._subtractive_mix = 0.0
+            glow._vignette_layer = MagicMock()
+            monkeypatch.setattr(mod.time, "monotonic", lambda: 100.0)
+
+            glow.update_amplitude(0.0)
+
+            idle_opacity = glow._glow_layer.setOpacity_.call_args[0][0]
+            assert idle_opacity > glow._glow_base_opacity
         finally:
             sys.modules.pop("spoke.glow", None)
 

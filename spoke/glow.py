@@ -93,6 +93,8 @@ _VIGNETTE_OPACITY_SCALE = 3.05
 _TEXTURE_ANIMATION_INTERVAL = 0.08
 _TEXTURE_MIN_GRID_WIDTH = 96
 _TEXTURE_MIN_GRID_HEIGHT = 64
+_TEXTURE_SMOKE_PREVIEW_FLOOR = 0.5
+_TEXTURE_SMOKE_PREVIEW_CEILING = 1.0
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -622,6 +624,14 @@ def _texture_subtractive_color(base_color: tuple[float, float, float], spec: dic
     return (rgb[0] * scale, rgb[1] * scale, rgb[2] * scale)
 
 
+def _smoke_preview_drive(normalized_opacity: float) -> float:
+    """Temporarily lift the branch-local smoke floor without flattening the speaking peak."""
+    normalized = min(max(normalized_opacity, 0.0), 1.0)
+    floor = min(max(_TEXTURE_SMOKE_PREVIEW_FLOOR, 0.0), 1.0)
+    ceiling = min(max(_TEXTURE_SMOKE_PREVIEW_CEILING, floor), 1.0)
+    return floor + normalized * (ceiling - floor)
+
+
 class GlowOverlay(NSObject):
     """Manages a screen-border glow window driven by audio amplitude."""
 
@@ -1069,6 +1079,7 @@ class GlowOverlay(NSObject):
         # All smoothing math above stays linear; this is the last step
         # before "rendering" — the display gamma, essentially.
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
+        amplitude_opacity = _smoke_preview_drive(amplitude_opacity)
         opacity = self._glow_base_opacity + amplitude_opacity * (_GLOW_MAX_OPACITY - self._glow_base_opacity)
         opacity = min(opacity, self._glow_peak_target)
 
