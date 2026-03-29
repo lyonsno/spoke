@@ -61,7 +61,10 @@ _GLOW_PEAK_TARGET = 0.119
 _GLOW_BASE_OPACITY_DARK = 0.059
 _GLOW_BASE_OPACITY_LIGHT = 0.196
 _GLOW_PEAK_TARGET_DARK = 0.105
-_GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
+_GLOW_PEAK_TARGET_LIGHT = 0.30
+_GLOW_HALO_RADIUS_SCALE = 3.0
+_GLOW_HALO_OPACITY = 0.5
+_GLOW_HALO_FILL_ALPHA = 0.02
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
@@ -225,6 +228,22 @@ def _edge_band_colors(
     return inner, middle, outer
 
 
+def _glow_shadow_profiles() -> tuple[dict[str, float], dict[str, float]]:
+    """Describe the tight rim bloom and the wider supporting halo."""
+    return (
+        {
+            "radius": _GLOW_SHADOW_RADIUS,
+            "opacity": 1.0,
+            "fill_alpha": 0.05,
+        },
+        {
+            "radius": _GLOW_SHADOW_RADIUS * _GLOW_HALO_RADIUS_SCALE,
+            "opacity": _GLOW_HALO_OPACITY,
+            "fill_alpha": _GLOW_HALO_FILL_ALPHA,
+        },
+    )
+
+
 def _rounded_rect_path(x, y, w, h, top_radius, bottom_radius):
     """Create a CGPath rounded rect with different top and bottom corner radii."""
     from Quartz import (
@@ -359,11 +378,6 @@ class GlowOverlay(NSObject):
         self._glow_layer.setFrame_(((0, 0), (w, h)))
         self._glow_layer.setOpacity_(0.0)
 
-        # ── Shadow-casting shape: thick border, full opacity ─────
-        # This layer is a child that casts the soft bloom shadow.
-        # Its own fill is hidden by the mask below — only its shadow is visible.
-        shadow_shape = CAShapeLayer.alloc().init()
-
         outer = _rounded_rect_path(0, 0, w, h,
                                    _CORNER_RADIUS_TOP, _CORNER_RADIUS_BOTTOM)
         inner = _rounded_rect_path(_GLOW_WIDTH, _GLOW_WIDTH,
@@ -375,23 +389,24 @@ class GlowOverlay(NSObject):
         combined = CGPathCreateMutableCopy(outer)
         CGPathAddPath(combined, None, inner)
 
-        shadow_shape.setPath_(combined)
-        shadow_shape.setFillRule_(kCAFillRuleEvenOdd)
-        shadow_shape.setFillColor_(inner_glow.CGColor())
-
-        # Shadow bloom — the main visual
-        shadow_shape.setShadowColor_(outer_glow.CGColor())
-        shadow_shape.setShadowOffset_((0, 0))
-        shadow_shape.setShadowRadius_(_GLOW_SHADOW_RADIUS)
-        shadow_shape.setShadowOpacity_(1.0)
-
-        self._glow_layer.addSublayer_(shadow_shape)
-        self._shadow_shape = shadow_shape
-
-        # Shape fill nearly transparent — just enough for CA to cast shadow
-        shadow_shape.setFillColor_(
-            inner_glow.colorWithAlphaComponent_(0.05).CGColor()
-        )
+        # ── Shadow-casting shapes: tight rim bloom plus a much wider soft halo ──
+        self._shadow_layers = []
+        for profile in _glow_shadow_profiles():
+            shadow_shape = CAShapeLayer.alloc().init()
+            shadow_shape.setPath_(combined)
+            shadow_shape.setFillRule_(kCAFillRuleEvenOdd)
+            shadow_shape.setFillColor_(inner_glow.CGColor())
+            shadow_shape.setShadowColor_(outer_glow.CGColor())
+            shadow_shape.setShadowOffset_((0, 0))
+            shadow_shape.setShadowRadius_(profile["radius"])
+            shadow_shape.setShadowOpacity_(profile["opacity"])
+            self._glow_layer.addSublayer_(shadow_shape)
+            shadow_shape.setFillColor_(
+                inner_glow.colorWithAlphaComponent_(profile["fill_alpha"]).CGColor()
+            )
+            self._shadow_layers.append(shadow_shape)
+        self._shadow_shape = self._shadow_layers[0]
+        self._halo_shadow_shape = self._shadow_layers[1]
 
         # Add 4 gradient layers for the visible feathered edge glow.
         # Exponential-style falloff: bright at edge, drops fast, long subtle tail.
@@ -442,7 +457,9 @@ class GlowOverlay(NSObject):
 
             self._glow_layer.addSublayer_(g)
 
-        self._gradient_layers = [self._glow_layer.sublayers()[i] for i in range(1, 5)]
+        self._gradient_layers = [
+            self._glow_layer.sublayers()[i] for i in range(len(self._shadow_layers), len(self._shadow_layers) + 4)
+        ]
 
         # ── Subtractive vignette: darkened colored edges for light backgrounds ──
         # Same shape as the additive glow but uses dark-tinted colors.
@@ -495,7 +512,14 @@ class GlowOverlay(NSObject):
         outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
             outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
         )
-        if hasattr(self, '_shadow_shape'):
+        shadow_layers = getattr(self, "_shadow_layers", None)
+        if shadow_layers:
+            for shadow_layer, profile in zip(shadow_layers, _glow_shadow_profiles()):
+                shadow_layer.setShadowColor_(outer_glow.CGColor())
+                shadow_layer.setFillColor_(
+                    inner_glow.colorWithAlphaComponent_(profile["fill_alpha"]).CGColor()
+                )
+        elif hasattr(self, "_shadow_shape"):
             self._shadow_shape.setShadowColor_(outer_glow.CGColor())
             self._shadow_shape.setFillColor_(
                 inner_glow.colorWithAlphaComponent_(0.05).CGColor()
