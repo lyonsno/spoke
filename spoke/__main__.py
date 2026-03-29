@@ -1480,6 +1480,10 @@ class SpokeAppDelegate(NSObject):
             or os.environ.get("SPOKE_WHISPER_MODEL")
             or self._default_transcription_model(),
         )
+        current_preview, current_transcription = self._sanitize_model_ids(
+            current_preview,
+            current_transcription,
+        )
         self._apply_model_selection(
             preview_model=current_preview if model_id is None else model_id,
             transcription_model=current_transcription if model_id is None else model_id,
@@ -1488,17 +1492,23 @@ class SpokeAppDelegate(NSObject):
     def _handle_model_menu_action(self, selection):
         """Menu callback for preview/transcription role-specific model choices."""
         if selection is None:
+            current_preview = getattr(
+                self, "_preview_model_id", _DEFAULT_PREVIEW_MODEL
+            )
+            current_transcription = getattr(
+                self, "_transcription_model_id", self._default_transcription_model()
+            )
+            current_preview, current_transcription = self._sanitize_model_ids(
+                current_preview,
+                current_transcription,
+            )
             state = {
                 "transcription": {
-                    "selected": getattr(
-                        self, "_transcription_model_id", self._default_transcription_model()
-                    ),
+                    "selected": current_transcription,
                     "models": self._select_model(None),
                 },
                 "preview": {
-                    "selected": getattr(
-                        self, "_preview_model_id", _DEFAULT_PREVIEW_MODEL
-                    ),
+                    "selected": current_preview,
                     "models": self._select_model(None),
                 },
             }
@@ -1561,6 +1571,10 @@ class SpokeAppDelegate(NSObject):
             os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or os.environ.get("SPOKE_WHISPER_MODEL")
             or self._default_transcription_model(),
+        )
+        current_preview, current_transcription = self._sanitize_model_ids(
+            current_preview,
+            current_transcription,
         )
         preview_model = current_preview
         transcription_model = current_transcription
@@ -1642,21 +1656,70 @@ class SpokeAppDelegate(NSObject):
             return _DEFAULT_TRANSCRIPTION_MODEL
         return _DEFAULT_PREVIEW_MODEL
 
+    def _fallback_model_for_role(self, role: str) -> str:
+        if role == "preview":
+            return _DEFAULT_PREVIEW_MODEL
+        return self._default_transcription_model()
+
+    def _sanitize_model_id(self, model_id: str, *, role: str) -> str:
+        if self._model_allowed(model_id):
+            return model_id
+        fallback = self._fallback_model_for_role(role)
+        logger.warning(
+            "%s model %s not available on this machine (%.0fGB RAM) — falling back to %s",
+            role.title(),
+            model_id,
+            _RAM_GB,
+            fallback,
+        )
+        return fallback
+
+    def _sanitize_model_ids(
+        self, preview_model: str, transcription_model: str
+    ) -> tuple[str, str]:
+        return (
+            self._sanitize_model_id(preview_model, role="preview"),
+            self._sanitize_model_id(transcription_model, role="transcription"),
+        )
+
     def _resolve_model_ids(self) -> tuple[str, str]:
         prefs = self._load_model_preferences()
         legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
-        preview_model = (
+        raw_preview_model = (
             os.environ.get("SPOKE_PREVIEW_MODEL")
             or prefs.get("preview_model")
             or legacy_model
             or _DEFAULT_PREVIEW_MODEL
         )
-        transcription_model = (
+        raw_transcription_model = (
             os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or prefs.get("transcription_model")
             or legacy_model
             or self._default_transcription_model()
         )
+        preview_model, transcription_model = self._sanitize_model_ids(
+            raw_preview_model,
+            raw_transcription_model,
+        )
+        if (
+            not os.environ.get("SPOKE_PREVIEW_MODEL")
+            and not os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            and not legacy_model
+            and (
+                prefs.get("preview_model") is not None
+                or prefs.get("transcription_model") is not None
+            )
+            and (
+                preview_model != raw_preview_model
+                or transcription_model != raw_transcription_model
+            )
+        ):
+            logger.info(
+                "Repairing unsupported saved model preferences: preview=%s, transcription=%s",
+                preview_model,
+                transcription_model,
+            )
+            self._save_model_preferences(preview_model, transcription_model)
         return preview_model, transcription_model
 
     def _resolve_local_whisper_settings(self) -> tuple[float | None, bool]:

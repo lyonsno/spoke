@@ -984,6 +984,57 @@ class TestDualModelConfiguration:
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
 
+    def test_init_falls_back_from_unsupported_persisted_transcription_model(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Unsupported saved transcription models should not abort startup."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "preview_model": "mlx-community/whisper-tiny.en-mlx",\n'
+            '  "transcription_model": "mlx-community/whisper-large-v3-turbo"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._transcription_model_id == "mlx-community/whisper-medium.en-mlx-8bit"
+        assert d._preview_model_id == "mlx-community/whisper-tiny.en-mlx"
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx-8bit"
+
+    def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
+        self, main_module, monkeypatch
+    ):
+        """Menu state should not advertise an unsupported current selection."""
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+        d._preview_model_id = "mlx-community/whisper-tiny.en-mlx"
+        d._transcription_model_id = "mlx-community/whisper-large-v3-turbo"
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription"]["selected"] == "mlx-community/whisper-medium.en-mlx-8bit"
+        transcription_ids = [model_id for model_id, _label, _enabled in model_state["transcription"]["models"]]
+        assert "mlx-community/whisper-large-v3-turbo" not in transcription_ids
+
     def test_switching_away_from_qwen_persists_models_across_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):
