@@ -414,7 +414,10 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             # Shift released while spacebar is still held
             if getattr(det, 'tray_active', False) and getattr(det, '_shift_down_during_hold', False):
                 det._shift_down_during_hold = False
-                # Shift was tapped while spacebar held = navigate up (more recent)
+                # Shift was tapped while spacebar held = navigate up (more recent).
+                # Clear _shift_latched so the subsequent spacebar release doesn't
+                # also see shift_held=True and fire navigate down.
+                det._shift_latched = False
                 logger.info("Shift tapped during spacebar hold — navigate up")
                 on_tap = getattr(det, '_on_shift_tap_during_hold', None)
                 if on_tap is not None:
