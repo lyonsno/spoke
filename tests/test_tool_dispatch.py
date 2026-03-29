@@ -87,6 +87,17 @@ class TestToolSchemas:
         assert "target_repo" in params.get("properties", {})
         assert "operations" in params.get("properties", {})
 
+    def test_query_gmail_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "query_gmail" in names
+
+        gmail_schema = next(s for s in schemas if s["function"]["name"] == "query_gmail")
+        params = gmail_schema["function"]["parameters"]
+        assert "mode" in params.get("properties", {})
+        assert "max_results" in params.get("properties", {})
+
 
     def test_list_directory_schema(self):
         mod = _import_tools()
@@ -414,6 +425,38 @@ class TestExecuteTool:
 
         parsed = json.loads(result)
         assert parsed["error"] == "bad worktree"
+
+    def test_execute_query_gmail(self):
+        mod = _import_tools()
+        fake_result = {
+            "mode": "starred_recruiter_mail",
+            "matched_count": 1,
+            "messages": [{"id": "m-1"}],
+        }
+        fake_operator = MagicMock()
+        fake_operator.execute_query.return_value = fake_result
+
+        with patch("spoke.tool_dispatch.GmailOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="query_gmail",
+                arguments={"mode": "starred_recruiter_mail", "max_results": 5},
+            )
+
+        assert json.loads(result) == fake_result
+
+    def test_execute_query_gmail_error(self):
+        mod = _import_tools()
+        with patch(
+            "spoke.tool_dispatch.GmailOperator",
+            side_effect=mod.GmailOperatorError("missing credentials"),
+        ):
+            result = mod.execute_tool(
+                name="query_gmail",
+                arguments={"mode": "starred_recruiter_mail", "max_results": 5},
+            )
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "missing credentials"
 
 
 # ── Command client with tools ────────────────────────────────────

@@ -41,6 +41,7 @@ class TestCommandClient:
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
         assert "add_to_tray" in msgs[0]["content"]
+        assert "query_gmail" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
 
     def test_system_prompt_explicitly_allows_literal_read_aloud(self):

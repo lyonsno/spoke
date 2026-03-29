@@ -24,6 +24,7 @@ Quick taps still produce a normal space. Longer holds trigger recording, show th
 - Live preview overlay during recording
 - Screen-edge glow driven by microphone amplitude
 - Local transcription by default (Whisper or Qwen3-ASR) when `SPOKE_WHISPER_URL` is unset
+- Optional spoken-command pathway with local tool calls and overlay output
 - Optional remote sidecar mode for heavier models
 - Voice command pathway via Shift+Space — sends utterances to a local LLM with streaming response overlay
 - OCR-verified paste with automatic recovery overlay on failure
@@ -172,6 +173,23 @@ choices across relaunches.
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
 | `SPOKE_COMMAND_URL` | unset | Local LLM server for voice commands (Shift+Space). Chat completions endpoint. |
 | `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model name sent in command requests. |
+
+### Command and Gmail
+
+| Variable | Default | Description |
+|---|---|---|
+| `SPOKE_COMMAND_URL` | unset | Enables the spoken-command pathway when set to an OpenAI-compatible chat completions endpoint. |
+| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model id used for the spoken-command pathway. |
+| `SPOKE_COMMAND_API_KEY` | unset | Optional bearer token for the command endpoint. |
+| `SPOKE_GMAIL_CREDENTIALS_PATH` | `~/Library/Application Support/Spoke/gmail_credentials.json` | Local JSON file containing Gmail OAuth material for the bounded read-only `query_gmail` tool. |
+| `SPOKE_GMAIL_CLIENT_ID` | unset | Optional env override for the Gmail OAuth client id. |
+| `SPOKE_GMAIL_CLIENT_SECRET` | unset | Optional env override for the Gmail OAuth client secret. |
+| `SPOKE_GMAIL_REFRESH_TOKEN` | unset | Optional env override for the Gmail OAuth refresh token. |
+| `SPOKE_GMAIL_TOKEN_URI` | `https://oauth2.googleapis.com/token` | Optional token endpoint override for Gmail OAuth refresh requests. |
+
+The first Gmail affordance is intentionally narrow and read-only: `query_gmail`
+currently supports recent starred recruiter- or CTO-style mail and returns
+compact metadata plus snippets rather than full message bodies.
 
 ### UI tuning
 
