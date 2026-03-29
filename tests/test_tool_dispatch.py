@@ -75,6 +75,18 @@ class TestToolSchemas:
             params["properties"]["source_ref"]["description"]
         )
 
+    def test_epistaxis_ops_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "run_epistaxis_ops" in names
+
+        op_schema = next(s for s in schemas if s["function"]["name"] == "run_epistaxis_ops")
+        params = op_schema["function"]["parameters"]
+        assert "epistaxis_root" in params.get("properties", {})
+        assert "target_repo" in params.get("properties", {})
+        assert "operations" in params.get("properties", {})
+
 
     def test_list_directory_schema(self):
         mod = _import_tools()
@@ -365,6 +377,43 @@ class TestExecuteTool:
         mod = _import_tools()
         result = mod.execute_tool(name="nonexistent", arguments={})
         assert "unknown tool" in result.lower() or "error" in result.lower()
+
+    def test_execute_epistaxis_ops(self):
+        mod = _import_tools()
+        fake_result = {"target_repo": "spoke", "operations": [{"op": "git_status", "status": ""}]}
+        fake_operator = MagicMock()
+        fake_operator.execute_plan.return_value = fake_result["operations"]
+
+        with patch("spoke.tool_dispatch.EpistaxisOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="run_epistaxis_ops",
+                arguments={
+                    "epistaxis_root": "/tmp/epistaxis-spoke-operator",
+                    "target_repo": "spoke",
+                    "operations": [{"op": "git_status"}],
+                },
+            )
+
+        parsed = json.loads(result)
+        assert parsed == fake_result
+
+    def test_execute_epistaxis_ops_error(self):
+        mod = _import_tools()
+        with patch(
+            "spoke.tool_dispatch.EpistaxisOperator",
+            side_effect=mod.EpistaxisOperatorError("bad worktree"),
+        ):
+            result = mod.execute_tool(
+                name="run_epistaxis_ops",
+                arguments={
+                    "epistaxis_root": "/Users/noahlyons/dev/epistaxis",
+                    "target_repo": "spoke",
+                    "operations": [{"op": "git_status"}],
+                },
+            )
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "bad worktree"
 
 
 # ── Command client with tools ────────────────────────────────────
