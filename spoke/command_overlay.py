@@ -54,7 +54,7 @@ _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
-_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.55)
+_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
 _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
@@ -516,23 +516,17 @@ class CommandOverlay(NSObject):
     _TTS_ALPHA_MAX = 1.0   # full brightness on voice peaks
 
     def update_tts_amplitude(self, rms: float) -> None:
-        """Drive window opacity from TTS audio RMS.
+        """Update smoothed TTS amplitude from audio RMS.
 
-        Uses the edge glow's aggressive attack/decay so the overlay
-        visibly breathes with the assistant's voice.
+        The pulse step reads _tts_amplitude when _tts_active is True to
+        drive the response text alpha — no window alpha manipulation here,
+        so there's no fighting between pulse and TTS updates.
         Must be called on the main thread.
         """
-        if self._window is None or not self._visible:
-            return
-
         if rms > self._tts_amplitude:
             self._tts_amplitude += (rms - self._tts_amplitude) * self._TTS_RISE
         else:
             self._tts_amplitude *= self._TTS_DECAY
-
-        scaled = min(self._tts_amplitude * self._TTS_MULTIPLIER, 1.0)
-        alpha = self._TTS_ALPHA_MIN + scaled * (self._TTS_ALPHA_MAX - self._TTS_ALPHA_MIN)
-        self._window.setAlphaValue_(alpha)
 
     def tts_start(self) -> None:
         """Prepare overlay for TTS-driven amplitude."""
@@ -540,11 +534,9 @@ class CommandOverlay(NSObject):
         self._tts_amplitude = 0.0
 
     def tts_stop(self) -> None:
-        """Restore overlay to full opacity after TTS ends."""
+        """Return to pulse-driven alpha after TTS ends."""
         self._tts_active = False
         self._tts_amplitude = 0.0
-        if self._window is not None and self._visible:
-            self._window.setAlphaValue_(1.0)
 
     # ── animation ───────────────────────────────────────────
 
@@ -622,7 +614,15 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
-        alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
+        pulse_alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
+
+        # When TTS is driving amplitude, cross-fade from pulse to TTS-driven alpha
+        if self._tts_active:
+            tts_scaled = min(self._tts_amplitude * self._TTS_MULTIPLIER, 1.0)
+            tts_alpha = self._TTS_ALPHA_MIN + tts_scaled * (self._TTS_ALPHA_MAX - self._TTS_ALPHA_MIN)
+            alpha_a = tts_alpha
+        else:
+            alpha_a = pulse_alpha_a
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))

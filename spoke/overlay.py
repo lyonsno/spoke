@@ -57,7 +57,7 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.10)
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.07)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
@@ -520,6 +520,13 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
         )
+
+        # Darken background at saturation: 140% of base at full amplitude
+        bg_alpha = _BG_ALPHA_MIN * (1.0 + 0.40 * scaled)
+        if hasattr(self, '_content_view') and self._content_view is not None:
+            self._content_view.layer().setBackgroundColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
+            )
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.
