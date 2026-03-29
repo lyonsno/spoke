@@ -41,10 +41,11 @@ Each key has a consistent identity across the entire grammar:
 The hold threshold defaults to 400ms (configurable via `SPOKE_HOLD_MS`, which
 sets the threshold in the `SpacebarHoldDetector`).
 
-## The fork-at-release principle
+## Disposition at release
 
-The intent fork happens at release, not at press. You hold spacebar, speak,
-and at the moment you let go you decide what the utterance was:
+For the ordinary recording path, utterance disposition is decided when capture
+ends, not when recording starts. You hold spacebar, speak, and at the moment
+capture ends you decide what the utterance becomes:
 
 - **Clean release** → text insertion (dictation)
 - **Shift held at release** → tray (review before committing)
@@ -52,7 +53,8 @@ and at the moment you let go you decide what the utterance was:
 
 Shift and enter can be pressed at any point during the hold — shift is latched
 via `kCGEventFlagsChanged`, so pressing shift after you start speaking still
-routes to the tray. What matters is what's held when spacebar comes up.
+routes to the tray. For the ordinary path, what matters is what's held when
+spacebar comes up.
 
 ## Modifier blocking
 
@@ -100,6 +102,41 @@ case the forwarded events are lost.
 
 This is the fast path for confident sends — you know before you finish
 speaking that this is a command. Hold enter, release spacebar, done.
+
+## Latched recording extension (planned)
+
+Latched recording is a mid-capture state transition, not a change in
+end-of-recording intent. The utterance's disposition is still chosen only
+when capture ends.
+
+### Entry
+
+- Start with an ordinary recording hold.
+- During active recording, tap shift while keeping spacebar held.
+- That shift tap changes the recording state to **latched recording**.
+- Once latched, releasing spacebar no longer ends capture.
+
+This is deliberately different from the ordinary shift-at-release tray route.
+The shift tap does not yet decide "tray" or "assistant." It only says "keep
+recording even after spacebar comes up."
+
+### Exits from latched recording
+
+| Gesture | Result |
+|---|---|
+| Enter | Stop capture, transcribe, send to assistant |
+| Hold shift + press spacebar, then release spacebar | Stop capture, transcribe, enter tray |
+
+Latched recording is intentionally not a second direct-text pathway. Clean
+release text insertion remains the ordinary pre-latch route. Once a recording
+has been latched, it exits through tray or assistant.
+
+### Relationship to the tray
+
+Tray entry does not change. From the tray, spacebar hold (≥ 400ms) still
+starts a new recording and pushes the current tray text down in the stack.
+If that new recording should continue hands-free, tap shift during the
+recording to latch it.
 
 ## The tray
 
