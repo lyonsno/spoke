@@ -508,6 +508,7 @@ class SpokeAppDelegate(NSObject):
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
         logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
+        self._maybe_prepare_command_overlay_dismiss_prep()
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -794,6 +795,8 @@ class SpokeAppDelegate(NSObject):
                     logger.info("Enter+empty — dismissing command overlay")
                     self._command_overlay.cancel_dismiss()
                 else:
+                    if self._command_overlay is not None:
+                        self._command_overlay.cancel_dismiss_prep(reset=True)
                     # Not showing — recall last response
                     history = self._command_client.history
                     if history:
@@ -810,6 +813,8 @@ class SpokeAppDelegate(NSObject):
                     else:
                         logger.info("Enter+empty — no history to recall")
             elif shift_held:
+                if self._command_overlay is not None:
+                    self._command_overlay.cancel_dismiss_prep(reset=True)
                 # Shift + empty recording = recall tray
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
@@ -821,6 +826,8 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             else:
+                if self._command_overlay is not None:
+                    self._command_overlay.cancel_dismiss_prep(reset=True)
                 command_visible = (
                     self._command_overlay is not None
                     and getattr(self._command_overlay, '_visible', False)
@@ -832,6 +839,9 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
+
+        if self._command_overlay is not None:
+            self._command_overlay.cancel_dismiss_prep(reset=True)
 
         # Invalidate any in-flight transcription so its result is discarded
         self._transcription_token += 1
@@ -995,6 +1005,20 @@ class SpokeAppDelegate(NSObject):
             getattr(self._glow, "_brightness", 0.0),
             immediate=immediate,
         )
+
+    def _maybe_prepare_command_overlay_dismiss_prep(self) -> None:
+        if (
+            self._command_overlay is None
+            or not getattr(self._command_overlay, "_visible", False)
+        ):
+            return
+        shift_held = bool(
+            getattr(self._detector, "_shift_at_press", False)
+            or getattr(self._detector, "_shift_latched", False)
+        )
+        enter_held = bool(getattr(self._detector, "_enter_held", False))
+        if shift_held and enter_held:
+            self._command_overlay.begin_dismiss_prep()
 
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""

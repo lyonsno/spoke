@@ -72,6 +72,9 @@ _OUTER_FEATHER = 40.0
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
+_DISMISS_PREP_DURATION_S = 0.28
+_DISMISS_PREP_SCALE = 1.018
+_DISMISS_SHRINK_SCALE = 0.968
 
 # Adaptive compositing for command output.
 _BG_COLOR_DARK = (0.1, 0.1, 0.12)
@@ -119,6 +122,16 @@ def _response_color_for_brightness(
 
 def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, float, float]:
     return _lerp_color(_THINKING_CUTOUT_DARK, _THINKING_CUTOUT_LIGHT, _clamp01(brightness))
+
+
+def _dismiss_prep_scale(progress: float) -> float:
+    eased = _clamp01(progress) ** 2
+    return _lerp(1.0, _DISMISS_PREP_SCALE, eased)
+
+
+def _dismiss_fade_scale(progress: float) -> float:
+    eased = _clamp01(progress) ** 2
+    return _lerp(_DISMISS_PREP_SCALE, _DISMISS_SHRINK_SCALE, eased)
 
 
 class CommandOverlay(NSObject):
@@ -210,6 +223,8 @@ class CommandOverlay(NSObject):
         content.setWantsLayer_(True)
         content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         content.layer().setMasksToBounds_(True)
+        content.layer().setAnchorPoint_((0.5, 0.5))
+        content.layer().setPosition_((f + _OVERLAY_WIDTH / 2, f + _OVERLAY_HEIGHT / 2))
         bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
         content.layer().setBackgroundColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
@@ -354,6 +369,8 @@ class CommandOverlay(NSObject):
         self._tts_active = False
         self._tts_blend = 0.0
         self._tts_amplitude = 0.0
+        self._dismiss_prep_active = False
+        self._dismiss_prep_progress = 0.0
         self._text_view.setString_("")
         self._window.setAlphaValue_(0.0)
 
@@ -373,6 +390,8 @@ class CommandOverlay(NSObject):
         self._scroll_view.setFrame_(
             NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         )
+        self._sync_content_layer_geometry(_OVERLAY_HEIGHT)
+        self._set_content_scale(1.0)
         self._apply_surface_theme()
 
         self._window.orderFrontRegardless()
@@ -417,14 +436,32 @@ class CommandOverlay(NSObject):
         self._cancel_all_timers()
         self._streaming = False
         self._visible = True  # keep visible for the animation
+        start_scale = _dismiss_prep_scale(getattr(self, "_dismiss_prep_progress", 0.0))
+        self._dismiss_prep_active = False
 
         self._cancel_step = 0
         self._cancel_phase = "hold"  # hold → fade
+        self._cancel_start_scale = start_scale
         # Brighten window to full — don't touch text color (no flash)
         self._window.setAlphaValue_(1.0)
+        self._set_content_scale(start_scale)
         self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / 30.0, self, "_cancelAnimStep:", None, True
         )
+
+    def begin_dismiss_prep(self) -> None:
+        """While a Shift+Enter recall hold is active, let the overlay swell slightly."""
+        if self._window is None or not self._visible:
+            return
+        if getattr(self, "_cancel_timer_anim", None) is not None:
+            return
+        self._dismiss_prep_active = True
+
+    def cancel_dismiss_prep(self, reset: bool = False) -> None:
+        self._dismiss_prep_active = False
+        if reset:
+            self._dismiss_prep_progress = 0.0
+            self._set_content_scale(1.0)
 
     def _cancelAnimStep_(self, timer) -> None:
         """Animate the dismiss sequence: hold → fade."""
@@ -442,11 +479,18 @@ class CommandOverlay(NSObject):
             eased = progress * progress
             alpha = 1.0 - eased
             self._window.setAlphaValue_(alpha)
+            scale_progress = min(self._cancel_step / 8.0, 1.0)
+            start_scale = getattr(self, "_cancel_start_scale", 1.0)
+            end_scale = _dismiss_fade_scale(scale_progress)
+            scale = _lerp(start_scale, end_scale, scale_progress)
+            self._set_content_scale(scale)
             if self._cancel_step >= 8:
                 if self._cancel_timer_anim is not None:
                     self._cancel_timer_anim.invalidate()
                     self._cancel_timer_anim = None
                 self._window.setAlphaValue_(0.0)
+                self._dismiss_prep_progress = 0.0
+                self._set_content_scale(1.0)
                 self._window.orderOut_(None)
                 self._visible = False
                 self._cancel_pulse()
@@ -457,6 +501,7 @@ class CommandOverlay(NSObject):
             return
         self._visible = False
         self._streaming = False
+        self.cancel_dismiss_prep(reset=True)
         self._cancel_linger()
         # Don't cancel pulse here — let it continue during fade-out.
         # It will be cancelled when the fade completes (window ordered out).
@@ -689,6 +734,14 @@ class CommandOverlay(NSObject):
         t = getattr(self, "_brightness", 0.0)
         self._apply_surface_theme()
 
+        if getattr(self, "_dismiss_prep_active", False):
+            progress = min(
+                getattr(self, "_dismiss_prep_progress", 0.0) + dt / _DISMISS_PREP_DURATION_S,
+                1.0,
+            )
+            self._dismiss_prep_progress = progress
+            self._set_content_scale(_dismiss_prep_scale(progress))
+
         # Advance phases
         self._pulse_phase_asst += dt / _PULSE_PERIOD_ASST
         if self._pulse_phase_asst > 1.0:
@@ -857,6 +910,26 @@ class CommandOverlay(NSObject):
         self._cancel_linger()
         self._stop_thinking_timer()
 
+    def _sync_content_layer_geometry(self, visible_height: float) -> None:
+        if self._content_view is None:
+            return
+        layer = self._content_view.layer()
+        if layer is None:
+            return
+        f = _OUTER_FEATHER
+        layer.setPosition_((f + _OVERLAY_WIDTH / 2, f + visible_height / 2))
+
+    def _set_content_scale(self, scale: float) -> None:
+        if self._content_view is None:
+            return
+        layer = self._content_view.layer()
+        if layer is None:
+            return
+        try:
+            layer.setValue_forKeyPath_(scale, "transform.scale")
+        except Exception:
+            logger.debug("Command overlay scale update failed", exc_info=True)
+
     # ── thinking timer ──────────────────────────────────────
 
     def _start_thinking_timer(self) -> None:
@@ -929,6 +1002,7 @@ class CommandOverlay(NSObject):
                 self._scroll_view.setFrame_(
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
+                self._sync_content_layer_geometry(new_height)
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')

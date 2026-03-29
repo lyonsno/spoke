@@ -128,6 +128,20 @@ class TestThinkingTimer:
 class TestDismissAnimation:
     """Test the cancel_dismiss two-phase animation state machine."""
 
+    def test_dismiss_prep_scale_eases_up_from_identity(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        assert mod._dismiss_prep_scale(0.0) == pytest.approx(1.0)
+        assert mod._dismiss_prep_scale(0.5) > 1.0
+        assert mod._dismiss_prep_scale(1.0) == pytest.approx(mod._DISMISS_PREP_SCALE)
+
+    def test_dismiss_fade_scale_eases_down_from_prep_peak(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        assert mod._dismiss_fade_scale(0.0) == pytest.approx(mod._DISMISS_PREP_SCALE)
+        assert mod._dismiss_fade_scale(0.5) < mod._DISMISS_PREP_SCALE
+        assert mod._dismiss_fade_scale(1.0) == pytest.approx(mod._DISMISS_SHRINK_SCALE)
+
     def test_cancel_dismiss_initializes_hold_phase(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True

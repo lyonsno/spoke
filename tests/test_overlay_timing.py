@@ -156,6 +156,29 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_overlay_chrome_reset_recenters_scaled_content_layer(self, mock_pyobjc):
+        """Height resets should keep the tray-entry pop anchored at the visual center."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._content_view = MagicMock()
+            overlay._content_view.layer.return_value = MagicMock()
+            overlay._inner_shadow = MagicMock()
+            overlay._outer_glow_tight = MagicMock()
+            overlay._outer_glow_wide = MagicMock()
+
+            overlay._reset_overlay_chrome_geometry(140.0)
+
+            overlay._content_view.layer.return_value.setPosition_.assert_called_once_with(
+                (
+                    mod._OUTER_FEATHER + mod._OVERLAY_WIDTH / 2,
+                    mod._OUTER_FEATHER + 140.0 / 2,
+                )
+            )
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
 
 class TestAdaptiveOverlayCompositing:
     """Overlay bg/text cross-fades between dark and light with brightness."""

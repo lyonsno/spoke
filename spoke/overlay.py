@@ -662,6 +662,10 @@ class TranscriptionOverlay(NSObject):
         """Keep height-dependent overlay layers in sync with the current overlay size."""
         f = _OUTER_FEATHER
         w = _OVERLAY_WIDTH
+        if self._content_view is not None and self._content_view.layer() is not None:
+            self._content_view.layer().setPosition_(
+                (f + _OVERLAY_WIDTH / 2, f + visible_height / 2)
+            )
 
         if hasattr(self, '_inner_shadow'):
             margin = _INNER_GLOW_DEPTH + 50

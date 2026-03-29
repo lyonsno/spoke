@@ -65,6 +65,19 @@ class TestHoldCallbacks:
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
 
+    def test_hold_start_primes_command_overlay_swell_for_shift_enter_recall(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector._shift_at_press = True
+        d._detector._shift_latched = True
+        d._detector._enter_held = True
+
+        d._on_hold_start()
+
+        d._command_overlay.begin_dismiss_prep.assert_called_once_with()
+
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.start.side_effect = RuntimeError("audio dead")
