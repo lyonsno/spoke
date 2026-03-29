@@ -98,6 +98,18 @@ class TestToolSchemas:
         assert "mode" in params.get("properties", {})
         assert "max_results" in params.get("properties", {})
 
+    def test_epistaxis_ops_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "run_epistaxis_ops" in names
+
+        op_schema = next(s for s in schemas if s["function"]["name"] == "run_epistaxis_ops")
+        params = op_schema["function"]["parameters"]
+        assert "epistaxis_root" in params.get("properties", {})
+        assert "target_repo" in params.get("properties", {})
+        assert "operations" in params.get("properties", {})
+
 
     def test_list_directory_schema(self):
         mod = _import_tools()

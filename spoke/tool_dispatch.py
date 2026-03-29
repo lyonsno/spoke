@@ -507,6 +507,7 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+
 def execute_tool(
     name: str,
     arguments: dict,
