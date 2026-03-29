@@ -57,6 +57,7 @@ class MenuBarIcon(NSObject):
         self._on_quit = on_quit
         self._on_select_model = on_select_model
         self._status_item = None
+        self._status_text = "Idle"
         self._idle_image = None
         self._recording_image = None
         return self
@@ -90,8 +91,15 @@ class MenuBarIcon(NSObject):
 
     def set_status_text(self, text: str) -> None:
         """Update the status label in the dropdown menu."""
+        self._status_text = text
         if hasattr(self, "_status_item_label") and self._status_item_label is not None:
             self._status_item_label.setTitle_(text)
+
+    def refresh_menu(self) -> None:
+        """Rebuild the dropdown menu in place."""
+        if self._status_item is None:
+            return
+        self._build_menu()
 
     # ── private ─────────────────────────────────────────────
 
@@ -99,7 +107,7 @@ class MenuBarIcon(NSObject):
         menu = NSMenu.new()
 
         self._status_item_label = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Idle", None, ""
+            getattr(self, "_status_text", "Idle"), None, ""
         )
         self._status_item_label.setEnabled_(False)
         menu.addItem_(self._status_item_label)

@@ -148,7 +148,10 @@ class SpokeAppDelegate(NSObject):
                 or _DEFAULT_COMMAND_MODEL
             )
             self._command_client = CommandClient(model=self._command_model_id)
-            self._command_model_options = self._discover_command_models(self._command_model_id)
+            self._command_model_options = [
+                (self._command_model_id, self._command_model_id, True)
+            ]
+            self._command_models_refresh_in_flight = False
             self._command_overlay: TranscriptionOverlay | None = None
             logger.info(
                 "Command pathway enabled: %s (%s)",
@@ -159,6 +162,7 @@ class SpokeAppDelegate(NSObject):
             self._command_client = None
             self._command_model_id = None
             self._command_model_options = []
+            self._command_models_refresh_in_flight = False
             self._command_overlay = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
@@ -211,6 +215,7 @@ class SpokeAppDelegate(NSObject):
             from .command_overlay import CommandOverlay
             self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
             self._command_overlay.setup()
+            self._refresh_command_model_options_async()
 
         # Step 1: Request mic permission with a test recording.
         # This triggers the system prompt before we start listening for spacebar.
@@ -1423,17 +1428,20 @@ class SpokeAppDelegate(NSObject):
                 },
             }
             if self._command_client is not None:
+                assistant_models = getattr(self, "_command_model_options", None)
+                if assistant_models is None:
+                    assistant_models = [
+                        (
+                            getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL),
+                            getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL),
+                            True,
+                        )
+                    ]
                 state["assistant"] = {
                     "selected": getattr(
                         self, "_command_model_id", _DEFAULT_COMMAND_MODEL
                     ),
-                    "models": getattr(
-                        self,
-                        "_command_model_options",
-                        self._discover_command_models(
-                            getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL)
-                        ),
-                    ),
+                    "models": assistant_models,
                 }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
@@ -1731,6 +1739,37 @@ class SpokeAppDelegate(NSObject):
             seen.add(model_id)
             options.append((model_id, model_id, True))
         return options
+
+    def _refresh_command_model_options_async(self) -> None:
+        if self._command_client is None or self._command_models_refresh_in_flight:
+            return
+        self._command_models_refresh_in_flight = True
+
+        def _load():
+            options = self._discover_command_models(
+                getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL)
+            )
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandModelsDiscovered:",
+                {"options": options},
+                False,
+            )
+
+        threading.Thread(
+            target=_load,
+            daemon=True,
+            name="command-model-refresh",
+        ).start()
+
+    def commandModelsDiscovered_(self, payload: dict) -> None:
+        self._command_models_refresh_in_flight = False
+        current_model = getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL)
+        options = payload.get("options") or []
+        if current_model not in [model_id for model_id, _, _ in options]:
+            options = [(current_model, current_model, True), *options]
+        self._command_model_options = options
+        if self._menubar is not None:
+            self._menubar.refresh_menu()
 
     def _apply_command_model_selection(self, model_id: str) -> None:
         current_model = getattr(

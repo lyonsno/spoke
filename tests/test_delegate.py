@@ -1104,6 +1104,30 @@ class TestDualModelConfiguration:
         assert d._command_model_id == "qwen3-14b"
         assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
 
+    def test_init_seeds_command_model_options_without_sync_discovery(
+        self, main_module, monkeypatch
+    ):
+        """Startup should not block on /v1/models just to seed the Assistant menu."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "qwen3-14b",
+            raising=False,
+        )
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            command_client = MagicMock()
+            MockCommand.return_value = command_client
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(model="qwen3-14b")
+        command_client.list_models.assert_not_called()
+        assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
+
     def test_switching_away_from_qwen_persists_models_across_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):
@@ -1358,6 +1382,82 @@ class TestWarmupContract:
             d._select_model("Qwen/Qwen3-ASR-0.6B")
 
         mock_execv.assert_called_once()
+
+    def test_application_launch_kicks_off_command_model_refresh_async(
+        self, main_module, monkeypatch
+    ):
+        """Assistant model discovery should start after launch, not inside init()."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._quit = MagicMock()
+        d._command_client = MagicMock()
+        d._refresh_command_model_options_async = MagicMock()
+        d._request_mic_permission = MagicMock()
+
+        menubar = MagicMock()
+        menubar.setup = MagicMock()
+        glow = MagicMock()
+        glow.setup = MagicMock()
+        overlay = MagicMock()
+        overlay.setup = MagicMock()
+        command_overlay = MagicMock()
+        command_overlay.setup = MagicMock()
+
+        with patch.object(main_module.MenuBarIcon, "alloc") as mock_menubar_alloc, \
+            patch.object(main_module.GlowOverlay, "alloc") as mock_glow_alloc, \
+            patch.object(main_module.TranscriptionOverlay, "alloc") as mock_overlay_alloc:
+            mock_menubar_alloc.return_value.initWithQuitCallback_selectModelCallback_.return_value = menubar
+            mock_glow_alloc.return_value.initWithScreen_.return_value = glow
+            mock_overlay_alloc.return_value.initWithScreen_.return_value = overlay
+            import sys
+            sys.modules["spoke.command_overlay"] = MagicMock()
+            sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
+
+            d.applicationDidFinishLaunching_(None)
+
+        d._refresh_command_model_options_async.assert_called_once_with()
+
+    def test_refresh_command_model_options_async_spawns_background_thread(
+        self, main_module, monkeypatch
+    ):
+        """Refreshing assistant model options should happen on a background thread."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = False
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+
+            d._refresh_command_model_options_async()
+
+        MockThread.assert_called_once()
+        mock_thread.start.assert_called_once_with()
+        assert d._command_models_refresh_in_flight is True
+
+    def test_command_models_discovered_updates_options_and_refreshes_menu(
+        self, main_module, monkeypatch
+    ):
+        """Async completion should publish the discovered models and rebuild the menu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = True
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+                    ("qwen3-14b", "qwen3-14b", True),
+                ]
+            }
+        )
+
+        assert d._command_models_refresh_in_flight is False
+        assert d._command_model_options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        d._menubar.refresh_menu.assert_called_once_with()
 
 
 class TestEnvValidation:

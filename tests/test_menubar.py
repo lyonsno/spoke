@@ -55,6 +55,71 @@ class TestMenuBarIcon:
         icon.set_status_text("Recording…")
         mock_label.setTitle_.assert_called_with("Recording…")
 
+    def test_refresh_menu_rebuilds_the_current_status_item_menu(self, menubar_module):
+        """refresh_menu() should rebuild the dropdown in place."""
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._status_item = MagicMock()
+        icon._build_menu = MagicMock()
+
+        icon.refresh_menu()
+
+        icon._build_menu.assert_called_once_with()
+
+    def test_refresh_menu_preserves_current_status_text(self, menubar_module):
+        """refresh_menu() should not reset the live status label back to Idle."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(
+            return_value={
+                "assistant": {
+                    "selected": "qwen3p5-35B-A3B",
+                    "models": [("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True)],
+                }
+            }
+        )
+        icon._status_item = status_item_menu_holder
+        icon._idle_image = None
+        icon._recording_image = None
+        icon._status_text = "Requesting mic access…"
+
+        icon.refresh_menu()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Requesting mic access…", None, "") for call in calls)
+
+    def test_refresh_menu_preserves_status_set_via_set_status_text(self, menubar_module):
+        """A live status update should survive a later menu rebuild."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._status_item = status_item_menu_holder
+        icon._idle_image = None
+        icon._recording_image = None
+        icon._status_text = "Idle"
+        icon._status_item_label = MagicMock()
+
+        icon.set_status_text("Ready — hold spacebar")
+        icon.refresh_menu()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Ready — hold spacebar", None, "") for call in calls)
+
     def test_build_menu_shows_source_discriminant(self, menubar_module):
         """setup() should show which checkout launched the running instance."""
         AppKit = __import__("AppKit")
