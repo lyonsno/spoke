@@ -33,6 +33,8 @@ from Foundation import NSObject
 from .capture import AudioCapture
 from .command import CommandClient
 from .focus_check import has_focused_text_input
+from .scene_capture import SceneCaptureCache
+from .tool_dispatch import execute_tool, get_tool_schemas
 from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
@@ -138,10 +140,14 @@ class SpokeAppDelegate(NSObject):
         if command_url:
             self._command_client = CommandClient()
             self._command_overlay: TranscriptionOverlay | None = None
+            self._scene_cache = SceneCaptureCache(max_captures=10)
+            self._tool_schemas = get_tool_schemas()
             logger.info("Command pathway enabled: %s", command_url)
         else:
             self._command_client = None
             self._command_overlay = None
+            self._scene_cache = None
+            self._tool_schemas = None
 
         # Recovery mode state
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -771,7 +777,11 @@ class SpokeAppDelegate(NSObject):
         # Stream the command in a background thread
         def _stream():
             try:
-                for content_token in self._command_client.stream_command(text):
+                for content_token in self._command_client.stream_command(
+                    text,
+                    tools=self._tool_schemas,
+                    tool_executor=self._make_tool_executor(),
+                ):
                     if token != self._transcription_token:
                         break  # stale
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -791,6 +801,29 @@ class SpokeAppDelegate(NSObject):
             )
 
         threading.Thread(target=_stream, daemon=True).start()
+
+    def _make_tool_executor(self):
+        """Build a tool executor closure with current app state."""
+        scene_cache = self._scene_cache
+        tts_client = getattr(self, "_tts_client", None)
+        # Get last assistant response for last_response refs
+        last_response = None
+        try:
+            history = self._command_client.history if self._command_client else []
+            if history:
+                _, last_response = history[-1]
+        except (TypeError, ValueError):
+            pass
+
+        def _executor(name, arguments, **kwargs):
+            return execute_tool(
+                name=name,
+                arguments=arguments,
+                scene_cache=scene_cache,
+                last_response=last_response,
+                tts_client=tts_client,
+            )
+        return _executor
 
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe then send command to OMLX."""
@@ -838,7 +871,11 @@ class SpokeAppDelegate(NSObject):
 
         # Step 2: Stream the command response
         try:
-            for content_token in self._command_client.stream_command(utterance):
+            for content_token in self._command_client.stream_command(
+                utterance,
+                tools=self._tool_schemas,
+                tool_executor=self._make_tool_executor(),
+            ):
                 if token != self._transcription_token:
                     break  # stale
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(

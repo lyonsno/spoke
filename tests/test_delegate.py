@@ -1396,6 +1396,8 @@ class TestCommandTranscribeWorker:
         d._transcribe_start = time.monotonic()
         d._transcription_token = 1
         d._command_first_token = False
+        d._scene_cache = None
+        d._tool_schemas = None
         return d
 
     def test_successful_transcribe_and_stream(self, main_module, monkeypatch):
@@ -1463,7 +1465,7 @@ class TestCommandTranscribeWorker:
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
 
-        def token_gen(utterance):
+        def token_gen(utterance, **kwargs):
             yield "first"
             d._transcription_token = 99  # simulate new recording invalidating
             yield "should not appear"
