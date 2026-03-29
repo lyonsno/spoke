@@ -63,10 +63,22 @@ def _get_ram_gb() -> float:
         return 0.0
 
 
-# Recording cap: 20s on machines with < 36GB RAM to avoid Metal GPU crashes
-# on long MLX inference buffers. No cap in sidecar mode (inference is remote).
+_MIN_RAM_GB_FOR_V3_TURBO = 16.0
+_MIN_RAM_GB_FOR_UNCAPPED_RECORDING = 32.0
+_LOW_RAM_RECORDING_CAP_SECS = 20.0
+
+
+def _max_record_secs_for_ram(ram_gb: float) -> float | None:
+    """Return the recording cap for local inference on this RAM tier."""
+    if ram_gb < _MIN_RAM_GB_FOR_UNCAPPED_RECORDING:
+        return _LOW_RAM_RECORDING_CAP_SECS
+    return None
+
+
+# Recording cap: keep smaller local boxes at 20s, but stop blanket-blocking
+# 16GB/32GB machines from trying v3 turbo. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
-_MAX_RECORD_SECS: float | None = 20.0 if _RAM_GB < 36 else None
+_MAX_RECORD_SECS: float | None = _max_record_secs_for_ram(_RAM_GB)
 
 
 class SpokeAppDelegate(NSObject):
@@ -174,8 +186,10 @@ class SpokeAppDelegate(NSObject):
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
-                "RAM %.0fGB < 36GB — recording capped at %.0fs to avoid Metal crashes",
-                _RAM_GB, _MAX_RECORD_SECS,
+                "RAM %.0fGB < %.0fGB — recording capped at %.0fs to avoid Metal crashes",
+                _RAM_GB,
+                _MIN_RAM_GB_FOR_UNCAPPED_RECORDING,
+                _MAX_RECORD_SECS,
             )
 
         return self
@@ -2027,8 +2041,8 @@ class SpokeAppDelegate(NSObject):
 
     @staticmethod
     def _model_allowed(model_id: str) -> bool:
-        """Guard: whisper-large-v3-turbo requires >= 36GB RAM."""
-        if "large-v3-turbo" in model_id and _RAM_GB < 36:
+        """Guard: whisper-large-v3-turbo requires >= 16GB RAM."""
+        if "large-v3-turbo" in model_id and _RAM_GB < _MIN_RAM_GB_FOR_V3_TURBO:
             return False
         return True
 

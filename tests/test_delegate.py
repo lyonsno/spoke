@@ -646,21 +646,26 @@ class TestHoldMsBounds:
 class TestModelPicker:
     """Test model selection menu and RAM guard."""
 
-    def test_model_allowed_blocks_large_on_low_ram(self, main_module, monkeypatch):
+    def test_model_allowed_blocks_large_below_16gb(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+
+    def test_model_allowed_permits_large_at_16gb(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         assert d._model_allowed("mlx-community/whisper-medium.en-mlx-8bit") is True
         assert d._model_allowed("Qwen/Qwen3-ASR-0.6B") is True
-        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
-    def test_model_allowed_permits_large_on_high_ram(self, main_module, monkeypatch):
+    def test_model_allowed_permits_large_at_32gb(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
         models = d._select_model(None)
         model_ids = [m[0] for m in models]
         assert "mlx-community/whisper-tiny.en-mlx" in model_ids
@@ -688,7 +693,7 @@ class TestModelPicker:
 
     def test_select_model_none_includes_large_on_high_ram(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         models = d._select_model(None)
         labels_by_id = {model_id: label for model_id, label, _enabled in models}
         assert "mlx-community/whisper-large-v3-turbo" in labels_by_id
@@ -1297,6 +1302,12 @@ class TestEnvValidation:
 class TestRecordingCap:
     """Test the recording cap countdown and force_end trigger."""
 
+    def test_max_record_secs_uses_32gb_cutoff(self, main_module):
+        assert main_module._max_record_secs_for_ram(15.0) == 20.0
+        assert main_module._max_record_secs_for_ram(16.0) == 20.0
+        assert main_module._max_record_secs_for_ram(31.0) == 20.0
+        assert main_module._max_record_secs_for_ram(32.0) is None
+
     def test_cap_fires_after_max_seconds(self, main_module, monkeypatch):
         """When elapsed >= _MAX_RECORD_SECS, cap should fire and call force_end."""
         d = _make_delegate(main_module, monkeypatch)
@@ -1370,7 +1381,7 @@ class TestRecordingCap:
         assert d._cap_fired is False
 
     def test_cap_noop_when_max_record_secs_none(self, main_module, monkeypatch):
-        """On high-RAM machines (>=36GB), _MAX_RECORD_SECS is None — cap is disabled."""
+        """At 32GB+, _MAX_RECORD_SECS is None — cap is disabled."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._cap_fired = False

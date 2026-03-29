@@ -249,7 +249,7 @@ standard typing roles. The exit gesture from editable mode is TBD.
 
 ## Recording cap
 
-On machines with < 36GB RAM running local inference: 20-second maximum
+On machines with < 32GB RAM running local inference: 20-second maximum
 recording duration. The last 3 seconds show a linear countdown glow. At 20s,
 recording force-stops. No cap in sidecar mode.
 
