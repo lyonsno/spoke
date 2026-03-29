@@ -31,7 +31,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from .capture import AudioCapture
-from .command import CommandClient
+from .command import CommandClient, _DEFAULT_COMMAND_MODEL
 from .focus_check import has_focused_text_input
 from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
@@ -142,11 +142,23 @@ class SpokeAppDelegate(NSObject):
         # Command pathway — initialized if SPOKE_COMMAND_URL is configured
         command_url = os.environ.get("SPOKE_COMMAND_URL", "")
         if command_url:
-            self._command_client = CommandClient()
+            self._command_model_id = (
+                os.environ.get("SPOKE_COMMAND_MODEL")
+                or self._load_command_model_preference()
+                or _DEFAULT_COMMAND_MODEL
+            )
+            self._command_client = CommandClient(model=self._command_model_id)
+            self._command_model_options = self._discover_command_models(self._command_model_id)
             self._command_overlay: TranscriptionOverlay | None = None
-            logger.info("Command pathway enabled: %s", command_url)
+            logger.info(
+                "Command pathway enabled: %s (%s)",
+                command_url,
+                self._command_model_id,
+            )
         else:
             self._command_client = None
+            self._command_model_id = None
+            self._command_model_options = []
             self._command_overlay = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
@@ -1410,6 +1422,19 @@ class SpokeAppDelegate(NSObject):
                     "models": self._select_model(None),
                 },
             }
+            if self._command_client is not None:
+                state["assistant"] = {
+                    "selected": getattr(
+                        self, "_command_model_id", _DEFAULT_COMMAND_MODEL
+                    ),
+                    "models": getattr(
+                        self,
+                        "_command_model_options",
+                        self._discover_command_models(
+                            getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL)
+                        ),
+                    ),
+                }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
                 state["local_whisper"] = {
@@ -1451,6 +1476,9 @@ class SpokeAppDelegate(NSObject):
             self._select_model(selection)
             return
         role, model_id = selection
+        if role == "assistant":
+            self._apply_command_model_selection(model_id)
+            return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
             return
@@ -1618,12 +1646,20 @@ class SpokeAppDelegate(NSObject):
             "transcription_model": prefs.get("transcription_model"),
         }
 
+    def _load_command_model_preference(self) -> str | None:
+        return self._load_preferences().get("command_model")
+
     def _save_model_preferences(
         self, preview_model: str, transcription_model: str
     ) -> bool:
         payload = self._load_preferences()
         payload["preview_model"] = preview_model
         payload["transcription_model"] = transcription_model
+        return self._save_preferences(payload)
+
+    def _save_command_model_preference(self, model_id: str) -> bool:
+        payload = self._load_preferences()
+        payload["command_model"] = model_id
         return self._save_preferences(payload)
 
     def _save_local_whisper_preferences(
@@ -1675,6 +1711,58 @@ class SpokeAppDelegate(NSObject):
                 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
             ),
         )
+
+    def _discover_command_models(
+        self, selected_model: str
+    ) -> list[tuple[str, str, bool]]:
+        model_ids: list[str] = []
+        if self._command_client is not None:
+            try:
+                model_ids = self._command_client.list_models()
+            except Exception:
+                logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
+        if selected_model and selected_model not in model_ids:
+            model_ids.insert(0, selected_model)
+        seen: set[str] = set()
+        options = []
+        for model_id in model_ids:
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            options.append((model_id, model_id, True))
+        return options
+
+    def _apply_command_model_selection(self, model_id: str) -> None:
+        current_model = getattr(
+            self,
+            "_command_model_id",
+            os.environ.get("SPOKE_COMMAND_MODEL")
+            or self._load_command_model_preference()
+            or _DEFAULT_COMMAND_MODEL,
+        )
+        if model_id == current_model:
+            if self._load_command_model_preference() != model_id:
+                logger.info(
+                    "Repairing stale assistant model preference without relaunch: %s",
+                    model_id,
+                )
+                self._save_command_model_preference(model_id)
+            return
+        logger.info(
+            "Switching assistant model (relaunching): %s -> %s",
+            current_model,
+            model_id,
+        )
+        if not self._save_command_model_preference(model_id):
+            logger.warning(
+                "Skipping relaunch because the assistant model selection could not be persisted"
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save model selection")
+            return
+        self._command_model_id = model_id
+        os.environ["SPOKE_COMMAND_MODEL"] = model_id
+        self._relaunch()
 
     def _prepare_clients(self) -> None:
         seen_clients = []

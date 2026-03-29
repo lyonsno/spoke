@@ -111,6 +111,55 @@ class TestCommandClient:
         client = self._make_client(base_url="http://kwarg-host:8888")
         assert client._base_url == "http://kwarg-host:8888"
 
+    def test_list_models_fetches_openai_models_endpoint(self):
+        """list_models() should return ids from /v1/models in server order."""
+        from spoke.command import CommandClient
+
+        payload = {
+            "data": [
+                {"id": "qwen3p5-35B-A3B"},
+                {"id": "qwen3-14b"},
+                {"id": "qwen3-4b"},
+            ]
+        }
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
+            assert client.list_models() == ["qwen3p5-35B-A3B", "qwen3-14b", "qwen3-4b"]
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "http://localhost:9999/v1/models"
+        assert req.get_method() == "GET"
+
+    def test_list_models_sends_auth_header(self):
+        """list_models() should reuse the configured bearer token."""
+        from spoke.command import CommandClient
+
+        payload = {"data": [{"id": "qwen3p5-35B-A3B"}]}
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="secret123",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
+            client.list_models()
+
+        req = mock_open.call_args[0][0]
+        assert req.get_header("Authorization") == "Bearer secret123"
+
 
 class TestStreamCommand:
     """Test streaming command dispatch with mocked HTTP."""

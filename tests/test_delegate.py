@@ -516,6 +516,24 @@ class TestModelPreferencePersistence:
         assert loaded["local_whisper_decode_timeout"] == 30.0
         assert loaded["local_whisper_eager_eval"] is True
 
+    def test_save_preserves_existing_command_model_preference(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Saving Whisper model prefs should not clobber the assistant model choice."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(json.dumps({
+            "command_model": "qwen3p5-35B-A3B",
+        }))
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d._save_model_preferences("model-a", "model-b")
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["preview_model"] == "model-a"
+        assert loaded["transcription_model"] == "model-b"
+        assert loaded["command_model"] == "qwen3p5-35B-A3B"
+
 
 class TestConcurrencyContract:
     """Test thread handoff and local-inference serialization."""
@@ -843,6 +861,28 @@ class TestDualModelConfiguration:
 
         assert "local_whisper" not in model_state
 
+    def test_handle_model_menu_none_exposes_assistant_models_when_command_enabled(
+        self, main_module, monkeypatch
+    ):
+        """Command mode should surface an Assistant submenu with the selected OMLX model."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["assistant"] == {
+            "selected": "qwen3p5-35B-A3B",
+            "models": [
+                ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+                ("qwen3-14b", "qwen3-14b", True),
+            ],
+        }
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -896,6 +936,62 @@ class TestDualModelConfiguration:
         assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "off"
         assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "0"
         mock_execv.assert_called_once()
+
+    def test_selecting_assistant_model_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        """Choosing a different assistant model should persist it and relaunch."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        d._save_command_model_preference = MagicMock(return_value=True)
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("assistant", "qwen3-14b"))
+
+        d._save_command_model_preference.assert_called_once_with("qwen3-14b")
+        assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
+        mock_execv.assert_called_once()
+
+    def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Re-selecting the running assistant model should heal stale prefs without relaunch."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(json.dumps({
+            "command_model": "qwen3-14b",
+        }))
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_command_model_preference = main_module.SpokeAppDelegate._load_command_model_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_command_model_preference = main_module.SpokeAppDelegate._save_command_model_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._relaunch = MagicMock()
+
+        d._apply_command_model_selection("qwen3p5-35B-A3B")
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["command_model"] == "qwen3p5-35B-A3B"
+        d._relaunch.assert_not_called()
 
     def test_init_shares_client_when_preview_and_transcription_models_match(
         self, main_module, monkeypatch
@@ -978,6 +1074,35 @@ class TestDualModelConfiguration:
             MockLocal.call_args_list[1].kwargs["model"]
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
+
+    def test_init_loads_persisted_command_model_when_env_var_absent(
+        self, main_module, monkeypatch
+    ):
+        """Persisted assistant model should bootstrap the OMLX command client."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "qwen3-14b",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_discover_command_models",
+            lambda self, selected_model: [("qwen3-14b", "qwen3-14b", True)],
+            raising=False,
+        )
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(model="qwen3-14b")
+        assert d._command_model_id == "qwen3-14b"
+        assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
 
     def test_switching_away_from_qwen_persists_models_across_relaunch(
         self, main_module, monkeypatch, tmp_path
