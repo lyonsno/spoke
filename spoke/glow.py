@@ -56,11 +56,11 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.07  # clear presence in silence
-_GLOW_PEAK_TARGET = 0.17
-_GLOW_BASE_OPACITY_DARK = 0.06
-_GLOW_BASE_OPACITY_LIGHT = 0.14
-_GLOW_PEAK_TARGET_DARK = 0.15
+_GLOW_BASE_OPACITY = 0.069  # clear presence in silence
+_GLOW_PEAK_TARGET = 0.119
+_GLOW_BASE_OPACITY_DARK = 0.059
+_GLOW_BASE_OPACITY_LIGHT = 0.196
+_GLOW_PEAK_TARGET_DARK = 0.105
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
@@ -70,10 +70,10 @@ _EDGE_OUTER_SATURATION_SCALE = 1.80
 _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corners
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
-_GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "30.0"))
+_GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.20  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.40  # dim on light/white backgrounds
+_DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.28  # same on light — subtractive vignette handles contrast
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words
@@ -89,59 +89,74 @@ _DIM_HIDE_FADE_S = 2.4
 _WINDOW_TEARDOWN_CUSHION_S = 0.05
 
 
-def _sample_screen_brightness(screen) -> float:
-    """Sample average brightness of the screen content below our window.
+_BRIGHTNESS_SAMPLE_INTERVAL = 1.0  # seconds between recurring samples
+_BRIGHTNESS_PATCH_SIZE = 50  # pixels per patch side
 
-    Returns 0.0 (black) to 1.0 (white). Captures once per call — intended
-    to be called at recording start, not per-frame.
+
+def _sample_screen_brightness(screen) -> float:
+    """Sample average brightness from 4 small patches (one per quadrant).
+
+    Each patch is 50x50 pixels, inset 25% from each screen edge to avoid
+    our own glow/vignette. Returns 0.0 (black) to 1.0 (white).
+    ~4x faster than a fullscreen capture on retina displays.
     """
     try:
         from Quartz import (
             CGWindowListCreateImage,
             kCGWindowListOptionOnScreenBelowWindow,
             kCGNullWindowID,
-            CGRectNull,
+            CGImageGetWidth,
+            CGImageGetHeight,
+            CGImageGetDataProvider,
+            CGDataProviderCopyData,
         )
         frame = screen.frame()
-        rect = ((frame.origin.x, frame.origin.y),
-                (frame.size.width, frame.size.height))
+        fw, fh = frame.size.width, frame.size.height
+        ox, oy = frame.origin.x, frame.origin.y
+        ps = _BRIGHTNESS_PATCH_SIZE
 
-        # Capture everything below all windows at our level
-        image = CGWindowListCreateImage(
-            rect,
-            kCGWindowListOptionOnScreenBelowWindow,
-            kCGNullWindowID,
-            0,  # kCGWindowImageDefault
-        )
-        if image is None:
-            return 0.5  # fallback to mid-brightness
+        # 4 patches at 25%/75% of each axis
+        patch_centers = [
+            (0.25, 0.25),  # bottom-left quadrant
+            (0.75, 0.25),  # bottom-right
+            (0.25, 0.75),  # top-left
+            (0.75, 0.75),  # top-right
+        ]
 
-        from Quartz import CGImageGetWidth, CGImageGetHeight, CGImageGetDataProvider, CGDataProviderCopyData
-        w = CGImageGetWidth(image)
-        h = CGImageGetHeight(image)
-        data = CGDataProviderCopyData(CGImageGetDataProvider(image))
-
-        if data is None or len(data) == 0:
-            return 0.5
-
-        # Sample a grid of pixels rather than reading every pixel
-        import struct
         total = 0.0
         samples = 0
-        bytes_per_pixel = len(data) // (w * h) if w * h > 0 else 4
-        step_x = max(w // 20, 1)
-        step_y = max(h // 20, 1)
 
-        for sy in range(0, h, step_y):
-            for sx in range(0, w, step_x):
-                offset = (sy * w + sx) * bytes_per_pixel
-                if offset + 3 <= len(data):
-                    # BGRA or RGBA — either way, first 3 bytes are color channels
-                    r, g, b = data[offset], data[offset + 1], data[offset + 2]
-                    # Perceived luminance
-                    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-                    total += lum
-                    samples += 1
+        for cx_frac, cy_frac in patch_centers:
+            px = ox + fw * cx_frac - ps / 2
+            py = oy + fh * cy_frac - ps / 2
+            rect = ((px, py), (ps, ps))
+
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                kCGNullWindowID,
+                0,
+            )
+            if image is None:
+                continue
+
+            w = CGImageGetWidth(image)
+            h = CGImageGetHeight(image)
+            data = CGDataProviderCopyData(CGImageGetDataProvider(image))
+            if data is None or len(data) == 0 or w * h == 0:
+                continue
+
+            bpp = len(data) // (w * h)
+            # Sample every 5th pixel for speed
+            step = max(5, 1)
+            for sy in range(0, h, step):
+                for sx in range(0, w, step):
+                    offset = (sy * w + sx) * bpp
+                    if offset + 3 <= len(data):
+                        r, g, b = data[offset], data[offset + 1], data[offset + 2]
+                        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                        total += lum
+                        samples += 1
 
         return total / samples if samples > 0 else 0.5
     except Exception:
@@ -230,6 +245,8 @@ class GlowOverlay(NSObject):
         self._glow_color = _GLOW_COLOR
         self._glow_base_opacity = _GLOW_BASE_OPACITY
         self._glow_peak_target = _GLOW_PEAK_TARGET
+        self._brightness_timer = None
+        self._brightness = 0.5
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -374,7 +391,43 @@ class GlowOverlay(NSObject):
             self._glow_layer.addSublayer_(g)
 
         self._gradient_layers = [self._glow_layer.sublayers()[i] for i in range(1, 5)]
+
+        # ── Subtractive vignette: darkened colored edges for light backgrounds ──
+        # Same shape as the additive glow but uses dark-tinted colors.
+        # Cross-faded with the additive glow based on background brightness.
+        self._vignette_layer = CALayer.alloc().init()
+        self._vignette_layer.setFrame_(((0, 0), (w, h)))
+        self._vignette_layer.setOpacity_(0.0)
+
+        # Vignette gradients: dark at edges, clear toward center
+        vig_edge = NSColor.colorWithSRGBRed_green_blue_alpha_(0.02, 0.02, 0.04, 0.85)
+        vig_mid = NSColor.colorWithSRGBRed_green_blue_alpha_(0.03, 0.03, 0.06, 0.45)
+        vig_faint = NSColor.colorWithSRGBRed_green_blue_alpha_(0.04, 0.04, 0.08, 0.12)
+        vig_clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+        vig_colors = [
+            vig_edge.CGColor(), vig_mid.CGColor(),
+            vig_faint.CGColor(), vig_clear.CGColor(),
+        ]
+
+        for origin, size, start, end in edges:
+            g = CAGradientLayer.alloc().init()
+            g.setFrame_((origin, size))
+            g.setColors_(vig_colors)
+            g.setLocations_(locations)
+            g.setStartPoint_(start)
+            g.setEndPoint_(end)
+
+            mask = CAShapeLayer.alloc().init()
+            mask.setFrame_(((0, 0), (w, h)))
+            mask.setPosition_((-origin[0] + w / 2, -origin[1] + h / 2))
+            mask.setPath_(mask_path)
+            g.setMask_(mask)
+
+            self._vignette_layer.addSublayer_(g)
+
+        self._vignette_gradient_layers = [self._vignette_layer.sublayers()[i] for i in range(4)]
         content.layer().addSublayer_(self._glow_layer)
+        content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
@@ -403,6 +456,17 @@ class GlowOverlay(NSObject):
             colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
             for gl in self._gradient_layers:
                 gl.setColors_(colors)
+        # Tint vignette with current hue — dark version of the glow color
+        if hasattr(self, '_vignette_gradient_layers'):
+            r, g, b = base_color
+            # Dark tinted versions: multiply color by low factor for darkening
+            vig_edge = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.08, g * 0.08, b * 0.08, 0.85)
+            vig_mid = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.10, g * 0.10, b * 0.10, 0.45)
+            vig_faint = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.12, g * 0.12, b * 0.12, 0.12)
+            vig_clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+            vig_colors = [vig_edge.CGColor(), vig_mid.CGColor(), vig_faint.CGColor(), vig_clear.CGColor()]
+            for gl in self._vignette_gradient_layers:
+                gl.setColors_(vig_colors)
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
@@ -418,6 +482,12 @@ class GlowOverlay(NSObject):
         brightness = _sample_screen_brightness(self._screen)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
+        self._brightness = brightness
+        # Cross-fade: additive glow fades out, subtractive vignette fades in
+        # as brightness increases. Fully additive at black, fully subtractive
+        # at white, blended in between.
+        self._additive_mix = 1.0 - brightness
+        self._subtractive_mix = brightness
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -453,13 +523,59 @@ class GlowOverlay(NSObject):
             )
             self._dim_layer.addAnimation_forKey_(dim_anim, "dimIn")
 
+        # Start recurring brightness sampling
+        old_timer = getattr(self, "_brightness_timer", None)
+        if old_timer is not None:
+            old_timer.invalidate()
+        from Foundation import NSTimer
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
+        )
+
         logger.info("Glow show")
+
+    def brightnessResample_(self, timer) -> None:
+        """Recurring timer: re-sample screen brightness and adapt glow/dim."""
+        if not self._visible:
+            return
+        new_brightness = _sample_screen_brightness(self._screen)
+        if abs(new_brightness - self._brightness) < 0.02:
+            return  # no meaningful change
+        self._brightness = new_brightness
+        new_color, new_base, new_peak = _glow_style_for_brightness(new_brightness)
+        self._glow_color = new_color
+        self._glow_base_opacity = new_base
+        self._glow_peak_target = new_peak
+        self._apply_glow_color(new_color)
+
+        # Update cross-fade mix
+        self._additive_mix = 1.0 - new_brightness
+        self._subtractive_mix = new_brightness
+
+        # Smoothly adjust dim opacity
+        if self._dim_layer is not None:
+            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            from Quartz import CABasicAnimation, CAMediaTimingFunction
+            pres = self._dim_layer.presentationLayer()
+            current = pres.opacity() if pres is not None else self._dim_layer.opacity()
+            self._dim_layer.removeAllAnimations()
+            self._dim_layer.setOpacity_(dim_target)
+            anim = CABasicAnimation.animationWithKeyPath_("opacity")
+            anim.setFromValue_(current)
+            anim.setToValue_(dim_target)
+            anim.setDuration_(0.5)
+            anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
+            self._dim_layer.addAnimation_forKey_(anim, "dimAdapt")
 
     def hide(self) -> None:
         """Fade the glow window out smoothly."""
         if self._window is None:
             return
         self._cancel_pending_hide()
+        bt = getattr(self, "_brightness_timer", None)
+        if bt is not None:
+            bt.invalidate()
+            self._brightness_timer = None
         self._visible = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
@@ -477,6 +593,20 @@ class GlowOverlay(NSObject):
             )
             self._glow_layer.setOpacity_(0.0)
             self._glow_layer.addAnimation_forKey_(anim, "fadeOut")
+
+            # Fade out subtractive vignette in sync
+            if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
+                vpres = self._vignette_layer.presentationLayer()
+                vcurrent = vpres.opacity() if vpres is not None else self._vignette_layer.opacity()
+                vanim = CABasicAnimation.animationWithKeyPath_("opacity")
+                vanim.setFromValue_(vcurrent)
+                vanim.setToValue_(0.0)
+                vanim.setDuration_(_GLOW_HIDE_FADE_S)
+                vanim.setTimingFunction_(
+                    CAMediaTimingFunction.functionWithName_("easeIn")
+                )
+                self._vignette_layer.setOpacity_(0.0)
+                self._vignette_layer.addAnimation_forKey_(vanim, "vignetteOut")
 
             # Fade out screen dim — slow and sneaky so the brightness
             # return is imperceptible while attention is on injected text
@@ -569,9 +699,14 @@ class GlowOverlay(NSObject):
             b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
             self._apply_glow_color((r, g, b))
 
-        self._glow_layer.setOpacity_(opacity)
+        # Cross-fade additive glow and subtractive vignette
+        additive_mix = getattr(self, "_additive_mix", 1.0)
+        subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
+        self._glow_layer.setOpacity_(opacity * additive_mix)
+        if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
+            self._vignette_layer.setOpacity_(opacity * subtractive_mix * 2.5)
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
-            logger.info("Glow amplitude: rms=%.4f smoothed=%.4f opacity=%.3f (update #%d)",
-                        rms, self._smoothed_amplitude, opacity, self._update_count)
+            logger.info("Glow amplitude: rms=%.4f smoothed=%.4f opacity=%.3f add=%.2f sub=%.2f (update #%d)",
+                        rms, self._smoothed_amplitude, opacity, additive_mix, subtractive_mix, self._update_count)
