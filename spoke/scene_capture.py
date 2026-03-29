@@ -372,7 +372,7 @@ def _capture_active_window():
             for win in window_list:
                 if win.get("kCGWindowOwnerPID") == app_pid:
                     bounds = win.get("kCGWindowBounds")
-                    if bounds and bounds.get("Height", 0) > 50:
+                    if bounds and bounds.get("Height", 0) > 50 and bounds.get("Width", 0) > 50:
                         target_window = win
                         break
 

@@ -127,11 +127,11 @@ class TestAccumulateToolCalls:
 
 class TestExecuteTool:
     def test_execute_capture_context(self):
+        """Test that execute_tool serializes a SceneCapture to the correct JSON shape."""
         mod = _import_tools()
         sc_mod = importlib.import_module("spoke.scene_capture")
         cache = sc_mod.SceneCaptureCache(max_captures=5)
 
-        # Mock the actual capture
         fake_capture = sc_mod.SceneCapture(
             scene_ref="scene-test",
             created_at=time.time(),
@@ -152,7 +152,9 @@ class TestExecuteTool:
             ],
         )
 
-        with patch.object(mod, "_execute_capture_context", return_value=fake_capture):
+        # Mock capture_context (the real function), not _execute_capture_context,
+        # so the JSON serialization in execute_tool is actually exercised.
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
             result = mod.execute_tool(
                 name="capture_context",
                 arguments={"scope": "active_window"},
@@ -162,17 +164,42 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert parsed["scene_ref"] == "scene-test"
         assert parsed["app_name"] == "Safari"
+        assert parsed["scope"] == "active_window"
+        assert parsed["window_title"] == "Test Page"
         assert len(parsed["ocr_blocks"]) == 2
+        assert parsed["ocr_blocks"][0]["ref"] == "scene-test:block-0"
+        assert parsed["ocr_blocks"][0]["text"] == "Hello"
+        assert len(parsed["ax_hints"]) == 1
+        assert parsed["ax_hints"][0]["role"] == "AXTextField"
+
+    def test_execute_capture_context_failure(self):
+        """When capture fails, execute_tool returns an error JSON."""
+        mod = _import_tools()
+        with patch("spoke.scene_capture.capture_context", return_value=None):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window"},
+            )
+        parsed = json.loads(result)
+        assert "error" in parsed
 
     def test_execute_read_aloud_literal(self):
+        """Test that execute_tool resolves a literal ref and returns the text."""
         mod = _import_tools()
-        # Mock TTS to avoid actually speaking
-        with patch.object(mod, "_execute_read_aloud", return_value="Spoke: hello world"):
-            result = mod.execute_tool(
-                name="read_aloud",
-                arguments={"source_ref": "literal:hello world"},
-            )
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "literal:hello world"},
+        )
         assert "hello world" in result
+
+    def test_execute_read_aloud_invalid_ref(self):
+        """Invalid ref should return an error string, not raise."""
+        mod = _import_tools()
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "bogus_kind:value"},
+        )
+        assert "error" in result.lower()
 
     def test_execute_unknown_tool(self):
         mod = _import_tools()

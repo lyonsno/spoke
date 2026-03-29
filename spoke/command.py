@@ -151,6 +151,9 @@ class CommandClient:
                 tool_call_acc = ToolCallAccumulator()
 
             finish_reason = None
+            # Content accumulated during this round only (may be
+            # intermediate text during a tool-call turn)
+            round_content = ""
 
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
@@ -186,7 +189,7 @@ class CommandClient:
                         # Content tokens
                         token = delta.get("content")
                         if token is not None:
-                            full_response += token
+                            round_content += token
                             yield token
 
                         # Tool call deltas — accumulate
@@ -216,9 +219,11 @@ class CommandClient:
                     ", ".join(c["function"]["name"] for c in completed_calls),
                 )
 
-                # Add the assistant's tool-call message to the conversation
+                # Add the assistant's tool-call message with any content
+                # from this round (required by OpenAI API spec)
                 messages.append({
                     "role": "assistant",
+                    "content": round_content or None,
                     "tool_calls": completed_calls,
                 })
 
@@ -241,7 +246,8 @@ class CommandClient:
                 # Continue the loop — next round sends tool results
                 continue
 
-            # No tool calls (or no tools configured) — we're done
+            # No tool calls — this round's content is the final response
+            full_response = round_content
             break
 
         # Add to ring buffer (content only, no reasoning)

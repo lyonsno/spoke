@@ -134,6 +134,14 @@ def _get_selection_text() -> str:
     Uses Cmd+C to copy the selection to the clipboard, reads it, then
     restores the original clipboard content.
 
+    Known limitations:
+    - Only saves/restores plain text — rich content, images, and file
+      references on the clipboard are lost during the round-trip.
+    - Uses a fixed 100ms delay which may be too short for slow apps.
+    - If selected text equals existing clipboard content, returns empty.
+    The primary screen-context path (capture_context → scene_block ref)
+    avoids these issues entirely. This is a secondary convenience path.
+
     Returns empty string on failure.
     """
     try:
