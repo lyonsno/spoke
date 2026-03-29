@@ -284,7 +284,7 @@ def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkey
 
     overlay.show()
 
-    assert overlay._window.frame().origin.y == pytest.approx(18.5)
+    assert overlay._window.frame().origin.y == pytest.approx(40.0)
 
 
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
@@ -335,6 +335,6 @@ def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, 
 
     overlay._update_layout()
 
-    expected_height = 241.5
+    expected_height = 220.0
     assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)

@@ -356,6 +356,6 @@ class TestGeometryCaps:
         overlay._update_layout()
 
         frame = overlay._window.setFrame_display_animate_.call_args[0][0]
-        expected_height = 708.0
+        expected_height = 640.0
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
