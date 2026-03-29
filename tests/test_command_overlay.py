@@ -9,6 +9,8 @@ import importlib
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 
 def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
@@ -136,6 +138,21 @@ class TestDismissAnimation:
 
         assert overlay._visible is False
         overlay._window.orderOut_.assert_called()
+
+    def test_fade_phase_uses_quadratic_alpha_curve_before_completion(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay.cancel_dismiss()
+
+        for _ in range(8):
+            overlay._cancelAnimStep_(None)
+
+        overlay._cancelAnimStep_(None)
+        overlay._cancelAnimStep_(None)
+        alpha_calls = [call.args[0] for call in overlay._window.setAlphaValue_.call_args_list]
+
+        assert alpha_calls[-2] == pytest.approx(1.0 - (1.0 / 15.0) ** 2)
+        assert alpha_calls[-1] == pytest.approx(1.0 - (2.0 / 15.0) ** 2)
 
     def test_cancel_dismiss_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

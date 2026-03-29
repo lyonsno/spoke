@@ -6,6 +6,7 @@ generation-based stale result rejection, and env var validation.
 
 import os
 import json
+from pathlib import Path
 import time
 from unittest.mock import MagicMock, patch
 
@@ -483,16 +484,33 @@ class TestModelPreferencePersistence:
     def test_save_model_preferences_uses_atomic_write(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Preferences should be written via tmp+rename for atomicity."""
+        """Preferences should write to a tmp path, then rename into place."""
         prefs_file = tmp_path / "model_preferences.json"
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        written = {}
 
-        d._save_model_preferences("model-a", "model-b")
+        def _fake_write_text(self, text, *args, **kwargs):
+            written["write_path"] = self
+            written["text"] = text
+            return len(text)
 
-        # The .tmp file should not linger after a successful write
-        assert not prefs_file.with_suffix(".tmp").exists()
-        assert prefs_file.exists()
+        def _fake_rename(self, target):
+            written["rename_from"] = self
+            written["rename_to"] = target
+            return target
+
+        with patch.object(Path, "write_text", autospec=True, side_effect=_fake_write_text):
+            with patch.object(Path, "rename", autospec=True, side_effect=_fake_rename):
+                assert d._save_model_preferences("model-a", "model-b") is True
+
+        tmp_file = prefs_file.with_suffix(".tmp")
+        assert written["write_path"] == tmp_file
+        assert written["rename_from"] == tmp_file
+        assert written["rename_to"] == prefs_file
+        payload = json.loads(written["text"])
+        assert payload["preview_model"] == "model-a"
+        assert payload["transcription_model"] == "model-b"
 
     def test_save_preserves_existing_local_whisper_preferences(
         self, main_module, monkeypatch, tmp_path

@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import types
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch, call, mock_open
 
 
 def _make_mic_delegate(main_module, monkeypatch):
@@ -180,41 +180,47 @@ class TestSigtermMenuBarCleanup:
     """SIGTERM must remove the NSStatusItem to prevent ghost menu bar icons."""
 
     def test_sigterm_handler_calls_menubar_cleanup(self, main_module, monkeypatch):
-        """The SIGTERM handler should call menubar.cleanup() before
-        calling NSApp.terminate_."""
+        """The SIGTERM handler should uninstall, clean up, then terminate."""
         monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
 
         import signal as signal_mod
         import sys
 
         captured_handlers = {}
+        events = []
 
         def capture_signal(signum, handler):
             captured_handlers[signum] = handler
 
-        with patch.object(main_module, "NSApp", MagicMock()):
+        with patch.object(main_module, "NSApp", MagicMock()) as mock_nsapp:
+            mock_nsapp.terminate_.side_effect = lambda _arg: events.append("terminate")
             with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
                 mock_nsapp_cls.sharedApplication.return_value = MagicMock()
                 with patch.object(signal_mod, "signal", side_effect=capture_signal):
                     delegate = MagicMock()
                     delegate._menubar = MagicMock()
                     delegate._detector = MagicMock()
+                    delegate._detector.uninstall.side_effect = lambda: events.append("uninstall")
+                    delegate._menubar.cleanup.side_effect = lambda: events.append("cleanup")
 
                     with patch.object(
                         main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
                     ) as mock_alloc:
                         mock_alloc.return_value.init.return_value = delegate
 
-                        with patch("PyObjCTools.AppHelper.runEventLoop"):
-                            main_module.main()
+                        with patch.object(main_module, "_acquire_instance_lock"):
+                            with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                main_module.main()
+                                assert signal_mod.SIGTERM in captured_handlers, (
+                                    "main() did not install a SIGTERM handler"
+                                )
 
-        assert signal_mod.SIGTERM in captured_handlers, (
-            "main() did not install a SIGTERM handler"
-        )
+                                captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
 
-        captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
-
-        delegate._menubar.cleanup.assert_called_once()
+                                delegate._detector.uninstall.assert_called_once()
+                                delegate._menubar.cleanup.assert_called_once()
+                                mock_nsapp.terminate_.assert_called_once_with(None)
+                                assert events == ["uninstall", "cleanup", "terminate"]
 
     def test_sigterm_handler_logs_pid_context(self, main_module, monkeypatch):
         """The SIGTERM handler should log PID context for disappearance forensics."""
@@ -227,7 +233,8 @@ class TestSigtermMenuBarCleanup:
         def capture_signal(signum, handler):
             captured_handlers[signum] = handler
 
-        with patch.object(main_module, "NSApp", MagicMock()):
+        with patch.object(main_module, "NSApp", MagicMock()) as mock_nsapp:
+            mock_nsapp.terminate_ = MagicMock()
             with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
                 mock_nsapp_cls.sharedApplication.return_value = MagicMock()
                 with patch.object(signal_mod, "signal", side_effect=capture_signal):
@@ -239,17 +246,19 @@ class TestSigtermMenuBarCleanup:
                         with patch.object(main_module.os, "getpid", return_value=4242):
                             with patch.object(main_module.os, "getppid", return_value=2121):
                                 with patch.object(main_module.os, "getcwd", return_value="/tmp/spoke"):
-                                    with patch.object(
-                                        main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
-                                    ) as mock_alloc:
-                                        mock_alloc.return_value.init.return_value = delegate
+                                    with patch("builtins.open", mock_open(read_data="4242")):
+                                        with patch.object(
+                                            main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
+                                        ) as mock_alloc:
+                                            mock_alloc.return_value.init.return_value = delegate
 
-                                        with patch("PyObjCTools.AppHelper.runEventLoop"):
-                                            main_module.main()
+                                            with patch.object(main_module, "_acquire_instance_lock"):
+                                                with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                                    main_module.main()
 
-                                        captured_handlers[signal_mod.SIGTERM](
-                                            signal_mod.SIGTERM, None
-                                        )
+                                                    captured_handlers[signal_mod.SIGTERM](
+                                                        signal_mod.SIGTERM, None
+                                                    )
 
                         mock_logger.info.assert_any_call(
                             "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",

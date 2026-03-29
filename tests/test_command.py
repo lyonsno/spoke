@@ -20,6 +20,26 @@ def _make_sse_response(chunks):
     return resp
 
 
+class _ClosableSSEBody(io.BytesIO):
+    """Minimal response object that behaves like a closable urlopen body."""
+
+    def __init__(self, chunks):
+        lines = []
+        for chunk in chunks:
+            lines.append(f"data: {json.dumps(chunk)}\n\n".encode())
+        lines.append(b"data: [DONE]\n\n")
+        super().__init__(b"".join(lines))
+        self.exited = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.exited = True
+        self.close()
+        return False
+
+
 class TestCommandClient:
     """Test CommandClient message assembly and ring buffer."""
 
@@ -370,7 +390,7 @@ class TestStreamCleanup:
         assert client._history == []
 
     def test_partial_consumption_closes_http_response(self):
-        """Abandoning a stream mid-flight should exit the HTTP context manager."""
+        """Abandoning a stream mid-flight should close the active response body."""
         from spoke.command import CommandClient
         client = CommandClient(
             base_url="http://localhost:9999",
@@ -381,13 +401,14 @@ class TestStreamCleanup:
             {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
             {"choices": [{"index": 0, "delta": {"content": "tok2"}}]},
         ]
-        fake_resp = _make_sse_response(chunks)
-        with patch("urllib.request.urlopen", return_value=fake_resp):
+        response = _ClosableSSEBody(chunks)
+        with patch("urllib.request.urlopen", return_value=response):
             gen = client.stream_command("test")
             next(gen)
+            assert response.closed is False
             gen.close()
-        # The mock context manager's __exit__ should have been called
-        fake_resp.__exit__.assert_called_once()
+        assert response.exited is True
+        assert response.closed is True
 
     def test_second_stream_after_partial_has_clean_state(self):
         """A new stream after a partial consumption should start with empty response."""
