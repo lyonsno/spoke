@@ -34,7 +34,13 @@ from .capture import AudioCapture
 from .command import CommandClient
 from .focus_check import has_focused_text_input
 from .glow import GlowOverlay
-from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
+from .inject import (
+    inject_text,
+    restore_pasteboard,
+    save_pasteboard,
+    set_pasteboard_only,
+    undo_last_insert,
+)
 from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
@@ -158,6 +164,8 @@ class SpokeAppDelegate(NSObject):
         self._tray_stack: list[str] = []
         self._tray_index: int = 0
         self._tray_active: bool = False
+        self._undoable_tray_insert: str | None = None
+        self._tray_pending_inject: str | None = None
 
         # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -604,6 +612,8 @@ class SpokeAppDelegate(NSObject):
                 self._glow.hide()
 
             if shift_held:
+                if self._undo_last_tray_insert():
+                    return
                 # Shift + empty recording = recall tray
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
@@ -1038,9 +1048,21 @@ class SpokeAppDelegate(NSObject):
             return
 
         inject_text(text)
+        self._undoable_tray_insert = text
         logger.info("Tray injected: %r", text[:50])
         if self._menubar is not None:
             self._menubar.set_status_text("Pasted!")
+
+    def _undo_last_tray_insert(self) -> bool:
+        """Undo the most recent tray insertion and return it to the tray."""
+        text = getattr(self, "_undoable_tray_insert", None)
+        if not text:
+            return False
+        undo_last_insert()
+        self._undoable_tray_insert = None
+        self._enter_tray(text)
+        logger.info("Undid last tray insertion and restored it to tray")
+        return True
 
     def _tray_send_current(self) -> None:
         """Send the current tray entry to the assistant and consume it."""

@@ -41,6 +41,8 @@ def _make_delegate(main_module, monkeypatch, *, command_client=False):
     delegate._tray_stack = []
     delegate._tray_index = 0
     delegate._tray_active = False
+    delegate._undoable_tray_insert = None
+    delegate._tray_pending_inject = None
     # Recovery state (implementation detail of tray)
     delegate._pre_paste_clipboard = None
     delegate._verify_paste_text = None
@@ -215,6 +217,18 @@ class TestTrayStack:
 
         assert "insert this" not in d._tray_stack
 
+    def test_delayed_tray_insert_becomes_undoable(self, main_module, monkeypatch):
+        """Completed tray insertion should become the next idle undo target."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_pending_inject = "insert this"
+
+        with patch("spoke.__main__.inject_text") as mock_inject:
+            d.trayInjectDelayed_(None)
+
+        mock_inject.assert_called_once_with("insert this")
+        assert d._undoable_tray_insert == "insert this"
+        assert d._tray_pending_inject is None
+
     def test_dismiss_preserves_stack(self, main_module, monkeypatch):
         """Dismissing the tray should preserve the stack for re-entry."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
@@ -296,6 +310,22 @@ class TestTrayGestures:
 
         assert d._tray_active is True
         assert d._tray_index == 0  # viewing the existing entry
+
+    def test_shift_empty_prefers_undo_of_last_tray_insert(self, main_module, monkeypatch):
+        """Idle shift tap should undo the last tray insertion before plain tray recall."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._undoable_tray_insert = "restored text"
+        d._capture.stop.return_value = b""
+
+        with patch("spoke.__main__.undo_last_insert") as mock_undo:
+            d._on_hold_end(shift_held=True)
+
+        mock_undo.assert_called_once_with()
+        assert d._undoable_tray_insert is None
+        assert d._tray_active is True
+        assert d._tray_stack == ["restored text"]
+        assert d._tray_index == 0
+        d._overlay.show_tray.assert_called_once_with("restored text")
 
 
 class TestTrayRecoveryUnification:

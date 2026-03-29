@@ -24,6 +24,7 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 _V_KEYCODE = 9
+_Z_KEYCODE = 6
 
 _DEFAULT_RESTORE_DELAY_S = 1.0
 
@@ -151,12 +152,22 @@ def inject_text(text: str, on_restored: object = None) -> None:
 
 def _post_cmd_v() -> None:
     """Post a synthetic Cmd+V keystroke."""
+    _post_cmd_key(_V_KEYCODE)
+
+
+def undo_last_insert() -> None:
+    """Post a synthetic Cmd+Z keystroke."""
+    _post_cmd_key(_Z_KEYCODE)
+
+
+def _post_cmd_key(keycode: int) -> None:
+    """Post a synthetic Cmd+<key> keystroke."""
     src = None  # default event source
 
-    down = CGEventCreateKeyboardEvent(src, _V_KEYCODE, True)
+    down = CGEventCreateKeyboardEvent(src, keycode, True)
     CGEventSetFlags(down, kCGEventFlagMaskCommand)
 
-    up = CGEventCreateKeyboardEvent(src, _V_KEYCODE, False)
+    up = CGEventCreateKeyboardEvent(src, keycode, False)
     # Clear modifier flags on keyUp so Command doesn't "stick" in the
     # system modifier state — otherwise the next real keypress (e.g.
     # spacebar) is interpreted as Cmd+Space, opening Spotlight.
