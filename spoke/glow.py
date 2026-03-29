@@ -74,6 +74,12 @@ _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.28  # same on light — subtractive vignette handles contrast
+_TRAY_DIM_FACTOR = 0.5  # tray keeps half the recording dim so context stays visible
+_TRAY_GLOW_FACTOR_MIN = 0.35  # tray breathes around the prior half-strength target
+_TRAY_GLOW_FACTOR_MAX = 0.75
+_TRAY_GLOW_PULSE_PERIOD = 5.0  # mirror assistant overlay cadence
+_TRAY_GLOW_PULSE_HZ = 30.0
+_TRAY_GLOW_PHASE_OFFSET = 0.23  # related to assistant pulse, but visibly out of phase
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words
@@ -186,6 +192,29 @@ def _glow_style_for_brightness(brightness: float) -> tuple[tuple[float, float, f
     return color, base_opacity, peak_target
 
 
+def _dim_opacity_for_brightness(brightness: float) -> float:
+    t = min(max(brightness, 0.0), 1.0)
+    return _DIM_OPACITY_DARK + t * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+
+
+def _tray_dim_opacity_for_brightness(brightness: float) -> float:
+    return _dim_opacity_for_brightness(brightness) * _TRAY_DIM_FACTOR
+
+
+def _assistant_breath(phase: float) -> float:
+    """Shared eased breath shape used by the assistant overlay."""
+    raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * phase))
+    return raw_breath * raw_breath
+
+
+def _tray_glow_factor(phase: float) -> float:
+    """Tray glow follows the assistant breath shape at a calmer range."""
+    breath = _assistant_breath(phase)
+    return _TRAY_GLOW_FACTOR_MIN + breath * (
+        _TRAY_GLOW_FACTOR_MAX - _TRAY_GLOW_FACTOR_MIN
+    )
+
+
 def _edge_band_colors(
     base_color: tuple[float, float, float]
 ) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
@@ -247,12 +276,35 @@ class GlowOverlay(NSObject):
         self._glow_peak_target = _GLOW_PEAK_TARGET
         self._brightness_timer = None
         self._brightness = 0.5
+        self._tray_dim_only = False
+        self._tray_pulse_timer = None
+        self._tray_pulse_phase = _TRAY_GLOW_PHASE_OFFSET
+        self._last_tray_pulse_at = 0.0
         return self
 
     def _cancel_pending_hide(self) -> None:
         if self._hide_timer is not None:
             self._hide_timer.invalidate()
             self._hide_timer = None
+
+    def _stop_tray_pulse(self) -> None:
+        if self._tray_pulse_timer is not None:
+            self._tray_pulse_timer.invalidate()
+            self._tray_pulse_timer = None
+
+    def _apply_tray_glow_pulse(self) -> None:
+        if self._glow_layer is None:
+            return
+        self._glow_layer.setOpacity_(
+            self._glow_base_opacity * _tray_glow_factor(self._tray_pulse_phase)
+        )
+
+    def _start_tray_pulse(self) -> None:
+        self._stop_tray_pulse()
+        self._last_tray_pulse_at = time.monotonic()
+        self._tray_pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _TRAY_GLOW_PULSE_HZ, self, "trayPulseStep:", None, True
+        )
 
     def setup(self) -> None:
         """Create the overlay window and glow layer."""
@@ -473,12 +525,14 @@ class GlowOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_pending_hide()
+        self._stop_tray_pulse()
         self._hide_generation += 1
         self._visible = True
         self._smoothed_amplitude = 0.0
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
+        self._tray_dim_only = False
         brightness = _sample_screen_brightness(self._screen)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
@@ -507,7 +561,7 @@ class GlowOverlay(NSObject):
         # Fade in screen dim — adaptive opacity based on screen brightness.
         # Sample once per recording, not per-frame.
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_opacity_for_brightness(brightness)
             logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
 
             pres = self._dim_layer.presentationLayer()
@@ -534,6 +588,64 @@ class GlowOverlay(NSObject):
 
         logger.info("Glow show")
 
+    def show_tray_dim(self) -> None:
+        """Keep a half-strength dim layer visible while the tray is up."""
+        if self._window is None:
+            return
+        self._cancel_pending_hide()
+        self._stop_tray_pulse()
+        self._visible = True
+        self._tray_dim_only = True
+        self._tray_pulse_phase = _TRAY_GLOW_PHASE_OFFSET
+        self._window.orderFrontRegardless()
+
+        brightness = _sample_screen_brightness(self._screen)
+        self._brightness = brightness
+        self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
+        self._apply_glow_color(self._glow_color)
+
+        self._glow_layer.removeAllAnimations()
+        self._apply_tray_glow_pulse()
+        if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
+            self._vignette_layer.removeAllAnimations()
+            self._vignette_layer.setOpacity_(0.0)
+
+        if self._dim_layer is not None:
+            dim_target = _tray_dim_opacity_for_brightness(brightness)
+            pres = self._dim_layer.presentationLayer()
+            current_opacity = pres.opacity() if pres is not None else self._dim_layer.opacity()
+            self._dim_layer.removeAllAnimations()
+            self._dim_layer.setOpacity_(dim_target)
+            dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
+            dim_anim.setFromValue_(current_opacity)
+            dim_anim.setToValue_(dim_target)
+            dim_anim.setDuration_(0.45)
+            dim_anim.setTimingFunction_(
+                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
+            )
+            self._dim_layer.addAnimation_forKey_(dim_anim, "trayDimIn")
+
+        old_timer = getattr(self, "_brightness_timer", None)
+        if old_timer is not None:
+            old_timer.invalidate()
+        from Foundation import NSTimer
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
+        )
+        self._start_tray_pulse()
+
+    def trayPulseStep_(self, timer) -> None:
+        if not self._visible or not self._tray_dim_only:
+            return
+        now = time.monotonic()
+        last = self._last_tray_pulse_at or now
+        dt = max(now - last, 0.0)
+        self._last_tray_pulse_at = now
+        self._tray_pulse_phase += dt / _TRAY_GLOW_PULSE_PERIOD
+        if self._tray_pulse_phase > 1.0:
+            self._tray_pulse_phase -= math.floor(self._tray_pulse_phase)
+        self._apply_tray_glow_pulse()
+
     def brightnessResample_(self, timer) -> None:
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
         if not self._visible:
@@ -547,6 +659,10 @@ class GlowOverlay(NSObject):
         self._glow_base_opacity = new_base
         self._glow_peak_target = new_peak
         self._apply_glow_color(new_color)
+        if getattr(self, "_tray_dim_only", False):
+            self._apply_tray_glow_pulse()
+            if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
+                self._vignette_layer.setOpacity_(0.0)
 
         # Update cross-fade mix
         self._additive_mix = 1.0 - new_brightness
@@ -554,7 +670,11 @@ class GlowOverlay(NSObject):
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = (
+                _tray_dim_opacity_for_brightness(new_brightness)
+                if getattr(self, "_tray_dim_only", False)
+                else _dim_opacity_for_brightness(new_brightness)
+            )
             from Quartz import CABasicAnimation, CAMediaTimingFunction
             pres = self._dim_layer.presentationLayer()
             current = pres.opacity() if pres is not None else self._dim_layer.opacity()
@@ -576,7 +696,9 @@ class GlowOverlay(NSObject):
         if bt is not None:
             bt.invalidate()
             self._brightness_timer = None
+        self._stop_tray_pulse()
         self._visible = False
+        self._tray_dim_only = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
         logger.info("Glow hide (received %d amplitude updates)", self._update_count)

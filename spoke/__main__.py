@@ -481,8 +481,24 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.show()
         if self._overlay is not None:
+            if self._glow is not None:
+                self._overlay.set_brightness(
+                    getattr(self._glow, "_brightness", 0.0),
+                    immediate=True,
+                )
             self._overlay.show()
-        self._capture.start(amplitude_callback=self._on_amplitude)
+        try:
+            self._capture.start(amplitude_callback=self._on_amplitude)
+        except Exception:
+            logger.exception("Audio capture failed to start")
+            if self._glow is not None:
+                self._glow.hide()
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._menubar is not None:
+                self._menubar.set_recording(False)
+                self._menubar.set_status_text("Audio input error — try again")
+            return
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
@@ -534,6 +550,10 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
+            glow_brightness = getattr(self._glow, "_brightness", 0.0)
+            if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
+                self._overlay.set_brightness(glow_brightness)
+            self._sync_command_overlay_brightness()
             # Text breathing: glow's smoothed amplitude, scaled independently
             self._overlay.update_text_amplitude(
                 min(self._glow._smoothed_amplitude * 18.0, 1.0)
@@ -921,6 +941,7 @@ class SpokeAppDelegate(NSObject):
                 last_utterance, last_response = history[-1]
                 logger.info("Recalling last response: %r", last_utterance[:50])
                 if self._command_overlay is not None:
+                    self._sync_command_overlay_brightness(immediate=True)
                     self._command_overlay.show()
                     self._command_overlay.set_utterance(last_utterance)
                     for ch in last_response:
@@ -933,6 +954,14 @@ class SpokeAppDelegate(NSObject):
         logger.info("No history to recall")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _sync_command_overlay_brightness(self, immediate: bool = False) -> None:
+        if self._command_overlay is None or self._glow is None:
+            return
+        self._command_overlay.set_brightness(
+            getattr(self._glow, "_brightness", 0.0),
+            immediate=immediate,
+        )
 
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
@@ -1036,7 +1065,10 @@ class SpokeAppDelegate(NSObject):
         self._detector.tray_active = True
 
         if self._glow is not None:
-            self._glow.hide()
+            if hasattr(self._glow, "show_tray_dim"):
+                self._glow.show_tray_dim()
+            else:
+                self._glow.hide()
 
         self._show_tray_current()
 
@@ -1062,6 +1094,8 @@ class SpokeAppDelegate(NSObject):
         """Dismiss the tray overlay. Stack is preserved for re-entry."""
         self._tray_active = False
         self._detector.tray_active = False
+        if self._glow is not None:
+            self._glow.hide()
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
@@ -1145,6 +1179,8 @@ class SpokeAppDelegate(NSObject):
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
 
+        if self._glow is not None:
+            self._glow.hide()
         self._cancel_recovery()
         if self._overlay is not None:
             self._overlay.hide()
@@ -1187,6 +1223,8 @@ class SpokeAppDelegate(NSObject):
 
         self._tray_active = False
         self._detector.tray_active = False
+        if self._glow is not None:
+            self._glow.hide()
         self._cancel_recovery()
 
         if self._command_client is not None:
@@ -1323,6 +1361,7 @@ class SpokeAppDelegate(NSObject):
             self._overlay.hide()
         # Show the command overlay with the utterance as context
         if self._command_overlay is not None:
+            self._sync_command_overlay_brightness(immediate=True)
             self._command_overlay.show()
             self._command_overlay.set_utterance(utterance)
         self._command_first_token = True
@@ -1402,6 +1441,7 @@ class SpokeAppDelegate(NSObject):
         # Show the error in the command overlay like a response
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
+                self._sync_command_overlay_brightness(immediate=True)
                 self._command_overlay.show()
             self._command_overlay.append_token("couldn't reach the model — try again in a moment")
             self._command_overlay.finish()

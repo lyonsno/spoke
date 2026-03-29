@@ -174,6 +174,37 @@ class TestStartStop:
         first_stream.close.assert_called_once()
 
     @patch("spoke.capture.sd")
+    def test_start_retries_once_after_portaudio_error(self, mock_sd):
+        """A dead backend on restart should get one PortAudio reset and retry."""
+        cap = AudioCapture()
+        first_stream = MagicMock()
+        first_stream.start.side_effect = RuntimeError("device failed")
+        second_stream = MagicMock()
+        mock_sd.InputStream.side_effect = [first_stream, second_stream]
+
+        cap.start()
+
+        assert mock_sd.InputStream.call_count == 2
+        first_stream.close.assert_called_once()
+        mock_sd._terminate.assert_called_once()
+        mock_sd._initialize.assert_called_once()
+        second_stream.start.assert_called_once()
+        assert cap._stream is second_stream
+
+    @patch("spoke.capture.sd")
+    def test_stop_resets_portaudio_after_zero_chunk_recording(self, mock_sd):
+        """A zero-chunk recording should reset PortAudio before the next hold."""
+        cap = AudioCapture()
+        cap._stream = MagicMock()
+
+        wav = cap.stop()
+
+        assert wav == b""
+        mock_sd._terminate.assert_called_once()
+        mock_sd._initialize.assert_called_once()
+        assert cap._stream is None
+
+    @patch("spoke.capture.sd")
     def test_get_new_frames_returns_incremental(self, mock_sd):
         """get_new_frames() should return only frames since last call."""
         cap = AudioCapture()

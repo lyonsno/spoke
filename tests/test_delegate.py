@@ -7,7 +7,7 @@ generation-based stale result rejection, and env var validation.
 import os
 import json
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 def _make_delegate(main_module, monkeypatch):
@@ -61,6 +61,19 @@ class TestHoldCallbacks:
 
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
+
+    def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.start.side_effect = RuntimeError("audio dead")
+
+        d._on_hold_start()
+
+        d._glow.hide.assert_called_once_with()
+        d._overlay.hide.assert_called_once_with()
+        d._menubar.set_recording.assert_any_call(True)
+        d._menubar.set_recording.assert_any_call(False)
+        d._menubar.set_status_text.assert_called_with("Audio input error — try again")
+        assert d._preview_active is False
 
     def test_hold_end_stops_capture_and_spawns_thread(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -1854,6 +1867,18 @@ class TestRecordingCap:
         d._detector.force_end.assert_not_called()
         assert d._cap_fired is False
 
+    def test_amplitude_update_syncs_command_overlay_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._glow._brightness = 0.61
+        self._setup_glow_mock(d)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        d._command_overlay.set_brightness.assert_called_with(0.61, immediate=False)
+
 
 class TestCommandTranscribeWorker:
     """Test _command_transcribe_worker branching and dispatch."""
@@ -2007,6 +2032,22 @@ class TestCommandCallbacks:
         d._overlay.hide.assert_called()
         d._command_overlay.show.assert_called()
         d._command_overlay.set_utterance.assert_called_with("open file")
+
+    def test_command_utterance_ready_primes_command_overlay_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._glow._brightness = 0.73
+        d._transcription_token = 1
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
+
+        assert d._command_overlay.method_calls[:3] == [
+            call.set_brightness(0.73, immediate=True),
+            call.show(),
+            call.set_utterance("open file"),
+        ]
 
     def test_command_utterance_ready_stale_token_ignored(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
