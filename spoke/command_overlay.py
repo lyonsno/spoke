@@ -105,6 +105,7 @@ class CommandOverlay(NSObject):
         # TTS amplitude state — drives window opacity during speech playback
         self._tts_amplitude = 0.0
         self._tts_active = False
+        self._tts_blend = 0.0  # 0.0 = pure pulse, 1.0 = pure TTS
 
         # Thinking timer state
         self._thinking_timer: NSTimer | None = None
@@ -616,11 +617,19 @@ class CommandOverlay(NSObject):
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
         pulse_alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
 
-        # When TTS is driving amplitude, cross-fade from pulse to TTS-driven alpha
+        # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
+        # _tts_blend ramps toward 1.0 when TTS is active, toward 0.0 when not.
+        # At 30Hz pulse rate, 0.06 per tick ≈ 0.55s full ramp.
+        _BLEND_RATE = 0.06
         if self._tts_active:
+            self._tts_blend = min(self._tts_blend + _BLEND_RATE, 1.0)
+        else:
+            self._tts_blend = max(self._tts_blend - _BLEND_RATE, 0.0)
+
+        if self._tts_blend > 0.0:
             tts_scaled = min(self._tts_amplitude * self._TTS_MULTIPLIER, 1.0)
             tts_alpha = self._TTS_ALPHA_MIN + tts_scaled * (self._TTS_ALPHA_MAX - self._TTS_ALPHA_MIN)
-            alpha_a = tts_alpha
+            alpha_a = pulse_alpha_a * (1.0 - self._tts_blend) + tts_alpha * self._tts_blend
         else:
             alpha_a = pulse_alpha_a
 
