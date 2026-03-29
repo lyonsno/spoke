@@ -1,7 +1,9 @@
 """Tests for the TTS client and command-completion autoplay hook."""
 
 import threading
+import tomllib
 from unittest.mock import patch, MagicMock, call
+from pathlib import Path
 
 import pytest
 
@@ -200,6 +202,14 @@ class TestTTSConfig:
         from spoke.tts import TTSClient
         client = TTSClient.from_env()
         assert client._model_id == "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
+
+    def test_tts_extra_includes_mistral_common_audio(self):
+        """The TTS extra should pull in the Mistral speech tokenizer dependency directly."""
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        pyproject = tomllib.loads(pyproject_path.read_text())
+
+        tts_extra = pyproject["project"]["optional-dependencies"]["tts"]
+        assert "mistral-common[audio]" in tts_extra
 
 
 class TestGPULockDiscipline:
