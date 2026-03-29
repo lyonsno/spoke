@@ -91,6 +91,7 @@ _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
+_WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -627,12 +628,12 @@ class TranscriptionOverlay(NSObject):
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowOpacity_(
-                min(opacity * 1.4, _INNER_GLOW_PEAK_TARGET)
+                min(opacity * 1.68, _INNER_GLOW_PEAK_TARGET * 1.2)
             )
         if hasattr(self, '_outer_glow_tight'):
             self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * 1.12, 1.0))
+            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * _WIDE_OUTER_GLOW_SCALE, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
