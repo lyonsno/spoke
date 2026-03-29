@@ -15,6 +15,8 @@ from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
 
+_missing_ocr_dependency_logged = False
+
 # Minimum fuzzy match ratio to consider the paste successful.
 # Generous because OCR may misread a few characters, and the pasted
 # text might only be partially visible (scrolled, clipped, etc.).
@@ -31,6 +33,7 @@ def capture_screen_text() -> str:
     Returns a single string with all OCR results concatenated.
     Returns empty string on any failure.
     """
+    global _missing_ocr_dependency_logged
     try:
         from Vision import VNRecognizeTextRequest, VNImageRequestHandler, VNRequestTextRecognitionLevelFast
         from Quartz import (
@@ -44,7 +47,7 @@ def capture_screen_text() -> str:
             CGRectInfinite, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, 0
         )
         if image is None:
-            logger.debug("Screen capture returned None")
+            logger.warning("Paste verify OCR failed: screen capture returned no image")
             return ""
 
         handler = VNImageRequestHandler.alloc().initWithCGImage_options_(image, None)
@@ -54,11 +57,12 @@ def capture_screen_text() -> str:
 
         success, error = handler.performRequests_error_([request], None)
         if not success:
-            logger.debug("Vision OCR failed: %s", error)
+            logger.warning("Paste verify OCR failed: Vision request unsuccessful: %s", error)
             return ""
 
         results = request.results()
         if not results:
+            logger.warning("Paste verify OCR produced no text observations")
             return ""
 
         lines = []
@@ -68,6 +72,11 @@ def capture_screen_text() -> str:
                 lines.append(candidates[0].string())
 
         return " ".join(lines)
+    except ModuleNotFoundError as exc:
+        if not _missing_ocr_dependency_logged:
+            logger.warning("Paste verify OCR unavailable: missing dependency: %s", exc)
+            _missing_ocr_dependency_logged = True
+        return ""
     except Exception:
         logger.debug("Screen OCR failed", exc_info=True)
         return ""
