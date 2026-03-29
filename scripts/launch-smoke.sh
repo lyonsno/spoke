@@ -66,10 +66,26 @@ child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
 child_env.pop("SPOKE_WHISPER_MODEL", None)
+tts_enabled = bool(child_env.get("SPOKE_TTS_VOICE"))
 
 with log_file.open("a", encoding="utf-8") as log:
     try:
-        if python_exe.is_file():
+        if tts_enabled and uv_bin.is_file():
+            command = [
+                str(uv_bin),
+                "run",
+                "--directory",
+                str(repo_root),
+                "--extra",
+                "tts",
+                "python",
+                "-m",
+                "spoke",
+            ]
+            log.write(
+                "Smoke launcher: SPOKE_TTS_VOICE is set, using uv --extra tts for a coherent TTS runtime.\n"
+            )
+        elif python_exe.is_file():
             command = [str(python_exe), "-m", "spoke"]
         elif uv_bin.is_file():
             command = [str(uv_bin), "run", "--directory", str(repo_root), "python", "-m", "spoke"]
