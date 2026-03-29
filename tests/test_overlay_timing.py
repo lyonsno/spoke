@@ -278,9 +278,9 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             text_r, text_g, text_b, _ = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
-            assert text_r == pytest.approx(0.04)
-            assert text_g == pytest.approx(0.04)
-            assert text_b == pytest.approx(0.05)
+            assert text_r == pytest.approx(0.016)
+            assert text_g == pytest.approx(0.016)
+            assert text_b == pytest.approx(0.02)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

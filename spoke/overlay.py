@@ -80,7 +80,7 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _BG_COLOR_DARK = (0.1, 0.1, 0.12)
 _TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
 _BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
-_TEXT_COLOR_LIGHT = (0.04, 0.04, 0.05)
+_TEXT_COLOR_LIGHT = (0.016, 0.016, 0.02)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
