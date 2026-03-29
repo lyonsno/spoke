@@ -61,8 +61,8 @@ _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.07)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
-_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.115)
-_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
+_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.08)
+_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(

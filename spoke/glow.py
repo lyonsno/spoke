@@ -56,10 +56,10 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.07  # clear presence in silence
+_GLOW_BASE_OPACITY = 0.098  # clear presence in silence
 _GLOW_PEAK_TARGET = 0.17
-_GLOW_BASE_OPACITY_DARK = 0.06
-_GLOW_BASE_OPACITY_LIGHT = 0.14
+_GLOW_BASE_OPACITY_DARK = 0.084
+_GLOW_BASE_OPACITY_LIGHT = 0.196
 _GLOW_PEAK_TARGET_DARK = 0.15
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
@@ -70,7 +70,7 @@ _EDGE_OUTER_SATURATION_SCALE = 1.80
 _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corners
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
-_GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "30.0"))
+_GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.20  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.40  # dim on light/white backgrounds
