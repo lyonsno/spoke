@@ -31,6 +31,7 @@ class TestGlowTuning:
         glow._glow_peak_target = mod._GLOW_PEAK_TARGET
         glow._dim_layer = MagicMock()
         glow._dim_layer.opacity.return_value = 0.0
+        glow._texture_timer = None
         return glow
 
     def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
@@ -100,6 +101,25 @@ class TestGlowTuning:
             assert edge == pytest.approx(1.0)
             assert edge > mid > wide > tail
             assert steeper < softer
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_texture_alpha_field_moves_and_keeps_mesa_more_selective(self, mock_pyobjc):
+        """The first-pass texture field should animate over time and keep mesa tighter than the mist."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            macro, mist, mesa = mod._continuous_texture_pass_specs()
+
+            macro_start = mod._texture_alpha_field(48, 32, macro, 0.0)
+            macro_later = mod._texture_alpha_field(48, 32, macro, 6.0)
+            mist_alpha = mod._texture_alpha_field(48, 32, mist, 1.5)
+            mesa_alpha = mod._texture_alpha_field(48, 32, mesa, 1.5)
+
+            assert float(macro_start.min()) >= 0.0
+            assert float(macro_start.max()) <= 1.0
+            assert not (macro_start == macro_later).all()
+            assert float(mesa_alpha.mean()) < float(mist_alpha.mean())
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -215,6 +235,21 @@ class TestGlowTuning:
             assert call.args[4] is False
             assert glow._hide_timer is timer
             assert glow._hide_generation == 1
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_hide_invalidates_texture_timer(self, mock_pyobjc):
+        """Texture animation should stop as part of the normal glow teardown path."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            texture_timer = MagicMock()
+            glow._texture_timer = texture_timer
+
+            glow.hide()
+
+            texture_timer.invalidate.assert_called_once_with()
         finally:
             sys.modules.pop("spoke.glow", None)
 

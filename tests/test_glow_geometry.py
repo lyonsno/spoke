@@ -46,6 +46,22 @@ def test_continuous_vignette_pass_specs_use_same_distance_field_architecture(moc
         sys.modules.pop("spoke.glow", None)
 
 
+def test_continuous_texture_pass_specs_define_first_three_layer_slice(mock_pyobjc):
+    """The texture stack should start with the agreed macro, mist, and mesa layers."""
+    sys.modules.pop("spoke.glow", None)
+    mod = importlib.import_module("spoke.glow")
+    try:
+        specs = mod._continuous_texture_pass_specs()
+
+        assert [spec["name"] for spec in specs] == ["macro_drift", "ionized_mist", "mesa_breakup"]
+        assert [spec["style"] for spec in specs] == ["macro", "mist", "mesa"]
+        assert specs[0]["mask_falloff"] > specs[1]["mask_falloff"] > specs[2]["mask_falloff"]
+        assert all(spec["additive_alpha"] > spec["subtractive_alpha"] > 0.0 for spec in specs)
+        assert all(spec["grid_scale"] > 0.0 for spec in specs)
+    finally:
+        sys.modules.pop("spoke.glow", None)
+
+
 def test_display_shape_geometry_derives_notch_from_auxiliary_areas(mock_pyobjc):
     """Live NSScreen auxiliary areas should define the notch cutout instead of a guessed hardcoded width."""
     sys.modules.pop("spoke.glow", None)

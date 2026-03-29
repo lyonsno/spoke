@@ -90,6 +90,9 @@ _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 3.05
+_TEXTURE_ANIMATION_INTERVAL = 0.08
+_TEXTURE_MIN_GRID_WIDTH = 96
+_TEXTURE_MIN_GRID_HEIGHT = 64
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -463,6 +466,51 @@ def _continuous_vignette_pass_specs():
     ]
 
 
+def _continuous_texture_pass_specs():
+    """First texture slice: unmistakable macro drift, soft mist, and restrained meso breakup."""
+    return [
+        {
+            "name": "macro_drift",
+            "fill_role": "outer",
+            "grid_scale": 0.115,
+            "mask_falloff": 18.0,
+            "mask_power": 3.25,
+            "additive_alpha": 0.15,
+            "subtractive_alpha": 0.085,
+            "subtractive_color_scale": 0.18,
+            "style": "macro",
+            "phase_rates": (0.055, -0.038, 0.024),
+            "freqs": ((1.08, 0.82), (1.62, -1.12), (-0.76, 1.44)),
+        },
+        {
+            "name": "ionized_mist",
+            "fill_role": "middle",
+            "grid_scale": 0.14,
+            "mask_falloff": 15.5,
+            "mask_power": 2.9,
+            "additive_alpha": 0.11,
+            "subtractive_alpha": 0.06,
+            "subtractive_color_scale": 0.14,
+            "style": "mist",
+            "phase_rates": (0.078, 0.052, -0.034),
+            "freqs": ((1.46, 1.18), (-1.94, 1.36), (2.22, -0.72)),
+        },
+        {
+            "name": "mesa_breakup",
+            "fill_role": "inner",
+            "grid_scale": 0.128,
+            "mask_falloff": 11.0,
+            "mask_power": 3.55,
+            "additive_alpha": 0.125,
+            "subtractive_alpha": 0.072,
+            "subtractive_color_scale": 0.11,
+            "style": "mesa",
+            "phase_rates": (0.047, -0.031, 0.021),
+            "freqs": ((1.72, 1.26), (-2.36, 1.74), (2.84, -1.12)),
+        },
+    ]
+
+
 def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSColor]:
     """Build additive glow colors keyed by intensity role."""
     inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
@@ -491,6 +539,89 @@ def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> 
     )
 
 
+def _texture_grid_size(width_pt: float, height_pt: float, scale: float) -> tuple[int, int]:
+    grid_width = max(int(round(width_pt * scale)), _TEXTURE_MIN_GRID_WIDTH)
+    grid_height = max(int(round(height_pt * scale)), _TEXTURE_MIN_GRID_HEIGHT)
+    return grid_width, grid_height
+
+
+def _texture_alpha_field(width: int, height: int, spec: dict, phase: float):
+    import numpy as np
+
+    x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
+    y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
+    (f1x, f1y), (f2x, f2y), (f3x, f3y) = spec["freqs"]
+    r1, r2, r3 = spec["phase_rates"]
+    wave_1 = np.sin((x * f1x + y * f1y + phase * r1) * math.tau)
+    wave_2 = np.sin((x * f2x + y * f2y + phase * r2) * math.tau + 1.2)
+    wave_3 = np.cos((x * f3x + y * f3y + phase * r3) * math.tau - 0.65)
+    field = (wave_1 * 0.54 + wave_2 * 0.29 + wave_3 * 0.17 + 1.0) * 0.5
+    field = np.clip(field, 0.0, 1.0)
+
+    if spec["style"] == "macro":
+        alpha = np.power(np.clip((field - 0.28) / 0.72, 0.0, 1.0), 1.35)
+    elif spec["style"] == "mist":
+        softened = np.power(field, 1.55)
+        alpha = np.power(np.clip((softened - 0.20) / 0.80, 0.0, 1.0), 2.15)
+    else:
+        terraced = np.floor(field * 4.0) / 4.0
+        alpha = np.power(np.clip((terraced - 0.30) / 0.70, 0.0, 1.0), 2.2)
+
+    return alpha.astype(np.float32, copy=False)
+
+
+def _color_alpha_field_to_image(alpha, color: tuple[float, float, float]):
+    """Convert a low-res tinted alpha field into a CGImage for a CALayer."""
+    import numpy as np
+
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32, copy=False)
+    rgba = np.empty(alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., 3] = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 0] = np.clip(color[0] * alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip(color[1] * alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip(color[2] * alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _texture_additive_color(base_color: tuple[float, float, float], spec: dict) -> tuple[float, float, float]:
+    inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
+    role_colors = {
+        "inner": inner_rgb,
+        "middle": middle_rgb,
+        "outer": outer_rgb,
+    }
+    return role_colors[spec["fill_role"]]
+
+
+def _texture_subtractive_color(base_color: tuple[float, float, float], spec: dict) -> tuple[float, float, float]:
+    rgb = _texture_additive_color(base_color, spec)
+    scale = spec["subtractive_color_scale"]
+    return (rgb[0] * scale, rgb[1] * scale, rgb[2] * scale)
+
+
 class GlowOverlay(NSObject):
     """Manages a screen-border glow window driven by audio amplitude."""
 
@@ -515,6 +646,10 @@ class GlowOverlay(NSObject):
         self._glow_peak_target = _GLOW_PEAK_TARGET
         self._brightness_timer = None
         self._brightness = 0.5
+        self._texture_timer = None
+        self._texture_phase = 0.0
+        self._texture_epoch = 0.0
+        self._texture_frame_payloads = []
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -609,13 +744,78 @@ class GlowOverlay(NSObject):
             vignette_pass_layers.append({"layer": layer, "spec": spec})
 
         self._vignette_pass_layers = vignette_pass_layers
+        texture_entries = []
+        texture_specs = _continuous_texture_pass_specs()
+        texture_mask_specs = [
+            {
+                "name": spec["name"],
+                "falloff": spec["mask_falloff"],
+                "power": spec["mask_power"],
+            }
+            for spec in texture_specs
+        ]
+        for spec, entry in zip(texture_specs, _distance_field_masks_for_specs(geometry, texture_mask_specs)):
+            additive_layer = CALayer.alloc().init()
+            additive_layer.setFrame_(((0, 0), (w, h)))
+            additive_mask = CALayer.alloc().init()
+            additive_mask.setFrame_(((0, 0), (w, h)))
+            additive_mask.setContents_(entry["image"])
+            additive_mask.setContentsScale_(mask_scale)
+            additive_layer.setMask_(additive_mask)
+            self._glow_layer.addSublayer_(additive_layer)
+
+            subtractive_layer = CALayer.alloc().init()
+            subtractive_layer.setFrame_(((0, 0), (w, h)))
+            subtractive_mask = CALayer.alloc().init()
+            subtractive_mask.setFrame_(((0, 0), (w, h)))
+            subtractive_mask.setContents_(entry["image"])
+            subtractive_mask.setContentsScale_(mask_scale)
+            subtractive_layer.setMask_(subtractive_mask)
+            self._vignette_layer.addSublayer_(subtractive_layer)
+
+            grid_width, grid_height = _texture_grid_size(w, h, spec["grid_scale"])
+            texture_entries.append(
+                {
+                    "spec": spec,
+                    "additive_layer": additive_layer,
+                    "subtractive_layer": subtractive_layer,
+                    "grid_width": grid_width,
+                    "grid_height": grid_height,
+                }
+            )
+            self._mask_payloads.append(entry["payload"])
+
+        self._texture_entries = texture_entries
         self._apply_glow_color(_GLOW_COLOR)
         content.layer().addSublayer_(self._glow_layer)
         content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
-    def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
+    def _refresh_texture_layers(self, base_color: tuple[float, float, float]) -> None:
+        if not getattr(self, "_texture_entries", None):
+            return
+        payloads = []
+        phase = getattr(self, "_texture_phase", 0.0)
+        for entry in self._texture_entries:
+            spec = entry["spec"]
+            alpha = _texture_alpha_field(entry["grid_width"], entry["grid_height"], spec, phase)
+            add_image, add_payload = _color_alpha_field_to_image(
+                alpha * spec["additive_alpha"],
+                _texture_additive_color(base_color, spec),
+            )
+            sub_image, sub_payload = _color_alpha_field_to_image(
+                alpha * spec["subtractive_alpha"],
+                _texture_subtractive_color(base_color, spec),
+            )
+            entry["additive_layer"].setContents_(add_image)
+            entry["additive_layer"].setContentsScale_(1.0)
+            entry["subtractive_layer"].setContents_(sub_image)
+            entry["subtractive_layer"].setContentsScale_(1.0)
+            payloads.extend([add_payload, sub_payload])
+        self._texture_frame_payloads = payloads
+
+    def _apply_glow_color(self, base_color: tuple[float, float, float], refresh_texture: bool = True) -> None:
         """Push the current glow color through the procedural glow/vignette passes."""
         glow_colors = _glow_role_colors(base_color)
         if hasattr(self, "_glow_pass_layers"):
@@ -632,6 +832,8 @@ class GlowOverlay(NSObject):
                 layer = entry["layer"]
                 spec = entry["spec"]
                 layer.setBackgroundColor_(_vignette_pass_color(base_color, spec).CGColor())
+        if refresh_texture:
+            self._refresh_texture_layers(base_color)
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
@@ -646,6 +848,8 @@ class GlowOverlay(NSObject):
         self._cap_factor = 1.0
         brightness = _sample_screen_brightness(self._screen)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
+        self._texture_phase = 0.0
+        self._texture_epoch = time.monotonic()
         self._apply_glow_color(self._glow_color)
         self._brightness = brightness
         # Cross-fade: additive glow fades out, subtractive vignette fades in
@@ -691,12 +895,26 @@ class GlowOverlay(NSObject):
         old_timer = getattr(self, "_brightness_timer", None)
         if old_timer is not None:
             old_timer.invalidate()
+        old_texture_timer = getattr(self, "_texture_timer", None)
+        if old_texture_timer is not None:
+            old_texture_timer.invalidate()
         from Foundation import NSTimer
         self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
         )
+        if getattr(self, "_texture_entries", None):
+            self._texture_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                _TEXTURE_ANIMATION_INTERVAL, self, "textureTick:", None, True
+            )
 
         logger.info("Glow show")
+
+    def textureTick_(self, timer) -> None:
+        """Animate the low-frequency texture fields so the edge treatment keeps moving at rest."""
+        if not self._visible:
+            return
+        self._texture_phase = time.monotonic() - getattr(self, "_texture_epoch", time.monotonic())
+        self._refresh_texture_layers(getattr(self, "_glow_color", _GLOW_COLOR))
 
     def brightnessResample_(self, timer) -> None:
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
@@ -739,6 +957,10 @@ class GlowOverlay(NSObject):
         if bt is not None:
             bt.invalidate()
             self._brightness_timer = None
+        tt = getattr(self, "_texture_timer", None)
+        if tt is not None:
+            tt.invalidate()
+            self._texture_timer = None
         self._visible = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
@@ -860,7 +1082,7 @@ class GlowOverlay(NSObject):
             r = self._glow_color[0] + t * (_GLOW_CAP_COLOR[0] - self._glow_color[0])
             g = self._glow_color[1] + t * (_GLOW_CAP_COLOR[1] - self._glow_color[1])
             b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
-            self._apply_glow_color((r, g, b))
+            self._apply_glow_color((r, g, b), refresh_texture=False)
 
         # Cross-fade additive glow and subtractive vignette
         additive_mix = getattr(self, "_additive_mix", 1.0)
