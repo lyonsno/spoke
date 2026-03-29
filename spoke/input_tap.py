@@ -8,6 +8,9 @@ State machine:
     WAITING ──[space keyUp before timer]──> IDLE  (forward synth space)
     WAITING ──[timer fires]──> RECORDING  (call on_hold_start)
     RECORDING ──[space keyUp]──> IDLE  (call on_hold_end)
+    RECORDING ──[shift tap]──> LATCHED  (capture continues hands-free)
+    LATCHED ──[enter]──> IDLE  (call on_hold_end with enter_held=True)
+    LATCHED ──[shift+space keyUp]──> IDLE  (call on_hold_end with shift_held=True)
 """
 
 from __future__ import annotations
@@ -66,6 +69,7 @@ class _State(Enum):
     IDLE = auto()
     WAITING = auto()
     RECORDING = auto()
+    LATCHED = auto()
 
 
 class SpacebarHoldDetector(NSObject):
@@ -105,6 +109,7 @@ class SpacebarHoldDetector(NSObject):
         self._tap = None
         self._tap_source = None
         self._awaiting_space_release = False
+        self._latched_space_down = False
 
         # Tray mode support — set by the delegate when tray is active.
         # When True, quick spacebar taps call on_hold_end instead of
@@ -161,7 +166,7 @@ class SpacebarHoldDetector(NSObject):
 
     def force_end(self) -> None:
         """Programmatically end a recording hold (e.g. recording cap reached)."""
-        if self._state == _State.RECORDING:
+        if self._state in (_State.RECORDING, _State.LATCHED):
             self._cancel_safety_timer()
             self._state = _State.IDLE
             self._awaiting_space_release = True
@@ -182,6 +187,7 @@ class SpacebarHoldDetector(NSObject):
         self._forwarding = False
         self._enter_held = False
         self._awaiting_space_release = False
+        self._latched_space_down = False
         self.tray_active = False
         self._state = _State.IDLE
 
@@ -211,6 +217,12 @@ class SpacebarHoldDetector(NSObject):
             self._shift_down_during_hold = False
             self._start_hold_timer()
             return True  # suppress the space
+
+        if self._state == _State.LATCHED:
+            self._shift_at_press = bool(flags & kCGEventFlagMaskShift)
+            self._shift_latched = self._shift_at_press
+            self._latched_space_down = True
+            return True
 
         # Already WAITING or RECORDING — suppress key repeats
         return True
@@ -286,6 +298,22 @@ class SpacebarHoldDetector(NSObject):
             self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
             return True
 
+        if self._state == _State.LATCHED:
+            shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
+            enter_held = getattr(self, '_enter_held', False)
+            self._shift_latched = False
+
+            if getattr(self, '_latched_space_down', False):
+                self._latched_space_down = False
+                if shift_held:
+                    self._cancel_safety_timer()
+                    self._state = _State.IDLE
+                    self._on_hold_end(shift_held=True, enter_held=enter_held)
+                return True
+
+            # Swallow the original release that let the user go hands-free.
+            return True
+
         return False
 
     # ── timers ──────────────────────────────────────────────
@@ -318,7 +346,7 @@ class SpacebarHoldDetector(NSObject):
     def safetyTimerFired_(self, timer: NSTimer) -> None:
         """Emergency stop — spacebar keyUp was never received."""
         self._safety_timer = None
-        if self._state == _State.RECORDING:
+        if self._state in (_State.RECORDING, _State.LATCHED):
             logger.warning("Safety timeout — auto-stopping recording")
             self._state = _State.IDLE
             self._awaiting_space_release = True
@@ -394,6 +422,11 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key state for command fast path
         if keycode == ENTER_KEYCODE:
             det._enter_held = True
+            if det._state == _State.LATCHED:
+                det._cancel_safety_timer()
+                det._state = _State.IDLE
+                det._on_hold_end(shift_held=False, enter_held=True)
+                return None
             # If tray is active, Enter = send to assistant.
             # Only suppress Enter if the callback exists and is called.
             # Always let Enter through if tray is not active.
@@ -447,6 +480,11 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 on_tap = getattr(det, '_on_shift_tap_during_hold', None)
                 if on_tap is not None:
                     on_tap()
+            elif det._state == _State.RECORDING and det._shift_latched:
+                det._shift_latched = False
+                det._latched_space_down = False
+                det._state = _State.LATCHED
+                logger.info("Shift tapped during active recording — latched recording")
 
         # Tray mode: track shift press/release for dismiss gesture (IDLE state)
         if getattr(det, 'tray_active', False) and det._state == _State.IDLE:

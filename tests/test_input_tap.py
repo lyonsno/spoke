@@ -478,6 +478,102 @@ class TestShiftLateLatching:
         assert det._shift_latched is False
 
 
+class TestLatchedRecording:
+    """Hands-free latched recording after shift tap during an active hold."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._tap = None
+        det._tap_source = None
+        det._shift_latched = False
+        det._shift_at_press = False
+        det._enter_held = False
+        det.tray_active = False
+        det._tray_shift_down = False
+        det._tray_space_between = False
+        det._shift_down_during_hold = False
+        det._tray_gesture_consumed = False
+        det._tray_last_shift_space_up = 0.0
+        return det, on_start, on_end
+
+    def test_shift_tap_during_recording_enters_latched_state(self, input_tap_module):
+        """Shift tap during active recording should switch to latched recording."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det._state == mod._State.RECORDING
+
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        Quartz.CGEventGetFlags.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        assert det._state == mod._State.LATCHED
+        assert det._shift_latched is False
+
+    def test_spacebar_release_after_latching_does_not_end_recording(self, input_tap_module):
+        """Once latched, releasing spacebar should keep recording alive."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        assert det._state == mod._State.LATCHED
+        on_end.assert_not_called()
+
+    def test_enter_during_latched_recording_ends_with_command_route(self, input_tap_module):
+        """Enter during latched recording should stop capture and route to assistant."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result is None
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._state == mod._State.IDLE
+
+    def test_shift_space_release_from_latched_recording_routes_to_tray(
+        self, input_tap_module
+    ):
+        """Shift+spacebar from latched recording should end into the tray."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+
+        shift_flag = mod.kCGEventFlagMaskShift
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag) is True
+
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
+        assert det._state == mod._State.IDLE
+
+
 class TestTrayAwareness:
     """Test input tap behavior when tray_active is set."""
 
