@@ -301,6 +301,10 @@ The fast command path moves from shift to enter. The accidental-send problem
 (shift held by mistake) goes away entirely — shift now means "review," never
 "send."
 
+For assistant recall, Enter also wins if both modifiers are involved during a
+short empty hold. That lets a slightly sloppy Shift+Enter overlap still
+toggle the assistant overlay instead of falling back to tray recall.
+
 ### Relationship to recovery mode
 
 Recovery mode becomes tray entered automatically when paste verification

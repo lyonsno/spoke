@@ -98,6 +98,7 @@ class SpacebarHoldDetector(NSObject):
         self._shift_at_press = False
         self._shift_latched = False  # True if shift was seen during WAITING/RECORDING
         self._enter_held = False  # True if enter is currently held (for command fast path)
+        self._enter_latched = False  # True if enter was tapped during WAITING/RECORDING
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
@@ -167,7 +168,10 @@ class SpacebarHoldDetector(NSObject):
             self._awaiting_space_release = True
             self._on_hold_end(
                 shift_held=False,
-                enter_held=getattr(self, '_enter_held', False),
+                enter_held=(
+                    getattr(self, '_enter_held', False)
+                    or getattr(self, '_enter_latched', False)
+                ),
             )
 
     def uninstall(self) -> None:
@@ -181,6 +185,7 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_forwarding_timer()
         self._forwarding = False
         self._enter_held = False
+        self._enter_latched = False
         self._awaiting_space_release = False
         self.tray_active = False
         self._state = _State.IDLE
@@ -242,10 +247,14 @@ class SpacebarHoldDetector(NSObject):
             if getattr(self, '_tray_gesture_consumed', False):
                 self._tray_gesture_consumed = False
                 self._shift_latched = False
+                self._enter_latched = False
                 return True
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
-            enter_held = getattr(self, '_enter_held', False)
+            enter_held = getattr(self, '_enter_held', False) or getattr(
+                self, '_enter_latched', False
+            )
             self._shift_latched = False
+            self._enter_latched = False
             if getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
@@ -279,10 +288,14 @@ class SpacebarHoldDetector(NSObject):
             if getattr(self, '_tray_gesture_consumed', False):
                 self._tray_gesture_consumed = False
                 self._shift_latched = False
+                self._enter_latched = False
                 return True
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
-            enter_held = getattr(self, '_enter_held', False)
+            enter_held = getattr(self, '_enter_held', False) or getattr(
+                self, '_enter_latched', False
+            )
             self._shift_latched = False
+            self._enter_latched = False
             self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
             return True
 
@@ -324,7 +337,10 @@ class SpacebarHoldDetector(NSObject):
             self._awaiting_space_release = True
             self._on_hold_end(
                 shift_held=False,
-                enter_held=getattr(self, '_enter_held', False),
+                enter_held=(
+                    getattr(self, '_enter_held', False)
+                    or getattr(self, '_enter_latched', False)
+                ),
             )
 
     def _cancel_safety_timer(self) -> None:
@@ -394,6 +410,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key state for command fast path
         if keycode == ENTER_KEYCODE:
             det._enter_held = True
+            if det._state in (_State.WAITING, _State.RECORDING):
+                det._enter_latched = True
             # If tray is active, Enter = send to assistant.
             # Only suppress Enter if the callback exists and is called.
             # Always let Enter through if tray is not active.

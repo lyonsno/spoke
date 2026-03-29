@@ -2231,6 +2231,43 @@ class TestShortShiftHold:
         assert d._tray_index == 0
         d._overlay.show_tray.assert_called()
 
+    def test_short_shift_enter_hold_recalls_command_overlay(self, main_module, monkeypatch):
+        """When both Shift and Enter were used, Enter should win for assistant recall."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._tray_stack = ["previous text"]
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._on_hold_end(shift_held=True, enter_held=True)
+
+        assert d._tray_active is False
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("hello")
+        d._command_overlay.append_token.assert_called()
+        d._command_overlay.finish.assert_called_once()
+        d._overlay.show_tray.assert_not_called()
+
+    def test_short_shift_enter_hold_dismisses_visible_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        """The same combined gesture should dismiss the assistant overlay with Shift still held."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._tray_stack = ["previous text"]
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+
+        d._on_hold_end(shift_held=True, enter_held=True)
+
+        assert d._tray_active is False
+        d._command_overlay.cancel_dismiss.assert_called_once()
+        d._overlay.show_tray.assert_not_called()
+
 
 class TestCoerceSettings:
     """Test _coerce_decode_timeout_setting and _coerce_eager_eval_setting parsers."""
