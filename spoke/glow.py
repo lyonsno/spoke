@@ -89,59 +89,74 @@ _DIM_HIDE_FADE_S = 2.4
 _WINDOW_TEARDOWN_CUSHION_S = 0.05
 
 
-def _sample_screen_brightness(screen) -> float:
-    """Sample average brightness of the screen content below our window.
+_BRIGHTNESS_SAMPLE_INTERVAL = 2.5  # seconds between recurring samples
+_BRIGHTNESS_PATCH_SIZE = 50  # pixels per patch side
 
-    Returns 0.0 (black) to 1.0 (white). Captures once per call — intended
-    to be called at recording start, not per-frame.
+
+def _sample_screen_brightness(screen) -> float:
+    """Sample average brightness from 4 small patches (one per quadrant).
+
+    Each patch is 50x50 pixels, inset 25% from each screen edge to avoid
+    our own glow/vignette. Returns 0.0 (black) to 1.0 (white).
+    ~4x faster than a fullscreen capture on retina displays.
     """
     try:
         from Quartz import (
             CGWindowListCreateImage,
             kCGWindowListOptionOnScreenBelowWindow,
             kCGNullWindowID,
-            CGRectNull,
+            CGImageGetWidth,
+            CGImageGetHeight,
+            CGImageGetDataProvider,
+            CGDataProviderCopyData,
         )
         frame = screen.frame()
-        rect = ((frame.origin.x, frame.origin.y),
-                (frame.size.width, frame.size.height))
+        fw, fh = frame.size.width, frame.size.height
+        ox, oy = frame.origin.x, frame.origin.y
+        ps = _BRIGHTNESS_PATCH_SIZE
 
-        # Capture everything below all windows at our level
-        image = CGWindowListCreateImage(
-            rect,
-            kCGWindowListOptionOnScreenBelowWindow,
-            kCGNullWindowID,
-            0,  # kCGWindowImageDefault
-        )
-        if image is None:
-            return 0.5  # fallback to mid-brightness
+        # 4 patches at 25%/75% of each axis
+        patch_centers = [
+            (0.25, 0.25),  # bottom-left quadrant
+            (0.75, 0.25),  # bottom-right
+            (0.25, 0.75),  # top-left
+            (0.75, 0.75),  # top-right
+        ]
 
-        from Quartz import CGImageGetWidth, CGImageGetHeight, CGImageGetDataProvider, CGDataProviderCopyData
-        w = CGImageGetWidth(image)
-        h = CGImageGetHeight(image)
-        data = CGDataProviderCopyData(CGImageGetDataProvider(image))
-
-        if data is None or len(data) == 0:
-            return 0.5
-
-        # Sample a grid of pixels rather than reading every pixel
-        import struct
         total = 0.0
         samples = 0
-        bytes_per_pixel = len(data) // (w * h) if w * h > 0 else 4
-        step_x = max(w // 20, 1)
-        step_y = max(h // 20, 1)
 
-        for sy in range(0, h, step_y):
-            for sx in range(0, w, step_x):
-                offset = (sy * w + sx) * bytes_per_pixel
-                if offset + 3 <= len(data):
-                    # BGRA or RGBA — either way, first 3 bytes are color channels
-                    r, g, b = data[offset], data[offset + 1], data[offset + 2]
-                    # Perceived luminance
-                    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-                    total += lum
-                    samples += 1
+        for cx_frac, cy_frac in patch_centers:
+            px = ox + fw * cx_frac - ps / 2
+            py = oy + fh * cy_frac - ps / 2
+            rect = ((px, py), (ps, ps))
+
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                kCGNullWindowID,
+                0,
+            )
+            if image is None:
+                continue
+
+            w = CGImageGetWidth(image)
+            h = CGImageGetHeight(image)
+            data = CGDataProviderCopyData(CGImageGetDataProvider(image))
+            if data is None or len(data) == 0 or w * h == 0:
+                continue
+
+            bpp = len(data) // (w * h)
+            # Sample every 5th pixel for speed
+            step = max(5, 1)
+            for sy in range(0, h, step):
+                for sx in range(0, w, step):
+                    offset = (sy * w + sx) * bpp
+                    if offset + 3 <= len(data):
+                        r, g, b = data[offset], data[offset + 1], data[offset + 2]
+                        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                        total += lum
+                        samples += 1
 
         return total / samples if samples > 0 else 0.5
     except Exception:
@@ -230,6 +245,8 @@ class GlowOverlay(NSObject):
         self._glow_color = _GLOW_COLOR
         self._glow_base_opacity = _GLOW_BASE_OPACITY
         self._glow_peak_target = _GLOW_PEAK_TARGET
+        self._brightness_timer = None
+        self._brightness = 0.5
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -506,13 +523,59 @@ class GlowOverlay(NSObject):
             )
             self._dim_layer.addAnimation_forKey_(dim_anim, "dimIn")
 
+        # Start recurring brightness sampling
+        old_timer = getattr(self, "_brightness_timer", None)
+        if old_timer is not None:
+            old_timer.invalidate()
+        from Foundation import NSTimer
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
+        )
+
         logger.info("Glow show")
+
+    def brightnessResample_(self, timer) -> None:
+        """Recurring timer: re-sample screen brightness and adapt glow/dim."""
+        if not self._visible:
+            return
+        new_brightness = _sample_screen_brightness(self._screen)
+        if abs(new_brightness - self._brightness) < 0.02:
+            return  # no meaningful change
+        self._brightness = new_brightness
+        new_color, new_base, new_peak = _glow_style_for_brightness(new_brightness)
+        self._glow_color = new_color
+        self._glow_base_opacity = new_base
+        self._glow_peak_target = new_peak
+        self._apply_glow_color(new_color)
+
+        # Update cross-fade mix
+        self._additive_mix = 1.0 - new_brightness
+        self._subtractive_mix = new_brightness
+
+        # Smoothly adjust dim opacity
+        if self._dim_layer is not None:
+            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            from Quartz import CABasicAnimation, CAMediaTimingFunction
+            pres = self._dim_layer.presentationLayer()
+            current = pres.opacity() if pres is not None else self._dim_layer.opacity()
+            self._dim_layer.removeAllAnimations()
+            self._dim_layer.setOpacity_(dim_target)
+            anim = CABasicAnimation.animationWithKeyPath_("opacity")
+            anim.setFromValue_(current)
+            anim.setToValue_(dim_target)
+            anim.setDuration_(0.5)
+            anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
+            self._dim_layer.addAnimation_forKey_(anim, "dimAdapt")
 
     def hide(self) -> None:
         """Fade the glow window out smoothly."""
         if self._window is None:
             return
         self._cancel_pending_hide()
+        bt = getattr(self, "_brightness_timer", None)
+        if bt is not None:
+            bt.invalidate()
+            self._brightness_timer = None
         self._visible = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
