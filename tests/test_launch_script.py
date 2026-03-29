@@ -302,6 +302,45 @@ def test_smoke_inline_launcher_prefers_uv_tts_runtime(tmp_path):
     assert "tts" in log_text
 
 
+def test_smoke_inline_launcher_logs_pythonpath_for_tts_runtime(tmp_path):
+    """Smoke launch should log whether the TTS runtime override is present at spawn time."""
+    repo_root = tmp_path / "repo"
+
+    python_exe = repo_root / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'uv-tts-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text("#!/bin/sh\nprintf 'uv-tts-started\\n'\n")
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "SPOKE_TTS_VOICE": "casual_female",
+            "PYTHONPATH": "/tmp/local-mlx-audio",
+            "UV_BIN": str(uv_bin),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "uv-tts-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach smoke launch log")
+
+    log_text = log_file.read_text()
+    assert "Smoke launcher TTS runtime:" in log_text
+    assert "PYTHONPATH=/tmp/local-mlx-audio" in log_text
+
+
 def test_launch_script_prefers_configured_dev_target(tmp_path):
     """A configured dev target should override the checkout that contains the script."""
     target_repo = tmp_path / "target-repo"

@@ -26,6 +26,24 @@ _DEFAULT_TOP_K = 50
 _DEFAULT_TOP_P = 0.95
 
 
+def _playback_device_summary() -> str:
+    """Return a compact description of the active playback device context."""
+    try:
+        default_device = getattr(sd.default, "device", None)
+        if isinstance(default_device, (list, tuple)):
+            output_index = default_device[1] if len(default_device) > 1 else default_device[0]
+        else:
+            output_index = default_device
+        device_info = sd.query_devices(output_index)
+        if isinstance(device_info, dict):
+            device_name = device_info.get("name", "<unknown>")
+        else:
+            device_name = getattr(device_info, "name", "<unknown>")
+        return f"default={default_device!r} output={output_index!r} name={device_name}"
+    except Exception as exc:
+        return f"default=<unavailable: {exc}>"
+
+
 def tts_load(model_id: str):
     """Load a Voxtral TTS model.  Separated for easy patching in tests."""
     if "voxtral" in model_id.lower():
@@ -153,6 +171,15 @@ class TTSClient:
             sr = result.sample_rate
             # ~64ms chunks for amplitude updates (matches mic capture cadence)
             chunk_size = int(sr * 0.064)
+            playback_device = _playback_device_summary()
+            logger.info(
+                "TTS playback starting: samples=%d sample_rate=%d channels=%d chunk_size=%d device=%s",
+                len(audio),
+                sr,
+                audio.shape[1],
+                chunk_size,
+                playback_device,
+            )
 
             done = threading.Event()
             stream = sd.OutputStream(
@@ -196,6 +223,25 @@ class TTSClient:
                         stream.write(fade_ramp)
                     except Exception:
                         pass
+                logger.info(
+                    "TTS playback finished: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                    len(audio),
+                    sr,
+                    audio.shape[1],
+                    self._cancelled,
+                    playback_device,
+                )
+            except Exception:
+                logger.warning(
+                    "TTS playback failed: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                    len(audio),
+                    sr,
+                    audio.shape[1],
+                    self._cancelled,
+                    playback_device,
+                    exc_info=True,
+                )
+                raise
             finally:
                 stream.stop()
                 stream.close()

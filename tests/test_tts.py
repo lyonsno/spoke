@@ -1,5 +1,6 @@
 """Tests for the TTS client and command-completion autoplay hook."""
 
+import logging
 import threading
 import tomllib
 import types
@@ -170,6 +171,47 @@ class TestTTSClient:
         thread.join(timeout=5)
         assert not thread.is_alive()
         mock_sd.OutputStream.assert_called_once()
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_logs_playback_start_and_finish(self, mock_load, mock_sd, caplog):
+        """speak() should log playback boundaries with enough context to debug silent output."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+        mock_sd.default.device = [0, 1]
+        mock_sd.query_devices.side_effect = lambda idx: {"name": "MacBook Pro Speakers"} if idx == 1 else {"name": "MacBook Pro Microphone"}
+
+        client = self._make_client()
+        with caplog.at_level(logging.INFO, logger="spoke.tts"):
+            client.speak("Hello world")
+
+        assert "TTS playback starting:" in caplog.text
+        assert "MacBook Pro Speakers" in caplog.text
+        assert "TTS playback finished:" in caplog.text
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_logs_playback_failure_context_before_raising(self, mock_load, mock_sd, caplog):
+        """Playback exceptions should be logged with device context before bubbling up."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+        mock_sd.default.device = [0, 1]
+        mock_sd.query_devices.side_effect = lambda idx: {"name": "MacBook Pro Speakers"} if idx == 1 else {"name": "MacBook Pro Microphone"}
+
+        fake_stream = MagicMock()
+        fake_stream.write.side_effect = RuntimeError("boom")
+        mock_sd.OutputStream.return_value = fake_stream
+
+        client = self._make_client()
+        with caplog.at_level(logging.INFO, logger="spoke.tts"):
+            with pytest.raises(RuntimeError, match="boom"):
+                client.speak("Hello world")
+
+        assert "TTS playback failed:" in caplog.text
+        assert "MacBook Pro Speakers" in caplog.text
 
 
 class TestTTSConfig:

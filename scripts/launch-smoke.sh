@@ -71,6 +71,7 @@ tts_enabled = bool(child_env.get("SPOKE_TTS_VOICE"))
 with log_file.open("a", encoding="utf-8") as log:
     try:
         if tts_enabled and uv_bin.is_file():
+            py_path = child_env.get("PYTHONPATH", "")
             command = [
                 str(uv_bin),
                 "run",
@@ -84,6 +85,9 @@ with log_file.open("a", encoding="utf-8") as log:
             ]
             log.write(
                 "Smoke launcher: SPOKE_TTS_VOICE is set, using uv --extra tts for a coherent TTS runtime.\n"
+            )
+            log.write(
+                f"Smoke launcher TTS runtime: PYTHONPATH={py_path or '<unset>'}\n"
             )
         elif python_exe.is_file():
             command = [str(python_exe), "-m", "spoke"]
