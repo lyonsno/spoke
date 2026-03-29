@@ -9,7 +9,7 @@ dependencies = [
     "sounddevice",
     "numpy",
     "httpx",
-    "mlx-whisper @ git+https://github.com/lyonsno/mlx-whisper-patched.git",
+    "mlx-whisper @ git+https://github.com/lyonsno/mlx-whisper-patched.git@eb06ea05a77037e971139d11195c675277836272",
     "mlx-qwen3-asr>=0.3.2",
     "pyobjc-framework-vision>=12.1",
 ]

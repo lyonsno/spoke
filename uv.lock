@@ -517,7 +517,7 @@ wheels = [
 [[package]]
 name = "mlx-whisper"
 version = "0.4.3"
-source = { git = "https://github.com/lyonsno/mlx-whisper-patched.git#901b1ed1bfb9a042740776160f2526df4e8643e5" }
+source = { git = "https://github.com/lyonsno/mlx-whisper-patched.git?rev=eb06ea05a77037e971139d11195c675277836272#eb06ea05a77037e971139d11195c675277836272" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "mlx" },
@@ -1239,7 +1239,7 @@ dev = [
 requires-dist = [
     { name = "httpx" },
     { name = "mlx-qwen3-asr", specifier = ">=0.3.2" },
-    { name = "mlx-whisper", git = "https://github.com/lyonsno/mlx-whisper-patched.git" },
+    { name = "mlx-whisper", git = "https://github.com/lyonsno/mlx-whisper-patched.git?rev=eb06ea05a77037e971139d11195c675277836272" },
     { name = "numpy" },
     { name = "pyobjc-framework-cocoa" },
     { name = "pyobjc-framework-quartz" },
