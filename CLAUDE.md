@@ -8,9 +8,38 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
-## After making changes
+## Testing
 
-When a change is ready for smoke testing, run the build and install pipeline:
+Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
+
+## Smoke testing
+
+There are two Automator-bound launcher scripts:
+
+- `scripts/launch-dev.sh` — always launches from the main repo checkout.
+- `scripts/launch-smoke.sh` — launches from whatever worktree path is written
+  in `~/.config/spoke/smoke-target`.
+
+When a change is ready for human smoke testing, point the smoke launcher at
+the active worktree and tell the user it's ready:
+
+```sh
+echo '/path/to/worktree' > ~/.config/spoke/smoke-target
+```
+
+The user triggers the smoke Automator hotkey themselves. Do not kill the
+running process or relaunch — `launch-smoke.sh` handles that.
+
+Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
+(e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
+
+After pointing the smoke target, **ask the user if the spacebar is working**
+before doing anything else. There is no way to verify event tap functionality
+from logs or process state.
+
+## Building the .app bundle
+
+For .app distribution testing (not normal dev smoke testing):
 
 ```sh
 pkill -TERM -f "Spoke" 2>/dev/null
@@ -22,28 +51,12 @@ cp -r dist/Spoke.app ~/Applications/
 open ~/Applications/Spoke.app
 ```
 
-This kills any running instance, rebuilds incrementally, copies to Applications, and relaunches. The user will grant permissions if prompted.
-
-For full clean builds (after dependency changes, spec file changes, or when --fast builds behave unexpectedly):
+For full clean builds (after dependency changes, spec file changes, or when
+`--fast` builds behave unexpectedly):
 
 ```sh
 ./scripts/build.sh
 ```
-
-## Testing
-
-Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
-
-## Smoke-test branch launches
-
-When the user asks to spin up a separate fun or smoke-test branch, treat that as a request to launch the dedicated worktree for that branch rather than the stable default launcher path.
-
-Before launching that branch:
-- pull or otherwise update the target branch/worktree
-- kill the currently running Spoke process
-- relaunch from the target worktree's launcher script
-
-Do not silently fall back to the stable Automator or `main` launcher when the user explicitly asked for the branch variant.
 
 ## Permissions
 

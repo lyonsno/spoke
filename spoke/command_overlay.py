@@ -395,6 +395,8 @@ class CommandOverlay(NSObject):
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
         )
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
@@ -402,8 +404,11 @@ class CommandOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.4),
             (0, len(text)),
         )
-        self._text_view.textStorage().setAttributedString_(attr_str)
-        self._update_layout()
+        glow = NSShadow.alloc().init()
+        glow.setShadowColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.15)
+        )
+        glow.setShadowOffset_((0, 0))
         glow.setShadowBlurRadius_(3.0)
         attr_str.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(text))

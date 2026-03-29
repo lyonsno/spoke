@@ -583,8 +583,7 @@ class SpokeAppDelegate(NSObject):
                         self._command_overlay.show()
                         self._command_overlay.set_utterance(last_utterance)
                         # Append the full response at once
-                        for token in last_response:
-                            self._command_overlay.append_token(token)
+                        self._command_overlay.append_token(last_response)
                         self._command_overlay.finish()
                 else:
                     logger.info("Shift+empty — no history to recall")
