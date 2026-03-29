@@ -164,16 +164,41 @@ class TestAdaptiveOverlayCompositing:
         overlay._outer_glow_tight = MagicMock()
         overlay._outer_glow_wide = MagicMock()
         overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
         return overlay
 
-    def test_set_brightness_stores_value(self, mock_pyobjc):
-        """set_brightness should store the brightness for use by amplitude updates."""
+    def test_set_brightness_immediate_snaps(self, mock_pyobjc):
+        """set_brightness(immediate=True) should snap brightness instantly."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
-            overlay.set_brightness(0.7)
+            overlay.set_brightness(0.7, immediate=True)
             assert overlay._brightness == pytest.approx(0.7)
+            assert overlay._brightness_target == pytest.approx(0.7)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
+        """set_brightness() should set target but not snap — brightness chases over time."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(0.8)
+            # Target is set but brightness hasn't moved yet
+            assert overlay._brightness_target == pytest.approx(0.8)
+            assert overlay._brightness == pytest.approx(0.0)
+
+            # Simulate ~30 amplitude frames (~0.5s at 60Hz) — should be close
+            for _ in range(30):
+                overlay.update_text_amplitude(0.0)
+            assert overlay._brightness > 0.6, f"Expected >0.6 after 30 frames, got {overlay._brightness:.3f}"
+
+            # After many more frames, should converge
+            for _ in range(100):
+                overlay.update_text_amplitude(0.0)
+            assert overlay._brightness == pytest.approx(0.8, abs=0.01)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -183,7 +208,7 @@ class TestAdaptiveOverlayCompositing:
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
-            overlay.set_brightness(0.0)
+            overlay.set_brightness(0.0, immediate=True)
 
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
@@ -216,7 +241,7 @@ class TestAdaptiveOverlayCompositing:
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
-            overlay.set_brightness(1.0)
+            overlay.set_brightness(1.0, immediate=True)
 
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
@@ -246,7 +271,7 @@ class TestAdaptiveOverlayCompositing:
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
-            overlay.set_brightness(0.5)
+            overlay.set_brightness(0.5, immediate=True)
 
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
@@ -288,7 +313,7 @@ class TestAdaptiveOverlayCompositing:
         try:
             def get_bg_rgb(brightness):
                 overlay = self._make_overlay(mod)
-                overlay.set_brightness(brightness)
+                overlay.set_brightness(brightness, immediate=True)
                 mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
                 overlay.update_text_amplitude(10.0)
                 # Find the bg color call (used for setBackgroundColor_)

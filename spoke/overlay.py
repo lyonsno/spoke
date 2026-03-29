@@ -162,6 +162,7 @@ class TranscriptionOverlay(NSObject):
 
         # Adaptive compositing — default dark (no brightness sample yet)
         self._brightness = 0.0
+        self._brightness_target = 0.0
 
         # Recovery mode state
         self._recovery_mode = False
@@ -397,13 +398,17 @@ class TranscriptionOverlay(NSObject):
         )
         logger.info("Overlay show")
 
-    def set_brightness(self, brightness: float) -> None:
+    def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing.
 
-        Called once per recording start with the sampled screen brightness.
-        Cross-fades overlay bg, text, and glow between dark and light treatments.
+        Called at recording start and on recurring resamples. The overlay
+        chases the target over ~0.5s so transitions feel smooth rather than
+        snapping. Pass immediate=True to skip the transition (e.g. on first
+        show before the overlay is visible).
         """
-        self._brightness = min(max(brightness, 0.0), 1.0)
+        self._brightness_target = min(max(brightness, 0.0), 1.0)
+        if immediate:
+            self._brightness = self._brightness_target
 
     def hide(self) -> None:
         """Fade the overlay out smoothly."""
@@ -545,6 +550,13 @@ class TranscriptionOverlay(NSObject):
             self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
             self._text_amplitude *= _SMOOTH_DECAY
+
+        # Chase brightness target — ~0.5s transition at 60Hz
+        _BRIGHTNESS_CHASE = 0.08
+        target = getattr(self, "_brightness_target", 0.0)
+        current = getattr(self, "_brightness", 0.0)
+        if abs(target - current) > 0.001:
+            self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
 
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 

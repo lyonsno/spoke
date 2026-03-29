@@ -344,7 +344,7 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             # Set brightness before show() so the initial bg/text colors are correct
             if self._glow is not None:
-                self._overlay.set_brightness(getattr(self._glow, '_brightness', 0.0))
+                self._overlay.set_brightness(getattr(self._glow, '_brightness', 0.0), immediate=True)
             self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
         self._record_start_time = time.monotonic()
