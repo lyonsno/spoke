@@ -64,6 +64,13 @@ _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
 _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
+# Adaptive compositing — dark endpoint (brightness ≈ 0)
+_BG_COLOR_DARK = (0.1, 0.1, 0.12)
+_TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
+# Light endpoint (brightness ≈ 1) — frosted glass on bright backgrounds
+_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
+_TEXT_COLOR_LIGHT = (0.08, 0.08, 0.10)
+
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
     (0.38, 0.52, 1.0), 1.28
@@ -98,6 +105,18 @@ def _truncate_preview(text: str | None) -> str:
     if len(text) > _RECOVERY_PREVIEW_MAX_CHARS:
         return text[:_RECOVERY_PREVIEW_MAX_CHARS] + "…"
     return text
+
+
+def _lerp(start: float, end: float, t: float) -> float:
+    return start + (end - start) * t
+
+
+def _lerp_color(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    t: float,
+) -> tuple[float, float, float]:
+    return tuple(_lerp(s, e, t) for s, e in zip(start, end))
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
@@ -140,6 +159,9 @@ class TranscriptionOverlay(NSObject):
 
         # Text breathing — separate heavy smoothing so text doesn't flicker
         self._text_amplitude = 0.0
+
+        # Adaptive compositing — default dark (no brightness sample yet)
+        self._brightness = 0.0
 
         # Recovery mode state
         self._recovery_mode = False
@@ -328,9 +350,11 @@ class TranscriptionOverlay(NSObject):
             if self._scroll_view is not None:
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
+            t = getattr(self, "_brightness", 0.0)
+            br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
             self._content_view.layer().setBackgroundColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    0.1, 0.1, 0.12, _BG_ALPHA_MIN
+                    br, bg, bb, _BG_ALPHA_MIN
                 ).CGColor()
             )
         self._cancel_fade()
@@ -372,6 +396,14 @@ class TranscriptionOverlay(NSObject):
             interval, self, "fadeStep:", None, True
         )
         logger.info("Overlay show")
+
+    def set_brightness(self, brightness: float) -> None:
+        """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing.
+
+        Called once per recording start with the sampled screen brightness.
+        Cross-fades overlay bg, text, and glow between dark and light treatments.
+        """
+        self._brightness = min(max(brightness, 0.0), 1.0)
 
     def hide(self) -> None:
         """Fade the overlay out smoothly."""
@@ -517,15 +549,18 @@ class TranscriptionOverlay(NSObject):
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
         text_alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        t = getattr(self, "_brightness", 0.0)
+        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, t)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
         )
 
-        # Darken background at saturation: 325% of base at full amplitude
+        # Darken/lighten background at saturation: 325% of base at full amplitude
         bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
+        br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_content_view') and self._content_view is not None:
             self._content_view.layer().setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
+                NSColor.colorWithSRGBRed_green_blue_alpha_(br, bg, bb, bg_alpha).CGColor()
             )
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
