@@ -783,18 +783,7 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
 
-            if shift_held:
-                # Shift + empty recording = recall tray
-                if self._tray_stack:
-                    logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
-                    self._tray_active = True
-                    self._detector.tray_active = True
-                    self._tray_index = len(self._tray_stack) - 1
-                    self._show_tray_current()
-                    return
-                else:
-                    logger.info("Shift+empty — no tray entries to recall")
-            elif enter_held and self._command_client is not None:
+            if enter_held and self._command_client is not None:
                 # Enter + empty recording = recall last assistant response
                 command_visible = (
                     self._command_overlay is not None
@@ -820,6 +809,17 @@ class SpokeAppDelegate(NSObject):
                                 logger.exception("Recall overlay failed")
                     else:
                         logger.info("Enter+empty — no history to recall")
+            elif shift_held:
+                # Shift + empty recording = recall tray
+                if self._tray_stack:
+                    logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
+                    self._tray_active = True
+                    self._detector.tray_active = True
+                    self._tray_index = len(self._tray_stack) - 1
+                    self._show_tray_current()
+                    return
+                else:
+                    logger.info("Shift+empty — no tray entries to recall")
             else:
                 command_visible = (
                     self._command_overlay is not None

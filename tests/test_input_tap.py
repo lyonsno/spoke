@@ -601,6 +601,7 @@ class TestTrayAwareness:
         det._shift_latched = False
         det._shift_at_press = False
         det._enter_held = False
+        det._enter_latched = False
         det.tray_active = False
         det._tray_shift_down = False
         det._tray_space_between = False
@@ -703,6 +704,27 @@ class TestTrayAwareness:
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
         det.holdTimerFired_(None)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_enter_tap_before_recording_release_stays_latched(self, input_tap_module):
+        """A brief Enter tap during recording should still route the release as command."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
 
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
