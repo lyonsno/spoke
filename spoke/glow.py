@@ -374,7 +374,43 @@ class GlowOverlay(NSObject):
             self._glow_layer.addSublayer_(g)
 
         self._gradient_layers = [self._glow_layer.sublayers()[i] for i in range(1, 5)]
+
+        # ── Subtractive vignette: darkened colored edges for light backgrounds ──
+        # Same shape as the additive glow but uses dark-tinted colors.
+        # Cross-faded with the additive glow based on background brightness.
+        self._vignette_layer = CALayer.alloc().init()
+        self._vignette_layer.setFrame_(((0, 0), (w, h)))
+        self._vignette_layer.setOpacity_(0.0)
+
+        # Vignette gradients: dark at edges, clear toward center
+        vig_edge = NSColor.colorWithSRGBRed_green_blue_alpha_(0.02, 0.02, 0.04, 0.85)
+        vig_mid = NSColor.colorWithSRGBRed_green_blue_alpha_(0.03, 0.03, 0.06, 0.45)
+        vig_faint = NSColor.colorWithSRGBRed_green_blue_alpha_(0.04, 0.04, 0.08, 0.12)
+        vig_clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+        vig_colors = [
+            vig_edge.CGColor(), vig_mid.CGColor(),
+            vig_faint.CGColor(), vig_clear.CGColor(),
+        ]
+
+        for origin, size, start, end in edges:
+            g = CAGradientLayer.alloc().init()
+            g.setFrame_((origin, size))
+            g.setColors_(vig_colors)
+            g.setLocations_(locations)
+            g.setStartPoint_(start)
+            g.setEndPoint_(end)
+
+            mask = CAShapeLayer.alloc().init()
+            mask.setFrame_(((0, 0), (w, h)))
+            mask.setPosition_((-origin[0] + w / 2, -origin[1] + h / 2))
+            mask.setPath_(mask_path)
+            g.setMask_(mask)
+
+            self._vignette_layer.addSublayer_(g)
+
+        self._vignette_gradient_layers = [self._vignette_layer.sublayers()[i] for i in range(4)]
         content.layer().addSublayer_(self._glow_layer)
+        content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
@@ -403,6 +439,17 @@ class GlowOverlay(NSObject):
             colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
             for gl in self._gradient_layers:
                 gl.setColors_(colors)
+        # Tint vignette with current hue — dark version of the glow color
+        if hasattr(self, '_vignette_gradient_layers'):
+            r, g, b = base_color
+            # Dark tinted versions: multiply color by low factor for darkening
+            vig_edge = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.08, g * 0.08, b * 0.08, 0.85)
+            vig_mid = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.10, g * 0.10, b * 0.10, 0.45)
+            vig_faint = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.12, g * 0.12, b * 0.12, 0.12)
+            vig_clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+            vig_colors = [vig_edge.CGColor(), vig_mid.CGColor(), vig_faint.CGColor(), vig_clear.CGColor()]
+            for gl in self._vignette_gradient_layers:
+                gl.setColors_(vig_colors)
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
@@ -418,6 +465,12 @@ class GlowOverlay(NSObject):
         brightness = _sample_screen_brightness(self._screen)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
+        self._brightness = brightness
+        # Cross-fade: additive glow fades out, subtractive vignette fades in
+        # as brightness increases. Fully additive at black, fully subtractive
+        # at white, blended in between.
+        self._additive_mix = 1.0 - brightness
+        self._subtractive_mix = brightness
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -477,6 +530,20 @@ class GlowOverlay(NSObject):
             )
             self._glow_layer.setOpacity_(0.0)
             self._glow_layer.addAnimation_forKey_(anim, "fadeOut")
+
+            # Fade out subtractive vignette in sync
+            if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
+                vpres = self._vignette_layer.presentationLayer()
+                vcurrent = vpres.opacity() if vpres is not None else self._vignette_layer.opacity()
+                vanim = CABasicAnimation.animationWithKeyPath_("opacity")
+                vanim.setFromValue_(vcurrent)
+                vanim.setToValue_(0.0)
+                vanim.setDuration_(_GLOW_HIDE_FADE_S)
+                vanim.setTimingFunction_(
+                    CAMediaTimingFunction.functionWithName_("easeIn")
+                )
+                self._vignette_layer.setOpacity_(0.0)
+                self._vignette_layer.addAnimation_forKey_(vanim, "vignetteOut")
 
             # Fade out screen dim — slow and sneaky so the brightness
             # return is imperceptible while attention is on injected text
@@ -569,9 +636,14 @@ class GlowOverlay(NSObject):
             b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
             self._apply_glow_color((r, g, b))
 
-        self._glow_layer.setOpacity_(opacity)
+        # Cross-fade additive glow and subtractive vignette
+        additive_mix = getattr(self, "_additive_mix", 1.0)
+        subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
+        self._glow_layer.setOpacity_(opacity * additive_mix)
+        if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
+            self._vignette_layer.setOpacity_(opacity * subtractive_mix * 2.5)
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
-            logger.info("Glow amplitude: rms=%.4f smoothed=%.4f opacity=%.3f (update #%d)",
-                        rms, self._smoothed_amplitude, opacity, self._update_count)
+            logger.info("Glow amplitude: rms=%.4f smoothed=%.4f opacity=%.3f add=%.2f sub=%.2f (update #%d)",
+                        rms, self._smoothed_amplitude, opacity, additive_mix, subtractive_mix, self._update_count)
