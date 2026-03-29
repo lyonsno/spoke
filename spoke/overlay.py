@@ -71,7 +71,7 @@ _GLOW_COLOR = _scale_color_saturation(
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
-_OUTER_GLOW_PEAK_TARGET = 0.50
+_OUTER_GLOW_PEAK_TARGET = 0.70
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -534,9 +534,23 @@ class TranscriptionOverlay(NSObject):
         opacity should be the screen glow's current opacity (0.0–1.0).
         cap_factor scales the glow down during the recording cap countdown
         (1.0 = full, ramps toward 0.25 near the cap).
+
+        Has its own smoothing (60% of screen glow's attack speed) so the
+        overlay glow responds more gently than the screen edge.
         """
         if not self._visible:
             return
+        # Independent smoothing — 60% of the screen glow's attack
+        _OVERLAY_GLOW_RISE = 0.54   # 60% of screen glow's 0.90
+        _OVERLAY_GLOW_DECAY = 0.70  # 60% blend toward screen glow's 0.50
+        if not hasattr(self, '_smoothed_glow_opacity'):
+            self._smoothed_glow_opacity = 0.0
+        if opacity > self._smoothed_glow_opacity:
+            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * _OVERLAY_GLOW_RISE
+        else:
+            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * (1.0 - _OVERLAY_GLOW_DECAY)
+        opacity = self._smoothed_glow_opacity
+
         # Apply recording-cap countdown scaling
         if cap_factor < 1.0:
             cap_floor = 0.25
@@ -544,11 +558,11 @@ class TranscriptionOverlay(NSObject):
             opacity *= scale
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(opacity)
+            self._inner_shadow.setShadowOpacity_(min(opacity * 1.4, 1.0))
         if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(outer_opacity * 0.5)
+            self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(outer_opacity * 0.8)
+            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * 1.12, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
