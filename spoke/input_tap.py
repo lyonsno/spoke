@@ -63,6 +63,7 @@ _MODIFIER_MASK = (
 _DEFAULT_HOLD_MS = 400
 _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
+_ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
 
 
 class _State(Enum):
@@ -107,10 +108,13 @@ class SpacebarHoldDetector(NSObject):
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
         self._forwarding_timer: NSTimer | None = None
+        self._release_decision_timer: NSTimer | None = None
         self._tap = None
         self._tap_source = None
         self._awaiting_space_release = False
         self._latched_space_down = False
+        self._pending_release_active = False
+        self._pending_release_shift_held = False
 
         # Tray mode support — set by the delegate when tray is active.
         # When True, quick spacebar taps call on_hold_end instead of
@@ -188,11 +192,14 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_hold_timer()
         self._cancel_safety_timer()
         self._cancel_forwarding_timer()
+        self._cancel_release_decision_timer()
         self._forwarding = False
         self._enter_held = False
         self._enter_latched = False
         self._awaiting_space_release = False
         self._latched_space_down = False
+        self._pending_release_active = False
+        self._pending_release_shift_held = False
         self.tray_active = False
         self._state = _State.IDLE
 
@@ -209,6 +216,9 @@ class SpacebarHoldDetector(NSObject):
 
         if getattr(self, "_awaiting_space_release", False):
             return True
+
+        if getattr(self, "_pending_release_active", False):
+            self._finish_pending_release(enter_held=False)
 
         # Pass through if any modifier is held (Cmd+Space, etc.)
         if flags & _MODIFIER_MASK:
@@ -308,7 +318,12 @@ class SpacebarHoldDetector(NSObject):
             )
             self._shift_latched = False
             self._enter_latched = False
-            self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
+            if enter_held:
+                self._on_hold_end(shift_held=shift_held, enter_held=True)
+            elif shift_held:
+                self._start_release_decision_timer(shift_held=True)
+            else:
+                self._on_hold_end(shift_held=False, enter_held=False)
             return True
 
         if self._state == _State.LATCHED:
@@ -409,6 +424,38 @@ class SpacebarHoldDetector(NSObject):
             self._forwarding_timer.invalidate()
             self._forwarding_timer = None
 
+    def _start_release_decision_timer(self, shift_held: bool) -> None:
+        self._cancel_release_decision_timer()
+        self._pending_release_active = True
+        self._pending_release_shift_held = shift_held
+        self._release_decision_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                _ENTER_RELEASE_GRACE_S,
+                self,
+                "releaseDecisionTimerFired:",
+                None,
+                False,
+            )
+        )
+
+    def releaseDecisionTimerFired_(self, timer: NSTimer) -> None:
+        self._release_decision_timer = None
+        self._finish_pending_release(enter_held=False)
+
+    def _cancel_release_decision_timer(self) -> None:
+        if getattr(self, "_release_decision_timer", None) is not None:
+            self._release_decision_timer.invalidate()
+            self._release_decision_timer = None
+
+    def _finish_pending_release(self, enter_held: bool) -> None:
+        if not getattr(self, "_pending_release_active", False):
+            return
+        shift_held = getattr(self, "_pending_release_shift_held", False)
+        self._cancel_release_decision_timer()
+        self._pending_release_active = False
+        self._pending_release_shift_held = False
+        self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
+
 
 # ── module-level callback ────────────────────────────────────
 
@@ -438,6 +485,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key state for command fast path
         if keycode == ENTER_KEYCODE:
             det._enter_held = True
+            if getattr(det, "_pending_release_active", False):
+                det._finish_pending_release(enter_held=True)
+                return None
             if det._state == _State.LATCHED:
                 det._cancel_safety_timer()
                 det._state = _State.IDLE
