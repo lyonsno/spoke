@@ -220,6 +220,38 @@ The stack has no hard depth limit. In practice it holds the last N
 transcriptions that entered via shift+release or paste failure. Old entries
 age out naturally as new ones push them down, or are explicitly deleted.
 
+### Tray entry ownership
+
+Every tray entry has an owner — either the user or the assistant — and the
+overlay renders each entry in the owner's color language. The user's color is
+the default dictation overlay style. The assistant's color is the command
+overlay style (hue rotation, pulsing). There is no third "shared" or "modified
+by both" color.
+
+**Ownership rules:**
+
+- **User-created entries** (dictation via shift+release, paste failure) appear
+  in user color immediately and permanently.
+- **Assistant-created entries** (placed via tool call) appear in assistant
+  color when they arrive.
+- **Ownership transfer is automatic and monotonic.** An assistant-created entry
+  transitions to user color after one interaction turn — once the user has
+  navigated to it, inserted it, or otherwise acknowledged it. Once an entry
+  is in user color, it stays in user color. There is no reverse transition.
+- **Assistant modifications to existing entries** re-paint the entry in
+  assistant color for one turn, then it returns to user color on
+  acknowledgment. The visual change is the signal — if the entry looks
+  different, the assistant touched it.
+
+**Design principle: failure is loud, stability is quiet.** Anything that has
+been with the user in a persistent state is rendered as theirs. The user
+should have the sense that their entries do not change silently. New or
+modified assistant content pops out visually because it hasn't been
+acknowledged yet. The moment it's acknowledged, it becomes the user's — quiet
+and stable. This means the only time assistant color appears in the tray is
+when something is new or has just changed. The resting state of the tray is
+entirely user-colored.
+
 ### Spring animation
 
 When the tray is entered from recording (shift held + release spacebar), the
@@ -297,7 +329,7 @@ recording force-stops. No cap in sidecar mode.
 | Idle | hidden | off | unfilled mic |
 | Recording | live preview (typewriter) | amplitude-reactive border | filled mic |
 | Transcribing | preview holds | fading | filled mic |
-| Tray | tray overlay (text + navigation state) | off | unfilled mic |
+| Tray | tray overlay (entry in owner color — user or assistant) | off | unfilled mic |
 | Command streaming | command overlay (slow full-spectrum hue rotation, pulsing) | off | filled mic |
 
 ## Key source files
