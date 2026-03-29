@@ -68,8 +68,8 @@ def _make_delegate(main_module, monkeypatch, *, command_client=False):
 class TestTrayEntry:
     """Shift+release during recording enters the tray."""
 
-    def test_shift_release_enters_tray(self, main_module, monkeypatch):
-        """Shift+release during recording should enter tray, not send to command."""
+    def test_shift_release_spawns_tray_transcription(self, main_module, monkeypatch):
+        """Shift+release during recording should spawn tray transcription thread."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 2.0
@@ -78,7 +78,10 @@ class TestTrayEntry:
             MockThread.return_value = MagicMock()
             d._on_hold_end(shift_held=True)
 
-        assert d._tray_active is True
+        # Tray transcription thread should be spawned
+        MockThread.assert_called_once()
+        # tray_active is deferred until transcription completes
+        assert d._transcribing is True
 
     def test_shift_release_does_not_send_to_command(self, main_module, monkeypatch):
         """Tray must intercept — text should not go to assistant."""

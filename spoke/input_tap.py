@@ -117,7 +117,6 @@ class SpacebarHoldDetector(NSObject):
         self._tray_space_between = False
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
         self._tray_last_shift_space_up: float = 0.0
-        _TRAY_DOUBLE_TAP_WINDOW_S = 0.3
 
         return self
 
@@ -297,7 +296,10 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             logger.warning("Safety timeout — auto-stopping recording")
             self._state = _State.IDLE
-            self._on_hold_end(shift_held=False)
+            self._on_hold_end(
+                shift_held=False,
+                enter_held=getattr(self, '_enter_held', False),
+            )
 
     def _cancel_safety_timer(self) -> None:
         if self._safety_timer is not None:

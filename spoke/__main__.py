@@ -617,11 +617,12 @@ class SpokeAppDelegate(NSObject):
                 daemon=True,
             )
         elif shift_held:
-            # Tray pathway: transcribe, then enter tray with the result
+            # Tray pathway: transcribe, then enter tray with the result.
+            # Don't set _tray_active yet — defer until _enter_tray is called
+            # from trayTranscriptionComplete_. Setting it prematurely would
+            # let gestures fire on stale/empty stack state during transcription.
             if self._menubar is not None:
                 self._menubar.set_status_text("Transcribing…")
-            self._tray_active = True
-            self._detector.tray_active = True
             thread = threading.Thread(
                 target=self._tray_transcribe_worker,
                 args=(wav_bytes, token),
@@ -817,6 +818,7 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
             self._tray_active = False
+            self._detector.tray_active = False
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
@@ -837,6 +839,7 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.hide()
         self._tray_active = False
+        self._detector.tray_active = False
         if self._menubar is not None:
             self._menubar.set_status_text("Error — try again")
 
