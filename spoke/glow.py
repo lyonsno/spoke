@@ -14,24 +14,18 @@ import time
 
 import objc
 from AppKit import (
-    NSBezierPath,
     NSColor,
     NSScreen,
-    NSView,
     NSWindow,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
 )
-from Foundation import NSObject, NSTimer
+from Foundation import NSData, NSObject, NSTimer
 from Quartz import (
     CABasicAnimation,
-    CAGradientLayer,
     CALayer,
     CAMediaTimingFunction,
-    CAShapeLayer,
-    CGPathCreateWithRoundedRect,
-    kCAFillRuleEvenOdd,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,12 +68,6 @@ _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.28  # same on light — subtractive vignette handles contrast
-_TRAY_DIM_FACTOR = 0.5  # tray keeps half the recording dim so context stays visible
-_TRAY_GLOW_FACTOR_MIN = 0.35  # tray breathes around the prior half-strength target
-_TRAY_GLOW_FACTOR_MAX = 0.75
-_TRAY_GLOW_PULSE_PERIOD = 5.0  # mirror assistant overlay cadence
-_TRAY_GLOW_PULSE_HZ = 30.0
-_TRAY_GLOW_PHASE_OFFSET = 0.23  # related to assistant pulse, but visibly out of phase
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words
@@ -97,6 +85,11 @@ _WINDOW_TEARDOWN_CUSHION_S = 0.05
 
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0  # seconds between recurring samples
 _BRIGHTNESS_PATCH_SIZE = 50  # pixels per patch side
+_DISTANCE_FIELD_SCALE_DEFAULT = 2.0
+_NOTCH_BOTTOM_RADIUS = 8.0
+_NOTCH_SHOULDER_SMOOTHING = 9.5
+_LIGHT_BACKGROUND_EDGE_BOOST = 0.28
+_VIGNETTE_OPACITY_SCALE = 3.05
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -192,27 +185,12 @@ def _glow_style_for_brightness(brightness: float) -> tuple[tuple[float, float, f
     return color, base_opacity, peak_target
 
 
-def _dim_opacity_for_brightness(brightness: float) -> float:
+def _edge_mix_for_brightness(brightness: float) -> tuple[float, float]:
+    """Cross-fade additive glow into subtractive edge treatment with a slight bright-scene boost."""
     t = min(max(brightness, 0.0), 1.0)
-    return _DIM_OPACITY_DARK + t * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
-
-
-def _tray_dim_opacity_for_brightness(brightness: float) -> float:
-    return _dim_opacity_for_brightness(brightness) * _TRAY_DIM_FACTOR
-
-
-def _assistant_breath(phase: float) -> float:
-    """Shared eased breath shape used by the assistant overlay."""
-    raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * phase))
-    return raw_breath * raw_breath
-
-
-def _tray_glow_factor(phase: float) -> float:
-    """Tray glow follows the assistant breath shape at a calmer range."""
-    breath = _assistant_breath(phase)
-    return _TRAY_GLOW_FACTOR_MIN + breath * (
-        _TRAY_GLOW_FACTOR_MAX - _TRAY_GLOW_FACTOR_MIN
-    )
+    additive_mix = 1.0 - t
+    subtractive_mix = t * (1.0 + _LIGHT_BACKGROUND_EDGE_BOOST * t)
+    return additive_mix, subtractive_mix
 
 
 def _edge_band_colors(
@@ -225,31 +203,292 @@ def _edge_band_colors(
     return inner, middle, outer
 
 
-def _rounded_rect_path(x, y, w, h, top_radius, bottom_radius):
-    """Create a CGPath rounded rect with different top and bottom corner radii."""
-    from Quartz import (
-        CGPathCreateMutable,
-        CGPathMoveToPoint,
-        CGPathAddArcToPoint,
-        CGPathCloseSubpath,
-    )
-    # macOS coordinate system: y=0 is bottom
-    path = CGPathCreateMutable()
-    tr = top_radius
-    br = bottom_radius
+def _safe_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
-    # Start at bottom-left, just above the bottom-left corner
-    CGPathMoveToPoint(path, None, x, y + br)
-    # Bottom-left corner
-    CGPathAddArcToPoint(path, None, x, y, x + br, y, br)
-    # Bottom edge to bottom-right corner
-    CGPathAddArcToPoint(path, None, x + w, y, x + w, y + br, br)
-    # Right edge to top-right corner
-    CGPathAddArcToPoint(path, None, x + w, y + h, x + w - tr, y + h, tr)
-    # Top edge to top-left corner
-    CGPathAddArcToPoint(path, None, x, y + h, x, y + h - tr, tr)
-    CGPathCloseSubpath(path)
-    return path
+
+def _screen_rect(screen, name: str) -> tuple[float, float, float, float] | None:
+    accessor = getattr(screen, name, None)
+    if accessor is None:
+        return None
+    try:
+        rect = accessor() if callable(accessor) else accessor
+    except Exception:
+        return None
+    if rect is None:
+        return None
+    try:
+        return (
+            _safe_float(rect.origin.x, 0.0),
+            _safe_float(rect.origin.y, 0.0),
+            _safe_float(rect.size.width, 0.0),
+            _safe_float(rect.size.height, 0.0),
+        )
+    except Exception:
+        return None
+
+
+def _screen_backing_scale(screen) -> float:
+    accessor = getattr(screen, "backingScaleFactor", None)
+    if accessor is None:
+        return _DISTANCE_FIELD_SCALE_DEFAULT
+    try:
+        value = accessor() if callable(accessor) else accessor
+    except Exception:
+        return _DISTANCE_FIELD_SCALE_DEFAULT
+    scale = _safe_float(value, _DISTANCE_FIELD_SCALE_DEFAULT)
+    return scale if scale > 0.0 else _DISTANCE_FIELD_SCALE_DEFAULT
+
+
+def _display_shape_geometry(screen, width_pt: float, height_pt: float, scale: float) -> dict:
+    """Resolve the live display silhouette used by the distance-field renderer."""
+    geometry = {
+        "pixel_width": max(int(round(width_pt * scale)), 1),
+        "pixel_height": max(int(round(height_pt * scale)), 1),
+        "top_radius": _CORNER_RADIUS_TOP * scale,
+        "bottom_radius": _CORNER_RADIUS_BOTTOM * scale,
+        "notch": None,
+    }
+
+    left_area = _screen_rect(screen, "auxiliaryTopLeftArea")
+    right_area = _screen_rect(screen, "auxiliaryTopRightArea")
+    if left_area is None or right_area is None:
+        return geometry
+
+    left_max_x = left_area[0] + left_area[2]
+    right_min_x = right_area[0]
+    notch_width = max(right_min_x - left_max_x, 0.0)
+    notch_base_y = min(left_area[1], right_area[1])
+    notch_height = max(height_pt - notch_base_y, 0.0)
+    if notch_width <= 0.0 or notch_height <= 0.0:
+        return geometry
+
+    geometry["notch"] = {
+        "x": left_max_x * scale,
+        "y": notch_base_y * scale,
+        "width": notch_width * scale,
+        "height": notch_height * scale,
+        "bottom_radius": min(notch_height * scale * 0.45, _NOTCH_BOTTOM_RADIUS * scale),
+        "shoulder_smoothing": _NOTCH_SHOULDER_SMOOTHING * scale,
+    }
+    return geometry
+
+
+def _asymmetric_rounded_rect_sdf(
+    x,
+    y,
+    width: float,
+    height: float,
+    top_radius: float,
+    bottom_radius: float,
+) :
+    import numpy as np
+
+    half_width = width * 0.5
+    half_height = height * 0.5
+    radii = np.where(y >= 0.0, top_radius, bottom_radius).astype(np.float32, copy=False)
+    qx = np.abs(x) - (half_width - radii)
+    qy = np.abs(y) - (half_height - radii)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return outside + inside - radii
+
+
+def _display_signed_distance_field(geometry: dict):
+    """Signed distance field for the live display outline, including the notch when available."""
+    import numpy as np
+
+    width = geometry["pixel_width"]
+    height = geometry["pixel_height"]
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+
+    signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        geometry["top_radius"],
+        geometry["bottom_radius"],
+    )
+
+    notch = geometry.get("notch")
+    if notch is None:
+        return signed.astype(np.float32, copy=False)
+
+    notch_center_x = notch["x"] + notch["width"] * 0.5 - width * 0.5
+    notch_center_y = notch["y"] + notch["height"] * 0.5 - height * 0.5
+    notch_signed = _asymmetric_rounded_rect_sdf(
+        centered_x - notch_center_x,
+        centered_y - notch_center_y,
+        notch["width"],
+        notch["height"],
+        0.0,
+        notch["bottom_radius"],
+    )
+    shoulder_smoothing = max(notch.get("shoulder_smoothing", 0.0), 0.0)
+    if shoulder_smoothing <= 0.0:
+        return np.maximum(signed, -notch_signed).astype(np.float32, copy=False)
+
+    seam = np.maximum(shoulder_smoothing - np.abs(signed + notch_signed), 0.0)
+    softened = np.maximum(signed, -notch_signed) + (seam * seam) * (0.25 / shoulder_smoothing)
+    return softened.astype(np.float32, copy=False)
+
+
+def _distance_field_opacity(distance: float, falloff: float, power: float) -> float:
+    normalized = max(distance, 0.0) / max(falloff, 1e-6)
+    return math.exp(-(normalized ** power))
+
+
+def _distance_field_alpha(signed_distance, falloff: float, power: float):
+    import numpy as np
+
+    distance = np.clip(-signed_distance, 0.0, None)
+    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
+    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
+
+
+def _alpha_field_to_image(alpha):
+    """Convert a float alpha field into a CGImage suitable for a CALayer mask."""
+    import numpy as np
+
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., 0] = 255
+    rgba[..., 1] = 255
+    rgba[..., 2] = 255
+    rgba[..., 3] = mask_alpha
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
+    signed_distance = _display_signed_distance_field(geometry)
+    masks = []
+    for spec in specs:
+        alpha = _distance_field_alpha(
+            signed_distance,
+            spec["falloff"] * geometry["scale"],
+            spec["power"],
+        )
+        image, payload = _alpha_field_to_image(alpha)
+        masks.append({"image": image, "payload": payload, "spec": spec})
+    return masks
+
+
+def _continuous_glow_pass_specs():
+    """Procedural additive passes driven from one shared distance field."""
+    return [
+        {
+            "name": "core",
+            "path_kind": "distance_field",
+            "falloff": 3.2,
+            "power": 2.7,
+            "fill_role": "inner",
+            "fill_alpha": 0.28,
+        },
+        {
+            "name": "tight_bloom",
+            "path_kind": "distance_field",
+            "falloff": 7.2,
+            "power": 3.2,
+            "fill_role": "middle",
+            "fill_alpha": 0.18,
+        },
+        {
+            "name": "wide_bloom",
+            "path_kind": "distance_field",
+            "falloff": 15.0,
+            "power": 3.7,
+            "fill_role": "outer",
+            "fill_alpha": 0.12,
+        },
+    ]
+
+
+def _continuous_vignette_pass_specs():
+    """Procedural subtractive passes driven from the same distance field."""
+    return [
+        {
+            "name": "core",
+            "path_kind": "distance_field",
+            "falloff": 3.0,
+            "power": 2.65,
+            "alpha": 0.44,
+            "color_scale": 0.08,
+        },
+        {
+            "name": "mid",
+            "path_kind": "distance_field",
+            "falloff": 7.0,
+            "power": 3.1,
+            "alpha": 0.21,
+            "color_scale": 0.10,
+        },
+        {
+            "name": "tail",
+            "path_kind": "distance_field",
+            "falloff": 14.0,
+            "power": 3.55,
+            "alpha": 0.095,
+            "color_scale": 0.12,
+        },
+    ]
+
+
+def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSColor]:
+    """Build additive glow colors keyed by intensity role."""
+    inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
+    return {
+        "inner": NSColor.colorWithSRGBRed_green_blue_alpha_(
+            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
+        ),
+        "middle": NSColor.colorWithSRGBRed_green_blue_alpha_(
+            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+        ),
+        "outer": NSColor.colorWithSRGBRed_green_blue_alpha_(
+            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
+        ),
+    }
+
+
+def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> NSColor:
+    """Build a tinted subtractive vignette color for a single pass."""
+    r, g, b = base_color
+    scale = spec["color_scale"]
+    return NSColor.colorWithSRGBRed_green_blue_alpha_(
+        r * scale,
+        g * scale,
+        b * scale,
+        spec["alpha"],
+    )
 
 
 class GlowOverlay(NSObject):
@@ -262,7 +501,7 @@ class GlowOverlay(NSObject):
 
         self._screen = screen or NSScreen.mainScreen()
         self._window: NSWindow | None = None
-        self._glow_layer: CAShapeLayer | None = None
+        self._glow_layer: CALayer | None = None
         self._smoothed_amplitude = 0.0
         self._visible = False
         self._fade_in_until = 0.0
@@ -276,35 +515,12 @@ class GlowOverlay(NSObject):
         self._glow_peak_target = _GLOW_PEAK_TARGET
         self._brightness_timer = None
         self._brightness = 0.5
-        self._tray_dim_only = False
-        self._tray_pulse_timer = None
-        self._tray_pulse_phase = _TRAY_GLOW_PHASE_OFFSET
-        self._last_tray_pulse_at = 0.0
         return self
 
     def _cancel_pending_hide(self) -> None:
         if self._hide_timer is not None:
             self._hide_timer.invalidate()
             self._hide_timer = None
-
-    def _stop_tray_pulse(self) -> None:
-        if self._tray_pulse_timer is not None:
-            self._tray_pulse_timer.invalidate()
-            self._tray_pulse_timer = None
-
-    def _apply_tray_glow_pulse(self) -> None:
-        if self._glow_layer is None:
-            return
-        self._glow_layer.setOpacity_(
-            self._glow_base_opacity * _tray_glow_factor(self._tray_pulse_phase)
-        )
-
-    def _start_tray_pulse(self) -> None:
-        self._stop_tray_pulse()
-        self._last_tray_pulse_at = time.monotonic()
-        self._tray_pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / _TRAY_GLOW_PULSE_HZ, self, "trayPulseStep:", None, True
-        )
 
     def setup(self) -> None:
         """Create the overlay window and glow layer."""
@@ -330,17 +546,11 @@ class GlowOverlay(NSObject):
         content.setWantsLayer_(True)
 
         w, h = frame.size.width, frame.size.height
+        mask_scale = _screen_backing_scale(self._screen)
+        geometry = _display_shape_geometry(self._screen, w, h, mask_scale)
+        geometry["scale"] = mask_scale
 
-        inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(_GLOW_COLOR)
-        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
-        )
-        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-        )
-        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
-        )
+        glow_colors = _glow_role_colors(_GLOW_COLOR)
 
         # ── Optional screen dim: subtle dark backdrop for glow contrast ──
         self._dim_layer = None
@@ -359,180 +569,81 @@ class GlowOverlay(NSObject):
         self._glow_layer.setFrame_(((0, 0), (w, h)))
         self._glow_layer.setOpacity_(0.0)
 
-        # ── Shadow-casting shape: thick border, full opacity ─────
-        # This layer is a child that casts the soft bloom shadow.
-        # Its own fill is hidden by the mask below — only its shadow is visible.
-        shadow_shape = CAShapeLayer.alloc().init()
+        # Procedural additive passes: one continuous field, different falloff curves.
+        glow_pass_layers = []
+        self._mask_payloads = []
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
+            spec = entry["spec"]
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((0, 0), (w, h)))
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(entry["image"])
+            mask_layer.setContentsScale_(mask_scale)
+            layer.setMask_(mask_layer)
+            self._glow_layer.addSublayer_(layer)
+            self._mask_payloads.append(entry["payload"])
+            glow_pass_layers.append({"layer": layer, "spec": spec})
 
-        outer = _rounded_rect_path(0, 0, w, h,
-                                   _CORNER_RADIUS_TOP, _CORNER_RADIUS_BOTTOM)
-        inner = _rounded_rect_path(_GLOW_WIDTH, _GLOW_WIDTH,
-                                   w - 2 * _GLOW_WIDTH, h - 2 * _GLOW_WIDTH,
-                                   max(_CORNER_RADIUS_TOP - _GLOW_WIDTH, 0),
-                                   max(_CORNER_RADIUS_BOTTOM - _GLOW_WIDTH, 0))
-
-        from Quartz import CGPathCreateMutableCopy, CGPathAddPath
-        combined = CGPathCreateMutableCopy(outer)
-        CGPathAddPath(combined, None, inner)
-
-        shadow_shape.setPath_(combined)
-        shadow_shape.setFillRule_(kCAFillRuleEvenOdd)
-        shadow_shape.setFillColor_(inner_glow.CGColor())
-
-        # Shadow bloom — the main visual
-        shadow_shape.setShadowColor_(outer_glow.CGColor())
-        shadow_shape.setShadowOffset_((0, 0))
-        shadow_shape.setShadowRadius_(_GLOW_SHADOW_RADIUS)
-        shadow_shape.setShadowOpacity_(1.0)
-
-        self._glow_layer.addSublayer_(shadow_shape)
-        self._shadow_shape = shadow_shape
-
-        # Shape fill nearly transparent — just enough for CA to cast shadow
-        shadow_shape.setFillColor_(
-            inner_glow.colorWithAlphaComponent_(0.05).CGColor()
-        )
-
-        # Add 4 gradient layers for the visible feathered edge glow.
-        # Exponential-style falloff: bright at edge, drops fast, long subtle tail.
-        # Use NSColor objects (not CGColor) — PyObjC bridges these correctly
-        # for CAGradientLayer, unlike raw CGColorRef pointers.
-        edge_nscolor = inner_glow
-        mid_nscolor = middle_glow.colorWithAlphaComponent_(0.25)
-        faint_nscolor = outer_glow.colorWithAlphaComponent_(0.06)
-        clear_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
-
-        # CAGradientLayer wants CGColorRef — extract via id bridge
-        colors = [
-            edge_nscolor.CGColor(),
-            mid_nscolor.CGColor(),
-            faint_nscolor.CGColor(),
-            clear_nscolor.CGColor(),
-        ]
-        locations = [0.0, 0.15, 0.4, 1.0]
-
-        grad_depth = _GLOW_WIDTH * 4  # gradient extends 4x border width
-
-        # Create a rounded-rect mask path so gradients follow screen curvature
-        mask_path = _rounded_rect_path(0, 0, w, h,
-                                       _CORNER_RADIUS_TOP, _CORNER_RADIUS_BOTTOM)
-
-        edges = [
-            # (origin, size, start_point, end_point)
-            ((0, 0), (w, grad_depth), (0.5, 0.0), (0.5, 1.0)),          # bottom
-            ((0, h - grad_depth), (w, grad_depth), (0.5, 1.0), (0.5, 0.0)),  # top
-            ((0, 0), (grad_depth, h), (0.0, 0.5), (1.0, 0.5)),          # left
-            ((w - grad_depth, 0), (grad_depth, h), (1.0, 0.5), (0.0, 0.5)),  # right
-        ]
-        for origin, size, start, end in edges:
-            g = CAGradientLayer.alloc().init()
-            g.setFrame_((origin, size))
-            g.setColors_(colors)
-            g.setLocations_(locations)
-            g.setStartPoint_(start)
-            g.setEndPoint_(end)
-
-            # Mask to rounded screen shape so corners follow the bezel curve
-            mask = CAShapeLayer.alloc().init()
-            # Offset the mask path to account for the gradient layer's origin
-            mask.setFrame_(((0, 0), (w, h)))
-            mask.setPosition_((-origin[0] + w / 2, -origin[1] + h / 2))
-            mask.setPath_(mask_path)
-            g.setMask_(mask)
-
-            self._glow_layer.addSublayer_(g)
-
-        self._gradient_layers = [self._glow_layer.sublayers()[i] for i in range(1, 5)]
+        self._glow_pass_layers = glow_pass_layers
+        self._shadow_shape = glow_pass_layers[-1]["layer"] if glow_pass_layers else None
 
         # ── Subtractive vignette: darkened colored edges for light backgrounds ──
-        # Same shape as the additive glow but uses dark-tinted colors.
-        # Cross-faded with the additive glow based on background brightness.
+        # Same distance-field geometry as the additive glow, with tinted falloff.
         self._vignette_layer = CALayer.alloc().init()
         self._vignette_layer.setFrame_(((0, 0), (w, h)))
         self._vignette_layer.setOpacity_(0.0)
 
-        # Vignette gradients: dark at edges, clear toward center
-        vig_edge = NSColor.colorWithSRGBRed_green_blue_alpha_(0.02, 0.02, 0.04, 0.85)
-        vig_mid = NSColor.colorWithSRGBRed_green_blue_alpha_(0.03, 0.03, 0.06, 0.45)
-        vig_faint = NSColor.colorWithSRGBRed_green_blue_alpha_(0.04, 0.04, 0.08, 0.12)
-        vig_clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
-        vig_colors = [
-            vig_edge.CGColor(), vig_mid.CGColor(),
-            vig_faint.CGColor(), vig_clear.CGColor(),
-        ]
+        vignette_pass_layers = []
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs()):
+            spec = entry["spec"]
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((0, 0), (w, h)))
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(entry["image"])
+            mask_layer.setContentsScale_(mask_scale)
+            layer.setMask_(mask_layer)
+            self._vignette_layer.addSublayer_(layer)
+            self._mask_payloads.append(entry["payload"])
+            vignette_pass_layers.append({"layer": layer, "spec": spec})
 
-        for origin, size, start, end in edges:
-            g = CAGradientLayer.alloc().init()
-            g.setFrame_((origin, size))
-            g.setColors_(vig_colors)
-            g.setLocations_(locations)
-            g.setStartPoint_(start)
-            g.setEndPoint_(end)
-
-            mask = CAShapeLayer.alloc().init()
-            mask.setFrame_(((0, 0), (w, h)))
-            mask.setPosition_((-origin[0] + w / 2, -origin[1] + h / 2))
-            mask.setPath_(mask_path)
-            g.setMask_(mask)
-
-            self._vignette_layer.addSublayer_(g)
-
-        self._vignette_gradient_layers = [self._vignette_layer.sublayers()[i] for i in range(4)]
+        self._vignette_pass_layers = vignette_pass_layers
+        self._apply_glow_color(_GLOW_COLOR)
         content.layer().addSublayer_(self._glow_layer)
         content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
     def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
-        """Push the current glow color through the bloom and gradient layers."""
-        inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
-        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
-        )
-        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-        )
-        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
-        )
-        if hasattr(self, '_shadow_shape'):
-            self._shadow_shape.setShadowColor_(outer_glow.CGColor())
-            self._shadow_shape.setFillColor_(
-                inner_glow.colorWithAlphaComponent_(0.05).CGColor()
-            )
-        if hasattr(self, '_gradient_layers'):
-            edge = inner_glow
-            mid = middle_glow.colorWithAlphaComponent_(0.25)
-            faint = outer_glow.colorWithAlphaComponent_(0.06)
-            clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
-            colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
-            for gl in self._gradient_layers:
-                gl.setColors_(colors)
-        # Tint vignette with current hue — dark version of the glow color
-        if hasattr(self, '_vignette_gradient_layers'):
-            r, g, b = base_color
-            # Dark tinted versions: multiply color by low factor for darkening
-            vig_edge = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.08, g * 0.08, b * 0.08, 0.85)
-            vig_mid = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.10, g * 0.10, b * 0.10, 0.45)
-            vig_faint = NSColor.colorWithSRGBRed_green_blue_alpha_(r * 0.12, g * 0.12, b * 0.12, 0.12)
-            vig_clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
-            vig_colors = [vig_edge.CGColor(), vig_mid.CGColor(), vig_faint.CGColor(), vig_clear.CGColor()]
-            for gl in self._vignette_gradient_layers:
-                gl.setColors_(vig_colors)
+        """Push the current glow color through the procedural glow/vignette passes."""
+        glow_colors = _glow_role_colors(base_color)
+        if hasattr(self, "_glow_pass_layers"):
+            for entry in self._glow_pass_layers:
+                layer = entry["layer"]
+                spec = entry["spec"]
+                fill_color = glow_colors[spec["fill_role"]]
+                layer.setBackgroundColor_(
+                    fill_color.colorWithAlphaComponent_(spec["fill_alpha"]).CGColor()
+                )
+
+        if hasattr(self, "_vignette_pass_layers"):
+            for entry in self._vignette_pass_layers:
+                layer = entry["layer"]
+                spec = entry["spec"]
+                layer.setBackgroundColor_(_vignette_pass_color(base_color, spec).CGColor())
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
         if self._window is None:
             return
         self._cancel_pending_hide()
-        self._stop_tray_pulse()
         self._hide_generation += 1
         self._visible = True
         self._smoothed_amplitude = 0.0
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
-        self._tray_dim_only = False
         brightness = _sample_screen_brightness(self._screen)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
@@ -540,8 +651,7 @@ class GlowOverlay(NSObject):
         # Cross-fade: additive glow fades out, subtractive vignette fades in
         # as brightness increases. Fully additive at black, fully subtractive
         # at white, blended in between.
-        self._additive_mix = 1.0 - brightness
-        self._subtractive_mix = brightness
+        self._additive_mix, self._subtractive_mix = _edge_mix_for_brightness(brightness)
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -561,7 +671,7 @@ class GlowOverlay(NSObject):
         # Fade in screen dim — adaptive opacity based on screen brightness.
         # Sample once per recording, not per-frame.
         if self._dim_layer is not None:
-            dim_target = _dim_opacity_for_brightness(brightness)
+            dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
             logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
 
             pres = self._dim_layer.presentationLayer()
@@ -588,64 +698,6 @@ class GlowOverlay(NSObject):
 
         logger.info("Glow show")
 
-    def show_tray_dim(self) -> None:
-        """Keep a half-strength dim layer visible while the tray is up."""
-        if self._window is None:
-            return
-        self._cancel_pending_hide()
-        self._stop_tray_pulse()
-        self._visible = True
-        self._tray_dim_only = True
-        self._tray_pulse_phase = _TRAY_GLOW_PHASE_OFFSET
-        self._window.orderFrontRegardless()
-
-        brightness = _sample_screen_brightness(self._screen)
-        self._brightness = brightness
-        self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
-        self._apply_glow_color(self._glow_color)
-
-        self._glow_layer.removeAllAnimations()
-        self._apply_tray_glow_pulse()
-        if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-            self._vignette_layer.removeAllAnimations()
-            self._vignette_layer.setOpacity_(0.0)
-
-        if self._dim_layer is not None:
-            dim_target = _tray_dim_opacity_for_brightness(brightness)
-            pres = self._dim_layer.presentationLayer()
-            current_opacity = pres.opacity() if pres is not None else self._dim_layer.opacity()
-            self._dim_layer.removeAllAnimations()
-            self._dim_layer.setOpacity_(dim_target)
-            dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
-            dim_anim.setFromValue_(current_opacity)
-            dim_anim.setToValue_(dim_target)
-            dim_anim.setDuration_(0.45)
-            dim_anim.setTimingFunction_(
-                CAMediaTimingFunction.functionWithName_("easeInEaseOut")
-            )
-            self._dim_layer.addAnimation_forKey_(dim_anim, "trayDimIn")
-
-        old_timer = getattr(self, "_brightness_timer", None)
-        if old_timer is not None:
-            old_timer.invalidate()
-        from Foundation import NSTimer
-        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
-        )
-        self._start_tray_pulse()
-
-    def trayPulseStep_(self, timer) -> None:
-        if not self._visible or not self._tray_dim_only:
-            return
-        now = time.monotonic()
-        last = self._last_tray_pulse_at or now
-        dt = max(now - last, 0.0)
-        self._last_tray_pulse_at = now
-        self._tray_pulse_phase += dt / _TRAY_GLOW_PULSE_PERIOD
-        if self._tray_pulse_phase > 1.0:
-            self._tray_pulse_phase -= math.floor(self._tray_pulse_phase)
-        self._apply_tray_glow_pulse()
-
     def brightnessResample_(self, timer) -> None:
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
         if not self._visible:
@@ -659,22 +711,13 @@ class GlowOverlay(NSObject):
         self._glow_base_opacity = new_base
         self._glow_peak_target = new_peak
         self._apply_glow_color(new_color)
-        if getattr(self, "_tray_dim_only", False):
-            self._apply_tray_glow_pulse()
-            if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-                self._vignette_layer.setOpacity_(0.0)
 
         # Update cross-fade mix
-        self._additive_mix = 1.0 - new_brightness
-        self._subtractive_mix = new_brightness
+        self._additive_mix, self._subtractive_mix = _edge_mix_for_brightness(new_brightness)
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:
-            dim_target = (
-                _tray_dim_opacity_for_brightness(new_brightness)
-                if getattr(self, "_tray_dim_only", False)
-                else _dim_opacity_for_brightness(new_brightness)
-            )
+            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
             from Quartz import CABasicAnimation, CAMediaTimingFunction
             pres = self._dim_layer.presentationLayer()
             current = pres.opacity() if pres is not None else self._dim_layer.opacity()
@@ -696,9 +739,7 @@ class GlowOverlay(NSObject):
         if bt is not None:
             bt.invalidate()
             self._brightness_timer = None
-        self._stop_tray_pulse()
         self._visible = False
-        self._tray_dim_only = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
         logger.info("Glow hide (received %d amplitude updates)", self._update_count)
@@ -826,7 +867,7 @@ class GlowOverlay(NSObject):
         subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
         self._glow_layer.setOpacity_(opacity * additive_mix)
         if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-            self._vignette_layer.setOpacity_(opacity * subtractive_mix * 2.5)
+            self._vignette_layer.setOpacity_(opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE)
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
