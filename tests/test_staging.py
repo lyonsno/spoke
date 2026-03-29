@@ -259,3 +259,72 @@ class TestShortShiftHoldRecall:
 
         # Should not be in staging with no content to show
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+
+class TestHoldThroughFastPath:
+    """Hold-through: shift held ~400ms after staging entry auto-sends."""
+
+    def test_holdthrough_sends_after_timer(self, main_module, monkeypatch):
+        """Enter staging with shift held, fire commit timer → sends to assistant."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._staging_text = None
+
+        # Enter staging mode
+        d._enter_staging_mode("send this")
+        assert d._staging_active is True
+
+        # Simulate that shift was held at staging entry — timer should be started
+        assert d._staging_commit_timer is not None
+
+        # Fire the timer manually
+        d.stagingCommitTimerFired_(None)
+
+        # Should have sent to assistant and left staging
+        assert d._staging_active is False
+
+    def test_holdthrough_cancelled_on_shift_release(self, main_module, monkeypatch):
+        """Enter staging with shift held, release shift before timer → stay in staging."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._enter_staging_mode("keep this")
+        assert d._staging_commit_timer is not None
+
+        # Simulate shift release
+        d._on_staging_shift_released()
+
+        # Timer should be cancelled, still in staging
+        assert d._staging_commit_timer is None
+        assert d._staging_active is True
+        assert d._staging_text == "keep this"
+
+    def test_holdthrough_preauthorization(self, main_module, monkeypatch):
+        """Timer fires but transcription not done → sends when transcription completes."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._staging_text = None
+        d._transcribing = True  # transcription still in progress
+
+        d._enter_staging_mode(None)  # text not yet available
+        d._staging_preauthorized = False  # reset for test
+
+        # Fire timer while text is None
+        d.stagingCommitTimerFired_(None)
+
+        # Should set pre-authorization flag
+        assert d._staging_preauthorized is True
+        # Should still be in staging (waiting for text)
+        assert d._staging_active is True
+
+    def test_preauthorized_sends_when_text_arrives(self, main_module, monkeypatch):
+        """Pre-authorized staging sends as soon as transcription text arrives."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._staging_active = True
+        d._staging_preauthorized = True
+        d._transcribing = True
+        d._transcription_token = 1
+        d._send_text_as_command = MagicMock()
+
+        # Simulate transcription completing
+        d.stagingTranscriptionComplete_({"token": 1, "text": "hello"})
+
+        # Should auto-send because pre-authorized
+        d._send_text_as_command.assert_called_once_with("hello")

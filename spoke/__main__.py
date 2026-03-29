@@ -151,6 +151,8 @@ class SpokeAppDelegate(NSObject):
         # when paste verification fails (the old "recovery mode").
         self._staging_text: str | None = None
         self._staging_active: bool = False
+        self._staging_commit_timer: object | None = None  # NSTimer for hold-through
+        self._staging_preauthorized: bool = False  # True if shift held through timer
 
         # Recovery mode state (implementation detail of staging)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -817,9 +819,22 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
             self._staging_active = False
+            self._detector.staging_active = False
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
+
+        # Check for pre-authorization (user held shift through the commit timer
+        # before transcription finished)
+        if getattr(self, "_staging_preauthorized", False) and self._command_client is not None:
+            logger.info("Pre-authorized staging send — sending to assistant immediately")
+            self._staging_preauthorized = False
+            self._staging_active = False
+            self._detector.staging_active = False
+            self._cancel_staging_commit_timer()
+            self._send_text_as_command(text)
+            return
+
         self._enter_staging_mode(text)
 
     def stagingTranscriptionFailed_(self, payload: dict) -> None:
@@ -841,15 +856,21 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Error — try again")
 
+    _STAGING_COMMIT_DELAY_S = 0.4  # hold-through fast path timer
+
     def _enter_staging_mode(self, text: str) -> None:
         """Enter staging mode with the given text.
 
         Shows the staging overlay (reuses recovery overlay for now) and sets
         staging state. The user can then insert, send to assistant, re-record,
         or dismiss.
+
+        Starts the hold-through commit timer — if shift is still held when
+        the timer fires, the text auto-sends to the assistant.
         """
         self._staging_text = text
         self._staging_active = True
+        self._staging_preauthorized = False
         self._detector.staging_active = True
 
         # Reuse recovery overlay infrastructure
@@ -869,10 +890,47 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Staging — hold spacebar to re-record")
 
+        # Start hold-through commit timer
+        self._cancel_staging_commit_timer()
+        from Foundation import NSTimer
+        self._staging_commit_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._STAGING_COMMIT_DELAY_S, self, "stagingCommitTimerFired:", None, False
+        )
+
+    def _cancel_staging_commit_timer(self) -> None:
+        """Cancel the hold-through commit timer if active."""
+        timer = getattr(self, "_staging_commit_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._staging_commit_timer = None
+
+    def stagingCommitTimerFired_(self, timer) -> None:
+        """Hold-through timer expired — auto-send if shift is still held."""
+        self._staging_commit_timer = None
+        if not self._staging_active:
+            return
+
+        text = self._staging_text
+        if text and self._command_client is not None:
+            # Text is ready — send immediately
+            logger.info("Hold-through timer fired — auto-sending to assistant")
+            self._cancel_recovery()
+            self._staging_text = None
+            self._staging_active = False
+            self._detector.staging_active = False
+            self._send_text_as_command(text)
+        else:
+            # Text not ready yet (transcription still running) —
+            # pre-authorize the send for when it arrives
+            logger.info("Hold-through timer fired — pre-authorizing send")
+            self._staging_preauthorized = True
+
     def _dismiss_staging(self) -> None:
         """Dismiss staging overlay but keep staged text for potential re-entry."""
         self._staging_active = False
         self._detector.staging_active = False
+        self._cancel_staging_commit_timer()
+        self._staging_preauthorized = False
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
@@ -884,11 +942,11 @@ class SpokeAppDelegate(NSObject):
             self._dismiss_staging()
 
     def _on_staging_shift_released(self) -> None:
-        """Shift released after a staging gesture — used for hold-through fast path."""
-        # Slice 3 will use this for cancelling the hold-through commit timer.
-        # For now, just log it.
+        """Shift released after a staging gesture — cancel hold-through timer."""
         if self._staging_active:
-            logger.info("Shift released during staging")
+            logger.info("Shift released during staging — cancelling hold-through")
+            self._cancel_staging_commit_timer()
+            self._staging_preauthorized = False
 
     # ── command pathway ────────────────────────────────────
 
