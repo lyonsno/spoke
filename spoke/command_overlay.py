@@ -623,7 +623,7 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
-        pulse_alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
+        pulse_alpha_a = 0.52 + 0.325 * breath  # 130% brighter floor and ceiling
 
         # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
         # _tts_blend ramps toward 1.0 when TTS is active, toward 0.0 when not.
@@ -664,7 +664,7 @@ class CommandOverlay(NSObject):
         self._color_log_counter += 1
         if self._color_log_counter % 30 == 0:
             logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
-        s, v = 0.38, 0.81  # soft pastel — readable, not neon
+        s, v = 0.228, 0.81  # desaturated — legible, ambient, not neon
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c

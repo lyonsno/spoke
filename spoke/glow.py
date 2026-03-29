@@ -72,8 +72,8 @@ _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.20  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.52  # dim on light/white backgrounds
+_DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.28  # same on light — subtractive vignette handles contrast
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words

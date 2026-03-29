@@ -78,20 +78,16 @@ class TestTTSClient:
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
-    def test_cancel_sets_flag_and_aborts_stream(self, mock_load, mock_sd):
-        """cancel() sets the cancelled flag and aborts the active stream."""
+    def test_cancel_sets_flag_without_aborting(self, mock_load, mock_sd):
+        """cancel() sets the cancelled flag — playback loop handles fade-out."""
         fake_model = MagicMock()
         mock_load.return_value = fake_model
 
         client = self._make_client()
-        fake_stream = MagicMock()
-        client._stream = fake_stream
-
         client.cancel()
 
         assert client._cancelled is True
-        fake_stream.abort.assert_called_once()
-        # sd.stop() should NOT be called — only the dedicated stream is affected
+        # No stream.abort() — the playback loop writes a fade-out and exits
         mock_sd.stop.assert_not_called()
 
     @patch("spoke.tts.sd")
