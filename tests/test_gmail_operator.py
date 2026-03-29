@@ -139,3 +139,27 @@ class TestGmailOperator:
         with pytest.raises(GmailOperatorError, match="Gmail credentials are not configured"):
             GmailOperator().execute_query("starred_recruiter_mail")
 
+    def test_env_credentials_override_malformed_credentials_file(self, tmp_path, monkeypatch):
+        from spoke.gmail_operator import GmailOperator
+
+        creds_path = tmp_path / "gmail_credentials.json"
+        creds_path.write_text("{not-json", encoding="utf-8")
+        monkeypatch.setenv("SPOKE_GMAIL_CREDENTIALS_PATH", str(creds_path))
+        monkeypatch.setenv("SPOKE_GMAIL_CLIENT_ID", "client-id")
+        monkeypatch.setenv("SPOKE_GMAIL_REFRESH_TOKEN", "refresh-token")
+
+        fake_operator = GmailOperator()
+
+        with patch.object(fake_operator, "_refresh_access_token", return_value="access-token") as refresh_mock:
+            with patch.object(fake_operator, "_query_starred_recruiter_mail", return_value=[]):
+                result = fake_operator.execute_query("starred_recruiter_mail")
+
+        refresh_mock.assert_called_once_with(
+            {
+                "client_id": "client-id",
+                "client_secret": "",
+                "refresh_token": "refresh-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        )
+        assert result["matched_count"] == 0

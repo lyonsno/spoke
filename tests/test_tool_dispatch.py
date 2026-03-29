@@ -298,6 +298,17 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert parsed["error"] == "missing credentials"
 
+    def test_execute_query_gmail_handles_null_max_results(self):
+        mod = _import_tools()
+
+        result = mod.execute_tool(
+            name="query_gmail",
+            arguments={"mode": "starred_recruiter_mail", "max_results": None},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
+
 
 # ── Command client with tools ────────────────────────────────────
 

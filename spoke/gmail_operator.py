@@ -94,26 +94,39 @@ class GmailOperator:
         }
 
     def _load_credentials(self) -> dict[str, str]:
+        env_credentials = {
+            "client_id": os.environ.get("SPOKE_GMAIL_CLIENT_ID"),
+            "client_secret": os.environ.get("SPOKE_GMAIL_CLIENT_SECRET"),
+            "refresh_token": os.environ.get("SPOKE_GMAIL_REFRESH_TOKEN"),
+            "token_uri": os.environ.get("SPOKE_GMAIL_TOKEN_URI"),
+        }
+        if env_credentials["client_id"] and env_credentials["refresh_token"]:
+            return {
+                "client_id": env_credentials["client_id"],
+                "client_secret": env_credentials["client_secret"] or "",
+                "refresh_token": env_credentials["refresh_token"],
+                "token_uri": env_credentials["token_uri"] or _DEFAULT_TOKEN_URI,
+            }
+
         raw: dict[str, Any] = {}
-        try:
-            if self._credentials_path.exists():
+        if self._credentials_path.exists():
+            try:
                 raw = json.loads(self._credentials_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise GmailOperatorError(
-                f"failed to read Gmail credentials from {self._credentials_path}"
-            ) from exc
+            except Exception as exc:
+                raise GmailOperatorError(
+                    f"failed to read Gmail credentials from {self._credentials_path}"
+                ) from exc
 
         nested = raw.get("installed") or raw.get("web") or {}
         credentials = {
-            "client_id": os.environ.get("SPOKE_GMAIL_CLIENT_ID")
+            "client_id": env_credentials["client_id"]
             or raw.get("client_id")
             or nested.get("client_id"),
-            "client_secret": os.environ.get("SPOKE_GMAIL_CLIENT_SECRET")
+            "client_secret": env_credentials["client_secret"]
             or raw.get("client_secret")
             or nested.get("client_secret"),
-            "refresh_token": os.environ.get("SPOKE_GMAIL_REFRESH_TOKEN")
-            or raw.get("refresh_token"),
-            "token_uri": os.environ.get("SPOKE_GMAIL_TOKEN_URI")
+            "refresh_token": env_credentials["refresh_token"] or raw.get("refresh_token"),
+            "token_uri": env_credentials["token_uri"]
             or raw.get("token_uri")
             or nested.get("token_uri")
             or _DEFAULT_TOKEN_URI,

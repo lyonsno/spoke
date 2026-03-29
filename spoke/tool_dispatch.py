@@ -216,11 +216,12 @@ def _execute_query_gmail(arguments: dict) -> str:
     mode = arguments.get("mode", "")
     max_results = arguments.get("max_results", 5)
     try:
+        normalized_max_results = int(max_results)
         operator = GmailOperator()
         return json.dumps(
-            operator.execute_query(mode, max_results=int(max_results))
+            operator.execute_query(mode, max_results=normalized_max_results)
         )
-    except (ValueError, GmailOperatorError) as exc:
+    except (TypeError, ValueError, GmailOperatorError) as exc:
         return json.dumps({"error": str(exc)})
 
 
