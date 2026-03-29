@@ -12,6 +12,11 @@ def _script_text() -> str:
     return script.read_text()
 
 
+def _smoke_script_text() -> str:
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-smoke.sh"
+    return script.read_text()
+
+
 def _inline_launcher_source() -> str:
     text = _script_text()
     start = text.index("<<'PY'\n") + len("<<'PY'\n")
@@ -73,6 +78,12 @@ def test_launch_script_supports_configured_dev_target():
     assert 'DEV_TARGET_FILE="${HOME}/.config/spoke/dev-target"' in text
     assert 'TARGET_SOURCE="~/.config/spoke/dev-target"' in text
     assert 'Launching Spoke from %s (%s)' in text
+
+
+def test_launch_scripts_preserve_spaces_in_target_paths():
+    """Configured launcher targets should trim only the trailing newline, not interior spaces."""
+    assert 'CONFIGURED_REPO_ROOT="$(tr -d \'[:space:]\' < "$DEV_TARGET_FILE")"' not in _script_text()
+    assert 'REPO_ROOT="$(cat "$SMOKE_TARGET_FILE" | tr -d \'[:space:]\')"' not in _smoke_script_text()
 
 
 def test_launch_script_logs_preflight_kill_diagnostics():
@@ -260,6 +271,46 @@ def test_launch_script_prefers_configured_dev_target(tmp_path):
         time.sleep(0.02)
     else:
         raise AssertionError("expected configured dev target output to reach launch log")
+
+    log_text = log_file.read_text()
+    assert f"Launching Spoke from {target_repo} (~/.config/spoke/dev-target)" in log_text
+
+
+def test_launch_script_preserves_spaces_in_configured_dev_target(tmp_path):
+    """Configured dev targets with spaces should launch successfully."""
+    target_repo = tmp_path / "target repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'spaced-target-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "spoke"
+    config_dir.mkdir(parents=True)
+    (config_dir / "dev-target").write_text(str(target_repo))
+
+    log_dir = home / "Library" / "Logs"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "spoke-dev-launch.log"
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-dev.sh"
+    result = subprocess.run(
+        [str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "spaced-target-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected spaced dev target output to reach launch log")
 
     log_text = log_file.read_text()
     assert f"Launching Spoke from {target_repo} (~/.config/spoke/dev-target)" in log_text

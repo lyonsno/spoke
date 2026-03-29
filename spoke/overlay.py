@@ -57,12 +57,19 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
+_TEXT_ALPHA_MAX_LIGHT = _TEXT_ALPHA_MAX + (1.0 - _TEXT_ALPHA_MAX) * 0.5
 _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
 _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
+
+# Adaptive compositing endpoints.
+_BG_COLOR_DARK = (0.1, 0.1, 0.12)
+_TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
+_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
+_TEXT_COLOR_LIGHT = (0.04, 0.04, 0.05)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -71,7 +78,8 @@ _GLOW_COLOR = _scale_color_saturation(
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
-_OUTER_GLOW_PEAK_TARGET = 0.70
+_INNER_GLOW_PEAK_TARGET = 0.50
+_OUTER_GLOW_PEAK_TARGET = 0.35
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -98,6 +106,18 @@ def _truncate_preview(text: str | None) -> str:
     if len(text) > _RECOVERY_PREVIEW_MAX_CHARS:
         return text[:_RECOVERY_PREVIEW_MAX_CHARS] + "…"
     return text
+
+
+def _lerp(start: float, end: float, t: float) -> float:
+    return start + (end - start) * t
+
+
+def _lerp_color(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    t: float,
+) -> tuple[float, float, float]:
+    return tuple(_lerp(s, e, t) for s, e in zip(start, end))
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
@@ -140,6 +160,10 @@ class TranscriptionOverlay(NSObject):
 
         # Text breathing — separate heavy smoothing so text doesn't flicker
         self._text_amplitude = 0.0
+
+        # Adaptive compositing defaults dark until we get a brightness sample.
+        self._brightness = 0.0
+        self._brightness_target = 0.0
 
         # Recovery mode state
         self._recovery_mode = False
@@ -328,9 +352,11 @@ class TranscriptionOverlay(NSObject):
             if self._scroll_view is not None:
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
+            t = getattr(self, "_brightness", 0.0)
+            br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
             self._content_view.layer().setBackgroundColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    0.1, 0.1, 0.12, _BG_ALPHA_MIN
+                    br, bg, bb, _BG_ALPHA_MIN
                 ).CGColor()
             )
         self._cancel_fade()
@@ -372,6 +398,12 @@ class TranscriptionOverlay(NSObject):
             interval, self, "fadeStep:", None, True
         )
         logger.info("Overlay show")
+
+    def set_brightness(self, brightness: float, immediate: bool = False) -> None:
+        """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
+        self._brightness_target = min(max(brightness, 0.0), 1.0)
+        if immediate:
+            self._brightness = self._brightness_target
 
     def hide(self) -> None:
         """Fade the overlay out smoothly."""
@@ -514,18 +546,30 @@ class TranscriptionOverlay(NSObject):
         else:
             self._text_amplitude *= _SMOOTH_DECAY
 
+        # Chase brightness target over roughly half a second at the live update cadence.
+        _BRIGHTNESS_CHASE = 0.08
+        target = getattr(self, "_brightness_target", 0.0)
+        current = getattr(self, "_brightness", 0.0)
+        if abs(target - current) > 0.001:
+            self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
+
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
-        text_alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        t = getattr(self, "_brightness", 0.0)
+        text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
+        text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
+        text_t = t ** 1.3
+        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
         )
 
-        # Darken background at saturation: 325% of base at full amplitude
+        # Darken/lighten the frosted panel as amplitude rises.
         bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_content_view') and self._content_view is not None:
             self._content_view.layer().setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
+                NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, bg_alpha).CGColor()
             )
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
@@ -558,7 +602,9 @@ class TranscriptionOverlay(NSObject):
             opacity *= scale
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(min(opacity * 1.4, 1.0))
+            self._inner_shadow.setShadowOpacity_(
+                min(opacity * 1.4, _INNER_GLOW_PEAK_TARGET)
+            )
         if hasattr(self, '_outer_glow_tight'):
             self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):

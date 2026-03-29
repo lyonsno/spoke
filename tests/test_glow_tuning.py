@@ -31,6 +31,9 @@ class TestGlowTuning:
         glow._glow_peak_target = mod._GLOW_PEAK_TARGET
         glow._dim_layer = MagicMock()
         glow._dim_layer.opacity.return_value = 0.0
+        glow._tray_pulse_timer = None
+        glow._tray_pulse_phase = mod._TRAY_GLOW_PHASE_OFFSET
+        glow._last_tray_pulse_at = 0.0
         return glow
 
     def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
@@ -64,6 +67,86 @@ class TestGlowTuning:
             assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
             assert light_base == pytest.approx(0.196)
             assert light_sat > dark_sat
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_tray_dim_is_halfway_between_recording_dim_and_idle(self, mock_pyobjc):
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            for brightness in (0.0, 0.35, 1.0):
+                assert mod._tray_dim_opacity_for_brightness(brightness) == pytest.approx(
+                    mod._dim_opacity_for_brightness(brightness) * 0.5
+                )
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_show_tray_dim_uses_half_strength_dimmer_and_glow(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            monkeypatch.setattr(mod, "_sample_screen_brightness", lambda screen: 0.6)
+            expected_base = mod._glow_style_for_brightness(0.6)[1]
+            expected_factor = mod._tray_glow_factor(mod._TRAY_GLOW_PHASE_OFFSET)
+
+            glow.show_tray_dim()
+
+            assert glow._tray_dim_only is True
+            glow._glow_layer.setOpacity_.assert_called_with(
+                pytest.approx(expected_base * expected_factor)
+            )
+            glow._dim_layer.setOpacity_.assert_called_with(
+                pytest.approx(mod._tray_dim_opacity_for_brightness(0.6))
+            )
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_brightness_resample_keeps_half_strength_tray_glow(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._tray_dim_only = True
+            glow._brightness = 0.2
+            monkeypatch.setattr(mod, "_sample_screen_brightness", lambda screen: 0.8)
+            expected_base = mod._glow_style_for_brightness(0.8)[1]
+            expected_factor = mod._tray_glow_factor(mod._TRAY_GLOW_PHASE_OFFSET)
+
+            glow.brightnessResample_(None)
+
+            glow._glow_layer.setOpacity_.assert_called_with(
+                pytest.approx(expected_base * expected_factor)
+            )
+            glow._dim_layer.setOpacity_.assert_called_with(
+                pytest.approx(mod._tray_dim_opacity_for_brightness(0.8))
+            )
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_tray_pulse_step_uses_assistant_breath_with_offset_phase(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._tray_dim_only = True
+            glow._glow_base_opacity = 0.2
+            glow._tray_pulse_phase = mod._TRAY_GLOW_PHASE_OFFSET
+            glow._last_tray_pulse_at = 10.0
+            monkeypatch.setattr(mod.time, "monotonic", lambda: 10.5)
+
+            glow.trayPulseStep_(None)
+
+            advanced_phase = mod._TRAY_GLOW_PHASE_OFFSET + 0.5 / mod._TRAY_GLOW_PULSE_PERIOD
+            expected_factor = mod._tray_glow_factor(advanced_phase)
+            glow._glow_layer.setOpacity_.assert_called_with(
+                pytest.approx(0.2 * expected_factor)
+            )
+            assert glow._tray_pulse_phase == pytest.approx(advanced_phase)
         finally:
             sys.modules.pop("spoke.glow", None)
 

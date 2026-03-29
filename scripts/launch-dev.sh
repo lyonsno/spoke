@@ -20,7 +20,7 @@ REPO_ROOT="$DEFAULT_REPO_ROOT"
 TARGET_SOURCE="script checkout"
 
 if [ -f "$DEV_TARGET_FILE" ]; then
-  CONFIGURED_REPO_ROOT="$(tr -d '[:space:]' < "$DEV_TARGET_FILE")"
+  IFS= read -r CONFIGURED_REPO_ROOT < "$DEV_TARGET_FILE"
   if [ -z "$CONFIGURED_REPO_ROOT" ] || [ ! -d "$CONFIGURED_REPO_ROOT" ]; then
     osascript -e "display notification \"Target gone: $CONFIGURED_REPO_ROOT\" with title \"Spoke Dev\" subtitle \"Set ~/.config/spoke/dev-target\"" 2>/dev/null
     afplay /System/Library/Sounds/Basso.aiff 2>/dev/null &

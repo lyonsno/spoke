@@ -49,6 +49,7 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
@@ -75,6 +76,23 @@ def _max_record_secs_for_ram(ram_gb: float) -> float | None:
     return None
 
 
+def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
+    """Return OMLX-friendly model ids discovered from a local model directory."""
+    if not model_dir.is_dir():
+        return []
+
+    model_ids: list[str] = []
+    for child in sorted(model_dir.iterdir(), key=lambda path: path.name.lower()):
+        if not child.is_dir():
+            continue
+        child_entries = list(child.iterdir())
+        if any(entry.is_file() for entry in child_entries):
+            model_ids.append(child.name)
+            continue
+        for grandchild in sorted(child_entries, key=lambda path: path.name.lower()):
+            if grandchild.is_dir():
+                model_ids.append(f"{child.name}/{grandchild.name}")
+    return model_ids
 # Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
 # Keep the 20s cap only for smaller local machines. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
@@ -339,7 +357,6 @@ class SpokeAppDelegate(NSObject):
         self._warmup_in_flight = False
         self._models_ready = True
         self._warm_error = None
-        self._hold_rejected_during_warmup = False
         logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
@@ -356,7 +373,6 @@ class SpokeAppDelegate(NSObject):
     def clientWarmupFailed_(self, _sender) -> None:
         self._warmup_in_flight = False
         self._models_ready = False
-        self._hold_rejected_during_warmup = False
         exc = self._warm_error or RuntimeError("Model warmup failed")
         self._refresh_startup_status()
         self._show_model_load_alert(exc)
@@ -463,8 +479,24 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.show()
         if self._overlay is not None:
+            if self._glow is not None:
+                self._overlay.set_brightness(
+                    getattr(self._glow, "_brightness", 0.0),
+                    immediate=True,
+                )
             self._overlay.show()
-        self._capture.start(amplitude_callback=self._on_amplitude)
+        try:
+            self._capture.start(amplitude_callback=self._on_amplitude)
+        except Exception:
+            logger.exception("Audio capture failed to start")
+            if self._glow is not None:
+                self._glow.hide()
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._menubar is not None:
+                self._menubar.set_recording(False)
+                self._menubar.set_status_text("Audio input error — try again")
+            return
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
@@ -516,6 +548,10 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
+            glow_brightness = getattr(self._glow, "_brightness", 0.0)
+            if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
+                self._overlay.set_brightness(glow_brightness)
+            self._sync_command_overlay_brightness()
             # Text breathing: glow's smoothed amplitude, scaled independently
             self._overlay.update_text_amplitude(
                 min(self._glow._smoothed_amplitude * 18.0, 1.0)
@@ -903,6 +939,7 @@ class SpokeAppDelegate(NSObject):
                 last_utterance, last_response = history[-1]
                 logger.info("Recalling last response: %r", last_utterance[:50])
                 if self._command_overlay is not None:
+                    self._sync_command_overlay_brightness(immediate=True)
                     self._command_overlay.show()
                     self._command_overlay.set_utterance(last_utterance)
                     for ch in last_response:
@@ -915,6 +952,14 @@ class SpokeAppDelegate(NSObject):
         logger.info("No history to recall")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _sync_command_overlay_brightness(self, immediate: bool = False) -> None:
+        if self._command_overlay is None or self._glow is None:
+            return
+        self._command_overlay.set_brightness(
+            getattr(self._glow, "_brightness", 0.0),
+            immediate=immediate,
+        )
 
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
@@ -1018,7 +1063,10 @@ class SpokeAppDelegate(NSObject):
         self._detector.tray_active = True
 
         if self._glow is not None:
-            self._glow.hide()
+            if hasattr(self._glow, "show_tray_dim"):
+                self._glow.show_tray_dim()
+            else:
+                self._glow.hide()
 
         self._show_tray_current()
 
@@ -1044,6 +1092,8 @@ class SpokeAppDelegate(NSObject):
         """Dismiss the tray overlay. Stack is preserved for re-entry."""
         self._tray_active = False
         self._detector.tray_active = False
+        if self._glow is not None:
+            self._glow.hide()
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
@@ -1127,6 +1177,8 @@ class SpokeAppDelegate(NSObject):
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
 
+        if self._glow is not None:
+            self._glow.hide()
         self._cancel_recovery()
         if self._overlay is not None:
             self._overlay.hide()
@@ -1169,6 +1221,8 @@ class SpokeAppDelegate(NSObject):
 
         self._tray_active = False
         self._detector.tray_active = False
+        if self._glow is not None:
+            self._glow.hide()
         self._cancel_recovery()
 
         if self._command_client is not None:
@@ -1305,6 +1359,7 @@ class SpokeAppDelegate(NSObject):
             self._overlay.hide()
         # Show the command overlay with the utterance as context
         if self._command_overlay is not None:
+            self._sync_command_overlay_brightness(immediate=True)
             self._command_overlay.show()
             self._command_overlay.set_utterance(utterance)
         self._command_first_token = True
@@ -1384,6 +1439,7 @@ class SpokeAppDelegate(NSObject):
         # Show the error in the command overlay like a response
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
+                self._sync_command_overlay_brightness(immediate=True)
                 self._command_overlay.show()
             self._command_overlay.append_token("couldn't reach the model — try again in a moment")
             self._command_overlay.finish()
@@ -1497,6 +1553,10 @@ class SpokeAppDelegate(NSObject):
             or os.environ.get("SPOKE_WHISPER_MODEL")
             or self._default_transcription_model(),
         )
+        current_preview, current_transcription = self._sanitize_model_ids(
+            current_preview,
+            current_transcription,
+        )
         self._apply_model_selection(
             preview_model=current_preview if model_id is None else model_id,
             transcription_model=current_transcription if model_id is None else model_id,
@@ -1505,17 +1565,23 @@ class SpokeAppDelegate(NSObject):
     def _handle_model_menu_action(self, selection):
         """Menu callback for preview/transcription role-specific model choices."""
         if selection is None:
+            current_preview = getattr(
+                self, "_preview_model_id", _DEFAULT_PREVIEW_MODEL
+            )
+            current_transcription = getattr(
+                self, "_transcription_model_id", self._default_transcription_model()
+            )
+            current_preview, current_transcription = self._sanitize_model_ids(
+                current_preview,
+                current_transcription,
+            )
             state = {
                 "transcription": {
-                    "selected": getattr(
-                        self, "_transcription_model_id", self._default_transcription_model()
-                    ),
+                    "selected": current_transcription,
                     "models": self._select_model(None),
                 },
                 "preview": {
-                    "selected": getattr(
-                        self, "_preview_model_id", _DEFAULT_PREVIEW_MODEL
-                    ),
+                    "selected": current_preview,
                     "models": self._select_model(None),
                 },
             }
@@ -1586,6 +1652,10 @@ class SpokeAppDelegate(NSObject):
             os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or os.environ.get("SPOKE_WHISPER_MODEL")
             or self._default_transcription_model(),
+        )
+        current_preview, current_transcription = self._sanitize_model_ids(
+            current_preview,
+            current_transcription,
         )
         preview_model = current_preview
         transcription_model = current_transcription
@@ -1667,21 +1737,70 @@ class SpokeAppDelegate(NSObject):
             return _DEFAULT_TRANSCRIPTION_MODEL
         return _DEFAULT_PREVIEW_MODEL
 
+    def _fallback_model_for_role(self, role: str) -> str:
+        if role == "preview":
+            return _DEFAULT_PREVIEW_MODEL
+        return self._default_transcription_model()
+
+    def _sanitize_model_id(self, model_id: str, *, role: str) -> str:
+        if self._model_allowed(model_id):
+            return model_id
+        fallback = self._fallback_model_for_role(role)
+        logger.warning(
+            "%s model %s not available on this machine (%.0fGB RAM) — falling back to %s",
+            role.title(),
+            model_id,
+            _RAM_GB,
+            fallback,
+        )
+        return fallback
+
+    def _sanitize_model_ids(
+        self, preview_model: str, transcription_model: str
+    ) -> tuple[str, str]:
+        return (
+            self._sanitize_model_id(preview_model, role="preview"),
+            self._sanitize_model_id(transcription_model, role="transcription"),
+        )
+
     def _resolve_model_ids(self) -> tuple[str, str]:
         prefs = self._load_model_preferences()
         legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
-        preview_model = (
+        raw_preview_model = (
             os.environ.get("SPOKE_PREVIEW_MODEL")
             or prefs.get("preview_model")
             or legacy_model
             or _DEFAULT_PREVIEW_MODEL
         )
-        transcription_model = (
+        raw_transcription_model = (
             os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or prefs.get("transcription_model")
             or legacy_model
             or self._default_transcription_model()
         )
+        preview_model, transcription_model = self._sanitize_model_ids(
+            raw_preview_model,
+            raw_transcription_model,
+        )
+        if (
+            not os.environ.get("SPOKE_PREVIEW_MODEL")
+            and not os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            and not legacy_model
+            and (
+                prefs.get("preview_model") is not None
+                or prefs.get("transcription_model") is not None
+            )
+            and (
+                preview_model != raw_preview_model
+                or transcription_model != raw_transcription_model
+            )
+        ):
+            logger.info(
+                "Repairing unsupported saved model preferences: preview=%s, transcription=%s",
+                preview_model,
+                transcription_model,
+            )
+            self._save_model_preferences(preview_model, transcription_model)
         return preview_model, transcription_model
 
     def _resolve_local_whisper_settings(self) -> tuple[float | None, bool]:
@@ -1810,6 +1929,11 @@ class SpokeAppDelegate(NSObject):
                 model_ids = self._command_client.list_models()
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
+        local_model_dir = Path(
+            os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+        ).expanduser()
+        local_model_ids = _iter_local_command_model_ids(local_model_dir)
+        model_ids.extend(local_model_ids)
         if selected_model and selected_model not in model_ids:
             model_ids.insert(0, selected_model)
         seen: set[str] = set()

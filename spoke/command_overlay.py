@@ -67,6 +67,54 @@ _PULSE_HZ = 30.0  # timer frequency for pulse animation
 _OUTER_FEATHER = 40.0
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
+_BRIGHTNESS_CHASE = 0.08
+
+# Adaptive compositing for command output.
+_BG_COLOR_DARK = (0.1, 0.1, 0.12)
+_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
+_USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
+_USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
+_RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
+_THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
+_THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
+
+
+def _clamp01(value: float) -> float:
+    return min(max(value, 0.0), 1.0)
+
+
+def _lerp(start: float, end: float, t: float) -> float:
+    return start + (end - start) * t
+
+
+def _lerp_color(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    t: float,
+) -> tuple[float, float, float]:
+    return tuple(_lerp(s, e, t) for s, e in zip(start, end))
+
+
+def _background_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    return _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, _clamp01(brightness))
+
+
+def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    return _lerp_color(_USER_TEXT_COLOR_DARK, _USER_TEXT_COLOR_LIGHT, _clamp01(brightness))
+
+
+def _response_color_for_brightness(
+    color: tuple[float, float, float],
+    brightness: float,
+) -> tuple[float, float, float]:
+    # Keep the hue-rotating identity, but bias toward a dark endpoint on
+    # bright screens so the response remains readable.
+    t = _clamp01(brightness) ** 1.15
+    return _lerp_color(color, _RESPONSE_TEXT_LIGHT_BG_TARGET, t)
+
+
+def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    return _lerp_color(_THINKING_CUTOUT_DARK, _THINKING_CUTOUT_LIGHT, _clamp01(brightness))
 
 
 class CommandOverlay(NSObject):
@@ -117,6 +165,10 @@ class CommandOverlay(NSObject):
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
 
+        # Adaptive compositing defaults dark until we sample the screen.
+        self._brightness = 0.0
+        self._brightness_target = 0.0
+
         return self
 
     def setup(self) -> None:
@@ -154,8 +206,9 @@ class CommandOverlay(NSObject):
         content.setWantsLayer_(True)
         content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         content.layer().setMasksToBounds_(True)
+        bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
         content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA).CGColor()
+            NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
         )
 
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -278,6 +331,7 @@ class CommandOverlay(NSObject):
 
         self._window.setContentView_(wrapper)
         self._window.setAlphaValue_(0.0)
+        self._apply_surface_theme()
 
         logger.info("Command overlay created")
 
@@ -315,6 +369,7 @@ class CommandOverlay(NSObject):
         self._scroll_view.setFrame_(
             NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         )
+        self._apply_surface_theme()
 
         self._window.orderFrontRegardless()
 
@@ -339,6 +394,13 @@ class CommandOverlay(NSObject):
 
         # Start thinking timer (glowing number mode)
         self._start_thinking_timer()
+
+    def set_brightness(self, brightness: float, immediate: bool = False) -> None:
+        """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
+        self._brightness_target = _clamp01(brightness)
+        if immediate:
+            self._brightness = self._brightness_target
+            self._apply_surface_theme()
 
     def cancel_dismiss(self) -> None:
         """Pseudo-haptic dismiss: 250ms hold at bright → 500ms fade off.
@@ -407,15 +469,16 @@ class CommandOverlay(NSObject):
             NSShadowAttributeName,
             NSShadow,
         )
+        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.4),
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
             (0, len(text)),
         )
         glow = NSShadow.alloc().init()
         glow.setShadowColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.15)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
         )
         glow.setShadowOffset_((0, 0))
         glow.setShadowBlurRadius_(3.0)
@@ -485,6 +548,7 @@ class CommandOverlay(NSObject):
             NSShadow,
         )
         r, g, b = self._current_hue_rgb()
+        r, g, b = _response_color_for_brightness((r, g, b), self._brightness)
         frag = NSMutableAttributedString.alloc().initWithString_(token)
         response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             r, g, b, _TEXT_ALPHA_MAX
@@ -614,6 +678,13 @@ class CommandOverlay(NSObject):
             return
         dt = 1.0 / _PULSE_HZ
 
+        target = getattr(self, "_brightness_target", 0.0)
+        current = getattr(self, "_brightness", 0.0)
+        if abs(target - current) > 0.001:
+            self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
+        t = getattr(self, "_brightness", 0.0)
+        self._apply_surface_theme()
+
         # Advance phases
         self._pulse_phase_asst += dt / _PULSE_PERIOD_ASST
         if self._pulse_phase_asst > 1.0:
@@ -685,6 +756,7 @@ class CommandOverlay(NSObject):
             r, g, b = x + m, m, c + m
         else:
             r, g, b = c + m, m, x + m
+        response_r, response_g, response_b = _response_color_for_brightness((r, g, b), t)
 
         # Update text colors per-range
         if self._text_view is not None:
@@ -693,31 +765,37 @@ class CommandOverlay(NSObject):
             total_len = ts.length() if hasattr(ts, 'length') else 0
             if total_len > 0 and self._utterance_text:
                 utt_len = min(len(self._utterance_text), total_len)
-                # User text: white with blue tint, breathing
+                # User text keeps the adaptive light/dark base, then breathes subtly.
                 try:
-                    ur = 0.85 + 0.15 * pulse_u
-                    ug = 0.9 + 0.1 * pulse_u
+                    user_base = _user_text_color_for_brightness(t)
+                    ur = _lerp(user_base[0], 1.0, 0.08 * pulse_u)
+                    ug = _lerp(user_base[1], 1.0, 0.06 * pulse_u)
+                    ub = _lerp(user_base[2], 1.0, 0.04 * pulse_u)
                     ts.addAttribute_value_range_(
                         _FG_pulse,
-                        NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, 1.0, utt_alpha),
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, ub, utt_alpha),
                         (0, utt_len),
                     )
                 except Exception:
                     pass
-                # Response text: current hue color
+                # Response text stays hue-rotating, but darkens on bright screens.
                 resp_start = utt_len + 2
                 if resp_start < total_len:
                     try:
                         ts.addAttribute_value_range_(
                             _FG_pulse,
-                            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a),
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                response_r, response_g, response_b, alpha_a
+                            ),
                             (resp_start, total_len - resp_start),
                         )
                     except Exception:
                         pass
             elif total_len > 0:
                 self._text_view.setTextColor_(
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a)
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                        response_r, response_g, response_b, alpha_a
+                    )
                 )
 
         # Pulse the glow with assistant phase oscillating color
@@ -802,12 +880,7 @@ class CommandOverlay(NSObject):
         signals that the model has transitioned from thinking to speaking.
         """
         self._thinking_inverted = True
-        if self._thinking_label is not None:
-            # Cutout mode: dark text that punches through the glow
-            # Using very low alpha dark color to create the negative-space effect
-            self._thinking_label.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0.05, 0.05, 0.06, 0.7)
-            )
+        self._apply_thinking_label_theme()
 
     def _stop_thinking_timer(self) -> None:
         """Stop and fade the thinking counter."""
@@ -858,3 +931,27 @@ class CommandOverlay(NSObject):
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
             logger.debug("Command overlay layout update failed", exc_info=True)
+
+    def _apply_surface_theme(self) -> None:
+        if self._content_view is None:
+            return
+        bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
+        self._content_view.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
+        )
+        self._apply_thinking_label_theme()
+
+    def _apply_thinking_label_theme(self) -> None:
+        if self._thinking_label is None or self._thinking_label.isHidden():
+            return
+        if self._thinking_inverted:
+            cut_r, cut_g, cut_b = _thinking_cutout_color_for_brightness(self._brightness)
+            self._thinking_label.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(cut_r, cut_g, cut_b, 0.7)
+            )
+            return
+        self._thinking_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.7
+            )
+        )

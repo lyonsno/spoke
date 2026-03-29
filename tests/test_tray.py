@@ -121,6 +121,16 @@ class TestTrayStack:
         assert d._tray_stack == ["hello world"]
         assert d._tray_index == 0
         assert d._tray_active is True
+        d._glow.show_tray_dim.assert_called_once()
+
+    def test_dismiss_tray_hides_tray_dim(self, main_module, monkeypatch):
+        """Leaving the tray should release the half-strength dimmer."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_active = True
+
+        d._dismiss_tray()
+
+        d._glow.hide.assert_called_once()
 
     def test_multiple_entries_stack(self, main_module, monkeypatch):
         """Multiple tray entries should stack with most recent on top."""

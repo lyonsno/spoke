@@ -20,7 +20,7 @@ if [ ! -f "$SMOKE_TARGET_FILE" ]; then
   exit 0
 fi
 
-REPO_ROOT="$(cat "$SMOKE_TARGET_FILE" | tr -d '[:space:]')"
+IFS= read -r REPO_ROOT < "$SMOKE_TARGET_FILE"
 
 if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ]; then
   osascript -e "display notification \"Target gone: $REPO_ROOT\" with title \"Spoke Smoke\" subtitle \"Worktree may have been cleaned up\"" 2>/dev/null

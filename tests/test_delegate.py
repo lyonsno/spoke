@@ -7,7 +7,7 @@ generation-based stale result rejection, and env var validation.
 import os
 import json
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 def _make_delegate(main_module, monkeypatch):
@@ -61,6 +61,19 @@ class TestHoldCallbacks:
 
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
+
+    def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.start.side_effect = RuntimeError("audio dead")
+
+        d._on_hold_start()
+
+        d._glow.hide.assert_called_once_with()
+        d._overlay.hide.assert_called_once_with()
+        d._menubar.set_recording.assert_any_call(True)
+        d._menubar.set_recording.assert_any_call(False)
+        d._menubar.set_status_text.assert_called_with("Audio input error — try again")
+        assert d._preview_active is False
 
     def test_hold_end_stops_capture_and_spawns_thread(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -962,6 +975,57 @@ class TestDualModelConfiguration:
         assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
         mock_execv.assert_called_once()
 
+    def test_discover_command_models_merges_server_and_local_inventory(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Assistant discovery should include local LM Studio models alongside /v1/models."""
+        model_root = tmp_path / "models"
+        (model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit").mkdir(
+            parents=True
+        )
+        (model_root / "unsloth" / "Qwen3-4B-Instruct-2507-GGUF").mkdir(parents=True)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.list_models.return_value = ["qwen3p5-35B-A3B", "qwen3-14b"]
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                True,
+            ),
+            (
+                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+                True,
+            ),
+        ]
+
+    def test_discover_command_models_keeps_selected_model_when_server_is_unavailable(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Selected assistant model should stay visible even if only local inventory is available."""
+        model_root = tmp_path / "models"
+        (model_root / "mlx-community" / "Qwen3-0.6B-8bit").mkdir(parents=True)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.list_models.side_effect = RuntimeError("offline")
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("mlx-community/Qwen3-0.6B-8bit", "mlx-community/Qwen3-0.6B-8bit", True),
+        ]
+
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):
@@ -1080,6 +1144,42 @@ class TestDualModelConfiguration:
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
 
+    def test_init_falls_back_from_unsupported_persisted_transcription_model(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Unsupported saved transcription models should not abort startup."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "preview_model": "mlx-community/whisper-tiny.en-mlx",\n'
+            '  "transcription_model": "mlx-community/whisper-large-v3-turbo"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._transcription_model_id == "mlx-community/whisper-medium.en-mlx-8bit"
+        assert d._preview_model_id == "mlx-community/whisper-tiny.en-mlx"
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx-8bit"
+
     def test_init_loads_persisted_command_model_when_env_var_absent(
         self, main_module, monkeypatch
     ):
@@ -1132,6 +1232,21 @@ class TestDualModelConfiguration:
         MockCommand.assert_called_once_with(model="qwen3-14b")
         command_client.list_models.assert_not_called()
         assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
+
+    def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
+        self, main_module, monkeypatch
+    ):
+        """Menu state should not advertise an unsupported current selection."""
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+        d._preview_model_id = "mlx-community/whisper-tiny.en-mlx"
+        d._transcription_model_id = "mlx-community/whisper-large-v3-turbo"
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription"]["selected"] == "mlx-community/whisper-medium.en-mlx-8bit"
+        transcription_ids = [model_id for model_id, _label, _enabled in model_state["transcription"]["models"]]
+        assert "mlx-community/whisper-large-v3-turbo" not in transcription_ids
 
     def test_switching_away_from_qwen_persists_models_across_relaunch(
         self, main_module, monkeypatch, tmp_path
@@ -1557,6 +1672,45 @@ class TestWarmupHoldGuard:
             "Model load failed.\nChoose another model from the menu."
         )
 
+    def test_hold_end_after_warmup_success_still_ignores_rejected_hold(
+        self, main_module, monkeypatch
+    ):
+        """A hold that began during warmup stays invalid even if warmup finishes before release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+
+        d._models_ready = False
+        d._warm_error = None
+        d._on_hold_start()
+        d.clientWarmupSucceeded_(None)
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._menubar.set_recording.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Ready — hold spacebar"
+        )
+
+    def test_hold_end_after_warmup_failure_transition_still_ignores_rejected_hold(
+        self, main_module, monkeypatch
+    ):
+        """A rejected hold should not mutate UI state after warmup flips into failure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._show_model_load_alert = MagicMock()
+
+        d._models_ready = False
+        d._warm_error = None
+        d._on_hold_start()
+        d._warm_error = RuntimeError("warm failed")
+        d.clientWarmupFailed_(None)
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Model load failed — choose another model"
+        )
+
 
 class TestEnvValidation:
     """Test environment variable validation in SpokeAppDelegate.init."""
@@ -1713,6 +1867,18 @@ class TestRecordingCap:
         d._detector.force_end.assert_not_called()
         assert d._cap_fired is False
 
+    def test_amplitude_update_syncs_command_overlay_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._glow._brightness = 0.61
+        self._setup_glow_mock(d)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        d._command_overlay.set_brightness.assert_called_with(0.61, immediate=False)
+
 
 class TestCommandTranscribeWorker:
     """Test _command_transcribe_worker branching and dispatch."""
@@ -1866,6 +2032,22 @@ class TestCommandCallbacks:
         d._overlay.hide.assert_called()
         d._command_overlay.show.assert_called()
         d._command_overlay.set_utterance.assert_called_with("open file")
+
+    def test_command_utterance_ready_primes_command_overlay_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._glow._brightness = 0.73
+        d._transcription_token = 1
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
+
+        assert d._command_overlay.method_calls[:3] == [
+            call.set_brightness(0.73, immediate=True),
+            call.show(),
+            call.set_utterance("open file"),
+        ]
 
     def test_command_utterance_ready_stale_token_ignored(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

@@ -9,6 +9,8 @@ import importlib
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 
 def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
@@ -18,8 +20,11 @@ def _make_overlay(mock_pyobjc):
     overlay._window = MagicMock()
     overlay._window.alphaValue.return_value = 1.0
     overlay._content_view = MagicMock()
+    overlay._content_view.layer.return_value = MagicMock()
     overlay._scroll_view = MagicMock()
     overlay._text_view = MagicMock()
+    overlay._text_view.textStorage.return_value = MagicMock()
+    overlay._text_view.textStorage.return_value.length.return_value = 0
     overlay._thinking_label = MagicMock()
     overlay._thinking_label.isHidden.return_value = False
     overlay._screen = MagicMock()
@@ -44,6 +49,14 @@ def _make_overlay(mock_pyobjc):
     overlay._pulse_phase_user = 0.0
     overlay._color_phase = 0.0
     overlay._color_velocity_phase = 0.0
+    overlay._tts_amplitude = 0.0
+    overlay._tts_active = False
+    overlay._tts_blend = 0.0
+    overlay._brightness = 0.0
+    overlay._brightness_target = 0.0
+    overlay._inner_shadow = MagicMock()
+    overlay._outer_glow_tight = MagicMock()
+    overlay._outer_glow_wide = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     return overlay, mod
@@ -260,3 +273,55 @@ class TestLingerDone:
 
         overlay.lingerDone_(None)
         assert overlay._visible is False
+
+
+class TestAdaptiveCompositing:
+    """Test brightness-adaptive command overlay styling."""
+
+    def test_set_brightness_immediate_snaps(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay.set_brightness(0.8, immediate=True)
+
+        assert overlay._brightness == pytest.approx(0.8)
+        assert overlay._brightness_target == pytest.approx(0.8)
+
+    def test_show_uses_light_background_after_brightness_snap(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay.set_brightness(1.0, immediate=True)
+
+        mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+        overlay.show()
+
+        bg_call = None
+        for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list:
+            r, g, b, a = call[0]
+            if a == pytest.approx(mod._BG_ALPHA) and min(r, g, b) > 0.85:
+                bg_call = call[0]
+                break
+        assert bg_call is not None
+
+    def test_response_color_darkens_for_bright_backgrounds(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark = mod._response_color_for_brightness((0.82, 0.66, 0.94), 0.0)
+            light = mod._response_color_for_brightness((0.82, 0.66, 0.94), 1.0)
+
+            assert sum(light) < sum(dark)
+            assert light[2] == max(light)
+            assert max(light) < 0.12
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_user_text_turns_dark_on_light_backgrounds(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark = mod._user_text_color_for_brightness(0.0)
+            light = mod._user_text_color_for_brightness(1.0)
+
+            assert min(dark) > 0.9
+            assert max(light) < 0.17
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
