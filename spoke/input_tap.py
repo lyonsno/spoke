@@ -117,6 +117,7 @@ class SpacebarHoldDetector(NSObject):
         self._tray_shift_down = False
         self._tray_space_between = False
         self._shift_down_during_hold = False  # tracks shift press while spacebar held
+        self._tray_gesture_consumed = False  # True if a tray gesture already fired this hold
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
         self._tray_last_shift_space_up: float = 0.0
 
@@ -200,6 +201,8 @@ class SpacebarHoldDetector(NSObject):
             self._state = _State.WAITING
             self._shift_at_press = bool(flags & kCGEventFlagMaskShift)
             self._shift_latched = self._shift_at_press
+            self._tray_gesture_consumed = False
+            self._shift_down_during_hold = False
             self._start_hold_timer()
             return True  # suppress the space
 
@@ -224,6 +227,12 @@ class SpacebarHoldDetector(NSObject):
             # Released before hold threshold
             self._cancel_hold_timer()
             self._state = _State.IDLE
+            # If a tray gesture already fired during this hold (e.g. shift-tap
+            # navigate), swallow the spacebar release — don't insert or navigate.
+            if getattr(self, '_tray_gesture_consumed', False):
+                self._tray_gesture_consumed = False
+                self._shift_latched = False
+                return True
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
             enter_held = getattr(self, '_enter_held', False)
             self._shift_latched = False
@@ -257,6 +266,10 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
             self._state = _State.IDLE
+            if getattr(self, '_tray_gesture_consumed', False):
+                self._tray_gesture_consumed = False
+                self._shift_latched = False
+                return True
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
             enter_held = getattr(self, '_enter_held', False)
             self._shift_latched = False
@@ -418,6 +431,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 # Clear _shift_latched so the subsequent spacebar release doesn't
                 # also see shift_held=True and fire navigate down.
                 det._shift_latched = False
+                det._tray_gesture_consumed = True
                 logger.info("Shift tapped during spacebar hold — navigate up")
                 on_tap = getattr(det, '_on_shift_tap_during_hold', None)
                 if on_tap is not None:
