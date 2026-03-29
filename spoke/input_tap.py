@@ -111,10 +111,12 @@ class SpacebarHoldDetector(NSObject):
         # tray navigation callbacks.
         self.tray_active = False
         self._on_shift_tap: Callable[[], None] | None = None
+        self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_enter_pressed: Callable[[], None] | None = None
         self._on_tray_delete: Callable[[], None] | None = None
         self._tray_shift_down = False
         self._tray_space_between = False
+        self._shift_down_during_hold = False  # tracks shift press while spacebar held
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
         self._tray_last_shift_space_up: float = 0.0
 
@@ -405,8 +407,20 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 if not det._shift_latched:
                     logger.info("Shift latched during %s", det._state)
                 det._shift_latched = True
+                # Track shift press during spacebar hold for tray navigate-up
+                if getattr(det, 'tray_active', False):
+                    det._shift_down_during_hold = True
+        elif not shift_now and det._state in (_State.WAITING, _State.RECORDING):
+            # Shift released while spacebar is still held
+            if getattr(det, 'tray_active', False) and getattr(det, '_shift_down_during_hold', False):
+                det._shift_down_during_hold = False
+                # Shift was tapped while spacebar held = navigate up (more recent)
+                logger.info("Shift tapped during spacebar hold — navigate up")
+                on_tap = getattr(det, '_on_shift_tap_during_hold', None)
+                if on_tap is not None:
+                    on_tap()
 
-        # Tray mode: track shift press/release for navigation gestures
+        # Tray mode: track shift press/release for dismiss gesture (IDLE state)
         if getattr(det, 'tray_active', False) and det._state == _State.IDLE:
             if shift_now and not getattr(det, '_tray_shift_down', False):
                 # Shift just pressed

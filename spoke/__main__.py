@@ -117,6 +117,7 @@ class SpokeAppDelegate(NSObject):
         )
         # Wire tray callbacks on the detector
         self._detector._on_shift_tap = self._on_tray_shift_tap
+        self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._menubar: MenuBarIcon | None = None
@@ -549,12 +550,9 @@ class SpokeAppDelegate(NSObject):
         if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
-                # Shift+space from tray = cycle to next entry.
-                # Wraps around when reaching the end of the stack.
-                # You enter the tray at the top (most recent), so the first
-                # gesture shows the next-oldest entry. Dismiss via shift-tap.
-                logger.info("Shift+space during tray — cycle")
-                self._tray_cycle()
+                # Shift held + release spacebar from tray = navigate down (older)
+                logger.info("Shift+space during tray — navigate down")
+                self._tray_navigate_down()
             elif tray_active:
                 # Spacebar from tray (tap or hold release) = insert
                 logger.info("Spacebar during tray — inserting text")
@@ -927,9 +925,15 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Ready — hold spacebar")
 
     def _on_tray_shift_tap(self) -> None:
-        """Shift tap (no spacebar between) during tray = navigate up / dismiss."""
+        """Shift tap (no spacebar) during tray = dismiss."""
         if self._tray_active:
-            logger.info("Shift tap during tray — navigate up")
+            logger.info("Shift tap during tray — dismiss")
+            self._dismiss_tray()
+
+    def _on_tray_navigate_up(self) -> None:
+        """Spacebar held + shift tapped during tray = navigate up (more recent)."""
+        if self._tray_active:
+            logger.info("Shift tap during hold — navigate up")
             self._tray_navigate_up()
 
     def _on_tray_enter_pressed(self) -> None:
