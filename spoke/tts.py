@@ -11,8 +11,6 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-import queue
-import re
 import threading
 import time
 from typing import Callable, Optional
@@ -28,7 +26,6 @@ _DEFAULT_TEMPERATURE = 0.5
 _DEFAULT_TOP_K = 50
 _DEFAULT_TOP_P = 0.95
 _AUDIO_TOGGLE_FADE_S = 0.5
-_QUEUE_MAXSIZE = 2
 _ABBREVIATION_SUFFIXES = (
     "dr.",
     "mr.",
@@ -333,76 +330,37 @@ class TTSClient:
             return
 
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
-        result_queue: queue.Queue[object] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
-        queue_done = object()
-
-        def _queue_put(item: object) -> bool:
-            while True:
-                if self._cancelled:
-                    return False
-                try:
-                    result_queue.put(item, timeout=0.05)
-                    return True
-                except queue.Full:
-                    continue
-
-        def _producer() -> None:
-            try:
-                for sentence in sentences:
-                    if self._cancelled:
-                        return
-                    with lock_ctx:
-                        self._ensure_model()
-                        if self._cancelled:
-                            return
-                        for result in self._model.generate(
-                            text=sentence,
-                            voice=self._voice,
-                            temperature=self._temperature,
-                            top_k=self._top_k,
-                            top_p=self._top_p,
-                        ):
-                            if self._cancelled:
-                                return
-                            if not _queue_put(result):
-                                return
-            except Exception as exc:
-                _queue_put(exc)
-            finally:
-                while True:
-                    try:
-                        result_queue.put(queue_done, timeout=0.05)
-                        break
-                    except queue.Full:
-                        if self._cancelled:
-                            break
-                        continue
-
         with self._speak_lock:
             if self._cancelled:
                 return
             with self._audio_fade_lock:
                 self._playback_active = True
-            producer = threading.Thread(target=_producer, daemon=True)
-            producer.start()
             try:
-                while True:
-                    try:
-                        item = result_queue.get(timeout=0.05)
-                    except queue.Empty:
-                        if not producer.is_alive():
-                            break
-                        continue
-                    if item is queue_done:
-                        break
-                    if isinstance(item, Exception):
-                        self._cancelled = True
-                        raise item
-                    self._play_result(item, amplitude_callback=amplitude_callback)
+                for sentence in sentences:
+                    if self._cancelled:
+                        return
+
+                    with lock_ctx:
+                        self._ensure_model()
+                        if self._cancelled:
+                            return
+                        results = list(
+                            self._model.generate(
+                                text=sentence,
+                                voice=self._voice,
+                                temperature=self._temperature,
+                                top_k=self._top_k,
+                                top_p=self._top_p,
+                            )
+                        )
+
+                    for result in results:
+                        if self._cancelled:
+                            return
+                        self._play_result(result, amplitude_callback=amplitude_callback)
             finally:
                 with self._audio_fade_lock:
                     self._playback_active = False
-                producer.join(timeout=1.0)
 
     def speak_async(
         self,

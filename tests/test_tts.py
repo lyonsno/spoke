@@ -230,17 +230,18 @@ class TestTTSClient:
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
     def test_speak_starts_playback_before_later_sentence_generation_finishes(self, mock_load, mock_sd):
-        """Sentence batching should let playback start while a later sentence is still generating."""
-        second_started = threading.Event()
-        release_second = threading.Event()
+        """Later sentence generation should wait until current playback has finished."""
         playback_started = threading.Event()
+        playback_finished = threading.Event()
+        release_playback = threading.Event()
 
         fake_model = MagicMock()
 
         def generate_side_effect(*, text, **kwargs):
             if text == "Second sentence.":
-                second_started.set()
-                assert release_second.wait(timeout=5), "second sentence was never released"
+                assert playback_finished.is_set(), (
+                    "second sentence generation started before first playback finished"
+                )
             return iter([_fake_result()])
 
         fake_model.generate.side_effect = generate_side_effect
@@ -250,6 +251,8 @@ class TestTTSClient:
 
         def write_side_effect(data):
             playback_started.set()
+            assert release_playback.wait(timeout=5), "first playback was never released"
+            playback_finished.set()
             for call_args in mock_sd.OutputStream.call_args_list:
                 cb = call_args[1].get("finished_callback")
                 if cb:
@@ -259,14 +262,18 @@ class TestTTSClient:
         mock_sd.OutputStream.return_value = fake_stream
 
         client = self._make_client()
-        thread = client.speak_async("First sentence. Second sentence.")
 
-        assert second_started.wait(timeout=5), "second sentence generation never started"
-        assert playback_started.wait(timeout=5), "playback did not start while second sentence was blocked"
+        def _release_once_playback_starts():
+            assert playback_started.wait(timeout=5), "playback never started"
+            release_playback.set()
 
-        release_second.set()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
+        releaser = threading.Thread(target=_release_once_playback_starts, daemon=True)
+        releaser.start()
+
+        client.speak("First sentence. Second sentence.")
+
+        releaser.join(timeout=5)
+        assert not releaser.is_alive()
 
     def test_toggle_audio_uses_500ms_eased_fade(self):
         """Audio toggle should fade toward the new target over 500ms instead of jumping."""
