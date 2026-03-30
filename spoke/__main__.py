@@ -4,10 +4,12 @@ Run with:  uv run spoke
     or:    uv run python -m spoke
 
 Configure via environment variables:
-    SPOKE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
-    SPOKE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
-    SPOKE_HOLD_MS        Hold threshold in ms (default: 200, must be > 0)
-    SPOKE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
+    SPOKE_WHISPER_URL          Sidecar server URL (optional — if unset, uses local MLX Whisper)
+    SPOKE_WHISPER_MODEL        Model name (default: mlx-community/whisper-large-v3-turbo)
+    SPOKE_HOLD_MS              Hold threshold in ms (default: 200, must be > 0)
+    SPOKE_RESTORE_DELAY_MS     Pasteboard restore delay in ms (default: 1000)
+    SPOKE_PARAKEET_MODEL_DIR   Path to FluidInference/parakeet-ctc-110m-coreml clone dir
+                               (enables Parakeet CoreML/ANE preview model in the menu)
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_cohere import LocalCohereClient
+from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient
 
@@ -1897,7 +1900,11 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
         ("CohereLabs/cohere-transcribe-03-2026", "Cohere Transcribe (4bit, ~1.5GB)"),
+        (_PARAKEET_MODEL_ID, "Parakeet CTC-110M (CoreML/ANE, preview only)"),
     ]
+
+    # Parakeet is preview-only: too rough for final transcription
+    _PREVIEW_ONLY_MODELS = frozenset({_PARAKEET_MODEL_ID})
 
     def _select_model(self, model_id):
         """Model picker. Pass None to get the menu list, or a model ID to switch."""
@@ -2178,6 +2185,15 @@ class SpokeAppDelegate(NSObject):
         return self._default_transcription_model()
 
     def _sanitize_model_id(self, model_id: str, *, role: str) -> str:
+        # Preview-only models (e.g. Parakeet) must not be used for transcription
+        if role == "transcription" and model_id in self._PREVIEW_ONLY_MODELS:
+            fallback = self._default_transcription_model()
+            logger.warning(
+                "Model %s is preview-only and cannot be used for transcription — falling back to %s",
+                model_id,
+                fallback,
+            )
+            return fallback
         if self._model_allowed(model_id):
             return model_id
         fallback = self._fallback_model_for_role(role)
@@ -2337,6 +2353,10 @@ class SpokeAppDelegate(NSObject):
         if whisper_url:
             logger.info("Using sidecar transcription: %s (%s)", whisper_url, model_id)
             return TranscriptionClient(base_url=whisper_url, model=model_id)
+        if model_id == _PARAKEET_MODEL_ID:
+            model_dir = self._resolve_parakeet_model_dir()
+            logger.info("Using Parakeet CoreML: %s", model_dir)
+            return ParakeetCoreMLClient(model_dir=model_dir)
         if model_id.startswith("CohereLabs/"):
             logger.info("Using Cohere Transcribe: %s", model_id)
             return LocalCohereClient(model=model_id)
@@ -2357,6 +2377,29 @@ class SpokeAppDelegate(NSObject):
                 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
             ),
         )
+
+    def _resolve_parakeet_model_dir(self) -> Path:
+        """Return the Parakeet CoreML model directory.
+
+        Checks SPOKE_PARAKEET_MODEL_DIR env var first, then the default HF
+        cache location (~/.cache/huggingface/hub/models--FluidInference--parakeet-ctc-110m-coreml/snapshots/).
+        Falls back to an empty path so the client can log a clear warning.
+        """
+        env_dir = os.environ.get("SPOKE_PARAKEET_MODEL_DIR", "")
+        if env_dir:
+            return Path(env_dir).expanduser()
+
+        # Try HF hub cache — look for the most recent snapshot
+        hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        snapshots = hf_cache / "models--FluidInference--parakeet-ctc-110m-coreml" / "snapshots"
+        if snapshots.is_dir():
+            candidates = sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            for candidate in candidates:
+                if (candidate / "AudioEncoder.mlmodelc").exists():
+                    return candidate
+
+        # No model found — return a path that will produce a clear warning
+        return Path("/nonexistent/parakeet-ctc-110m-coreml")
 
     def _discover_command_models(
         self, selected_model: str
@@ -2805,8 +2848,26 @@ class SpokeAppDelegate(NSObject):
 
     @staticmethod
     def _model_allowed(model_id: str) -> bool:
-        """Guard: whisper-large-v3-turbo requires >= 16GB RAM."""
+        """Guard: some models require specific hardware or installed files."""
         if "large-v3-turbo" in model_id and _RAM_GB < _MIN_RAM_GB_FOR_V3_TURBO:
+            return False
+        if model_id == _PARAKEET_MODEL_ID:
+            # Only show if the model files are present or the user has pointed us at them
+            env_dir = os.environ.get("SPOKE_PARAKEET_MODEL_DIR", "")
+            if env_dir and (Path(env_dir).expanduser() / "AudioEncoder.mlmodelc").exists():
+                return True
+            hf_snapshots = (
+                Path.home()
+                / ".cache"
+                / "huggingface"
+                / "hub"
+                / "models--FluidInference--parakeet-ctc-110m-coreml"
+                / "snapshots"
+            )
+            if hf_snapshots.is_dir():
+                return any(
+                    (s / "AudioEncoder.mlmodelc").exists() for s in hf_snapshots.iterdir()
+                )
             return False
         return True
 
