@@ -129,6 +129,7 @@ class SpacebarHoldDetector(NSObject):
         self._tray_shift_down = False
         self._tray_space_between = False
         self._idle_shift_down = False
+        self._idle_shift_interrupted = False
         self._shift_down_during_hold = False  # tracks shift press while spacebar held
         self._tray_gesture_consumed = False  # True if a tray gesture already fired this hold
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
@@ -204,6 +205,7 @@ class SpacebarHoldDetector(NSObject):
         self._pending_release_shift_held = False
         self.tray_active = False
         self._idle_shift_down = False
+        self._idle_shift_interrupted = False
         self._state = _State.IDLE
 
         global _active_detector  # noqa: PLW0603
@@ -507,6 +509,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                     on_enter()
                     return None  # suppress enter during tray
             # Enter passes through to the OS when tray is not active
+        if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
+            det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
@@ -520,6 +524,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key release
         if keycode == ENTER_KEYCODE:
             det._enter_held = False
+        if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
+            det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyUp space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
@@ -574,10 +580,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         elif det._state == _State.IDLE:
             if shift_now and not getattr(det, '_idle_shift_down', False):
                 det._idle_shift_down = True
+                det._idle_shift_interrupted = False
             elif not shift_now and getattr(det, '_idle_shift_down', False):
                 det._idle_shift_down = False
-                on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
-                if on_shift_tap_idle is not None:
-                    on_shift_tap_idle()
+                if not getattr(det, '_idle_shift_interrupted', False):
+                    on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
+                    if on_shift_tap_idle is not None:
+                        on_shift_tap_idle()
+                det._idle_shift_interrupted = False
 
     return event
