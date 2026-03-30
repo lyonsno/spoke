@@ -4,6 +4,7 @@ Tests the wiring between layers: hold callbacks, transcription lifecycle,
 generation-based stale result rejection, and env var validation.
 """
 
+import logging
 import os
 import json
 import time
@@ -2159,6 +2160,22 @@ class TestCommandCallbacks:
         d._command_overlay.invert_thinking_timer.assert_not_called()
         d._command_overlay.append_token.assert_called_with("more")
 
+    def test_command_token_invert_failure_still_appends_token(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.invert_thinking_timer.side_effect = RuntimeError("flip")
+        d._transcription_token = 1
+        d._command_first_token = True
+
+        with caplog.at_level(logging.ERROR):
+            d.commandToken_({"token": 1, "text": "first"})
+
+        d._command_overlay.append_token.assert_called_with("first")
+        assert d._command_first_token is False
+        assert "Command overlay failed to invert thinking timer" in caplog.text
+
     def test_command_complete_finishes_overlay(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()
@@ -2170,6 +2187,43 @@ class TestCommandCallbacks:
         assert d._transcribing is False
         d._command_overlay.finish.assert_called_once()
         d._glow.hide.assert_called()
+
+    def test_command_complete_finish_failure_still_starts_autoplay(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.finish.side_effect = RuntimeError("finish")
+        d._transcription_token = 1
+        d._transcribing = True
+        d._tts_client = MagicMock()
+
+        with caplog.at_level(logging.ERROR):
+            d.commandComplete_({"token": 1, "response": "Hello there"})
+
+        assert d._transcribing is False
+        d._tts_client.speak_async.assert_called_once()
+        d._command_overlay.tts_start.assert_called_once()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        assert "Command overlay finish failed" in caplog.text
+
+    def test_command_complete_autoplay_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+        d._tts_client = MagicMock()
+        d._tts_client.speak_async.side_effect = RuntimeError("tts launch")
+
+        with caplog.at_level(logging.ERROR):
+            d.commandComplete_({"token": 1, "response": "Hello there"})
+
+        assert d._transcribing is False
+        d._command_overlay.tts_stop.assert_called_once()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        assert "Command autoplay failed to start" in caplog.text
 
     def test_tool_executor_marks_tool_tts_usage(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -2197,6 +2251,47 @@ class TestCommandCallbacks:
         d._command_overlay.show.assert_called()
         d._command_overlay.append_token.assert_called()
         d._command_overlay.finish.assert_called()
+
+    def test_tts_amplitude_update_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.update_tts_amplitude.side_effect = RuntimeError("amp")
+
+        with caplog.at_level(logging.ERROR):
+            d.ttsAmplitudeUpdate_(0.5)
+
+        assert "Command overlay amplitude update failed" in caplog.text
+
+    def test_tts_finished_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.tts_stop.side_effect = RuntimeError("stop")
+
+        with caplog.at_level(logging.ERROR):
+            d.ttsFinished_(None)
+
+        assert "Command overlay TTS stop failed" in caplog.text
+
+    def test_command_failed_overlay_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._command_overlay.append_token.side_effect = RuntimeError("append")
+        d._transcription_token = 1
+        d._transcribing = True
+
+        with caplog.at_level(logging.ERROR):
+            d.commandFailed_({"token": 1, "error": "OMLX down"})
+
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called()
+        assert "Command overlay append failed during error presentation" in caplog.text
 
     def test_recall_last_response_shows_history(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
