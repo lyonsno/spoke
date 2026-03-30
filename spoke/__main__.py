@@ -39,6 +39,11 @@ from .focus_check import has_focused_text_input
 from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
+from .launch_targets import (
+    current_launch_target_id,
+    iter_launch_targets,
+    save_selected_launch_target,
+)
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
@@ -1761,6 +1766,9 @@ class SpokeAppDelegate(NSObject):
                     "models": self._select_model(None),
                 },
             }
+            launch_target = self._launch_target_menu_state()
+            if launch_target is not None:
+                state["launch_target"] = launch_target
             if self._command_client is not None:
                 state["assistant"] = {
                     "selected": getattr(self, "_command_model_id", None),
@@ -1832,6 +1840,8 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "assistant_backend":
             self._apply_command_backend_selection(model_id)
+        if role == "launch_target":
+            self._apply_launch_target_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -1863,6 +1873,63 @@ class SpokeAppDelegate(NSObject):
         else:
             transcription_model = model_id
         self._apply_model_selection(preview_model, transcription_model)
+
+    def _current_checkout_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _launch_target_menu_state(self) -> dict | None:
+        targets = iter_launch_targets()
+        if not targets:
+            return None
+        current_target = current_launch_target_id(self._current_checkout_root())
+        return {
+            "title": "Launch Target",
+            "selected": current_target,
+            "items": [
+                (target["id"], target["label"], target["enabled"]) for target in targets
+            ],
+        }
+
+    def _persist_launch_target_selection(self, target_id: str) -> bool:
+        return save_selected_launch_target(target_id)
+
+    def _invoke_launch_target_helper(self, target_id: str) -> bool:
+        helper_path = Path(__file__).resolve().parents[1] / "scripts" / "launch-target.sh"
+        if not helper_path.is_file():
+            logger.warning("Launch target helper is missing: %s", helper_path)
+            return False
+        import subprocess
+
+        subprocess.Popen(
+            ["/bin/bash", str(helper_path), target_id],
+            cwd=helper_path.parent.parent,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        return True
+
+    def _apply_launch_target_selection(self, target_id: str) -> None:
+        current_target = current_launch_target_id(self._current_checkout_root())
+        if not self._persist_launch_target_selection(target_id):
+            logger.warning(
+                "Skipping launch-target switch because %s could not be persisted",
+                target_id,
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save launch target")
+            return
+        if target_id == current_target:
+            return
+        logger.info("Switching launch target (handoff): %s -> %s", current_target, target_id)
+        if not self._invoke_launch_target_helper(target_id):
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't switch launch target")
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text(f"Switching to {target_id}…")
 
     def _apply_model_selection(self, preview_model: str, transcription_model: str) -> None:
         if not self._model_allowed(preview_model):
