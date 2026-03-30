@@ -357,6 +357,50 @@ def test_smoke_inline_launcher_skips_broken_pyenv_shim(tmp_path):
     assert "fallback-uv-started\n" in log_file.read_text()
 
 
+def test_smoke_inline_launcher_falls_back_to_path_uv_for_tts_runtime(tmp_path):
+    """If UV_BIN points nowhere but uv is on PATH, smoke launch should still
+    use the uv TTS runtime instead of falling back to repo python."""
+    repo_root = tmp_path / "repo"
+
+    python_exe = repo_root / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'venv-python-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    uv_dir = tmp_path / "bin"
+    uv_dir.mkdir()
+    uv_bin = uv_dir / "uv"
+    uv_bin.write_text("#!/bin/sh\nprintf 'uv-tts-started\\n'\n")
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "SPOKE_TTS_VOICE": "casual_female",
+            "UV_BIN": str(tmp_path / "missing-uv"),
+            "PATH": f"{uv_dir}:{os.environ.get('PATH', '')}",
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach smoke launch log")
+
+    log_text = log_file.read_text()
+    assert "uv-tts-started\n" in log_text
+    assert "venv-python-started\n" not in log_text
+    assert "--extra" in log_text
+    assert "tts" in log_text
+
+
 def test_launch_script_prefers_configured_dev_target(tmp_path):
     """A configured dev target should override the checkout that contains the script."""
     target_repo = tmp_path / "target-repo"
