@@ -640,8 +640,11 @@ class TestTrayAwareness:
         det._release_decision_timer = None
         det._tap = None
         det._tap_source = None
+        det._awaiting_space_release = False
+        det._latched_space_down = False
         det._shift_latched = False
         det._shift_at_press = False
+        det._shift_down_during_hold = False
         det._enter_held = False
         det._enter_latched = False
         det._pending_release_active = False
@@ -663,6 +666,35 @@ class TestTrayAwareness:
 
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
         assert det._forwarding is False
+
+    def test_tray_shift_hold_then_shift_release_stays_tray_native(
+        self, input_tap_module
+    ):
+        """Shift held before spacebar in tray should not fall into LATCHED on shift release."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+        mod._active_detector = det
+        event = MagicMock()
+
+        shift_flag = mod.kCGEventFlagMaskShift
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag) is True
+        det.holdTimerFired_(None)
+        on_start.assert_called_once()
+        assert det._state == mod._State.RECORDING
+
+        Quartz.CGEventGetFlags.return_value = 0
+        Quartz.CGEventGetIntegerValueField.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        assert det._state != mod._State.LATCHED
+
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
+        assert det._state == mod._State.IDLE
 
     def test_non_tray_quick_release_still_forwards_space(self, input_tap_module):
         """Regression: when NOT in tray, quick release should forward space."""
