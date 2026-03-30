@@ -213,6 +213,7 @@ class SpokeAppDelegate(NSObject):
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
         self._verify_paste_text: str | None = None
         self._verify_paste_attempt: int = 0
+        self._result_pending_inject = None
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
         self._recovery_text: str | None = None
         self._recovery_clipboard_state: str = "idle"
@@ -1605,12 +1606,6 @@ class SpokeAppDelegate(NSObject):
 
         # Second check also failed
         self._verify_paste_text = None
-        if not is_retry and has_focused_text_input():
-            logger.warning(
-                "Paste not verified by OCR after %d attempts, but a text field is still focused — treating as likely OCR false negative",
-                attempt + 1,
-            )
-            return
         if is_retry:
             # Retry from recovery failed — bounce the overlay back
             logger.warning("Recovery retry not verified by OCR — bouncing back")
@@ -1618,7 +1613,10 @@ class SpokeAppDelegate(NSObject):
             self._enter_recovery_mode(text)
         else:
             # Normal paste failed — enter recovery for the first time
-            logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+            logger.warning(
+                "Paste not verified by OCR after %d attempts — entering recovery",
+                attempt + 1,
+            )
             self._enter_recovery_mode(text)
 
     # ── helpers ─────────────────────────────────────────────
@@ -2282,10 +2280,24 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.order_out()
 
-        # Always attempt the paste immediately — the user perceives no delay.
         # Save clipboard state before inject_text overwrites it, in case we
         # need to enter recovery mode after OCR verification.
         self._pre_paste_clipboard = save_pasteboard()
+        # Give the target app a brief moment to refocus after the overlay
+        # disappears before we synthesize Cmd+V.
+        self._result_pending_inject = (text, status_text)
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.05, self, "resultInjectDelayed:", None, False
+        )
+
+    def resultInjectDelayed_(self, timer) -> None:
+        """Paste normal-path text after a short post-overlay refocus delay."""
+        pending = getattr(self, "_result_pending_inject", None)
+        self._result_pending_inject = None
+        if pending is None:
+            return
+        text, status_text = pending
 
         def _on_clipboard_restored():
             if self._menubar is not None:

@@ -2138,11 +2138,10 @@ class TestCommandCallbacks:
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
-    def test_inject_result_text_orders_out_overlay_before_focus_check(
+    def test_inject_result_text_orders_out_overlay_before_delayed_inject(
         self, main_module, monkeypatch
     ):
-        """Overlay should be ordered out (not faded) before the focus check
-        runs so the AX system sees the underlying text field, not the overlay."""
+        """Overlay should be ordered out before the delayed paste fires."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch.object(main_module, "inject_text"):

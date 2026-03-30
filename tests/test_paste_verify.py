@@ -1,13 +1,84 @@
 """Tests for post-paste OCR verification."""
 
+import builtins
 import importlib
+import logging
 import sys
+import types
 from unittest.mock import patch
 
 
 def _import_module():
     sys.modules.pop("spoke.paste_verify", None)
     return importlib.import_module("spoke.paste_verify")
+
+
+def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, error=None, lines=()):
+    class _FakeCandidate:
+        def __init__(self, text):
+            self._text = text
+
+        def string(self):
+            return self._text
+
+    class _FakeObservation:
+        def __init__(self, text):
+            self._text = text
+
+        def topCandidates_(self, count):
+            return [_FakeCandidate(self._text)]
+
+    observations = [_FakeObservation(line) for line in lines]
+
+    class _FakeRequest:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def init(self):
+            return self
+
+        def setRecognitionLevel_(self, level):
+            self.level = level
+
+        def setUsesLanguageCorrection_(self, enabled):
+            self.enabled = enabled
+
+        def results(self):
+            return observations
+
+    class _FakeHandler:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithCGImage_options_(self, cgimage, options):
+            self.cgimage = cgimage
+            self.options = options
+            return self
+
+        def performRequests_error_(self, requests, options):
+            return success, error
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Vision",
+        types.SimpleNamespace(
+            VNRecognizeTextRequest=_FakeRequest,
+            VNImageRequestHandler=_FakeHandler,
+            VNRequestTextRecognitionLevelFast="fast",
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "Quartz",
+        types.SimpleNamespace(
+            CGWindowListCreateImage=lambda *args: image,
+            kCGWindowListOptionOnScreenOnly=1,
+            kCGNullWindowID=0,
+            CGRectInfinite="infinite",
+        ),
+    )
 
 
 class TestTextAppearsOnScreen:
@@ -165,3 +236,36 @@ class TestTextAppearsOnScreen:
             "Please navigate to the authentication dashboard and check credentials",
             "chrome tabs authentication dashboard browser stuff"
         ) is True
+
+
+class TestCaptureScreenText:
+    def test_missing_vision_logs_warning(self, monkeypatch, caplog):
+        mod = _import_module()
+        real_import = builtins.__import__
+
+        def _import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "Vision":
+                raise ModuleNotFoundError("No module named 'Vision'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import)
+
+        with caplog.at_level(logging.WARNING):
+            assert mod.capture_screen_text() == ""
+
+        assert "Paste verify OCR unavailable" in caplog.text
+
+    def test_screen_capture_none_logs_warning(self, monkeypatch, caplog):
+        mod = _import_module()
+        _install_fake_ocr_modules(monkeypatch, image=None)
+
+        with caplog.at_level(logging.WARNING):
+            assert mod.capture_screen_text() == ""
+
+        assert "screen capture returned no image" in caplog.text
+
+    def test_success_returns_joined_text(self, monkeypatch):
+        mod = _import_module()
+        _install_fake_ocr_modules(monkeypatch, lines=("first line", "second line"))
+
+        assert mod.capture_screen_text() == "first line second line"
