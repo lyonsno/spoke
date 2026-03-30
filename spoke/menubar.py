@@ -203,22 +203,34 @@ class MenuBarIcon(NSObject):
 
         menu.addItem_(NSMenuItem.separatorItem())
 
-        # Model picker
+        added_menu_section = False
         if getattr(self, '_on_select_model', None) is not None:
             model_state = self._on_select_model(None)
             if isinstance(model_state, dict):
+                launch_target = model_state.get("launch_target")
+                if launch_target:
+                    menu.addItem_(
+                        self._build_choice_submenu_item(
+                            launch_target["title"],
+                            "launch_target",
+                            launch_target["selected"],
+                            launch_target["items"],
+                        )
+                    )
+                    added_menu_section = True
                 assistant = model_state.get("assistant")
                 transcription = model_state.get("transcription")
                 preview = model_state.get("preview")
                 if assistant:
                     menu.addItem_(
-                        self._build_model_submenu_item(
+                        self._build_choice_submenu_item(
                             "Assistant Model",
                             "assistant",
                             assistant["selected"],
                             assistant["models"],
                         )
                     )
+                    added_menu_section = True
                 command_backend = model_state.get("command_backend")
                 if command_backend:
                     menu.addItem_(
@@ -228,6 +240,7 @@ class MenuBarIcon(NSObject):
                             command_backend["items"],
                         )
                     )
+                    added_menu_section = True
                 command_endpoint = model_state.get("command_endpoint")
                 if command_endpoint:
                     menu.addItem_(self._build_info_item(command_endpoint["title"]))
@@ -236,16 +249,17 @@ class MenuBarIcon(NSObject):
                         menu.addItem_(self._build_info_item(note))
                 if transcription:
                     menu.addItem_(
-                        self._build_model_submenu_item(
+                        self._build_choice_submenu_item(
                             "Transcription",
                             "transcription",
                             transcription["selected"],
                             transcription["models"],
                         )
                     )
+                    added_menu_section = True
                 if preview:
                     menu.addItem_(
-                        self._build_model_submenu_item(
+                        self._build_choice_submenu_item(
                             "Preview",
                             "preview",
                             preview["selected"],
@@ -261,6 +275,7 @@ class MenuBarIcon(NSObject):
                             tts_backend["items"],
                         )
                     )
+                    added_menu_section = True
                 tts_endpoint = model_state.get("tts_endpoint")
                 if tts_endpoint:
                     menu.addItem_(self._build_info_item(tts_endpoint["title"]))
@@ -276,7 +291,7 @@ class MenuBarIcon(NSObject):
                             local_whisper["items"],
                         )
                     )
-                menu.addItem_(NSMenuItem.separatorItem())
+                    added_menu_section = True
             elif model_state:
                 for model_id, label, enabled in model_state:
                     item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -286,7 +301,10 @@ class MenuBarIcon(NSObject):
                     item.setRepresentedObject_(model_id)
                     item.setEnabled_(enabled)
                     menu.addItem_(item)
-                menu.addItem_(NSMenuItem.separatorItem())
+                    added_menu_section = True
+
+        if added_menu_section:
+            menu.addItem_(NSMenuItem.separatorItem())
 
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Spoke", "quitApp:", "q"
@@ -296,25 +314,25 @@ class MenuBarIcon(NSObject):
 
         self._status_item.setMenu_(menu)
 
-    def _build_model_submenu_item(
+    def _build_choice_submenu_item(
         self,
         title: str,
         role: str,
-        selected_model: str,
-        models,
+        selected_value: str,
+        items,
     ):
         submenu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             title, None, ""
         )
         submenu = NSMenu.new()
-        for model_id, label, enabled in models:
+        for item_id, label, enabled in items:
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 label, "selectModel:", ""
             )
             item.setTarget_(self)
-            item.setRepresentedObject_((role, model_id))
+            item.setRepresentedObject_((role, item_id))
             item.setEnabled_(enabled)
-            if model_id == selected_model:
+            if item_id == selected_value:
                 item.setState_(1)
             submenu.addItem_(item)
         submenu_item.setSubmenu_(submenu)

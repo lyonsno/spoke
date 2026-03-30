@@ -307,3 +307,38 @@ class TestMenuBarIcon:
         assert any(call.args == ("Assistant Backend (stored): Local", None, "") for call in calls)
         assert any(call.args == ("Assistant Endpoint: localhost:8001", None, "") for call in calls)
         assert any(call.args == ("Routing forced by env: SPOKE_COMMAND_URL", None, "") for call in calls)
+
+    def test_build_menu_shows_launch_target_submenu(self, menubar_module):
+        """Registry-backed launch targets should appear as their own submenu."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(
+            return_value={
+                "launch_target": {
+                    "title": "Launch Target",
+                    "selected": "main",
+                    "items": [
+                        ("main", "Main", True),
+                        ("smoke", "Smoke", True),
+                    ],
+                }
+            }
+        )
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Launch Target", None, "") for call in calls)
+        assert any(call.args == ("Main", "selectModel:", "") for call in calls)
+        assert any(call.args == ("Smoke", "selectModel:", "") for call in calls)
