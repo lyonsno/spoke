@@ -66,6 +66,7 @@ fi
 
 /usr/bin/python3 - <<'PY'
 import os
+import shutil
 import subprocess
 import traceback
 from pathlib import Path
@@ -73,7 +74,12 @@ from pathlib import Path
 repo_root = Path(os.environ["REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
 python_exe = Path(os.environ.get("VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python")))
-uv_bin = Path(os.environ.get("UV_BIN", "/Users/noahlyons/.pyenv/shims/uv"))
+uv_bin_env = os.environ.get("UV_BIN")
+if uv_bin_env and Path(uv_bin_env).is_file():
+    uv_bin = Path(uv_bin_env)
+else:
+    resolved_uv = shutil.which("uv")
+    uv_bin = Path(resolved_uv) if resolved_uv else Path("/Users/noahlyons/.pyenv/shims/uv")
 child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
