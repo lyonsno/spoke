@@ -52,7 +52,7 @@ fi
 
 export REPO_ROOT LOG_FILE
 export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
-export UV_BIN="${UV_BIN:-/Users/noahlyons/.pyenv/shims/uv}"
+export UV_BIN="${UV_BIN:-}"
 export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"
 unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
@@ -60,14 +60,49 @@ unset SPOKE_WHISPER_MODEL
 
 /usr/bin/python3 - <<'PY'
 import os
+import shutil
 import subprocess
 import traceback
 from pathlib import Path
+from typing import Optional
+
+
+def _resolve_uv_bin(repo_root: Path) -> Optional[Path]:
+    candidates: list[Path] = []
+    env_uv_bin = os.environ.get("UV_BIN")
+    if env_uv_bin:
+        candidates.append(Path(env_uv_bin))
+    candidates.append(repo_root / ".venv" / "bin" / "uv")
+    which_uv = shutil.which("uv")
+    if which_uv:
+        candidates.append(Path(which_uv))
+    candidates.append(Path("/Users/noahlyons/.pyenv/shims/uv"))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            continue
+        if "/.pyenv/shims/" in candidate_str:
+            probe = subprocess.run(
+                [candidate_str, "--version"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if probe.returncode != 0:
+                continue
+        return candidate
+    return None
+
 
 repo_root = Path(os.environ["REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
 python_exe = Path(os.environ.get("VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python")))
-uv_bin = Path(os.environ.get("UV_BIN", "/Users/noahlyons/.pyenv/shims/uv"))
+uv_bin = _resolve_uv_bin(repo_root)
 child_env = os.environ.copy()
 child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
@@ -78,7 +113,7 @@ with log_file.open("a", encoding="utf-8") as log:
     try:
         if python_exe.is_file():
             command = [str(python_exe), "-m", "spoke"]
-        elif uv_bin.is_file():
+        elif uv_bin is not None:
             command = [str(uv_bin), "run", "--directory", str(repo_root), "python", "-m", "spoke"]
         else:
             log.write(
