@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import subprocess
 from typing import Callable
 
 from AppKit import (
@@ -21,7 +22,37 @@ import objc
 from Foundation import NSObject
 
 logger = logging.getLogger(__name__)
-_SOURCE_LABEL = f"Source: {Path(__file__).resolve().parents[1].name}"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_LABEL = f"Source: {_REPO_ROOT.name}"
+
+
+def _run_git(repo_root: Path, *args: str) -> str:
+    """Return trimmed git stdout for the running checkout, or an empty string."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _branch_menu_label(repo_root: Path = _REPO_ROOT) -> str:
+    """Resolve a human-legible branch label for the running checkout."""
+    branch = _run_git(repo_root, "branch", "--show-current")
+    if branch:
+        return f"Branch: {branch}"
+
+    short_head = _run_git(repo_root, "rev-parse", "--short", "HEAD")
+    if short_head:
+        return f"Branch: detached@{short_head}"
+
+    return "Branch: unknown"
 
 
 class MenuBarIcon(NSObject):
@@ -58,12 +89,14 @@ class MenuBarIcon(NSObject):
         self._on_select_model = on_select_model
         self._status_item = None
         self._status_text = "Idle"
+        self._branch_label = _branch_menu_label()
         self._idle_image = None
         self._recording_image = None
         return self
 
     def setup(self) -> None:
         """Create the status item and menu."""
+        self._branch_label = getattr(self, "_branch_label", _branch_menu_label())
         self._status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
             NSVariableStatusItemLength
         )
@@ -79,6 +112,7 @@ class MenuBarIcon(NSObject):
         button = self._status_item.button()
         if button is not None:
             button.setImage_(self._idle_image)
+            button.setToolTip_(f"Spoke — {self._branch_label}")
 
         self._build_menu()
 
@@ -117,6 +151,12 @@ class MenuBarIcon(NSObject):
         )
         source_item.setEnabled_(False)
         menu.addItem_(source_item)
+
+        branch_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            getattr(self, "_branch_label", "Branch: unknown"), None, ""
+        )
+        branch_item.setEnabled_(False)
+        menu.addItem_(branch_item)
 
         menu.addItem_(NSMenuItem.separatorItem())
 
