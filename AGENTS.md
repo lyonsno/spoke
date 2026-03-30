@@ -50,3 +50,14 @@ Before launching that branch:
 - relaunch from the target worktree's launcher script
 
 Do not silently fall back to the stable Automator or `main` launcher when the user explicitly asked for the branch variant.
+
+## Local hotkey policy
+
+When changing or resetting local smoke hotkeys:
+
+- treat the live WezTerm mapping and the launcher target files as one contract
+- keep the meaning legible: `Space` for pinned `main`, `K` for the current smoke target, and any optional extra smoke binding clearly named and logged
+- prefer retargeting `~/.config/spoke/*-target` files over editing launcher scripts when only the destination worktree changes
+- if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
+- if a launcher needs a known-good interpreter because a fresh worktree venv crashes, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path into the shared launcher
+- record any durable remap or reset rule in repo docs and `spoke` Epistaxis rather than leaving it only in thread history

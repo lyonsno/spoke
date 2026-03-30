@@ -28,6 +28,14 @@ if [ -f "$MAIN_TARGET_FILE" ]; then
   TARGET_SOURCE="~/.config/spoke/main-target"
 fi
 
+# Source per-target env overrides from the pinned main worktree if present.
+# This keeps local main-smoke repairs in the target worktree instead of
+# requiring edits to the shared launcher.
+if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.spoke-smoke-env"
+fi
+
 {
   printf '\n=== %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
   printf 'Launcher PID %d (PPID %d) invoked from %s\n' "$$" "$PPID" "$PWD"
@@ -49,7 +57,7 @@ else
 fi
 
 export REPO_ROOT LOG_FILE
-export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"
 export UV_BIN="${UV_BIN:-}"
 export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"
 unset SPOKE_PREVIEW_MODEL

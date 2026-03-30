@@ -40,9 +40,20 @@ running process or relaunch — `launch-smoke.sh` handles that.
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
 
+If a local main/smoke worktree boots only with a known-good interpreter, set
+`SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` rather than
+hardcoding the override into the shared launcher.
+
 After pointing the smoke target, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality
 from logs or process state.
+
+When changing or resetting box-local hotkeys:
+
+- treat `~/.config/wezterm/wezterm.lua` and `~/.config/spoke/*-target` files as one contract
+- prefer retargeting the target files over editing scripts when only the launched worktree changes
+- check the corresponding `~/Library/Logs/spoke-*-launch.log` before assuming the binding itself is dead
+- record durable hotkey/reset rules in repo docs and `spoke` Epistaxis
 
 ## Building the .app bundle
 

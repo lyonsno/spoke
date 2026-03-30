@@ -117,7 +117,14 @@ def test_main_launch_script_supports_configured_main_target():
 
     assert 'MAIN_TARGET_FILE="${HOME}/.config/spoke/main-target"' in text
     assert 'TARGET_SOURCE="~/.config/spoke/main-target"' in text
+    assert 'if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then' in text
     assert 'Launching Spoke main from %s (%s)' in text
+
+
+def test_launch_scripts_support_interpreter_override():
+    """Pinned main/dev surfaces should be able to choose a known-good Python runtime."""
+    assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _script_text()
+    assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _main_script_text()
 
 
 def test_launch_scripts_preserve_spaces_in_target_paths():
@@ -559,3 +566,47 @@ def test_main_launch_script_preserves_spaces_in_configured_main_target(tmp_path)
 
     log_text = log_file.read_text()
     assert f"Launching Spoke main from {target_repo} (~/.config/spoke/main-target)" in log_text
+
+
+def test_main_launch_script_honors_target_python_override(tmp_path):
+    """Pinned main should allow the target worktree to override the Python runtime."""
+    target_repo = tmp_path / "target-repo"
+    target_repo.mkdir()
+
+    override_python = tmp_path / "known-good-python"
+    override_python.write_text("#!/bin/sh\nprintf 'main-override-started\\n'\n")
+    override_python.chmod(0o755)
+
+    (target_repo / ".spoke-smoke-env").write_text(
+        f'export SPOKE_VENV_PYTHON="{override_python}"\n'
+    )
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "spoke"
+    config_dir.mkdir(parents=True)
+    (config_dir / "main-target").write_text(str(target_repo))
+
+    log_dir = home / "Library" / "Logs"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "spoke-main-launch.log"
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-main.sh"
+    result = subprocess.run(
+        [str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "main-override-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected overridden main launch output to reach launch log")
+
+    assert "main-override-started\n" in log_file.read_text()

@@ -51,7 +51,7 @@ else
 fi
 
 export REPO_ROOT LOG_FILE
-export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"
 export UV_BIN="${UV_BIN:-}"
 export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"
 unset SPOKE_PREVIEW_MODEL
