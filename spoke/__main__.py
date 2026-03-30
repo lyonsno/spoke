@@ -1471,23 +1471,34 @@ class SpokeAppDelegate(NSObject):
         """Main thread: append a streamed token to the command overlay."""
         if payload["token"] != self._transcription_token:
             return
+        overlay = self._command_overlay
         # First content token: invert the thinking timer and update status
         if getattr(self, "_command_first_token", False):
             self._command_first_token = False
-            if self._command_overlay is not None:
-                self._command_overlay.invert_thinking_timer()
+            if overlay is not None:
+                try:
+                    overlay.invert_thinking_timer()
+                except Exception:
+                    logger.exception("Command overlay failed to invert thinking timer")
             if self._menubar is not None:
                 self._menubar.set_status_text("Responding…")
-        if self._command_overlay is not None:
-            self._command_overlay.append_token(payload["text"])
+        if overlay is not None:
+            try:
+                overlay.append_token(payload["text"])
+            except Exception:
+                logger.exception("Command overlay failed to append streamed token")
 
     def commandComplete_(self, payload: dict) -> None:
         """Main thread: command response finished streaming."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._command_overlay is not None:
-            self._command_overlay.finish()
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.finish()
+            except Exception:
+                logger.exception("Command overlay finish failed")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
         # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
@@ -1498,15 +1509,26 @@ class SpokeAppDelegate(NSObject):
         if response and tts is not None and not tool_used_tts:
             if self._glow is not None:
                 self._glow.hide()
-            if self._command_overlay is not None:
-                self._command_overlay.tts_start()
-            tts.speak_async(
-                response,
-                amplitude_callback=self._on_tts_amplitude,
-                done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "ttsFinished:", None, False
-                ),
-            )
+            if overlay is not None:
+                try:
+                    overlay.tts_start()
+                except Exception:
+                    logger.exception("Command overlay TTS start failed")
+            try:
+                tts.speak_async(
+                    response,
+                    amplitude_callback=self._on_tts_amplitude,
+                    done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "ttsFinished:", None, False
+                    ),
+                )
+            except Exception:
+                logger.exception("Command autoplay failed to start")
+                if overlay is not None:
+                    try:
+                        overlay.tts_stop()
+                    except Exception:
+                        logger.exception("Command overlay TTS stop failed")
         elif self._glow is not None:
             self._glow.hide()
 
@@ -1521,12 +1543,18 @@ class SpokeAppDelegate(NSObject):
         """Main thread: forward TTS amplitude to command overlay."""
         rms = float(rms_number)
         if self._command_overlay is not None:
-            self._command_overlay.update_tts_amplitude(rms)
+            try:
+                self._command_overlay.update_tts_amplitude(rms)
+            except Exception:
+                logger.exception("Command overlay amplitude update failed")
 
     def ttsFinished_(self, _) -> None:
         """Main thread: TTS playback ended — restore overlay opacity."""
         if self._command_overlay is not None:
-            self._command_overlay.tts_stop()
+            try:
+                self._command_overlay.tts_stop()
+            except Exception:
+                logger.exception("Command overlay TTS stop failed")
 
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""
@@ -1543,9 +1571,18 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
-            self._command_overlay.append_token("couldn't reach the model — try again in a moment")
-            self._command_overlay.finish()
+                try:
+                    self._command_overlay.show()
+                except Exception:
+                    logger.exception("Command overlay show failed during error presentation")
+            try:
+                self._command_overlay.append_token("couldn't reach the model — try again in a moment")
+            except Exception:
+                logger.exception("Command overlay append failed during error presentation")
+            try:
+                self._command_overlay.finish()
+            except Exception:
+                logger.exception("Command overlay finish failed during error presentation")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
