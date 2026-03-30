@@ -275,6 +275,48 @@ class TestTTSClient:
         releaser.join(timeout=5)
         assert not releaser.is_alive()
 
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_starts_playback_before_long_sentence_generator_exhausts(self, mock_load, mock_sd):
+        """A long single sentence should start playback on the first yielded result."""
+        first_result_played = threading.Event()
+        allow_second_result = threading.Event()
+
+        fake_model = MagicMock()
+
+        def generate_side_effect(*, text, **kwargs):
+            assert text == "This is a long sentence without an early split point"
+            yield _fake_result()
+            assert allow_second_result.wait(timeout=5), "second result was never released"
+            yield _fake_result()
+
+        fake_model.generate.side_effect = generate_side_effect
+        mock_load.return_value = fake_model
+
+        fake_stream = MagicMock()
+
+        def write_side_effect(data):
+            first_result_played.set()
+            for call_args in mock_sd.OutputStream.call_args_list:
+                cb = call_args[1].get("finished_callback")
+                if cb:
+                    cb()
+
+        fake_stream.write = MagicMock(side_effect=write_side_effect)
+        mock_sd.OutputStream.return_value = fake_stream
+
+        client = self._make_client()
+        thread = client.speak_async("This is a long sentence without an early split point")
+
+        assert first_result_played.wait(timeout=0.2), (
+            "playback did not start before the long-sentence generator exhausted"
+        )
+
+        client.cancel()
+        allow_second_result.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
     def test_toggle_audio_uses_500ms_eased_fade(self):
         """Audio toggle should fade toward the new target over 500ms instead of jumping."""
         client = self._make_client()
