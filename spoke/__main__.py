@@ -507,7 +507,15 @@ class SpokeAppDelegate(NSObject):
         self._recovery_hold_active = False
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
-        logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
+        logger.info(
+            "Hold started — recording (shift_at_press=%s tray_active=%s recovery_active=%s recovery_hold_active=%s verify_pending=%s overlay_visible=%s)",
+            shift_at_press,
+            getattr(self, "_tray_active", False),
+            getattr(self, "_recovery_text", None) is not None,
+            getattr(self, "_recovery_hold_active", False),
+            getattr(self, "_verify_paste_text", None) is not None,
+            getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
+        )
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -721,8 +729,20 @@ class SpokeAppDelegate(NSObject):
             token = None
             text = payload
         if token is not None and token != getattr(self, "_preview_session_token", token):
+            logger.info(
+                "Dropping stale preview update (token=%s current=%s len=%d)",
+                token,
+                getattr(self, "_preview_session_token", None),
+                len(text),
+            )
             return
         if not self._preview_active:
+            logger.info(
+                "Dropping preview update while preview inactive (token=%s current=%s len=%d)",
+                token,
+                getattr(self, "_preview_session_token", None),
+                len(text),
+            )
             return
         self._last_preview_text = text
         if self._overlay is not None:
@@ -1096,6 +1116,12 @@ class SpokeAppDelegate(NSObject):
         self._tray_index = len(self._tray_stack) - 1
         self._tray_active = True
         self._detector.tray_active = True
+        logger.info(
+            "Entering tray (entries=%d index=%d text_len=%d)",
+            len(self._tray_stack),
+            self._tray_index,
+            len(text),
+        )
 
         if self._glow is not None:
             if hasattr(self._glow, "show_tray_dim"):
@@ -1125,6 +1151,12 @@ class SpokeAppDelegate(NSObject):
 
     def _dismiss_tray(self) -> None:
         """Dismiss the tray overlay. Stack is preserved for re-entry."""
+        logger.info(
+            "Dismissing tray (entries=%d index=%d recovery_active=%s)",
+            len(self._tray_stack),
+            self._tray_index,
+            getattr(self, "_recovery_text", None) is not None,
+        )
         self._tray_active = False
         self._detector.tray_active = False
         if self._glow is not None:
