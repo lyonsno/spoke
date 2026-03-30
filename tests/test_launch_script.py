@@ -12,6 +12,11 @@ def _script_text() -> str:
     return script.read_text()
 
 
+def _main_script_text() -> str:
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-main.sh"
+    return script.read_text()
+
+
 def _smoke_script_text() -> str:
     script = Path(__file__).resolve().parent.parent / "scripts" / "launch-smoke.sh"
     return script.read_text()
@@ -106,9 +111,19 @@ def test_launch_script_supports_configured_dev_target():
     assert 'Launching Spoke from %s (%s)' in text
 
 
+def test_main_launch_script_supports_configured_main_target():
+    """The main launcher should allow a stable Automator binding to target a fresh worktree."""
+    text = _main_script_text()
+
+    assert 'MAIN_TARGET_FILE="${HOME}/.config/spoke/main-target"' in text
+    assert 'TARGET_SOURCE="~/.config/spoke/main-target"' in text
+    assert 'Launching Spoke main from %s (%s)' in text
+
+
 def test_launch_scripts_preserve_spaces_in_target_paths():
     """Configured launcher targets should trim only the trailing newline, not interior spaces."""
     assert 'CONFIGURED_REPO_ROOT="$(tr -d \'[:space:]\' < "$DEV_TARGET_FILE")"' not in _script_text()
+    assert 'CONFIGURED_REPO_ROOT="$(tr -d \'[:space:]\' < "$MAIN_TARGET_FILE")"' not in _main_script_text()
     assert 'REPO_ROOT="$(cat "$SMOKE_TARGET_FILE" | tr -d \'[:space:]\')"' not in _smoke_script_text()
 
 
@@ -253,7 +268,7 @@ def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):
     result = _run_inline_launcher(
         repo_root,
         log_file,
-        extra_env={"UV_BIN": str(repo_root / "missing-uv")},
+        extra_env={"UV_BIN": str(repo_root / "missing-uv"), "PATH": ""},
     )
 
     assert result.stderr == ""
@@ -300,6 +315,46 @@ def test_smoke_inline_launcher_prefers_uv_tts_runtime(tmp_path):
     assert "venv-python-started\n" not in log_text
     assert "--extra" in log_text
     assert "tts" in log_text
+
+
+def test_smoke_inline_launcher_skips_broken_pyenv_shim(tmp_path):
+    """Smoke launch should fall back to a working uv binary when the configured shim is broken."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    broken_uv = tmp_path / ".pyenv" / "shims" / "uv"
+    broken_uv.parent.mkdir(parents=True)
+    broken_uv.write_text("#!/bin/sh\nexit 1\n")
+    broken_uv.chmod(0o755)
+
+    fallback_dir = tmp_path / "bin"
+    fallback_dir.mkdir()
+    fallback_uv = fallback_dir / "uv"
+    fallback_uv.write_text("#!/bin/sh\nprintf 'fallback-uv-started\\n'\n")
+    fallback_uv.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "SPOKE_TTS_VOICE": "casual_female",
+            "UV_BIN": str(broken_uv),
+            "PATH": f"{fallback_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "fallback-uv-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected fallback uv output to reach smoke launch log")
+
+    assert "fallback-uv-started\n" in log_file.read_text()
 
 
 def test_launch_script_prefers_configured_dev_target(tmp_path):
@@ -380,3 +435,83 @@ def test_launch_script_preserves_spaces_in_configured_dev_target(tmp_path):
 
     log_text = log_file.read_text()
     assert f"Launching Spoke from {target_repo} (~/.config/spoke/dev-target)" in log_text
+
+
+def test_main_launch_script_prefers_configured_main_target(tmp_path):
+    """A configured main target should override the checkout that contains the script."""
+    target_repo = tmp_path / "target-repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'target-repo-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "spoke"
+    config_dir.mkdir(parents=True)
+    (config_dir / "main-target").write_text(str(target_repo))
+
+    log_dir = home / "Library" / "Logs"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "spoke-main-launch.log"
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-main.sh"
+    result = subprocess.run(
+        [str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "target-repo-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected configured main target output to reach launch log")
+
+    log_text = log_file.read_text()
+    assert f"Launching Spoke main from {target_repo} (~/.config/spoke/main-target)" in log_text
+
+
+def test_main_launch_script_preserves_spaces_in_configured_main_target(tmp_path):
+    """Configured main targets with spaces should launch successfully."""
+    target_repo = tmp_path / "target repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'spaced-target-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "spoke"
+    config_dir.mkdir(parents=True)
+    (config_dir / "main-target").write_text(str(target_repo))
+
+    log_dir = home / "Library" / "Logs"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "spoke-main-launch.log"
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-main.sh"
+    result = subprocess.run(
+        [str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "spaced-target-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected spaced main target output to reach launch log")
+
+    log_text = log_file.read_text()
+    assert f"Launching Spoke main from {target_repo} (~/.config/spoke/main-target)" in log_text
