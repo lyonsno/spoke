@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
@@ -41,6 +42,14 @@ _ABBREVIATION_SUFFIXES = (
     "u.s.",
     "u.k.",
 )
+
+
+@dataclass
+class _PlaybackResult:
+    """Materialized audio payload safe to play after generation yields it."""
+
+    audio: np.ndarray
+    sample_rate: int
 
 
 def _playback_device_summary() -> str:
@@ -344,20 +353,27 @@ class TTSClient:
                         self._ensure_model()
                         if self._cancelled:
                             return
-                        results = list(
-                            self._model.generate(
-                                text=sentence,
-                                voice=self._voice,
-                                temperature=self._temperature,
-                                top_k=self._top_k,
-                                top_p=self._top_p,
-                            )
+                        results = self._model.generate(
+                            text=sentence,
+                            voice=self._voice,
+                            temperature=self._temperature,
+                            top_k=self._top_k,
+                            top_p=self._top_p,
                         )
 
-                    for result in results:
+                    while True:
                         if self._cancelled:
                             return
-                        self._play_result(result, amplitude_callback=amplitude_callback)
+                        with lock_ctx:
+                            try:
+                                result = next(results)
+                            except StopIteration:
+                                break
+                            materialized = _PlaybackResult(
+                                audio=np.asarray(result.audio, dtype=np.float32),
+                                sample_rate=result.sample_rate,
+                            )
+                        self._play_result(materialized, amplitude_callback=amplitude_callback)
             finally:
                 with self._audio_fade_lock:
                     self._playback_active = False
