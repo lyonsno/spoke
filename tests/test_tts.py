@@ -275,6 +275,31 @@ class TestTTSClient:
         releaser.join(timeout=5)
         assert not releaser.is_alive()
 
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_materializes_audio_while_gpu_lock_is_held(self, mock_load, mock_sd):
+        """MLX-backed audio should be read before leaving the generation lock."""
+        gpu_lock = threading.Lock()
+        audio_lock_states = []
+
+        class LockedAudioResult:
+            sample_rate = 24000
+
+            @property
+            def audio(self):
+                audio_lock_states.append(gpu_lock.locked())
+                return [0.1, 0.2, 0.3]
+
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([LockedAudioResult()])
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        client = self._make_client(gpu_lock=gpu_lock)
+        client.speak("First sentence.")
+
+        assert audio_lock_states == [True]
+
     def test_toggle_audio_uses_500ms_eased_fade(self):
         """Audio toggle should fade toward the new target over 500ms instead of jumping."""
         client = self._make_client()
