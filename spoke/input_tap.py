@@ -323,6 +323,12 @@ class SpacebarHoldDetector(NSObject):
             )
             self._shift_latched = False
             self._enter_latched = False
+            if getattr(self, 'tray_active', False):
+                # Tray-intercepted holds are tray gestures, not recording-release
+                # decisions. Keep them on the tray path even if shift came up
+                # before spacebar.
+                self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
+                return True
             if enter_held:
                 self._on_hold_end(shift_held=shift_held, enter_held=True)
             elif shift_held:
@@ -557,7 +563,11 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 on_tap = getattr(det, '_on_shift_tap_during_hold', None)
                 if on_tap is not None:
                     on_tap()
-            elif det._state == _State.RECORDING and det._shift_latched:
+            elif (
+                det._state == _State.RECORDING
+                and det._shift_latched
+                and not getattr(det, 'tray_active', False)
+            ):
                 det._shift_latched = False
                 det._latched_space_down = False
                 det._state = _State.LATCHED
