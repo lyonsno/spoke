@@ -22,6 +22,11 @@ def _smoke_script_text() -> str:
     return script.read_text()
 
 
+def _launch_target_script_text() -> str:
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-target.sh"
+    return script.read_text()
+
+
 def _inline_launcher_source() -> str:
     text = _script_text()
     start = text.index("<<'PY'\n") + len("<<'PY'\n")
@@ -31,6 +36,13 @@ def _inline_launcher_source() -> str:
 
 def _smoke_inline_launcher_source() -> str:
     text = _smoke_script_text()
+    start = text.index("<<'PY'\n") + len("<<'PY'\n")
+    end = text.rindex("\nPY")
+    return text[start:end]
+
+
+def _launch_target_inline_source() -> str:
+    text = _launch_target_script_text()
     start = text.index("<<'PY'\n") + len("<<'PY'\n")
     end = text.rindex("\nPY")
     return text[start:end]
@@ -67,6 +79,29 @@ def _run_smoke_inline_launcher(
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-c", _smoke_inline_launcher_source()],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_launch_target_inline_launcher(
+    helper_repo_root: Path,
+    targets_file: Path,
+    target_id: str,
+    log_file: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HELPER_REPO_ROOT"] = str(helper_repo_root)
+    env["SPOKE_LAUNCH_TARGETS_PATH"] = str(targets_file)
+    env["TARGET_ID"] = target_id
+    env["LOG_FILE"] = str(log_file)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [sys.executable, "-c", _launch_target_inline_source()],
         env=env,
         capture_output=True,
         text=True,
@@ -146,6 +181,60 @@ def test_launch_script_avoids_nohup_detach():
     assert "start_new_session=True" in text
     assert "subprocess.Popen(" in text
     assert text.rstrip().endswith("PY")
+
+
+def test_launch_target_script_reads_named_target_registry():
+    """The target-switch launcher should resolve launch surfaces by registry id."""
+    text = _launch_target_script_text()
+
+    assert 'TARGETS_FILE="${SPOKE_LAUNCH_TARGETS_PATH:-$HOME/.config/spoke/launch_targets.json}"' in text
+    assert 'TARGET_ID="${1:-${TARGET_ID:-}}"' in text
+    assert "spoke-launch-target.log" in text
+    assert "SPOKE_LAUNCH_TARGET_ID" in text
+
+
+def test_inline_launch_target_launcher_starts_requested_target(tmp_path):
+    """A registry-backed target launch should spawn the selected repo's Python runtime."""
+    helper_repo_root = tmp_path / "helper"
+    helper_repo_root.mkdir()
+
+    target_repo = tmp_path / "target repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text(
+        "#!/bin/sh\n"
+        "printf 'target=%s\\n' \"${SPOKE_LAUNCH_TARGET_ID:-}\"\n"
+    )
+    python_exe.chmod(0o755)
+
+    targets_file = tmp_path / "launch_targets.json"
+    targets_file.write_text(
+        (
+            '{"selected":"main","targets":['
+            '{"id":"main","label":"Main","path":"%s"},'
+            '{"id":"smoke","label":"Smoke","path":"%s"}'
+            "]}"
+        )
+        % (tmp_path / "other", target_repo)
+    )
+
+    log_file = tmp_path / "launch-target.log"
+    result = _run_launch_target_inline_launcher(
+        helper_repo_root=helper_repo_root,
+        targets_file=targets_file,
+        target_id="smoke",
+        log_file=log_file,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "target=smoke" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected selected target output to reach launch log")
 
 
 def test_inline_launcher_routes_child_output_into_log(tmp_path):

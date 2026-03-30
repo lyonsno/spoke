@@ -901,6 +901,46 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_handle_model_menu_none_exposes_launch_targets_from_registry(
+        self, main_module, monkeypatch
+    ):
+        """A populated launch-target registry should surface a dedicated submenu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._launch_target_menu_state = MagicMock(
+            return_value={
+                "title": "Launch Target",
+                "selected": "main",
+                "items": [
+                    ("main", "Main", True),
+                    ("smoke", "Smoke", True),
+                ],
+            }
+        )
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["launch_target"] == {
+            "title": "Launch Target",
+            "selected": "main",
+            "items": [
+                ("main", "Main", True),
+                ("smoke", "Smoke", True),
+            ],
+        }
+
+    def test_selecting_launch_target_persists_choice_and_invokes_helper(
+        self, main_module, monkeypatch
+    ):
+        """Choosing a new launch target should save it and hand off to the launcher helper."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._persist_launch_target_selection = MagicMock(return_value=True)
+        d._invoke_launch_target_helper = MagicMock(return_value=True)
+
+        d._handle_model_menu_action(("launch_target", "smoke"))
+
+        d._persist_launch_target_selection.assert_called_once_with("smoke")
+        d._invoke_launch_target_helper.assert_called_once_with("smoke")
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
