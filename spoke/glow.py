@@ -89,7 +89,7 @@ _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 4.0  # eased back ~35% from the 2x boost for movement legibility
+_VIGNETTE_OPACITY_SCALE = 3.05  # back to original
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -439,25 +439,25 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 1.5,     # 2x sharper than original, crisp edge
-            "power": 3.5,
-            "alpha": 0.88,
+            "falloff": 2.5,
+            "power": 2.4,       # relaxed from 3.5 — softer edge
+            "alpha": 0.65,      # eased from 0.88
             "color_scale": 0.08,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 4.0,     # 2x wider than last pass, fills out
-            "power": 3.5,
-            "alpha": 0.52,
+            "falloff": 6.0,
+            "power": 2.6,       # relaxed from 3.5
+            "alpha": 0.35,      # eased from 0.52
             "color_scale": 0.10,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 8.0,     # 2x wider — the shadow extends further in
-            "power": 3.8,
-            "alpha": 0.45,
+            "falloff": 12.0,
+            "power": 3.0,       # relaxed from 3.8
+            "alpha": 0.28,      # eased from 0.45
             "color_scale": 0.12,
         },
     ]

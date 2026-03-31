@@ -773,11 +773,15 @@ class TranscriptionOverlay(NSObject):
             last_t = getattr(self, '_fill_image_brightness', -1.0)
             if abs(t - last_t) > 0.03:
                 self._fill_image_brightness = t
-                win = getattr(self, '_window', None)
-                if win:
+                # Recompute the full SDF + fill image at the current overlay
+                # size.  Using _update_fill_image with a stale SDF caused
+                # corner distortion when the overlay had resized since the
+                # SDF was last computed.
+                content = getattr(self, '_content_view', None)
+                if content:
                     try:
-                        wf = win.frame()
-                        self._update_fill_image(wf.size.width, wf.size.height)
+                        cf = content.frame()
+                        self._apply_ridge_masks(cf.size.width, cf.size.height)
                     except Exception:
                         pass
 
