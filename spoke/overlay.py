@@ -216,6 +216,21 @@ def _ridge_alpha(signed_distance, falloff: float, power: float):
     return np.exp(-np.power(d / max(falloff, 1e-6), power, dtype=np.float32))
 
 
+def _interior_fill_alpha(signed_distance, edge_softness: float):
+    """Interior fill that fades smoothly to zero at the boundary.
+
+    Fully opaque deep inside (negative distance), smoothly transitions
+    to zero at and beyond the boundary.  edge_softness controls how many
+    pixels before the boundary the fade begins.
+    """
+    import numpy as np
+
+    # sigmoid-like ramp: 1 deep inside, 0 at boundary, smooth transition
+    t = np.clip(-signed_distance / max(edge_softness, 1e-6), 0.0, 1.0)
+    # smoothstep for a soft edge
+    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
 def _build_ridge_image(field_width: float, field_height: float,
                        rect_width: float, rect_height: float,
                        corner_radius: float, scale: float,
@@ -624,8 +639,13 @@ class TranscriptionOverlay(NSObject):
         # Light: near-opaque dark fill, text is negative space.
         # Crossover (~0.5): fill gets MORE opaque to maintain text contrast
         # during the mode transition.
-        bg_alpha_dark = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
-        bg_alpha_light = _BG_ALPHA_LIGHT_BASE + _BG_ALPHA_LIGHT_AMP * scaled
+        # When RMS is above ~30% (scaled > ~0.5 given _TEXT_AMP_SATURATION),
+        # the fill should be assertive enough for strong text contrast.
+        # Steeper amplitude response: cubic ramp so the fill jumps to
+        # legible territory quickly once the user is actually speaking.
+        fill_drive = scaled * scaled * scaled  # cubic — stays low at whisper, jumps at voice
+        bg_alpha_dark = _lerp(_BG_ALPHA_MIN, 0.55, fill_drive)
+        bg_alpha_light = _lerp(_BG_ALPHA_LIGHT_BASE, 0.96, fill_drive)
         crossover_bump = _CROSSOVER_AMPLITUDE * math.exp(
             -((t - _CROSSOVER_CENTER) / _CROSSOVER_WIDTH) ** 2
         )
@@ -707,15 +727,28 @@ class TranscriptionOverlay(NSObject):
         total_h = height + 2 * f
 
         try:
-            ridge_image, self._ridge_payload = _build_ridge_image(
+            import numpy as np
+            from .glow import _alpha_field_to_image
+
+            # Compute SDF once, reuse for ridge and fill masks
+            sdf = _overlay_rounded_rect_sdf(
                 total_w, total_h, width, height,
                 _OVERLAY_CORNER_RADIUS, scale,
-                _RIDGE_FALLOFF, _RIDGE_POWER,
             )
+
+            # Ridge mask — sharp exponential peak at the boundary
+            ridge_alpha = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
+            ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha)
+
+            # Interior fill mask — smoothstep fade at the boundary so the
+            # content view's fill doesn't create a hard rectangular edge.
+            _FILL_EDGE_SOFTNESS = 6.0  # px of fade before the boundary
+            fill_alpha = _interior_fill_alpha(sdf, _FILL_EDGE_SOFTNESS * scale)
+            fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
 
-        # Apply as layer masks
+        # Apply ridge mask
         if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
             ridge_mask = CALayer.alloc().init()
             ridge_mask.setFrame_(((0, 0), (total_w, total_h)))
@@ -723,6 +756,15 @@ class TranscriptionOverlay(NSObject):
             ridge_mask.setContentsGravity_("resize")
             self._ridge_layer.setMask_(ridge_mask)
             self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
+
+        # Apply fill mask to content view — the fill fades to zero at the
+        # boundary instead of ending with a hard rectangular edge.
+        if hasattr(self, '_content_view') and self._content_view is not None:
+            fill_mask = CALayer.alloc().init()
+            fill_mask.setFrame_(((0, 0), (width, height)))
+            fill_mask.setContents_(fill_image)
+            fill_mask.setContentsGravity_("resize")
+            self._content_view.layer().setMask_(fill_mask)
 
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""

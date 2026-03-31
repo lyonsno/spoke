@@ -208,76 +208,31 @@ class CommandOverlay(NSObject):
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        content.layer().setMasksToBounds_(True)
+        content.layer().setMasksToBounds_(False)
         bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
         content.layer().setBackgroundColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
         )
 
-        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
-        )
-
-        # Inner glow
+        # Distance-field ridge — same system as the preview overlay
+        from .overlay import _RIDGE_FALLOFF, _RIDGE_POWER, _GLOW_COLOR as _OVERLAY_GLOW_COLOR, _overlay_layer_colors
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
-        margin = _INNER_GLOW_DEPTH + 50
-        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+        _, middle_rgb, _ = _overlay_layer_colors(_OVERLAY_GLOW_COLOR)
 
-        lw, lh = w + 2 * margin, h + 2 * margin
+        self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        self._inner_shadow = CAShapeLayer.alloc().init()
-        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
-
-        outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
-        inner = CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
+        self._ridge_layer = CALayer.alloc().init()
+        self._ridge_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._ridge_layer.setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+            ).CGColor()
         )
-        combined = CGPathCreateMutableCopy(outer)
-        CGPathAddPath(combined, None, inner)
+        self._ridge_layer.setOpacity_(0.0)
+        self._ridge_layer.setContentsScale_(self._ridge_scale)
 
-        self._inner_shadow.setPath_(combined)
-        self._inner_shadow.setFillRule_(kEO)
-        self._inner_shadow.setFillColor_(glow_nscolor.colorWithAlphaComponent_(0.12).CGColor())
-        self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
-        self._inner_shadow.setShadowOffset_((0, 0))
-        self._inner_shadow.setShadowRadius_(2.4)
-        self._inner_shadow.setShadowOpacity_(0.8)
-
-        inner_mask = CAShapeLayer.alloc().init()
-        inner_mask.setFrame_(((0, 0), (lw, lh)))
-        inner_mask.setPath_(CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        ))
-        self._inner_shadow.setMask_(inner_mask)
-        wrapper.layer().addSublayer_(self._inner_shadow)
-
-        # Outer glow layers
-        self._outer_glow_tight = CALayer.alloc().init()
-        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
-        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_tight.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
-        self._outer_glow_tight.setShadowOffset_((0, 0))
-        self._outer_glow_tight.setShadowRadius_(6.2)
-        self._outer_glow_tight.setShadowOpacity_(0.2)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
-
-        self._outer_glow_wide = CALayer.alloc().init()
-        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
-        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_wide.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
-        self._outer_glow_wide.setShadowOffset_((0, 0))
-        self._outer_glow_wide.setShadowRadius_(14.0)
-        self._outer_glow_wide.setShadowOpacity_(0.4)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+        self._apply_ridge_masks(w, h)
+        wrapper.layer().insertSublayer_below_(self._ridge_layer, content.layer())
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -822,18 +777,9 @@ class CommandOverlay(NSObject):
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
         glow_opacity = 0.5 + 0.3 * breath
-        if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
-            self._inner_shadow.setFillColor_(
-                glow_nscolor.colorWithAlphaComponent_(0.12).CGColor()
-            )
-            self._inner_shadow.setShadowOpacity_(glow_opacity)
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
-            self._outer_glow_tight.setShadowOpacity_(min(glow_opacity * 0.4, _OUTER_GLOW_PEAK_TARGET))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
-            self._outer_glow_wide.setShadowOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
+        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
+            self._ridge_layer.setBackgroundColor_(glow_nscolor.CGColor())
+            self._ridge_layer.setOpacity_(min(glow_opacity * 0.15, 0.20))
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -916,6 +862,51 @@ class CommandOverlay(NSObject):
         self._thinking_seconds += 0.1
         if self._thinking_label is not None and not self._thinking_label.isHidden():
             self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+
+    # ── ridge masks ────────────────────────────────────────
+
+    def _apply_ridge_masks(self, width: float, height: float) -> None:
+        """Compute SDF and apply ridge + fill masks for the given overlay size."""
+        from .overlay import (
+            _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
+            _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
+        )
+        f = _OUTER_FEATHER
+        scale = getattr(self, '_ridge_scale', 2.0)
+        total_w = width + 2 * f
+        total_h = height + 2 * f
+
+        try:
+            import numpy as np
+            from .glow import _alpha_field_to_image
+
+            sdf = _overlay_rounded_rect_sdf(
+                total_w, total_h, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+            )
+
+            ridge_alpha_field = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
+            ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha_field)
+
+            fill_alpha = _interior_fill_alpha(sdf, 6.0 * scale)
+            fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
+        except (ImportError, Exception):
+            return
+
+        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
+            ridge_mask = CALayer.alloc().init()
+            ridge_mask.setFrame_(((0, 0), (total_w, total_h)))
+            ridge_mask.setContents_(ridge_image)
+            ridge_mask.setContentsGravity_("resize")
+            self._ridge_layer.setMask_(ridge_mask)
+            self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
+
+        if hasattr(self, '_content_view') and self._content_view is not None:
+            fill_mask = CALayer.alloc().init()
+            fill_mask.setFrame_(((0, 0), (width, height)))
+            fill_mask.setContents_(fill_image)
+            fill_mask.setContentsGravity_("resize")
+            self._content_view.layer().setMask_(fill_mask)
 
     # ── layout ──────────────────────────────────────────────
 
