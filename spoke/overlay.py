@@ -93,7 +93,7 @@ _GLOW_COLOR = _scale_color_saturation(
 )  # ~10% of original saturation — subtle tint, not a neon outline
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
-_OUTER_FEATHER = 80.0  # glow bleed past overlay edge — wide enough for the stretched-exp tails
+_OUTER_FEATHER = 160.0  # glow bleed past overlay edge — wide for the stretched-exp tails
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
@@ -721,39 +721,25 @@ class TranscriptionOverlay(NSObject):
 
         t = getattr(self, "_brightness", 0.0)
 
-        # Text color and alpha — on light backgrounds, text fades toward
-        # transparent (cutout effect: letter shapes become negative space
-        # through which the bright background shows).
-        text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
-        text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
-        # Text stays visible in both modes — no cutout ramp for now.
+        # Text: anchored near-opaque.  Dark on white backgrounds, white on
+        # dark backgrounds.  Text does NOT breathe with amplitude — it stays
+        # legible and stable.  The SDF fill breathes instead.
+        _TEXT_ANCHOR_ALPHA = 0.85
         text_t = t ** 1.3
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         )
 
-        # Background fill — brightness-adaptive with a crossover opacity bump.
-        # Dark: ethereal low-opacity fill, intensity from the ridge.
-        # Light: near-opaque dark fill, text is negative space.
-        # Crossover (~0.5): fill gets MORE opaque to maintain text contrast
-        # during the mode transition.
-        # When RMS is above ~30% (scaled > ~0.5 given _TEXT_AMP_SATURATION),
-        # the fill should be assertive enough for strong text contrast.
-        # Steeper amplitude response: cubic ramp so the fill jumps to
-        # legible territory quickly once the user is actually speaking.
-        fill_drive = scaled * scaled * scaled  # cubic — stays low at whisper, jumps at voice
-        bg_alpha_dark = _lerp(_BG_ALPHA_MIN, 0.55, fill_drive)
-        bg_alpha_light = _lerp(_BG_ALPHA_LIGHT_BASE, 0.96, fill_drive)
-        crossover_bump = _CROSSOVER_AMPLITUDE * math.exp(
-            -((t - _CROSSOVER_CENTER) / _CROSSOVER_WIDTH) ** 2
-        )
-        bg_alpha = _lerp(bg_alpha_dark, bg_alpha_light, t) + crossover_bump
-        bg_alpha = min(bg_alpha, 0.96)
+        # SDF fill breathes with amplitude — the distance field is the thing
+        # that responds to voice, not the text.  Low amplitude = subtle wash,
+        # speaking = fill comes alive.
+        fill_drive = scaled  # linear response for the fill
+        fill_opacity = _lerp(0.15, 0.85, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(bg_alpha, 0.96))
+            self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
             # Rebuild the fill image when brightness changes enough to
-            # affect the baked color.  Avoids per-frame CGImage rebuilds.
+            # affect the baked color.
             last_t = getattr(self, '_fill_image_brightness', -1.0)
             if abs(t - last_t) > 0.03:
                 self._fill_image_brightness = t

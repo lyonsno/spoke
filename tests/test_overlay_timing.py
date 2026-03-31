@@ -28,8 +28,8 @@ class TestOverlayTiming:
             overlay.update_text_amplitude(10.0)
 
             _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
-            assert applied_alpha <= mod._TEXT_ALPHA_MAX
-            assert applied_alpha == pytest.approx(mod._TEXT_ALPHA_MAX)
+            # Text is now anchored at a fixed high alpha, not driven by amplitude
+            assert applied_alpha == pytest.approx(0.85)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -241,27 +241,25 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_mid_brightness_crossover_bump_increases_fill_opacity(self, mock_pyobjc):
-        """At the crossover point, the fill gets more opaque to maintain contrast."""
+    def test_fill_opacity_responds_to_amplitude(self, mock_pyobjc):
+        """The SDF fill should breathe with amplitude — low at silence, high when speaking."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
 
-            # Measure fill opacity at brightness 0 (dark, no crossover)
-            overlay.set_brightness(0.0, immediate=True)
+            # Low amplitude
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(0.0)
+            alpha_silent = overlay._fill_layer.setOpacity_.call_args[0][0]
+
+            # High amplitude
             overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
-            alpha_dark = overlay._fill_layer.setOpacity_.call_args[0][0]
+            alpha_loud = overlay._fill_layer.setOpacity_.call_args[0][0]
 
-            # Measure fill opacity at brightness 0.35 (crossover center)
-            overlay.set_brightness(0.35, immediate=True)
-            overlay._fill_layer.reset_mock()
-            overlay.update_text_amplitude(10.0)
-            alpha_crossover = overlay._fill_layer.setOpacity_.call_args[0][0]
-
-            # Crossover should be more opaque than dark due to the bump
-            assert alpha_crossover > alpha_dark + 0.1
+            assert alpha_loud > alpha_silent + 0.3
         finally:
             sys.modules.pop("spoke.overlay", None)
 
