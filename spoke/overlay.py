@@ -230,19 +230,27 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _glow_fill_alpha(signed_distance, width: float):
-    """Stretched-exponential fill profile — sharp cusp at boundary, heavy tails.
+def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.70):
+    """Asymmetric stretched-exponential fill profile.
 
-    exp(-sqrt(|d|/width)) gives a pointed peak (infinite slope at d=0),
-    aggressive initial falloff, and heavy tails that stay more opaque
-    deep inside than a Gaussian or Lorentzian would.  The sqrt stretches
-    the exponential so it drops fast near the peak but slows down far
-    from it — exactly the "aggressive at first, bottoms out higher" shape.
+    Inside (negative distance): sharp cusp at boundary, drops rapidly
+    then floors at interior_floor — the interior never goes below this.
+    Outside (positive distance): same sharp cusp, drops all the way to
+    zero with a long gradual tail.
+
+    Both sides use exp(-sqrt(|d|/width)) for the pointed cusp and
+    gradually decelerating falloff.
     """
     import numpy as np
 
     d = np.abs(signed_distance)
-    return np.exp(-np.sqrt(d / max(width, 1e-6))).astype(np.float32)
+    raw = np.exp(-np.sqrt(d / max(width, 1e-6)))
+
+    # Inside: remap so it goes from 1.0 at boundary toward interior_floor
+    inside = interior_floor + (1.0 - interior_floor) * raw
+
+    # Outside: raw curve goes all the way to zero
+    return np.where(signed_distance <= 0.0, inside, raw).astype(np.float32)
 
 
 def _fill_field_to_image(alpha, r: int, g: int, b: int):
