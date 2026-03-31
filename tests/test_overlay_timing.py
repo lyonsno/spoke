@@ -251,7 +251,7 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_saturated_text_alpha_can_rise_near_full_opacity(self, mock_pyobjc):
+    def test_light_background_saturated_text_alpha_stops_at_ninety_percent(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -263,11 +263,11 @@ class TestAdaptiveOverlayCompositing:
 
             text_r, text_g, text_b, text_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
             assert text_r < 0.3 and text_g < 0.3 and text_b < 0.3
-            assert text_alpha == pytest.approx(0.95)
+            assert text_alpha == pytest.approx(0.90)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_preview_text_moves_halfway_toward_black(self, mock_pyobjc):
+    def test_light_background_preview_text_reaches_true_black(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -278,9 +278,9 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             text_r, text_g, text_b, _ = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
-            assert text_r == pytest.approx(0.016)
-            assert text_g == pytest.approx(0.016)
-            assert text_b == pytest.approx(0.02)
+            assert text_r == pytest.approx(0.0)
+            assert text_g == pytest.approx(0.0)
+            assert text_b == pytest.approx(0.0)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

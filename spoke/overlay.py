@@ -68,7 +68,7 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_ALPHA_MAX_LIGHT = 0.95
+_TEXT_ALPHA_MAX_LIGHT = 0.90
 _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
@@ -80,7 +80,7 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _BG_COLOR_DARK = (0.1, 0.1, 0.12)
 _TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
 _BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
-_TEXT_COLOR_LIGHT = (0.016, 0.016, 0.02)
+_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
