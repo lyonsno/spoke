@@ -340,8 +340,7 @@ class TTSClient:
 
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
         with self._speak_lock:
-            if self._cancelled:
-                return
+            self._cancelled = False
             with self._audio_fade_lock:
                 self._playback_active = True
             try:
@@ -385,7 +384,7 @@ class TTSClient:
         done_callback: Callable[[], None] | None = None,
     ) -> threading.Thread:
         """Generate and play speech on a background daemon thread."""
-        self._cancelled = False
+        self.cancel()
         def _run():
             self.speak(text, amplitude_callback=amplitude_callback)
             if done_callback is not None:
