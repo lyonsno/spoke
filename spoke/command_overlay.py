@@ -68,7 +68,7 @@ _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
 _PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
-_OUTER_FEATHER = 40.0
+_OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp tails
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
@@ -213,33 +213,21 @@ class CommandOverlay(NSObject):
 
         # Distance-field ridge + fill — same system as the preview overlay
         from .overlay import (
-            _RIDGE_FALLOFF, _RIDGE_POWER, _GLOW_COLOR as _OVERLAY_GLOW_COLOR,
-            _overlay_layer_colors, _fill_field_to_image, _interior_fill_alpha,
+            _GLOW_COLOR as _OVERLAY_GLOW_COLOR,
+            _overlay_layer_colors,
         )
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
         _, middle_rgb, _ = _overlay_layer_colors(_OVERLAY_GLOW_COLOR)
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        # Fill layer — colored SDF image with baked alpha
+        # Fill layer — colored SDF image with baked alpha, same as preview overlay
         self._fill_layer = CALayer.alloc().init()
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
 
-        # Ridge layer
-        self._ridge_layer = CALayer.alloc().init()
-        self._ridge_layer.setFrame_(((0, 0), (win_w, win_h)))
-        self._ridge_layer.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-            ).CGColor()
-        )
-        self._ridge_layer.setOpacity_(0.0)
-        self._ridge_layer.setContentsScale_(self._ridge_scale)
-
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
-        wrapper.layer().insertSublayer_below_(self._ridge_layer, self._fill_layer)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -252,6 +240,13 @@ class CommandOverlay(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setBorderType_(0)
         self._scroll_view.setAutoresizingMask_(18)
+        # Kill clip view background — same fix as preview overlay
+        clip_view = self._scroll_view.contentView()
+        if clip_view and hasattr(clip_view, 'setDrawsBackground_'):
+            clip_view.setDrawsBackground_(False)
+        if clip_view and hasattr(clip_view, 'setWantsLayer_'):
+            clip_view.setWantsLayer_(True)
+            clip_view.layer().setBackgroundColor_(None)
 
         text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
@@ -784,9 +779,10 @@ class CommandOverlay(NSObject):
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
         glow_opacity = 0.5 + 0.3 * breath
-        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
-            self._ridge_layer.setBackgroundColor_(glow_nscolor.CGColor())
-            self._ridge_layer.setOpacity_(min(glow_opacity * 0.15, 0.20))
+        # Drive the SDF fill layer with the pulse — the fill breathes
+        # with the assistant's thinking/response animation.
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -885,18 +881,13 @@ class CommandOverlay(NSObject):
         total_h = height + 2 * f
 
         try:
-            from .glow import _alpha_field_to_image
+            from .overlay import _glow_fill_alpha
 
             sdf = _overlay_rounded_rect_sdf(
                 total_w, total_h, width, height,
                 _OVERLAY_CORNER_RADIUS, scale,
             )
 
-            ridge_alpha_field = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
-            ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha_field)
-
-            # Lorentzian fill profile — same as preview overlay
-            from .overlay import _glow_fill_alpha
             fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
@@ -907,14 +898,6 @@ class CommandOverlay(NSObject):
             )
         except (ImportError, Exception):
             return
-
-        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
-            ridge_mask = CALayer.alloc().init()
-            ridge_mask.setFrame_(((0, 0), (total_w, total_h)))
-            ridge_mask.setContents_(ridge_image)
-            ridge_mask.setContentsGravity_("resize")
-            self._ridge_layer.setMask_(ridge_mask)
-            self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
 
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
