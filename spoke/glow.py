@@ -50,11 +50,11 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.0966  # 140% of the calmer baseline so the border keeps dancing at rest
-_GLOW_PEAK_TARGET = 0.1904
-_GLOW_BASE_OPACITY_DARK = 0.0826
+_GLOW_BASE_OPACITY = 0.2898  # 3x (was 0.0966)
+_GLOW_PEAK_TARGET = 0.5712   # 3x (was 0.1904)
+_GLOW_BASE_OPACITY_DARK = 0.1487  # 1.8x (was 0.0826)
 _GLOW_BASE_OPACITY_LIGHT = 0.2744
-_GLOW_PEAK_TARGET_DARK = 0.168
+_GLOW_PEAK_TARGET_DARK = 0.3024    # 1.8x (was 0.168)
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
@@ -69,35 +69,76 @@ _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.424  # bright scenes move 20% closer to fully opaque
 # Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.95  # faster attack — vignette snaps to voice
-_DECAY_FACTOR = 0.50  # very quick falloff between words
+_RISE_FACTOR = 0.99  # 3x faster (was 0.90)
+_DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
 
-# Fade timing
-_FADE_IN_S = 0.08
-_FADE_OUT_S = 0.2
-_GLOW_SHOW_FADE_S = 0.2
-_GLOW_HIDE_FADE_S = 0.6
+# Fade timing (all 3x faster)
+_FADE_IN_S = 0.026
+_FADE_OUT_S = 0.066
+_GLOW_SHOW_FADE_S = 0.066
+_GLOW_HIDE_FADE_S = 0.2
 _GLOW_SHOW_TIMING = "easeIn"
-_DIM_SHOW_FADE_S = 1.08
-_DIM_HIDE_FADE_S = 2.4
-_WINDOW_TEARDOWN_CUSHION_S = 0.05
+_DIM_SHOW_FADE_S = 0.36
+_DIM_HIDE_FADE_S = 0.8
+_WINDOW_TEARDOWN_CUSHION_S = 0.016
 
 
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0  # seconds between recurring samples
-_BRIGHTNESS_PATCH_SIZE = 50  # pixels per patch side
+_BRIGHTNESS_PATCH_SIZE = 64  # pixels per patch side
+_BRIGHTNESS_SAMPLE_STEP = 8  # skip pixels within each patch
 _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 3.05  # back to original
+_VIGNETTE_OPACITY_SCALE = 7.625  # 2.5x (was 3.05)
 
 
-def _sample_screen_brightness(screen) -> float:
-    """Sample average brightness from 4 small patches (one per quadrant).
+class BrightnessField:
+    """A 4x4 grid of screen brightness samples with bilinear interpolation."""
 
-    Each patch is 50x50 pixels, inset 25% from each screen edge to avoid
-    our own glow/vignette. Returns 0.0 (black) to 1.0 (white).
-    ~4x faster than a fullscreen capture on retina displays.
+    def __init__(self, samples: list[float]):
+        self.samples = (samples + [0.5] * 16)[:16]
+
+    @property
+    def average(self) -> float:
+        """Global average brightness."""
+        return sum(self.samples) / 16.0
+
+    def sample_at(self, x_frac: float, y_frac: float) -> float:
+        """Bilinear interpolation at the given screen-fraction coordinates."""
+        # Grid points are at 12.5%, 37.5%, 62.5%, 87.5%
+        # Map 0.125->0, 0.375->1, 0.625->2, 0.875->3
+        u = (x_frac - 0.125) * 4.0
+        v = (y_frac - 0.125) * 4.0
+
+        # Clamp to grid interior for simple bilinear interpolation
+        # Outside [0.125, 0.875] we just clamp to the nearest edge cell
+        i = int(max(0, min(2, math.floor(u))))
+        j = int(max(0, min(2, math.floor(v))))
+        u_frac = max(0, min(1, u - i))
+        v_frac = max(0, min(1, v - j))
+
+        def get(ix, iy):
+            return self.samples[iy * 4 + ix]
+
+        s00 = get(i, j)
+        s10 = get(i + 1, j)
+        s01 = get(i, j + 1)
+        s11 = get(i + 1, j + 1)
+
+        return (
+            s00 * (1 - u_frac) * (1 - v_frac)
+            + s10 * u_frac * (1 - v_frac)
+            + s01 * (1 - u_frac) * v_frac
+            + s11 * u_frac * v_frac
+        )
+
+
+def _sample_screen_brightness(screen) -> list[float]:
+    """Sample brightness from a 4x4 grid (16 patches) across the screen.
+
+    Each patch is 64x64 pixels, centered at 12.5%, 37.5%, 62.5%, 87.5%
+    of each axis. Returns a flat list of 16 floats (0.0 to 1.0).
     """
     try:
         from Quartz import (
@@ -113,19 +154,18 @@ def _sample_screen_brightness(screen) -> float:
         fw, fh = frame.size.width, frame.size.height
         ox, oy = frame.origin.x, frame.origin.y
         ps = _BRIGHTNESS_PATCH_SIZE
+        step = _BRIGHTNESS_SAMPLE_STEP
 
-        # 4 patches at 25%/75% of each axis
-        patch_centers = [
-            (0.25, 0.25),  # bottom-left quadrant
-            (0.75, 0.25),  # bottom-right
-            (0.25, 0.75),  # top-left
-            (0.75, 0.75),  # top-right
-        ]
+        # 4x4 grid at 12.5%, 37.5%, 62.5%, 87.5% of each axis
+        fractions = [0.125, 0.375, 0.625, 0.875]
+        grid_points = []
+        for fy in fractions:
+            for fx in fractions:
+                grid_points.append((fx, fy))
 
-        total = 0.0
-        samples = 0
+        patch_luminances = []
 
-        for cx_frac, cy_frac in patch_centers:
+        for cx_frac, cy_frac in grid_points:
             px = ox + fw * cx_frac - ps / 2
             py = oy + fh * cy_frac - ps / 2
             rect = ((px, py), (ps, ps))
@@ -137,30 +177,35 @@ def _sample_screen_brightness(screen) -> float:
                 0,
             )
             if image is None:
+                patch_luminances.append(0.5)
                 continue
 
             w = CGImageGetWidth(image)
             h = CGImageGetHeight(image)
             data = CGDataProviderCopyData(CGImageGetDataProvider(image))
             if data is None or len(data) == 0 or w * h == 0:
+                patch_luminances.append(0.5)
                 continue
 
             bpp = len(data) // (w * h)
-            # Sample every 5th pixel for speed
-            step = max(5, 1)
+            total = 0.0
+            samples = 0
+
             for sy in range(0, h, step):
                 for sx in range(0, w, step):
                     offset = (sy * w + sx) * bpp
                     if offset + 3 <= len(data):
+                        # Simple RGB -> Luminance
                         r, g, b = data[offset], data[offset + 1], data[offset + 2]
-                        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-                        total += lum
+                        total += (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
                         samples += 1
 
-        return total / samples if samples > 0 else 0.5
+            patch_luminances.append(total / samples if samples > 0 else 0.5)
+
+        return patch_luminances
     except Exception:
-        logger.debug("Screen brightness sampling failed", exc_info=True)
-        return 0.5
+        logger.debug("Screen brightness grid sampling failed", exc_info=True)
+        return [0.5] * 16
 
 
 def _compress_screen_glow_peak(opacity: float) -> float:
@@ -341,17 +386,68 @@ def _display_signed_distance_field(geometry: dict):
 
 
 def _distance_field_opacity(distance: float, falloff: float, power: float) -> float:
-    normalized = max(distance, 0.0) / max(falloff, 1e-6)
-    return math.exp(-(normalized ** power))
+    # Option B: Rational falloff (inverse-square family)
+    # 1 / (1 + (d/falloff)^power)
+    denom = 1.0 + (max(distance, 0.0) / max(falloff, 1e-6)) ** power
+    return 1.0 / denom
 
 
-def _distance_field_alpha(signed_distance, falloff: float, power: float):
+def _generate_brownian_mist(width: int, height: int, scale: float) -> "np.ndarray":
+    """Generate structured ridged noise with domain warping (supple tendrils)."""
+    import numpy as np
+    from scipy.ndimage import zoom
+
+    noise = np.zeros((height, width), dtype=np.float32)
+    # Domain warping: use initial noise octaves to warp the sampling of later ones.
+    warp_x = np.zeros((height, width), dtype=np.float32)
+    warp_y = np.zeros((height, width), dtype=np.float32)
+
+    lacunarity = 2.1
+    gain = 0.52
+
+    for octave in range(6):
+        freq = (lacunarity ** octave) * 0.65 / scale
+        amp = gain ** octave
+        rw, rh = max(int(width * freq), 2), max(int(height * freq), 2)
+
+        # Warp the sampling grid for this octave
+        if octave > 0:
+            # Simple warp: shift the seed indices based on previous noise
+            # This creates the "supple" organic flow lines.
+            shift = (octave * 4.0) / scale
+            warp_x += zoom(np.random.rand(rh, rw).astype(np.float32) - 0.5, (height / rh, width / rw), order=1)[:height, :width] * shift
+            warp_y += zoom(np.random.rand(rh, rw).astype(np.float32) - 0.5, (height / rh, width / rw), order=1)[:height, :width] * shift
+
+        seed = np.random.rand(rh, rw).astype(np.float32)
+        octave_noise = zoom(seed, (height / rh, width / rw), order=1)[:height, :width]
+
+        # Apply warp to the current octave
+        v = 1.0 - np.abs(octave_noise - 0.5) * 2.0
+        # Multifractal scaling: noise is "sharpened" as it gets smaller
+        noise += (v ** (2.5 + octave * 0.2)) * amp
+
+    n_min, n_max = noise.min(), noise.max()
+    if n_max > n_min:
+        noise = (noise - n_min) / (n_max - n_min)
+    return noise
+
+def _distance_field_alpha(signed_distance, falloff: float, power: float, noise_field: "np.ndarray" | None = None):
     import numpy as np
 
     distance = np.clip(-signed_distance, 0.0, None)
-    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
-    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
+    # Option B: Rational falloff (inverse-square family)
+    # Gives a visible shoulder near the edge and a long, slow tail.
+    denom = 1.0 + np.power(distance / max(falloff, 1e-6), power, dtype=np.float32)
+    alpha = 1.0 / denom
 
+    if noise_field is not None:
+        noise_strength = alpha 
+        # User Directive: "increase the magnitude of the subtraction ... punch some sharper holes"
+        # 2.3x deeper bite (0.30 -> 0.70) for sharper, more legible structural patterns
+        structured_noise = np.power(noise_field, 4.0)
+        alpha = alpha * (1.0 - structured_noise * noise_strength * 0.70)
+
+    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
 
 def _alpha_field_to_image(alpha):
     """Convert a float alpha field into a CGImage suitable for a CALayer mask."""
@@ -389,14 +485,18 @@ def _alpha_field_to_image(alpha):
     return image, payload
 
 
-def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
+def _distance_field_masks_for_specs(geometry: dict, specs: list[dict], noise_field: "np.ndarray" | None = None) -> list[dict]:
+    import numpy as np
     signed_distance = _display_signed_distance_field(geometry)
+    scale = geometry["scale"]
+
     masks = []
     for spec in specs:
         alpha = _distance_field_alpha(
             signed_distance,
-            spec["falloff"] * geometry["scale"],
+            spec["falloff"] * scale,
             spec["power"],
+            noise_field=noise_field,
         )
         image, payload = _alpha_field_to_image(alpha)
         masks.append({"image": image, "payload": payload, "spec": spec})
@@ -502,6 +602,7 @@ class GlowOverlay(NSObject):
         self._screen = screen or NSScreen.mainScreen()
         self._window: NSWindow | None = None
         self._glow_layer: CALayer | None = None
+        self._dim_layer: CALayer | None = None
         self._smoothed_amplitude = 0.0
         self._visible = False
         self._fade_in_until = 0.0
@@ -515,6 +616,7 @@ class GlowOverlay(NSObject):
         self._glow_peak_target = _GLOW_PEAK_TARGET
         self._brightness_timer = None
         self._brightness = 0.5
+        self._brightness_field: BrightnessField | None = None
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -545,34 +647,34 @@ class GlowOverlay(NSObject):
         content = self._window.contentView()
         content.setWantsLayer_(True)
 
+        # ── Procedural additive and subtractive passes ─────────
         w, h = frame.size.width, frame.size.height
         mask_scale = _screen_backing_scale(self._screen)
         geometry = _display_shape_geometry(self._screen, w, h, mask_scale)
         geometry["scale"] = mask_scale
 
-        glow_colors = _glow_role_colors(_GLOW_COLOR)
+        # Shared noise field for visual consistency across additive/subtractive
+        import numpy as np
+        pw, ph = geometry["pixel_width"], geometry["pixel_height"]
+        noise_field = _generate_brownian_mist(pw, ph, mask_scale)
 
-        # ── Optional screen dim: subtle dark backdrop for glow contrast ──
-        self._dim_layer = None
+        # Optional screen dim layer
         if _DIM_SCREEN:
             self._dim_layer = CALayer.alloc().init()
             self._dim_layer.setFrame_(((0, 0), (w, h)))
-            self._dim_layer.setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 1.0).CGColor()
-            )
+            self._dim_layer.setBackgroundColor_(NSColor.blackColor().CGColor())
             self._dim_layer.setOpacity_(0.0)
             content.layer().addSublayer_(self._dim_layer)
 
-        # ── Container layer: holds shadow + masked fill ──────────
-        # We control opacity on this layer to drive the whole effect.
+        # Container for all distance-field effects
         self._glow_layer = CALayer.alloc().init()
         self._glow_layer.setFrame_(((0, 0), (w, h)))
         self._glow_layer.setOpacity_(0.0)
 
-        # Procedural additive passes: one continuous field, different falloff curves.
+        # Additive glow passes
         glow_pass_layers = []
         self._mask_payloads = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs(), noise_field=noise_field):
             spec = entry["spec"]
             layer = CALayer.alloc().init()
             layer.setFrame_(((0, 0), (w, h)))
@@ -586,16 +688,14 @@ class GlowOverlay(NSObject):
             glow_pass_layers.append({"layer": layer, "spec": spec})
 
         self._glow_pass_layers = glow_pass_layers
-        self._shadow_shape = glow_pass_layers[-1]["layer"] if glow_pass_layers else None
 
-        # ── Subtractive vignette: darkened colored edges for light backgrounds ──
-        # Same distance-field geometry as the additive glow, with tinted falloff.
+        # Subtractive vignette passes
         self._vignette_layer = CALayer.alloc().init()
         self._vignette_layer.setFrame_(((0, 0), (w, h)))
         self._vignette_layer.setOpacity_(0.0)
 
         vignette_pass_layers = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs()):
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs(), noise_field=noise_field):
             spec = entry["spec"]
             layer = CALayer.alloc().init()
             layer.setFrame_(((0, 0), (w, h)))
@@ -644,7 +744,11 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
-        brightness = _sample_screen_brightness(self._screen)
+        
+        samples = _sample_screen_brightness(self._screen)
+        self._brightness_field = BrightnessField(samples)
+        brightness = self._brightness_field.average
+        
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
         self._brightness = brightness
@@ -702,10 +806,14 @@ class GlowOverlay(NSObject):
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
         if not self._visible:
             return
-        new_brightness = _sample_screen_brightness(self._screen)
+        samples = _sample_screen_brightness(self._screen)
+        new_field = BrightnessField(samples)
+        new_brightness = new_field.average
         if abs(new_brightness - self._brightness) < 0.02:
             return  # no meaningful change
         self._brightness = new_brightness
+        self._brightness_field = new_field
+        
         new_color, new_base, new_peak = _glow_style_for_brightness(new_brightness)
         self._glow_color = new_color
         self._glow_base_opacity = new_base

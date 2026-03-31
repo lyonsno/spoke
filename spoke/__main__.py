@@ -4,10 +4,12 @@ Run with:  uv run spoke
     or:    uv run python -m spoke
 
 Configure via environment variables:
-    SPOKE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
-    SPOKE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
-    SPOKE_HOLD_MS        Hold threshold in ms (default: 200, must be > 0)
-    SPOKE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
+    SPOKE_WHISPER_URL          Sidecar server URL (optional — if unset, uses local MLX Whisper)
+    SPOKE_WHISPER_MODEL        Model name (default: mlx-community/whisper-large-v3-turbo)
+    SPOKE_HOLD_MS              Hold threshold in ms (default: 200, must be > 0)
+    SPOKE_RESTORE_DELAY_MS     Pasteboard restore delay in ms (default: 1000)
+    SPOKE_PARAKEET_MODEL_DIR   Path to FluidInference/parakeet-ctc-110m-coreml clone dir
+                               (enables Parakeet CoreML/ANE preview model in the menu)
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
+from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient
 
@@ -64,6 +67,14 @@ _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen2.5-Coder-7B-Instruct-MLX-4bit",
     "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
     "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+]
+
+_TTS_MODELS = [
+    ("mlx-community/Voxtral-4B-TTS-2603-mlx-4bit", "Voxtral 4B (4-bit)"),
+    ("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit", "Qwen3-TTS 1.7B CustomVoice (8-bit)"),
+    ("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit", "Qwen3-TTS 0.6B CustomVoice (8-bit)"),
+    ("mlx-community/VibeVoice-Realtime-0.5B-fp16", "VibeVoice 0.5B Realtime (fp16)"),
+    ("mlx-community/Kokoro-82M-bf16", "Kokoro 82M (bf16)"),
 ]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
@@ -214,6 +225,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
+        self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -264,11 +276,15 @@ class SpokeAppDelegate(NSObject):
             self._scene_cache = None
             self._tool_schemas = None
 
-        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
+        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
+        # Preference-based model override takes priority over env var.
+        tts_model_pref = self._load_preferences().get("tts_model")
+        if tts_model_pref:
+            os.environ["SPOKE_TTS_MODEL"] = tts_model_pref
         self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
         self._command_tool_used_tts = False
         if self._tts_client is not None:
-            logger.info("TTS enabled: voice=%s", self._tts_client._voice)
+            logger.info("TTS enabled: model=%s voice=%s", self._tts_client._model_id, self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
         self._tray_stack: list[TrayEntry | str] = []
@@ -282,6 +298,7 @@ class SpokeAppDelegate(NSObject):
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
         self._verify_paste_text: str | None = None
         self._verify_paste_attempt: int = 0
+        self._result_pending_inject = None
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
         self._recovery_text: str | None = None
         self._recovery_clipboard_state: str = "idle"
@@ -579,10 +596,16 @@ class SpokeAppDelegate(NSObject):
             self._transcription_token += 1
             self._transcribing = False
             # Fall through to start recording
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            # User speech should interrupt assistant speech before we reopen input.
-            tts.cancel()
+        # Don't cancel TTS on hold-start — let tool-call playback finish
+        # naturally. TTS is cancelled on explicit overlay dismiss or when
+        # a new command response arrives and supersedes the old one.
+        # Clear Enter suppression — new hold replaces/dismisses the overlay.
+        self._detector.command_overlay_active = False
+        # Do NOT clear _just_dismissed here — it must survive until
+        # _on_hold_end so the empty-recording path can see it.
+        # Otherwise a slow dismiss tap (>400ms) would recall immediately.
+        logger.info("command_overlay_active -> False (hold start), _just_dismissed=%s (preserved)",
+                     self._detector._command_overlay_just_dismissed)
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -627,7 +650,7 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             if self._glow is not None:
                 self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
+                    getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0)),
                     immediate=True,
                 )
             self._overlay.show()
@@ -694,8 +717,8 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
-            glow_brightness = getattr(self._glow, "_brightness", 0.0)
-            if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
+            glow_brightness = getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0))
+            if glow_brightness != getattr(self._overlay, "_brightness_field", getattr(self._overlay, "_brightness", 0.0)):
                 self._overlay.set_brightness(glow_brightness)
             self._sync_command_overlay_brightness()
             # Text breathing: glow's smoothed amplitude, scaled independently
@@ -900,22 +923,25 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_recording(False)
 
         if not wav_bytes:
-            logger.info("No audio — instant path (shift=%s, enter=%s)", shift_held, enter_held)
+            logger.info("No audio — instant path (shift=%s, enter=%s, overlay_active=%s)",
+                        shift_held, enter_held, self._detector.command_overlay_active)
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
 
             if enter_held and self._command_client is not None:
-                # Enter + empty recording = recall last assistant response
-                command_visible = (
-                    self._command_overlay is not None
-                    and getattr(self._command_overlay, '_visible', False)
-                )
-                if command_visible:
+                # Enter + empty recording = toggle last assistant response.
+                # Use command_overlay_active (our flag) not _visible (animation state)
+                # to avoid re-dismissing during the dismiss animation.
+                self._detector._command_overlay_just_dismissed = False
+                if self._detector.command_overlay_active:
                     # Already showing — dismiss it
                     logger.info("Enter+empty — dismissing command overlay")
-                    self._command_overlay.cancel_dismiss()
+                    if self._command_overlay is not None:
+                        self._command_overlay.cancel_dismiss()
+                    self._detector.command_overlay_active = False
+                    logger.info("command_overlay_active -> False (enter+empty dismiss)")
                 else:
                     # Not showing — recall last response
                     history = self._command_client.history
@@ -928,6 +954,8 @@ class SpokeAppDelegate(NSObject):
                                 self._command_overlay.set_utterance(last_utterance)
                                 self._command_overlay.append_token(last_response)
                                 self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
+                                logger.info("command_overlay_active -> True (enter+empty recall)")
                             except Exception:
                                 logger.exception("Recall overlay failed")
                     else:
@@ -944,14 +972,41 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             else:
-                command_visible = (
-                    self._command_overlay is not None
-                    and getattr(self._command_overlay, '_visible', False)
-                )
-                if command_visible:
-                    logger.info("Empty recording — dismissing command overlay")
-                    self._command_overlay.cancel_dismiss()
+                # Only dismiss if the overlay wasn't already dismissed by the
+                # instant-press handler (which clears command_overlay_active).
+                if self._detector.command_overlay_active:
+                    command_visible = (
+                        self._command_overlay is not None
+                        and getattr(self._command_overlay, '_visible', False)
+                    )
+                    if command_visible:
+                        logger.info("Empty recording — dismissing command overlay")
+                        self._command_overlay.cancel_dismiss()
+                        self._detector.command_overlay_active = False
+                        logger.info("command_overlay_active -> False (empty dismiss)")
+                elif self._command_client is not None and not self._detector._command_overlay_just_dismissed:
+                    # Overlay not visible — recall last response on empty tap.
+                    # Skip if this tap already dismissed the overlay (avoid dismiss→recall stutter).
+                    history = self._command_client.history
+                    if history:
+                        last_utterance, last_response = history[-1]
+                        logger.info("Empty tap — recalling last response")
+                        if self._command_overlay is not None:
+                            try:
+                                self._sync_command_overlay_brightness(immediate=True)
+                                self._command_overlay.show()
+                                self._command_overlay.set_utterance(last_utterance)
+                                self._command_overlay.append_token(last_response)
+                                self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
+                                logger.info("command_overlay_active -> True (empty tap recall)")
+                            except Exception:
+                                logger.exception("Recall overlay failed")
 
+            # Clear _just_dismissed now that the decision has been made.
+            # This flag only needs to survive from instant-dismiss through
+            # the current hold's _on_hold_end.
+            self._detector._command_overlay_just_dismissed = False
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
@@ -1103,6 +1158,8 @@ class SpokeAppDelegate(NSObject):
                     for ch in last_response:
                         self._command_overlay.append_token(ch)
                     self._command_overlay.finish()
+                    self._detector.command_overlay_active = True
+                    logger.info("command_overlay_active -> True (shift recall)")
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
                 return
@@ -1115,7 +1172,7 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is None or self._glow is None:
             return
         self._command_overlay.set_brightness(
-            getattr(self._glow, "_brightness", 0.0),
+            getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0)),
             immediate=immediate,
         )
 
@@ -1312,6 +1369,36 @@ class SpokeAppDelegate(NSObject):
             logger.info("Shift tap during tray — dismiss")
             self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
+
+    def _dismiss_command_overlay(self) -> None:
+        """Instant-dismiss the command overlay.
+
+        Called from the event tap callback, which runs on the main runloop.
+        We call dismissCommandOverlay_ directly instead of deferring via
+        performSelectorOnMainThread, so that the flag writes happen before
+        handle_key_down and _on_hold_end see them in the same runloop pass.
+        """
+        self.dismissCommandOverlay_(None)
+
+    def dismissCommandOverlay_(self, _) -> None:
+        """Main thread: dismiss the command overlay and cancel TTS.
+
+        All flag writes happen here on the main thread, not in the event
+        tap callback.  This prevents interleaving with _on_hold_start and
+        _on_hold_end which also run on the main thread.
+        """
+        # Don't cancel TTS — audio keeps playing after overlay dismiss.
+        # TTS is only cancelled when a new command response supersedes the old one.
+        overlay_visible = self._command_overlay is not None and getattr(self._command_overlay, '_visible', False)
+        logger.info("dismissCommandOverlay_: overlay_visible=%s command_overlay_active=%s",
+                     overlay_visible, self._detector.command_overlay_active)
+        self._detector.command_overlay_active = False
+        self._detector._command_overlay_just_dismissed = True
+        logger.info("command_overlay_active -> False, _just_dismissed -> True (instant dismiss, main thread)")
+        if overlay_visible:
+            self._command_overlay.cancel_dismiss()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     def _on_audio_shift_tap(self) -> None:
         """Shift tap while idle toggles current TTS audibility."""
@@ -1524,19 +1611,37 @@ class SpokeAppDelegate(NSObject):
                     if token != self._transcription_token:
                         break  # stale
                     if event.kind == "assistant_delta":
+                        full_response += event.text
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                            "commandToken:",
-                            {"token": token, "text": event.text},
-                            False,
+                            "commandToken:", {"token": token, "text": event.text}, False
                         )
+                    elif event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:", {"token": token, "text": "", "tool_call": event.tool_call}, False
+                        )
+                                "commandToolStart:", {"token": token}, False
+                            )
+                        else:
+                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                "commandToolEnd:", {"token": token}, False
+                            )
                     elif event.kind == "assistant_final":
-                        full_response = event.text
+                        full_response += event.text
             except Exception:
                 logger.exception("Command stream failed")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "commandFailed:", {"token": token, "error": "Command failed"}, False
                 )
                 return
+            finally:
+                # Save history even if the generator was interrupted by a stale
+                # token break — otherwise the model loses all conversation context.
+                if full_response:
+                    self._command_client._history.append((text, full_response))
+                    max_h = self._command_client._max_history
+                    if len(self._command_client._history) > max_h:
+                        self._command_client._history.pop(0)
+                    logger.info("Command history saved: %d turns", len(self._command_client._history))
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandComplete:", {"token": token, "response": full_response}, False
@@ -1646,14 +1751,20 @@ class SpokeAppDelegate(NSObject):
             ):
                 if token != self._transcription_token:
                     break  # stale
-                if event.kind == "assistant_delta":
+                if event.kind == "assistant_delta" or event.kind == "tool_call":
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "commandToken:",
-                        {"token": token, "text": event.text},
-                        False,
+                        "commandToken:", {"token": token, "text": event.text}, False
                     )
+                    if event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolStart:", {"token": token}, False
+                        )
+                    else:
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolEnd:", {"token": token}, False
+                        )
                 elif event.kind == "assistant_final":
-                    full_response = event.text
+                    full_response += event.text
         except Exception:
             logger.exception("Command stream failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1678,9 +1789,25 @@ class SpokeAppDelegate(NSObject):
             self._sync_command_overlay_brightness(immediate=True)
             self._command_overlay.show()
             self._command_overlay.set_utterance(utterance)
+            self._detector.command_overlay_active = True
+            logger.info("command_overlay_active -> True (command started)")
         self._command_first_token = True
         if self._menubar is not None:
             self._menubar.set_status_text("Thinking…")
+
+    def commandToolStart_(self, payload: dict) -> None:
+        """Main thread: tool execution started."""
+        if payload["token"] != self._transcription_token:
+            return
+        if self._command_overlay is not None:
+            self._command_overlay.set_tool_active(True)
+
+    def commandToolEnd_(self, payload: dict) -> None:
+        """Main thread: tool execution finished."""
+        if payload["token"] != self._transcription_token:
+            return
+        if self._command_overlay is not None:
+            self._command_overlay.set_tool_active(False)
 
     def commandToken_(self, payload: dict) -> None:
         """Main thread: append a streamed token to the command overlay."""
@@ -1709,6 +1836,8 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         overlay = self._command_overlay
+        if overlay is not None: 
+            overlay.set_tool_active(False) 
         response = payload.get("response", "")
         if overlay is not None and response:
             try:
@@ -1726,6 +1855,21 @@ class SpokeAppDelegate(NSObject):
         tts = getattr(self, "_tts_client", None)
         tool_used_tts = getattr(self, "_command_tool_used_tts", False)
         self._command_tool_used_tts = False
+        logger.info(
+            "TTS autoplay decision: response=%d chars, tts_client=%s, tool_used_tts=%s, model=%s",
+            len(response) if response else 0,
+            tts is not None,
+            tool_used_tts,
+            getattr(tts, "_model_id", "?") if tts else "none",
+        )
+        if not response:
+            logger.info("TTS autoplay: skipped — no response text")
+        elif tts is None:
+            logger.info("TTS autoplay: skipped — no TTS client")
+            if self._menubar is not None:
+                self._menubar.set_status_text("TTS: not configured")
+        elif tool_used_tts:
+            logger.info("TTS autoplay: skipped — tool already used TTS")
         if response and tts is not None and not tool_used_tts:
             if self._glow is not None:
                 self._glow.hide()
@@ -1735,6 +1879,7 @@ class SpokeAppDelegate(NSObject):
                 except Exception:
                     logger.exception("Command overlay TTS start failed")
             try:
+                logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
                 tts.speak_async(
                     response,
                     amplitude_callback=self._on_tts_amplitude,
@@ -1742,6 +1887,7 @@ class SpokeAppDelegate(NSObject):
                         "ttsFinished:", None, False
                     ),
                 )
+                logger.info("TTS autoplay: speak_async returned (queued)")
             except Exception:
                 logger.exception("Command autoplay failed to start")
                 if overlay is not None:
@@ -1801,6 +1947,8 @@ class SpokeAppDelegate(NSObject):
                 logger.exception("Command overlay append failed during error presentation")
             try:
                 self._command_overlay.finish()
+                self._detector.command_overlay_active = True
+                logger.info("command_overlay_active -> True (command failed)")
             except Exception:
                 logger.exception("Command overlay finish failed during error presentation")
         if self._menubar is not None:
@@ -1863,12 +2011,6 @@ class SpokeAppDelegate(NSObject):
 
         # Second check also failed
         self._verify_paste_text = None
-        if not is_retry and has_focused_text_input():
-            logger.warning(
-                "Paste not verified by OCR after %d attempts, but a text field is still focused — treating as likely OCR false negative",
-                attempt + 1,
-            )
-            return
         if is_retry:
             # Retry from recovery failed — bounce the overlay back
             logger.warning("Recovery retry not verified by OCR — bouncing back")
@@ -1876,7 +2018,10 @@ class SpokeAppDelegate(NSObject):
             self._enter_recovery_mode(text)
         else:
             # Normal paste failed — enter recovery for the first time
-            logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+            logger.warning(
+                "Paste not verified by OCR after %d attempts — entering recovery",
+                attempt + 1,
+            )
             self._enter_recovery_mode(text)
 
     # ── helpers ─────────────────────────────────────────────
@@ -1894,7 +2039,11 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
+        (_PARAKEET_MODEL_ID, "Parakeet CTC-110M (CoreML/ANE, preview only)"),
     ]
+
+    # Parakeet is preview-only: too rough for final transcription
+    _PREVIEW_ONLY_MODELS = frozenset({_PARAKEET_MODEL_ID})
 
     def _select_model(self, model_id):
         """Model picker. Pass None to get the menu list, or a model ID to switch."""
@@ -1995,6 +2144,17 @@ class SpokeAppDelegate(NSObject):
                         ),
                     ],
                 }
+            tts = getattr(self, "_tts_client", None)
+            if tts is not None:
+                current_tts_model = tts._model_id
+                tts_models = [
+                    (model_id, label, True)
+                    for model_id, label in _TTS_MODELS
+                ]
+                state["tts"] = {
+                    "selected": current_tts_model,
+                    "models": tts_models,
+                }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
             self._select_model(selection)
@@ -2005,6 +2165,9 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "launch_target":
             self._apply_launch_target_selection(model_id)
+            return
+        if role == "tts":
+            self._apply_tts_model_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -2172,6 +2335,15 @@ class SpokeAppDelegate(NSObject):
         return self._default_transcription_model()
 
     def _sanitize_model_id(self, model_id: str, *, role: str) -> str:
+        # Preview-only models (e.g. Parakeet) must not be used for transcription
+        if role == "transcription" and model_id in self._PREVIEW_ONLY_MODELS:
+            fallback = self._default_transcription_model()
+            logger.warning(
+                "Model %s is preview-only and cannot be used for transcription — falling back to %s",
+                model_id,
+                fallback,
+            )
+            return fallback
         if self._model_allowed(model_id):
             return model_id
         fallback = self._fallback_model_for_role(role)
@@ -2331,6 +2503,10 @@ class SpokeAppDelegate(NSObject):
         if whisper_url:
             logger.info("Using sidecar transcription: %s (%s)", whisper_url, model_id)
             return TranscriptionClient(base_url=whisper_url, model=model_id)
+        if model_id == _PARAKEET_MODEL_ID:
+            model_dir = self._resolve_parakeet_model_dir()
+            logger.info("Using Parakeet CoreML: %s", model_dir)
+            return ParakeetCoreMLClient(model_dir=model_dir)
         if model_id.startswith("Qwen/"):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
@@ -2348,6 +2524,29 @@ class SpokeAppDelegate(NSObject):
                 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
             ),
         )
+
+    def _resolve_parakeet_model_dir(self) -> Path:
+        """Return the Parakeet CoreML model directory.
+
+        Checks SPOKE_PARAKEET_MODEL_DIR env var first, then the default HF
+        cache location (~/.cache/huggingface/hub/models--FluidInference--parakeet-ctc-110m-coreml/snapshots/).
+        Falls back to an empty path so the client can log a clear warning.
+        """
+        env_dir = os.environ.get("SPOKE_PARAKEET_MODEL_DIR", "")
+        if env_dir:
+            return Path(env_dir).expanduser()
+
+        # Try HF hub cache — look for the most recent snapshot
+        hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        snapshots = hf_cache / "models--FluidInference--parakeet-ctc-110m-coreml" / "snapshots"
+        if snapshots.is_dir():
+            candidates = sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            for candidate in candidates:
+                if (candidate / "AudioEncoder.mlmodelc").exists():
+                    return candidate
+
+        # No model found — return a path that will produce a clear warning
+        return Path("/nonexistent/parakeet-ctc-110m-coreml")
 
     def _discover_command_models(
         self, selected_model: str
@@ -2448,6 +2647,27 @@ class SpokeAppDelegate(NSObject):
             return
         self._command_model_id = model_id
         os.environ["SPOKE_COMMAND_MODEL"] = model_id
+        self._relaunch()
+
+    def _apply_tts_model_selection(self, model_id: str) -> None:
+        tts = getattr(self, "_tts_client", None)
+        current_model = tts._model_id if tts else None
+        if model_id == current_model:
+            return
+        logger.info(
+            "Switching TTS model (relaunching): %s -> %s",
+            current_model,
+            model_id,
+        )
+        payload = self._load_preferences()
+        payload["tts_model"] = model_id
+        if not self._save_preferences(payload):
+            logger.warning(
+                "Skipping relaunch because the TTS model selection could not be persisted"
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save TTS model selection")
+            return
         self._relaunch()
 
     def _prepare_clients(self) -> None:
@@ -2624,10 +2844,24 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.order_out()
 
-        # Always attempt the paste immediately — the user perceives no delay.
         # Save clipboard state before inject_text overwrites it, in case we
         # need to enter recovery mode after OCR verification.
         self._pre_paste_clipboard = save_pasteboard()
+        # Give the target app a brief moment to refocus after the overlay
+        # disappears before we synthesize Cmd+V.
+        self._result_pending_inject = (text, status_text)
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.05, self, "resultInjectDelayed:", None, False
+        )
+
+    def resultInjectDelayed_(self, timer) -> None:
+        """Paste normal-path text after a short post-overlay refocus delay."""
+        pending = getattr(self, "_result_pending_inject", None)
+        self._result_pending_inject = None
+        if pending is None:
+            return
+        text, status_text = pending
 
         def _on_clipboard_restored():
             if self._menubar is not None:
@@ -2801,8 +3035,26 @@ class SpokeAppDelegate(NSObject):
 
     @staticmethod
     def _model_allowed(model_id: str) -> bool:
-        """Guard: whisper-large-v3-turbo requires >= 16GB RAM."""
+        """Guard: some models require specific hardware or installed files."""
         if "large-v3-turbo" in model_id and _RAM_GB < _MIN_RAM_GB_FOR_V3_TURBO:
+            return False
+        if model_id == _PARAKEET_MODEL_ID:
+            # Only show if the model files are present or the user has pointed us at them
+            env_dir = os.environ.get("SPOKE_PARAKEET_MODEL_DIR", "")
+            if env_dir and (Path(env_dir).expanduser() / "AudioEncoder.mlmodelc").exists():
+                return True
+            hf_snapshots = (
+                Path.home()
+                / ".cache"
+                / "huggingface"
+                / "hub"
+                / "models--FluidInference--parakeet-ctc-110m-coreml"
+                / "snapshots"
+            )
+            if hf_snapshots.is_dir():
+                return any(
+                    (s / "AudioEncoder.mlmodelc").exists() for s in hf_snapshots.iterdir()
+                )
             return False
         return True
 
