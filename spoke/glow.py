@@ -89,7 +89,7 @@ _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 6.10  # 2x — more intense subtractive shadow
+_VIGNETTE_OPACITY_SCALE = 4.0  # eased back ~35% from the 2x boost for movement legibility
 
 
 def _sample_screen_brightness(screen) -> float:
