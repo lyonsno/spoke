@@ -13,6 +13,7 @@ Configure via environment variables:
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -129,6 +130,32 @@ _RAM_GB = _get_ram_gb()
 _MAX_RECORD_SECS: float | None = _max_record_secs_for_ram(_RAM_GB)
 
 
+@dataclass
+class TrayEntry:
+    """A tray entry with minimal ownership/provenance metadata."""
+
+    text: str
+    owner: str = "user"
+    acknowledged: bool = True
+
+    def __eq__(self, other):
+        if isinstance(other, TrayEntry):
+            return (
+                self.text == other.text
+                and self.owner == other.owner
+                and self.acknowledged == other.acknowledged
+            )
+        if isinstance(other, str):
+            return self.text == other
+        return NotImplemented
+
+    @property
+    def display_owner(self) -> str:
+        if self.owner == "assistant" and not self.acknowledged:
+            return "assistant"
+        return "user"
+
+
 class SpokeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
 
@@ -239,9 +266,10 @@ class SpokeAppDelegate(NSObject):
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
-        self._tray_stack: list[str] = []
+        self._tray_stack: list[TrayEntry | str] = []
         self._tray_index: int = 0
         self._tray_active: bool = False
+        self._tray_tool_result: dict | None = None
 
         # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -836,7 +864,7 @@ class SpokeAppDelegate(NSObject):
                     self._tray_active = True
                     self._detector.tray_active = True
                     self._tray_index = len(self._tray_stack) - 1
-                    self._show_tray_current()
+                    self._show_tray_current(acknowledge=True)
                     return
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
@@ -1112,26 +1140,61 @@ class SpokeAppDelegate(NSObject):
 
     def _enter_tray(self, text: str) -> None:
         """Enter the tray with new text, pushing it onto the stack."""
-        self._tray_stack.append(text)
-        self._tray_index = len(self._tray_stack) - 1
-        self._tray_active = True
-        self._detector.tray_active = True
-        logger.info(
-            "Entering tray (entries=%d index=%d text_len=%d)",
-            len(self._tray_stack),
-            self._tray_index,
-            len(text),
+        self._add_tray_entry(text, owner="user", activate=True)
+
+    def _coerce_tray_entry(self, entry: TrayEntry | str) -> TrayEntry:
+        if isinstance(entry, TrayEntry):
+            return entry
+        return TrayEntry(text=str(entry))
+
+    def _get_tray_entry(self, index: int) -> TrayEntry:
+        entry = self._coerce_tray_entry(self._tray_stack[index])
+        self._tray_stack[index] = entry
+        return entry
+
+    def _acknowledge_tray_entry(self, index: int) -> None:
+        if index < 0 or index >= len(self._tray_stack):
+            return
+        entry = self._get_tray_entry(index)
+        if entry.owner == "assistant" and not entry.acknowledged:
+            entry.acknowledged = True
+
+    def _add_tray_entry(
+        self,
+        text: str,
+        *,
+        owner: str = "user",
+        activate: bool = True,
+    ) -> TrayEntry:
+        entry = TrayEntry(
+            text=text,
+            owner=owner,
+            acknowledged=(owner != "assistant"),
         )
+        self._tray_stack.append(entry)
+        self._tray_index = len(self._tray_stack) - 1
 
-        if self._glow is not None:
-            if hasattr(self._glow, "show_tray_dim"):
-                self._glow.show_tray_dim()
-            else:
-                self._glow.hide()
+        if activate:
+            self._tray_active = True
+            self._detector.tray_active = True
+            logger.info(
+                "Entering tray (entries=%d index=%d text_len=%d)",
+                len(self._tray_stack),
+                self._tray_index,
+                len(text),
+            )
 
-        self._show_tray_current()
+            if self._glow is not None:
+                if hasattr(self._glow, "show_tray_dim"):
+                    self._glow.show_tray_dim()
+                else:
+                    self._glow.hide()
 
-    def _show_tray_current(self) -> None:
+            self._show_tray_current()
+
+        return entry
+
+    def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
         if not self._tray_stack:
             self._dismiss_tray()
@@ -1139,12 +1202,15 @@ class SpokeAppDelegate(NSObject):
         # Defensive bounds clamp
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
-        text = self._tray_stack[self._tray_index]
+        if acknowledge:
+            self._acknowledge_tray_entry(self._tray_index)
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
         # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
         if self._overlay is not None:
-            self._overlay.show_tray(text)
+            self._overlay.show_tray(text, owner=entry.display_owner)
         if self._menubar is not None:
             pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
             self._menubar.set_status_text(f"Tray [{pos}]")
@@ -1169,6 +1235,7 @@ class SpokeAppDelegate(NSObject):
         """Shift tap (no spacebar) during tray = dismiss."""
         if self._tray_active:
             logger.info("Shift tap during tray — dismiss")
+            self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
 
     def _on_audio_shift_tap(self) -> None:
@@ -1217,7 +1284,7 @@ class SpokeAppDelegate(NSObject):
             self._dismiss_tray()
         else:
             self._tray_index += 1
-            self._show_tray_current()
+            self._show_tray_current(acknowledge=True)
 
     def _tray_navigate_down(self) -> None:
         """Navigate down toward older entries. Stop at bottom."""
@@ -1225,7 +1292,7 @@ class SpokeAppDelegate(NSObject):
             return
         if self._tray_index > 0:
             self._tray_index -= 1
-            self._show_tray_current()
+            self._show_tray_current(acknowledge=True)
 
     def _tray_delete_current(self) -> None:
         """Delete the currently displayed tray entry."""
@@ -1238,13 +1305,14 @@ class SpokeAppDelegate(NSObject):
         # Adjust index: stay at same position or move up if we were at the end
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
-        self._show_tray_current()
+        self._show_tray_current(acknowledge=True)
 
     def _tray_insert_current(self) -> None:
         """Insert the current tray entry at cursor and consume it."""
         if not self._tray_active or not self._tray_stack:
             return
-        text = self._tray_stack[self._tray_index]
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
 
         # Dismiss tray first, then inject. Dismissing before inject ensures
         # the tray overlay doesn't interfere with focus on the target app.
@@ -1291,7 +1359,8 @@ class SpokeAppDelegate(NSObject):
             return
         if not self._tray_active:
             return
-        text = self._tray_stack[self._tray_index]
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
 
         # Remove consumed entry from stack
         del self._tray_stack[self._tray_index]
@@ -1310,6 +1379,38 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Tray send — no command client configured")
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _add_assistant_content_to_tray(self, text: str) -> dict:
+        """Place assistant-created content into the tray on the main thread.
+
+        Must be called from a background thread — uses waitUntilDone=True to
+        synchronously dispatch tray mutation onto the main thread. Relies on
+        tool calls being executed sequentially (the command.py tool loop) so
+        that _tray_tool_result is never written concurrently.
+        """
+        self._tray_tool_result = None
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "toolAddToTray:",
+            {"text": text},
+            True,
+        )
+        return self._tray_tool_result or {"error": "Tray update failed"}
+
+    def toolAddToTray_(self, payload: dict) -> None:
+        """Main-thread tray mutation entrypoint for command tool calls."""
+        text = payload.get("text", "")
+        reveal_now = bool(self._tray_active)
+        self._add_tray_entry(
+            text,
+            owner="assistant",
+            activate=reveal_now,
+        )
+        self._tray_tool_result = {
+            "status": "added",
+            "tray_visible": reveal_now,
+            "stack_size": len(self._tray_stack),
+            "owner": "assistant",
+        }
 
     # ── command pathway ────────────────────────────────────
 
@@ -1407,6 +1508,7 @@ class SpokeAppDelegate(NSObject):
                 scene_cache=scene_cache,
                 last_response=last_response,
                 tts_client=tts_client,
+                tray_writer=self._add_assistant_content_to_tray,
             )
         return _executor
 

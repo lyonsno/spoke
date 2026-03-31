@@ -76,10 +76,36 @@ _READ_ALOUD_SCHEMA = {
     },
 }
 
+_ADD_TO_TRAY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "add_to_tray",
+        "description": (
+            "Place exact text into the tray for later insertion or sending. "
+            "Use this when the user wants to save, hold onto, or keep "
+            "something for later rather than speaking it aloud immediately."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": (
+                        "The exact text to place into the tray. Preserve the "
+                        "content literally unless the user explicitly asked "
+                        "for a summary or rewrite."
+                    ),
+                },
+            },
+            "required": ["text"],
+        },
+    },
+}
+
 
 def get_tool_schemas() -> list[dict]:
     """Return the tool schemas for the assistant."""
-    return [_CAPTURE_CONTEXT_SCHEMA, _READ_ALOUD_SCHEMA]
+    return [_CAPTURE_CONTEXT_SCHEMA, _READ_ALOUD_SCHEMA, _ADD_TO_TRAY_SCHEMA]
 
 
 # ── Tool call accumulation ───────────────────────────────────────
@@ -178,6 +204,19 @@ def _execute_read_aloud(
     return f"Spoke: {text}"
 
 
+def _execute_add_to_tray(
+    arguments: dict,
+    tray_writer: Callable[[str], Any] | None = None,
+) -> dict[str, Any]:
+    """Execute add_to_tray by handing exact text to the live tray surface."""
+    text = arguments.get("text", "")
+    if not isinstance(text, str) or not text.strip():
+        return {"error": "No tray text provided"}
+    if tray_writer is None:
+        return {"error": "Tray writer unavailable"}
+    return tray_writer(text)
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -185,6 +224,7 @@ def execute_tool(
     scene_cache: SceneCaptureCache | None = None,
     last_response: str | None = None,
     tts_client: Any | None = None,
+    tray_writer: Callable[[str], Any] | None = None,
 ) -> str:
     """Execute a tool by name and return the result as a JSON string.
 
@@ -226,6 +266,14 @@ def execute_tool(
             scene_cache=scene_cache,
             last_response=last_response,
             tts_client=tts_client,
+        )
+
+    elif name == "add_to_tray":
+        return json.dumps(
+            _execute_add_to_tray(
+                arguments,
+                tray_writer=tray_writer,
+            )
         )
 
     else:

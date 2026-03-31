@@ -2238,6 +2238,21 @@ class TestCommandCallbacks:
         assert d._command_tool_used_tts is True
         d._tts_client.speak_async.assert_called_once_with("hello world")
 
+    def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._add_assistant_content_to_tray = MagicMock(
+            return_value={"status": "added", "tray_visible": False, "stack_size": 1}
+        )
+
+        executor = d._make_tool_executor()
+        result = executor("add_to_tray", {"text": "save this"})
+
+        d._add_assistant_content_to_tray.assert_called_once_with("save this")
+        parsed = json.loads(result)
+        assert parsed["status"] == "added"
+
     def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()

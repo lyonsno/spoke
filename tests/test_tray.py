@@ -65,6 +65,12 @@ def _make_delegate(main_module, monkeypatch, *, command_client=False):
     return delegate
 
 
+def _run_main_thread_selector(delegate):
+    def _dispatch(selector, payload, wait):
+        getattr(delegate, selector.replace(":", "_"))(payload)
+    delegate.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = _dispatch
+
+
 class TestTrayEntry:
     """Shift+release during recording enters the tray."""
 
@@ -111,6 +117,17 @@ class TestTrayEntry:
 
 class TestTrayStack:
     """Tray stack lifecycle — push, navigate, consume, delete."""
+
+    def test_enter_tray_records_user_owned_entry(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._enter_tray("hello world")
+
+        entry = d._tray_stack[0]
+        assert isinstance(entry, main_module.TrayEntry)
+        assert entry.text == "hello world"
+        assert entry.owner == "user"
+        assert entry.acknowledged is True
 
     def test_enter_tray_pushes_to_stack(self, main_module, monkeypatch):
         """Entering the tray should push text onto the stack."""
@@ -246,6 +263,52 @@ class TestTrayStack:
         d._enter_tray("newest")
 
         assert d._tray_index == 2  # viewing the newest
+
+    def test_assistant_add_to_closed_tray_stays_silent(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        _run_main_thread_selector(d)
+
+        result = d._add_assistant_content_to_tray("saved result")
+
+        assert d._tray_active is False
+        d._overlay.show_tray.assert_not_called()
+        entry = d._tray_stack[0]
+        assert isinstance(entry, main_module.TrayEntry)
+        assert entry.owner == "assistant"
+        assert entry.acknowledged is False
+        assert result["tray_visible"] is False
+
+    def test_assistant_add_to_open_tray_surfaces_immediately(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        _run_main_thread_selector(d)
+        d._tray_stack = [main_module.TrayEntry("existing")]
+        d._tray_index = 0
+        d._tray_active = True
+        d._detector.tray_active = True
+
+        result = d._add_assistant_content_to_tray("new result")
+
+        assert d._tray_active is True
+        assert d._tray_index == 1
+        d._overlay.show_tray.assert_called_with("new result", owner="assistant")
+        entry = d._tray_stack[1]
+        assert entry.owner == "assistant"
+        assert entry.acknowledged is False
+        assert result["tray_visible"] is True
+
+    def test_recalling_assistant_entry_acknowledges_it(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_stack = [
+            main_module.TrayEntry("from assistant", owner="assistant", acknowledged=False)
+        ]
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.5
+
+        d._on_hold_end(shift_held=True)
+
+        entry = d._tray_stack[0]
+        assert entry.acknowledged is True
+        d._overlay.show_tray.assert_called_with("from assistant", owner="user")
 
 
 class TestTrayGestures:

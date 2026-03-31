@@ -31,12 +31,15 @@ _SYSTEM_PROMPT = (
     "- read_aloud: resolves a source ref to exact text and speaks it via TTS. "
     "Pass block refs from capture_context directly (e.g., 'scene-abc:block-1'). "
     "Other ref formats: 'clipboard:current', 'selection:frontmost', "
-    "'last_response:current', 'literal:text to speak'.\n\n"
+    "'last_response:current', 'literal:text to speak'.\n"
+    "- add_to_tray: places exact text into the tray for later insertion or "
+    "sending. Use this to save content the user may want to paste or send later.\n\n"
     "Prefer refs over regenerated text. If the user asks you to read something "
     "visible, call capture_context first, then read_aloud with a block ref. "
     "If the user asks to read selected text or the clipboard, use read_aloud directly "
-    "with selection:frontmost or clipboard:current. Do not restate visible text in "
-    "your response when a ref can be spoken instead."
+    "with selection:frontmost or clipboard:current. Use add_to_tray when the user "
+    "wants content kept for later use rather than spoken immediately. Do not restate "
+    "visible text in your response when a ref can be spoken instead."
 )
 
 

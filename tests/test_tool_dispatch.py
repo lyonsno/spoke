@@ -70,6 +70,16 @@ class TestToolSchemas:
         params = ra_schema["function"]["parameters"]
         assert "source_ref" in params.get("properties", {})
 
+    def test_add_to_tray_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "add_to_tray" in names
+
+        add_schema = next(s for s in schemas if s["function"]["name"] == "add_to_tray")
+        params = add_schema["function"]["parameters"]
+        assert "text" in params.get("properties", {})
+
 
 # ── Tool call accumulation ───────────────────────────────────────
 
@@ -215,6 +225,32 @@ class TestExecuteTool:
             arguments={"source_ref": "bogus_kind:value"},
         )
         assert "error" in result.lower()
+
+    def test_execute_add_to_tray_uses_callback(self):
+        mod = _import_tools()
+        tray_writer = MagicMock(
+            return_value={"status": "added", "tray_visible": False, "stack_size": 1}
+        )
+
+        result = mod.execute_tool(
+            name="add_to_tray",
+            arguments={"text": "Save this"},
+            tray_writer=tray_writer,
+        )
+
+        tray_writer.assert_called_once_with("Save this")
+        parsed = json.loads(result)
+        assert parsed["status"] == "added"
+        assert parsed["tray_visible"] is False
+
+    def test_execute_add_to_tray_without_callback_returns_error(self):
+        mod = _import_tools()
+        result = mod.execute_tool(
+            name="add_to_tray",
+            arguments={"text": "Save this"},
+        )
+        parsed = json.loads(result)
+        assert "error" in parsed
 
     def test_execute_unknown_tool(self):
         mod = _import_tools()

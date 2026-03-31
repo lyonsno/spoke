@@ -40,6 +40,7 @@ class TestCommandClient:
         msgs = client._build_messages("hello world")
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
+        assert "add_to_tray" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
 
     def test_build_messages_with_history(self):

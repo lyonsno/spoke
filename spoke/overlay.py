@@ -732,7 +732,7 @@ class TranscriptionOverlay(NSObject):
 
     # ── tray mode ──────────────────────────────────────────────
 
-    def show_tray(self, text: str) -> None:
+    def show_tray(self, text: str, *, owner: str = "user") -> None:
         """Show the tray overlay with the given text.
 
         Displays the text immediately (no typewriter effect) in the
@@ -755,12 +755,22 @@ class TranscriptionOverlay(NSObject):
         if self._scroll_view is not None:
             self._scroll_view.setHidden_(False)
 
-        # Reset background to normal overlay style
-        self._content_view.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
+        # Reset background to the owner's color language.
+        if owner == "assistant":
+            bg_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.10, 0.13, 0.19, _RECOVERY_BG_ALPHA
+            )
+            text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.88, 0.93, 1.0, _RECOVERY_TEXT_ALPHA
+            )
+        else:
+            bg_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
                 0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
-            ).CGColor()
-        )
+            )
+            text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
+            )
+        self._content_view.layer().setBackgroundColor_(bg_color.CGColor())
 
         # Reset to default height
         screen_frame = self._screen.frame()
@@ -783,12 +793,7 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_hwm = len(text)
         if self._text_view is not None:
             self._text_view.setString_(text)
-            # Set text color to higher opacity for tray readability
-            self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
-                )
-            )
+            self._text_view.setTextColor_(text_color)
         self._update_layout()
 
         # Show overlay
@@ -799,7 +804,11 @@ class TranscriptionOverlay(NSObject):
         # Entrance pop
         self._pop_entrance()
 
-        logger.info("Tray overlay shown: %r", text[:50] if text else "")
+        logger.info(
+            "Tray overlay shown (%s): %r",
+            owner,
+            text[:50] if text else "",
+        )
 
     # ── recovery mode ────────────────────────────────────────
 
