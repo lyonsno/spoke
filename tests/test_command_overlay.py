@@ -60,7 +60,7 @@ def _make_overlay(mock_pyobjc):
     overlay._tts_blend = 0.0
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
-    overlay._ridge_layer = MagicMock()
+    overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     return overlay, mod

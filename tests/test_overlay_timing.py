@@ -71,33 +71,21 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_ridge_glow_amplitude_drives_ridge_layer(
+    def test_glow_amplitude_smoothing_converges(
         self, mock_pyobjc
     ):
-        """Ridge layer should respond to glow amplitude with smoothing."""
+        """Glow amplitude smoothing should converge toward the input signal."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
             overlay._visible = True
-            overlay._ridge_layer = MagicMock()
             overlay._smoothed_glow_opacity = 0.0
 
-            # Feed steady low signal to let the independent smoothing converge
             for _ in range(30):
-                overlay.update_glow_amplitude(0.1)
-            ridge_opacity = overlay._ridge_layer.setOpacity_.call_args[0][0]
-            # Smoothed value converges near 0.1; ridge scales by 0.15
-            assert ridge_opacity == pytest.approx(0.015, abs=0.005)
-
-            overlay._ridge_layer.reset_mock()
-
-            # Feed high signal
-            for _ in range(30):
-                overlay.update_glow_amplitude(1.0)
-            ridge_at_peak = overlay._ridge_layer.setOpacity_.call_args[0][0]
-            # Ridge capped at 0.20
-            assert ridge_at_peak <= 0.20
+                overlay.update_glow_amplitude(0.5)
+            # Smoothing should converge near the input
+            assert overlay._smoothed_glow_opacity == pytest.approx(0.5, abs=0.05)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -143,7 +131,6 @@ class TestAdaptiveOverlayCompositing:
         overlay._text_amplitude = 0.0
         overlay._content_view = MagicMock()
         overlay._fill_layer = MagicMock()
-        overlay._ridge_layer = MagicMock()
         overlay._brightness = 0.0
         overlay._brightness_target = 0.0
         return overlay
@@ -188,12 +175,12 @@ class TestAdaptiveOverlayCompositing:
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
 
-            # Text should be light
+            # Text should be dark (dark text on light fill for dark backgrounds)
             color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
             text_color_args = None
             for call in color_calls:
                 r, g, b, _ = call[0]
-                if r == pytest.approx(1.0) and g == pytest.approx(1.0) and b == pytest.approx(1.0):
+                if r < 0.1 and g < 0.1 and b < 0.1:
                     text_color_args = call[0]
             assert text_color_args is not None
 

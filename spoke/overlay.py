@@ -78,15 +78,14 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
 # Adaptive compositing endpoints.
-# On dark backgrounds: dark fill, light text (additive/luminous language).
-# On light backgrounds: dark fill too (but more opaque), text becomes
-# transparent cutout.  The fill stays dark in both modes — on light
-# backgrounds the opaque dark fill creates the contrast surface for the
-# transparent text cutouts.
-_BG_COLOR_DARK = (0.1, 0.1, 0.12)
-_TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
-_BG_COLOR_LIGHT = (0.12, 0.12, 0.14)
-_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
+# On dark backgrounds: light/white fill, dark text — the overlay is a
+# bright ghostly bubble that reads as additive glow.
+# On light backgrounds: dark fill, text becomes transparent cutout —
+# the overlay is a dark bubble with letter-shaped holes.
+_BG_COLOR_DARK = (0.92, 0.92, 0.90)   # light fill on dark backgrounds
+_TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
+_BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
+_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)     # dark text that fades to transparent
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -400,22 +399,10 @@ class TranscriptionOverlay(NSObject):
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
 
-        # Ridge layer — sharp exponential peak at the boundary
-        self._ridge_layer = CALayer.alloc().init()
-        self._ridge_layer.setFrame_(((0, 0), (win_w, win_h)))
-        self._ridge_layer.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-            ).CGColor()
-        )
-        self._ridge_layer.setOpacity_(0.0)
-        self._ridge_layer.setContentsScale_(self._ridge_scale)
-
-        # Build initial SDF masks
+        # Build initial SDF fill image
         self._apply_ridge_masks(w, h)
 
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
-        wrapper.layer().insertSublayer_below_(self._ridge_layer, self._fill_layer)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -772,11 +759,7 @@ class TranscriptionOverlay(NSObject):
             cap_floor = 0.25
             scale = cap_floor + (1.0 - cap_floor) * cap_factor
             opacity *= scale
-        # Drive ridge layers — very low opacity so the ridge reads as a
-        # subtle glow, not an opaque plasma.  At typical RMS (~0.3) the ridge
-        # should be around 2-4% opacity; at full amplitude it can reach ~15%.
-        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
-            self._ridge_layer.setOpacity_(min(opacity * 0.15, 0.20))
+        # Ridge layer removed — the SDF fill edge carries the boundary.
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -814,34 +797,16 @@ class TranscriptionOverlay(NSObject):
         total_h = height + 2 * f
 
         try:
-            import numpy as np
-            from .glow import _alpha_field_to_image
-
-            # Compute SDF once, reuse for ridge and fill masks
             sdf = _overlay_rounded_rect_sdf(
                 total_w, total_h, width, height,
                 _OVERLAY_CORNER_RADIUS, scale,
             )
 
-            # Ridge mask — sharp exponential peak at the boundary
-            ridge_alpha = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
-            ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha)
-
-            # Interior fill — colored image with alpha from the SDF smoothstep.
-            _FILL_EDGE_SOFTNESS = 6.0  # px of fade before the boundary
-            self._fill_sdf = sdf  # stash for color updates
+            _FILL_EDGE_SOFTNESS = 6.0
+            self._fill_sdf = sdf
             self._fill_scale = scale
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
-
-        # Apply ridge mask
-        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
-            ridge_mask = CALayer.alloc().init()
-            ridge_mask.setFrame_(((0, 0), (total_w, total_h)))
-            ridge_mask.setContents_(ridge_image)
-            ridge_mask.setContentsGravity_("resize")
-            self._ridge_layer.setMask_(ridge_mask)
-            self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
 
         # Build and apply the colored fill image
         self._update_fill_image(total_w, total_h)
