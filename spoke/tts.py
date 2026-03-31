@@ -1,14 +1,15 @@
-"""Local text-to-speech via Voxtral on MLX.
+"""Local text-to-speech via mlx_audio.
 
-Loads a Voxtral TTS model lazily and plays generated audio through
-sounddevice.  Designed to be driven from the command-completion pathway
-in __main__.py — speak_async() returns immediately, running generation
-and playback on a background thread.
+Loads any mlx_audio-supported TTS model lazily and plays generated audio
+through sounddevice.  Designed to be driven from the command-completion
+pathway in __main__.py — speak_async() returns immediately, running
+generation and playback on a background thread.
 """
 
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import threading
@@ -119,24 +120,42 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def tts_load(model_id: str):
-    """Load a Voxtral TTS model.  Separated for easy patching in tests."""
-    if "voxtral" in model_id.lower():
-        try:
-            mlx_audio_pkg = importlib.import_module("mlx_audio")
-            importlib.import_module("mlx_audio.tts.models.voxtral_tts")
-        except Exception as exc:
-            mlx_audio_path = getattr(mlx_audio_pkg, "__file__", "<unresolved>") if "mlx_audio_pkg" in locals() else "<unresolved>"
-            py_path = os.environ.get("PYTHONPATH", "")
-            raise RuntimeError(
-                "Voxtral TTS backend is unavailable in the active mlx_audio runtime. "
-                f"Resolved mlx_audio from {mlx_audio_path}. "
-                f"PYTHONPATH={py_path or '<unset>'}. "
-                "Expected mlx_audio.tts.models.voxtral_tts to be importable. "
-                "If you are using a local smoke/runtime checkout, ensure the branch-local "
-                ".spoke-smoke-env restores the intended PYTHONPATH override."
-            ) from exc
+    """Load an mlx_audio TTS model.  Separated for easy patching in tests."""
     from mlx_audio.tts import load
     return load(model_id)
+
+
+def _generate_kwargs(model, *, text: str, voice: str,
+                     temperature: float, top_k: int, top_p: float) -> dict:
+    """Build kwargs for model.generate(), passing only params it accepts.
+
+    If the model's generate() signature can't be introspected (e.g. it
+    accepts **kwargs with no named params beyond self), all params are
+    forwarded — the model can ignore what it doesn't need.
+    """
+    try:
+        sig = inspect.signature(model.generate)
+        params = sig.parameters
+    except (ValueError, TypeError):
+        params = {}
+    # If there are no named params (just *args/**kwargs), pass everything
+    has_var_keyword = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    named = {n for n, p in params.items()
+             if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                           inspect.Parameter.KEYWORD_ONLY)}
+    all_extras = {"voice": voice, "temperature": temperature,
+                  "top_k": top_k, "top_p": top_p}
+    kwargs: dict = {"text": text}
+    if not named or has_var_keyword:
+        # Can't tell what's accepted — forward everything
+        kwargs.update(all_extras)
+    else:
+        for k, v in all_extras.items():
+            if k in named:
+                kwargs[k] = v
+    return kwargs
 
 
 class TTSClient:
@@ -353,13 +372,15 @@ class TTSClient:
                         self._ensure_model()
                         if self._cancelled:
                             return
-                        results = self._model.generate(
+                        gen_kwargs = _generate_kwargs(
+                            self._model,
                             text=sentence,
                             voice=self._voice,
                             temperature=self._temperature,
                             top_k=self._top_k,
                             top_p=self._top_p,
                         )
+                        results = self._model.generate(**gen_kwargs)
 
                     while True:
                         if self._cancelled:

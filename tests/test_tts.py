@@ -469,6 +469,51 @@ class TestTTSConfig:
         assert "PYTHONPATH=/tmp/local-mlx-audio" in message
         assert ".spoke-smoke-env" in message
 
+    def test_generate_kwargs_filters_by_signature(self):
+        """_generate_kwargs only passes params the model's generate() accepts."""
+        from spoke.tts import _generate_kwargs
+
+        # Model that only accepts text and voice (like Kokoro/Irodori)
+        def generate(self, text: str, voice: str = None, **kwargs): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="default",
+            temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert kwargs == {"text": "hi", "voice": "default",
+                          "temperature": 0.5, "top_k": 50, "top_p": 0.95}
+
+    def test_generate_kwargs_passes_all_for_voxtral(self):
+        """Voxtral-style signature gets all params forwarded."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(self, text: str, voice: str = "casual_male",
+                     temperature: float = 0.8, top_k: int = 50,
+                     top_p: float = 0.95, **kwargs): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="af", temperature=0.3, top_k=10, top_p=0.9,
+        )
+        assert kwargs == {"text": "hi", "voice": "af",
+                          "temperature": 0.3, "top_k": 10, "top_p": 0.9}
+
+    def test_generate_kwargs_strict_signature_drops_unknown(self):
+        """Model without **kwargs only gets params it declares."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(self, text: str, voice: str = None, speed: float = 1.0): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="en", temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert kwargs == {"text": "hi", "voice": "en"}
+
 
 class TestGPULockDiscipline:
     """Verify that the GPU lock is held during generation but not playback."""
