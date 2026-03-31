@@ -251,7 +251,7 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_saturated_text_alpha_moves_halfway_to_full_opacity(self, mock_pyobjc):
+    def test_light_background_saturated_text_alpha_can_rise_near_full_opacity(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -263,7 +263,7 @@ class TestAdaptiveOverlayCompositing:
 
             text_r, text_g, text_b, text_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
             assert text_r < 0.3 and text_g < 0.3 and text_b < 0.3
-            assert text_alpha == pytest.approx(0.875)
+            assert text_alpha == pytest.approx(0.95)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
