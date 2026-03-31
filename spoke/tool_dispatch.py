@@ -103,9 +103,73 @@ _ADD_TO_TRAY_SCHEMA = {
 }
 
 
+
+_LIST_DIRECTORY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "list_directory",
+        "description": "List contents of a directory. Returns files and subdirectories.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dir_path": {"type": "string", "description": "Absolute or relative directory path"}
+            },
+            "required": ["dir_path"]
+        }
+    }
+}
+
+_READ_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "Read the contents of a file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute or relative file path"}
+            },
+            "required": ["file_path"]
+        }
+    }
+}
+
+_WRITE_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "write_file",
+        "description": "Write text content to a file, overwriting if it exists.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute or relative file path"},
+                "content": {"type": "string", "description": "Full text content to write"}
+            },
+            "required": ["file_path", "content"]
+        }
+    }
+}
+
+_SEARCH_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "search_file",
+        "description": "Search file contents in a directory using grep or equivalent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex or string pattern to search"},
+                "dir_path": {"type": "string", "description": "Directory path to search in (recursive)"}
+            },
+            "required": ["pattern", "dir_path"]
+        }
+    }
+}
+
+
 def get_tool_schemas() -> list[dict]:
     """Return the tool schemas for the assistant."""
-    return [_CAPTURE_CONTEXT_SCHEMA, _READ_ALOUD_SCHEMA, _ADD_TO_TRAY_SCHEMA]
+    return [_CAPTURE_CONTEXT_SCHEMA, _READ_ALOUD_SCHEMA, _ADD_TO_TRAY_SCHEMA, _LIST_DIRECTORY_SCHEMA, _READ_FILE_SCHEMA, _WRITE_FILE_SCHEMA, _SEARCH_FILE_SCHEMA]
 
 
 # ── Tool call accumulation ───────────────────────────────────────
@@ -219,6 +283,56 @@ def _execute_add_to_tray(
     return tray_writer(text)
 
 
+
+def _execute_list_directory(arguments: dict) -> dict[str, Any]:
+    import os
+    dir_path = arguments.get("dir_path", ".")
+    try:
+        if not os.path.isdir(dir_path):
+            return {"error": f"Not a valid directory: {dir_path}"}
+        contents = os.listdir(dir_path)
+        return {"dir_path": dir_path, "contents": contents}
+    except Exception as e:
+        return {"error": str(e)}
+
+def _execute_read_file(arguments: dict) -> dict[str, Any]:
+    import os
+    file_path = arguments.get("file_path", "")
+    try:
+        if not os.path.isfile(file_path):
+            return {"error": f"File not found: {file_path}"}
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"file_path": file_path, "content": content}
+    except Exception as e:
+        return {"error": str(e)}
+
+def _execute_write_file(arguments: dict) -> dict[str, Any]:
+    file_path = arguments.get("file_path", "")
+    content = arguments.get("content", "")
+    if not file_path:
+        return {"error": "file_path is required"}
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"status": "success", "file_path": file_path}
+    except Exception as e:
+        return {"error": str(e)}
+
+def _execute_search_file(arguments: dict) -> dict[str, Any]:
+    import subprocess
+    pattern = arguments.get("pattern", "")
+    dir_path = arguments.get("dir_path", ".")
+    if not pattern:
+        return {"error": "pattern is required"}
+    try:
+        # Simple grep via subprocess
+        result = subprocess.run(["grep", "-rn", pattern, dir_path], capture_output=True, text=True)
+        return {"matches": result.stdout, "dir_path": dir_path, "pattern": pattern}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -277,6 +391,16 @@ def execute_tool(
                 tray_writer=tray_writer,
             )
         )
+
+
+    elif name == "list_directory":
+        return json.dumps(_execute_list_directory(arguments))
+    elif name == "read_file":
+        return json.dumps(_execute_read_file(arguments))
+    elif name == "write_file":
+        return json.dumps(_execute_write_file(arguments))
+    elif name == "search_file":
+        return json.dumps(_execute_search_file(arguments))
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
