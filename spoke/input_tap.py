@@ -531,6 +531,18 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            # Instant dismiss: if the command overlay is visible, dismiss it
+            # on the first spacebar press instead of waiting for a hold.
+            if (
+                getattr(det, 'command_overlay_active', False)
+                and det._state == _State.IDLE
+                and not getattr(det, 'tray_active', False)
+            ):
+                dismiss = getattr(det, '_on_command_overlay_dismiss', None)
+                if dismiss is not None:
+                    logger.info("Instant dismiss — command_overlay_active -> False")
+                    det.command_overlay_active = False
+                    dismiss()
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
