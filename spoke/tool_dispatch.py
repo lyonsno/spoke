@@ -199,9 +199,9 @@ def _execute_read_aloud(
             tts_client.speak(text)
             logger.info("read_aloud: speak finished")
             return f"Speaking: {text}"
-        except Exception:
+        except Exception as e:
             logger.warning("TTS playback failed", exc_info=True)
-            return "Error speaking text: TTS playback failed"
+            return f"Error speaking text: {e}"
     else:
         logger.warning("read_aloud: no tts_client available")
 
