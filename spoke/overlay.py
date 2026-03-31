@@ -176,18 +176,28 @@ _BG_ALPHA_LIGHT_BASE = 0.85
 _BG_ALPHA_LIGHT_AMP = 0.10
 
 
-def _overlay_rounded_rect_sdf(width: float, height: float, corner_radius: float, scale: float):
-    """Signed distance field for a rounded rectangle at the overlay's pixel dimensions."""
+def _overlay_rounded_rect_sdf(
+    field_width: float, field_height: float,
+    rect_width: float, rect_height: float,
+    corner_radius: float, scale: float,
+):
+    """Signed distance field for a rounded rectangle centered in a larger field.
+
+    The field covers field_width x field_height pixels; the rounded rect is
+    rect_width x rect_height, centered within it.  This lets the SDF extend
+    smoothly past the rect boundary into the surrounding margin.
+    """
     import numpy as np
 
-    pw, ph = int(width * scale), int(height * scale)
+    pw, ph = int(field_width * scale), int(field_height * scale)
+    rw, rh = rect_width * scale, rect_height * scale
     x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
     y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
     cx = x - pw * 0.5
     cy = y - ph * 0.5
     r = corner_radius * scale
-    qx = np.abs(cx) - (pw * 0.5 - r)
-    qy = np.abs(cy) - (ph * 0.5 - r)
+    qx = np.abs(cx) - (rw * 0.5 - r)
+    qy = np.abs(cy) - (rh * 0.5 - r)
     outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
     inside = np.minimum(np.maximum(qx, qy), 0.0)
     return (outside + inside - r).astype(np.float32)
@@ -201,12 +211,16 @@ def _ridge_alpha(signed_distance, falloff: float, power: float):
     return np.exp(-np.power(d / max(falloff, 1e-6), power, dtype=np.float32))
 
 
-def _build_ridge_image(width: float, height: float, corner_radius: float,
-                       scale: float, falloff: float, power: float):
+def _build_ridge_image(field_width: float, field_height: float,
+                       rect_width: float, rect_height: float,
+                       corner_radius: float, scale: float,
+                       falloff: float, power: float):
     """Build a CGImage mask for the ridge effect at the given overlay size."""
     from .glow import _alpha_field_to_image
 
-    sdf = _overlay_rounded_rect_sdf(width, height, corner_radius, scale)
+    sdf = _overlay_rounded_rect_sdf(field_width, field_height,
+                                     rect_width, rect_height,
+                                     corner_radius, scale)
     alpha = _ridge_alpha(sdf, falloff * scale, power)
     return _alpha_field_to_image(alpha)
 
@@ -691,38 +705,24 @@ class TranscriptionOverlay(NSObject):
         in a larger field covering the full window (content + feather margin)
         so the outer falloff bleeds into the feather zone.
         """
-        try:
-            import numpy as np
-            from .glow import _alpha_field_to_image
-        except (ImportError, ModuleNotFoundError):
-            return  # numpy or Quartz not available (test environment)
-
         f = _OUTER_FEATHER
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
 
-        # Content-rect SDF: zero at boundary, negative inside, positive outside
-        content_sdf = _overlay_rounded_rect_sdf(width, height, _OVERLAY_CORNER_RADIUS, scale)
-
-        # Embed content SDF in the full window field.  Outside the content
-        # rect the distance increases — fill with a large positive value so
-        # the ridge falls off properly in the feather margin.
-        pw, ph = int(total_w * scale), int(total_h * scale)
-        full_sdf = np.full((ph, pw), f * scale, dtype=np.float32)
-        ch, cw = content_sdf.shape
-        y0 = (ph - ch) // 2
-        x0 = (pw - cw) // 2
-        full_sdf[y0:y0 + ch, x0:x0 + cw] = content_sdf
-
-        ridge_alpha = _ridge_alpha(full_sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
         try:
-            ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha)
+            ridge_image, self._ridge_payload = _build_ridge_image(
+                total_w, total_h, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+                _RIDGE_FALLOFF, _RIDGE_POWER,
+            )
+            bloom_image, self._bloom_payload = _build_ridge_image(
+                total_w, total_h, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+                _RIDGE_BLOOM_FALLOFF, _RIDGE_BLOOM_POWER,
+            )
         except (ImportError, Exception):
-            return  # Quartz CGImage APIs not available
-
-        bloom_alpha = _ridge_alpha(full_sdf, _RIDGE_BLOOM_FALLOFF * scale, _RIDGE_BLOOM_POWER)
-        bloom_image, self._bloom_payload = _alpha_field_to_image(bloom_alpha)
+            return  # numpy or Quartz not available (test environment)
 
         # Apply as layer masks
         if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
