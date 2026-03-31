@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+import types
 from unittest.mock import patch, MagicMock, call
 
 import pytest
@@ -385,6 +386,37 @@ class TestTTSConfig:
         from spoke.tts import TTSClient
         client = TTSClient.from_env()
         assert client._model_id == "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
+
+    @patch.dict("os.environ", {"PYTHONPATH": "/tmp/local-mlx-audio"})
+    def test_tts_load_surfaces_actionable_voxtral_backend_error(self, monkeypatch):
+        """Missing Voxtral backend should fail with the resolved mlx_audio path in the error."""
+        import sys
+        from spoke.tts import tts_load
+
+        fake_mlx_audio = types.ModuleType("mlx_audio")
+        fake_mlx_audio.__file__ = "/tmp/local-mlx-audio/mlx_audio/__init__.py"
+        fake_tts = types.ModuleType("mlx_audio.tts")
+        fake_tts.load = MagicMock()
+
+        monkeypatch.setitem(sys.modules, "mlx_audio", fake_mlx_audio)
+        monkeypatch.setitem(sys.modules, "mlx_audio.tts", fake_tts)
+
+        def fake_import_module(name):
+            if name == "mlx_audio":
+                return fake_mlx_audio
+            if name == "mlx_audio.tts.models.voxtral_tts":
+                raise ModuleNotFoundError(name)
+            raise AssertionError(f"unexpected import: {name}")
+
+        with patch("spoke.tts.importlib.import_module", side_effect=fake_import_module):
+            with pytest.raises(RuntimeError) as excinfo:
+                tts_load("mlx-community/Voxtral-4B-TTS-2603-mlx-6bit")
+
+        message = str(excinfo.value)
+        assert "Voxtral TTS backend is unavailable" in message
+        assert "/tmp/local-mlx-audio/mlx_audio/__init__.py" in message
+        assert "PYTHONPATH=/tmp/local-mlx-audio" in message
+        assert ".spoke-smoke-env" in message
 
 
 class TestGPULockDiscipline:

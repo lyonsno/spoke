@@ -53,6 +53,13 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
+_CURATED_LOCAL_COMMAND_MODEL_IDS = [
+    "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+    "mlx-community/Qwen3-4B-Thinking-2507-8bit",
+    "lmstudio-community/Qwen2.5-Coder-7B-Instruct-MLX-4bit",
+    "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+    "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
@@ -80,22 +87,43 @@ def _max_record_secs_for_ram(ram_gb: float) -> float | None:
 
 
 def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
-    """Return OMLX-friendly model ids discovered from a local model directory."""
+    """Return a curated list of installed MLX model ids from a local model directory."""
     if not model_dir.is_dir():
         return []
 
-    model_ids: list[str] = []
+    discovered: set[str] = set()
     for child in sorted(model_dir.iterdir(), key=lambda path: path.name.lower()):
         if not child.is_dir():
             continue
-        child_entries = list(child.iterdir())
-        if any(entry.is_file() for entry in child_entries):
-            model_ids.append(child.name)
+        child_entries = sorted(child.iterdir(), key=lambda path: path.name.lower())
+        if _is_local_command_model_leaf(child):
+            discovered.add(child.name)
             continue
-        for grandchild in sorted(child_entries, key=lambda path: path.name.lower()):
-            if grandchild.is_dir():
-                model_ids.append(f"{child.name}/{grandchild.name}")
-    return model_ids
+        for grandchild in child_entries:
+            if _is_local_command_model_leaf(grandchild):
+                discovered.add(f"{child.name}/{grandchild.name}")
+    return [
+        model_id
+        for model_id in _CURATED_LOCAL_COMMAND_MODEL_IDS
+        if model_id in discovered
+    ]
+
+
+def _is_local_command_model_leaf(model_path: Path) -> bool:
+    """Return True when a leaf directory looks like an installed MLX model."""
+    if not model_path.is_dir():
+        return False
+
+    file_names = {
+        entry.name
+        for entry in model_path.iterdir()
+        if entry.is_file()
+    }
+    if "config.json" not in file_names or "tokenizer.json" not in file_names:
+        return False
+    if "model.safetensors" in file_names or "model.safetensors.index.json" in file_names:
+        return True
+    return any(name.endswith(".safetensors") for name in file_names)
 # Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
 # Keep the 20s cap only for smaller local machines. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
@@ -184,9 +212,9 @@ class SpokeAppDelegate(NSObject):
                 or _DEFAULT_COMMAND_MODEL
             )
             self._command_client = CommandClient(model=self._command_model_id)
-            self._command_model_options = [
-                (self._command_model_id, self._command_model_id, True)
-            ]
+            self._command_model_options = self._seed_command_model_options(
+                self._command_model_id
+            )
             self._command_models_refresh_in_flight = False
             self._command_overlay: TranscriptionOverlay | None = None
             logger.info(
@@ -2170,27 +2198,51 @@ class SpokeAppDelegate(NSObject):
     def _discover_command_models(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        model_ids: list[str] = []
+        server_model_ids: list[str] = []
         if self._command_client is not None:
             try:
-                model_ids = self._command_client.list_models()
+                server_model_ids = self._command_client.list_models()
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
         local_model_ids = _iter_local_command_model_ids(local_model_dir)
-        model_ids.extend(local_model_ids)
-        if selected_model and selected_model not in model_ids:
-            model_ids.insert(0, selected_model)
+        if local_model_ids:
+            local_model_set = set(local_model_ids)
+            model_ids = [
+                model_id
+                for model_id in server_model_ids
+                if model_id in local_model_set
+            ]
+            model_ids.extend(
+                model_id for model_id in local_model_ids if model_id not in model_ids
+            )
+        else:
+            model_ids = server_model_ids
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
             if not model_id or model_id in seen:
                 continue
             seen.add(model_id)
-            options.append((model_id, model_id, True))
+            options.append((model_id, model_id, model_id == selected_model))
         return options
+
+    def _seed_command_model_options(
+        self, selected_model: str
+    ) -> list[tuple[str, str, bool]]:
+        """Seed the Assistant menu from local disk without hitting /v1/models."""
+        local_model_dir = Path(
+            os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+        ).expanduser()
+        local_model_ids = _iter_local_command_model_ids(local_model_dir)
+        if local_model_ids:
+            return [
+                (model_id, model_id, model_id == selected_model)
+                for model_id in local_model_ids
+            ]
+        return [(selected_model, selected_model, True)] if selected_model else []
 
     def _refresh_command_model_options_async(self) -> None:
         if self._command_client is None or self._command_models_refresh_in_flight:
@@ -2213,10 +2265,7 @@ class SpokeAppDelegate(NSObject):
 
     def commandModelsDiscovered_(self, payload: dict) -> None:
         self._command_models_refresh_in_flight = False
-        current_model = self._command_model_id
         options = payload.get("options") or []
-        if current_model not in [model_id for model_id, _, _ in options]:
-            options = [(current_model, current_model, True), *options]
         self._command_model_options = options
         if self._menubar is not None:
             self._menubar.refresh_menu()
