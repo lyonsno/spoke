@@ -58,6 +58,7 @@ def _make_overlay(mock_pyobjc):
     overlay._tts_amplitude = 0.0
     overlay._tts_active = False
     overlay._tts_blend = 0.0
+    overlay._tool_mode = False
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
     overlay._fill_layer = MagicMock()
@@ -374,3 +375,37 @@ class TestGeometryCaps:
         expected_height = 640.0
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
+
+
+class TestToolState:
+    """Test the tool execution visual state machine."""
+
+    def test_set_tool_active_shows_label(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._thinking_label.setHidden_.reset_mock()
+        
+        overlay.set_tool_active(True)
+        
+        assert overlay._tool_mode is True
+        overlay._thinking_label.setHidden_.assert_called_with(False)
+        overlay._thinking_label.setStringValue_.assert_called_with("tool…")
+
+    def test_thinking_tick_shows_tool_in_tool_mode(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.set_tool_active(True)
+        overlay._thinking_label.setStringValue_.reset_mock()
+        
+        overlay.thinkingTick_(None)
+        
+        overlay._thinking_label.setStringValue_.assert_called_with("tool…")
+
+    def test_set_tool_active_false_preserves_mode_until_tick(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.set_tool_active(True)
+        overlay.set_tool_active(False)
+        
+        assert overlay._tool_mode is False
+        overlay.thinkingTick_(None)
+        # Now it should show seconds again
+        assert "s" in overlay._thinking_label.setStringValue_.call_args[0][0]

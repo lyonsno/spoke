@@ -153,7 +153,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
-
+        self._tool_mode = False
         # Linger timer
         self._linger_timer: NSTimer | None = None
 
@@ -349,6 +349,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
+        self._tool_mode = False
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -550,6 +551,16 @@ class CommandOverlay(NSObject):
             NSShadowAttributeName, glow, (0, len(token))
         )
         return frag
+
+    def set_tool_active(self, active: bool) -> None:
+        """Show or hide the tool execution indicator."""
+        self._tool_mode = active
+        if active and self._visible:
+            if self._thinking_label is not None:
+                self._thinking_label.setHidden_(False)
+                self._thinking_label.setStringValue_("tool…")
+            if self._thinking_timer is None:
+                self._start_thinking_timer()
 
     def finish(self) -> None:
         """Called when the response stream is complete.
@@ -831,7 +842,8 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = False
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(False)
-            self._thinking_label.setStringValue_("0.0s")
+            if self._tool_mode: self._thinking_label.setStringValue_("tool…")
+            else: self._thinking_label.setStringValue_("0.0s")
             # Glowing number: violet text on transparent background
             self._thinking_label.setTextColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -864,7 +876,8 @@ class CommandOverlay(NSObject):
         """Update the thinking counter every 100ms."""
         self._thinking_seconds += 0.1
         if self._thinking_label is not None and not self._thinking_label.isHidden():
-            self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+            if self._tool_mode: self._thinking_label.setStringValue_("tool…")
+            else: self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
 
     # ── ridge masks ────────────────────────────────────────
 
