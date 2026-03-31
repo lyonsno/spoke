@@ -191,6 +191,17 @@ class CommandClient:
                 body["tools"] = tools
 
             payload = json.dumps(body).encode()
+            logger.info(
+                "Sending to model: round=%d model=%s messages=%d tools=%d thinking=%s payload_bytes=%d",
+                _round, self._model, len(messages),
+                len(tools) if tools else 0,
+                self._enable_thinking,
+                len(payload),
+            )
+            if _round == 0:
+                # Log the user utterance as sent
+                user_msg = messages[-1].get("content", "")
+                logger.info("User utterance sent to model: %s", user_msg[:300])
 
             headers = {"Content-Type": "application/json"}
             if self._api_key:
