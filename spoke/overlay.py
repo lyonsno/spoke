@@ -729,12 +729,20 @@ class TranscriptionOverlay(NSObject):
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
-        _TEXT_ANCHOR_ALPHA = 0.92
-        # The brightness sampler reports ~0.25 even on white backgrounds
-        # (because the screen dimmer darkens the scene).  Use a steep
-        # sigmoid so the text color flips near the actual switchover point.
-        text_t = min(t / 0.20, 1.0)  # saturates at brightness 0.20
-        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
+        _TEXT_ANCHOR_ALPHA = 0.88
+        # Text contrasts against the fill: light fill (dark bg) → dark text,
+        # dark fill (light bg) → white text.  The fill color lerps from
+        # _BG_COLOR_DARK (light/0.92) to _BG_COLOR_LIGHT (dark/0.10) with
+        # brightness.  Text goes the opposite direction.
+        # Use the same t directly — on dark bg (t~0) text is dark, on light
+        # bg (t~0.25+) text should be white.
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+        # If fill is light (lum > 0.5) → dark text; if fill is dark → white text
+        if bg_lum > 0.5:
+            tr, tg, tb = (0.0, 0.0, 0.0)
+        else:
+            tr, tg, tb = (1.0, 1.0, 1.0)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         )
@@ -743,8 +751,8 @@ class TranscriptionOverlay(NSObject):
         # Dark backgrounds: very transparent at rest, moderate peak
         # Light backgrounds: the SDF peak should saturate near-full
         fill_drive = scaled
-        fill_min = _lerp(0.04, 0.15, t)   # dark: barely there at rest
-        fill_max = _lerp(0.45, 0.96, t)   # light: peak saturates
+        fill_min = _lerp(0.04, 0.20, t)   # dark: barely there at rest
+        fill_max = _lerp(0.50, 0.98, t)   # light: peak nearly full black
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
@@ -849,10 +857,9 @@ class TranscriptionOverlay(NSObject):
             return
         try:
             scale = getattr(self, '_fill_scale', 2.0)
-            # Stretched-exponential fill: sharp cusp, heavy tails.
-            # Width 5 = steeper initial drop from peak than 8, but the
-            # 0.70 interior floor keeps the center present.
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=5.0 * scale)
+            # Stretched-exponential fill: knife-edge cusp, heavy tails.
+            # Width 2.5 = very aggressive initial drop from peak.
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale)
 
             t = getattr(self, '_brightness', 0.0)
             bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)

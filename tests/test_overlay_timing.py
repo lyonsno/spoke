@@ -29,7 +29,7 @@ class TestOverlayTiming:
 
             _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
             # Text is anchored at a fixed high alpha, not driven by amplitude
-            assert applied_alpha == pytest.approx(0.92)
+            assert applied_alpha == pytest.approx(0.88)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -272,27 +272,24 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_brightness_cross_fade_is_continuous(self, mock_pyobjc):
+    def test_text_color_contrasts_with_fill(self, mock_pyobjc):
+        """Text should be dark on light fill (dark bg) and white on dark fill (light bg)."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            def get_bg_rgb(brightness):
-                overlay = self._make_overlay(mod)
-                overlay.set_brightness(brightness, immediate=True)
-                mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
-                overlay.update_text_amplitude(10.0)
-                for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list:
-                    r, g, b, _ = call[0]
-                    return (r, g, b)
-                return None
+            # Dark background → light fill → dark text
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(0.0, immediate=True)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay.update_text_amplitude(10.0)
+            text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
+            assert text_r < 0.1  # dark text
 
-            c1 = get_bg_rgb(0.4)
-            c2 = get_bg_rgb(0.5)
-            c3 = get_bg_rgb(0.6)
-
-            assert c1 is not None and c2 is not None and c3 is not None
-            for i in range(3):
-                assert abs(c2[i] - c1[i]) < 0.25
-                assert abs(c3[i] - c2[i]) < 0.25
+            # Light background → dark fill → white text
+            overlay.set_brightness(1.0, immediate=True)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay.update_text_amplitude(10.0)
+            text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
+            assert text_r > 0.9  # white text
         finally:
             sys.modules.pop("spoke.overlay", None)

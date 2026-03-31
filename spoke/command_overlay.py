@@ -897,7 +897,7 @@ class CommandOverlay(NSObject):
 
             # Lorentzian fill profile — same as preview overlay
             from .overlay import _glow_fill_alpha
-            fill_alpha = _glow_fill_alpha(sdf, width=5.0 * scale)
+            fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
             )
