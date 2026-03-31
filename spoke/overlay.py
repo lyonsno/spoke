@@ -231,7 +231,7 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.55):
+def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.775):
     """Asymmetric stretched-exponential fill profile.
 
     Inside (negative distance): sharp cusp at boundary, drops rapidly
