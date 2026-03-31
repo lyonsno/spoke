@@ -596,10 +596,9 @@ class SpokeAppDelegate(NSObject):
             self._transcription_token += 1
             self._transcribing = False
             # Fall through to start recording
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            # User speech should interrupt assistant speech before we reopen input.
-            tts.cancel()
+        # Don't cancel TTS on hold-start — let tool-call playback finish
+        # naturally. TTS is cancelled on explicit overlay dismiss or when
+        # a new command response arrives and supersedes the old one.
         # Clear Enter suppression — new hold replaces/dismisses the overlay.
         self._detector.command_overlay_active = False
         self._detector._command_overlay_just_dismissed = False
