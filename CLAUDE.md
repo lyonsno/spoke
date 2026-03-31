@@ -55,6 +55,7 @@ When the launch-target menu feature is in play:
 
 - treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
 - agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
+- there is no dedicated `smoke_branch` slot; additional prepared surfaces should appear as their own explicit registry entries
 - prefer stable ids and short human labels
 - when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
 - do not silently assume the selected target also carries the launch-target submenu; call that out when preparing a target that does not
