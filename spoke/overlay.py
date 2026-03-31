@@ -68,7 +68,7 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_ALPHA_MAX_LIGHT = _TEXT_ALPHA_MAX + (1.0 - _TEXT_ALPHA_MAX) * 0.5
+_TEXT_ALPHA_MAX_LIGHT = 0.90
 _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
@@ -80,7 +80,7 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _BG_COLOR_DARK = (0.1, 0.1, 0.12)
 _TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
 _BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
-_TEXT_COLOR_LIGHT = (0.016, 0.016, 0.02)
+_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -91,6 +91,7 @@ _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
+_WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -627,12 +628,12 @@ class TranscriptionOverlay(NSObject):
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowOpacity_(
-                min(opacity * 1.4, _INNER_GLOW_PEAK_TARGET)
+                min(opacity * 1.68, _INNER_GLOW_PEAK_TARGET * 1.2)
             )
         if hasattr(self, '_outer_glow_tight'):
             self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * 1.12, 1.0))
+            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * _WIDE_OUTER_GLOW_SCALE, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -731,7 +732,7 @@ class TranscriptionOverlay(NSObject):
 
     # ── tray mode ──────────────────────────────────────────────
 
-    def show_tray(self, text: str) -> None:
+    def show_tray(self, text: str, *, owner: str = "user") -> None:
         """Show the tray overlay with the given text.
 
         Displays the text immediately (no typewriter effect) in the
@@ -754,12 +755,22 @@ class TranscriptionOverlay(NSObject):
         if self._scroll_view is not None:
             self._scroll_view.setHidden_(False)
 
-        # Reset background to normal overlay style
-        self._content_view.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
+        # Reset background to the owner's color language.
+        if owner == "assistant":
+            bg_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.10, 0.13, 0.19, _RECOVERY_BG_ALPHA
+            )
+            text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.88, 0.93, 1.0, _RECOVERY_TEXT_ALPHA
+            )
+        else:
+            bg_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
                 0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
-            ).CGColor()
-        )
+            )
+            text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
+            )
+        self._content_view.layer().setBackgroundColor_(bg_color.CGColor())
 
         # Reset to default height
         screen_frame = self._screen.frame()
@@ -782,12 +793,7 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_hwm = len(text)
         if self._text_view is not None:
             self._text_view.setString_(text)
-            # Set text color to higher opacity for tray readability
-            self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
-                )
-            )
+            self._text_view.setTextColor_(text_color)
         self._update_layout()
 
         # Show overlay
@@ -798,7 +804,11 @@ class TranscriptionOverlay(NSObject):
         # Entrance pop
         self._pop_entrance()
 
-        logger.info("Tray overlay shown: %r", text[:50] if text else "")
+        logger.info(
+            "Tray overlay shown (%s): %r",
+            owner,
+            text[:50] if text else "",
+        )
 
     # ── recovery mode ────────────────────────────────────────
 

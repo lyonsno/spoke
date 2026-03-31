@@ -20,6 +20,7 @@ spoke = "spoke.__main__:main"
 [project.optional-dependencies]
 tts = [
     "mlx-audio[tts]",
+    "mistral-common[audio]",
 ]
 
 [dependency-groups]

@@ -15,6 +15,7 @@ Configure via environment variables:
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -35,9 +36,16 @@ from Foundation import NSObject
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .focus_check import has_focused_text_input
+from .scene_capture import SceneCaptureCache
+from .tool_dispatch import execute_tool, get_tool_schemas
 from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
+from .launch_targets import (
+    current_launch_target_id,
+    iter_launch_targets,
+    save_selected_launch_target,
+)
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
@@ -53,6 +61,13 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
+_CURATED_LOCAL_COMMAND_MODEL_IDS = [
+    "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+    "mlx-community/Qwen3-4B-Thinking-2507-8bit",
+    "lmstudio-community/Qwen2.5-Coder-7B-Instruct-MLX-4bit",
+    "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+    "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
@@ -80,26 +95,73 @@ def _max_record_secs_for_ram(ram_gb: float) -> float | None:
 
 
 def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
-    """Return OMLX-friendly model ids discovered from a local model directory."""
+    """Return a curated list of installed MLX model ids from a local model directory."""
     if not model_dir.is_dir():
         return []
 
-    model_ids: list[str] = []
+    discovered: set[str] = set()
     for child in sorted(model_dir.iterdir(), key=lambda path: path.name.lower()):
         if not child.is_dir():
             continue
-        child_entries = list(child.iterdir())
-        if any(entry.is_file() for entry in child_entries):
-            model_ids.append(child.name)
+        child_entries = sorted(child.iterdir(), key=lambda path: path.name.lower())
+        if _is_local_command_model_leaf(child):
+            discovered.add(child.name)
             continue
-        for grandchild in sorted(child_entries, key=lambda path: path.name.lower()):
-            if grandchild.is_dir():
-                model_ids.append(f"{child.name}/{grandchild.name}")
-    return model_ids
+        for grandchild in child_entries:
+            if _is_local_command_model_leaf(grandchild):
+                discovered.add(f"{child.name}/{grandchild.name}")
+    return [
+        model_id
+        for model_id in _CURATED_LOCAL_COMMAND_MODEL_IDS
+        if model_id in discovered
+    ]
+
+
+def _is_local_command_model_leaf(model_path: Path) -> bool:
+    """Return True when a leaf directory looks like an installed MLX model."""
+    if not model_path.is_dir():
+        return False
+
+    file_names = {
+        entry.name
+        for entry in model_path.iterdir()
+        if entry.is_file()
+    }
+    if "config.json" not in file_names or "tokenizer.json" not in file_names:
+        return False
+    if "model.safetensors" in file_names or "model.safetensors.index.json" in file_names:
+        return True
+    return any(name.endswith(".safetensors") for name in file_names)
 # Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
 # Keep the 20s cap only for smaller local machines. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
 _MAX_RECORD_SECS: float | None = _max_record_secs_for_ram(_RAM_GB)
+
+
+@dataclass
+class TrayEntry:
+    """A tray entry with minimal ownership/provenance metadata."""
+
+    text: str
+    owner: str = "user"
+    acknowledged: bool = True
+
+    def __eq__(self, other):
+        if isinstance(other, TrayEntry):
+            return (
+                self.text == other.text
+                and self.owner == other.owner
+                and self.acknowledged == other.acknowledged
+            )
+        if isinstance(other, str):
+            return self.text == other
+        return NotImplemented
+
+    @property
+    def display_owner(self) -> str:
+        if self.owner == "assistant" and not self.acknowledged:
+            return "assistant"
+        return "user"
 
 
 class SpokeAppDelegate(NSObject):
@@ -184,11 +246,13 @@ class SpokeAppDelegate(NSObject):
                 or _DEFAULT_COMMAND_MODEL
             )
             self._command_client = CommandClient(model=self._command_model_id)
-            self._command_model_options = [
-                (self._command_model_id, self._command_model_id, True)
-            ]
+            self._command_model_options = self._seed_command_model_options(
+                self._command_model_id
+            )
             self._command_models_refresh_in_flight = False
             self._command_overlay: TranscriptionOverlay | None = None
+            self._scene_cache = SceneCaptureCache(max_captures=10)
+            self._tool_schemas = get_tool_schemas()
             logger.info(
                 "Command pathway enabled: %s (%s)",
                 command_url,
@@ -200,16 +264,20 @@ class SpokeAppDelegate(NSObject):
             self._command_model_options = []
             self._command_models_refresh_in_flight = False
             self._command_overlay = None
+            self._scene_cache = None
+            self._tool_schemas = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
         self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
+        self._command_tool_used_tts = False
         if self._tts_client is not None:
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
-        self._tray_stack: list[str] = []
+        self._tray_stack: list[TrayEntry | str] = []
         self._tray_index: int = 0
         self._tray_active: bool = False
+        self._tray_tool_result: dict | None = None
 
         # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -515,14 +583,13 @@ class SpokeAppDelegate(NSObject):
             self._transcription_token += 1
             self._transcribing = False
             # Fall through to start recording
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            # User speech should interrupt assistant speech before we reopen input.
+            tts.cancel()
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
-
-        # Cancel any in-flight TTS playback
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            tts.cancel()
 
         # Tray intercept: shift+space from tray = navigation, plain space = record.
         self._verify_paste_text = None
@@ -843,18 +910,7 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
 
-            if shift_held:
-                # Shift + empty recording = recall tray
-                if self._tray_stack:
-                    logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
-                    self._tray_active = True
-                    self._detector.tray_active = True
-                    self._tray_index = len(self._tray_stack) - 1
-                    self._show_tray_current()
-                    return
-                else:
-                    logger.info("Shift+empty — no tray entries to recall")
-            elif enter_held and self._command_client is not None:
+            if enter_held and self._command_client is not None:
                 # Enter + empty recording = recall last assistant response
                 command_visible = (
                     self._command_overlay is not None
@@ -880,6 +936,17 @@ class SpokeAppDelegate(NSObject):
                                 logger.exception("Recall overlay failed")
                     else:
                         logger.info("Enter+empty — no history to recall")
+            elif shift_held:
+                # Shift + empty recording = recall tray
+                if self._tray_stack:
+                    logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
+                    self._tray_active = True
+                    self._detector.tray_active = True
+                    self._tray_index = len(self._tray_stack) - 1
+                    self._show_tray_current(acknowledge=True)
+                    return
+                else:
+                    logger.info("Shift+empty — no tray entries to recall")
             else:
                 command_visible = (
                     self._command_overlay is not None
@@ -1152,26 +1219,61 @@ class SpokeAppDelegate(NSObject):
 
     def _enter_tray(self, text: str) -> None:
         """Enter the tray with new text, pushing it onto the stack."""
-        self._tray_stack.append(text)
-        self._tray_index = len(self._tray_stack) - 1
-        self._tray_active = True
-        self._detector.tray_active = True
-        logger.info(
-            "Entering tray (entries=%d index=%d text_len=%d)",
-            len(self._tray_stack),
-            self._tray_index,
-            len(text),
+        self._add_tray_entry(text, owner="user", activate=True)
+
+    def _coerce_tray_entry(self, entry: TrayEntry | str) -> TrayEntry:
+        if isinstance(entry, TrayEntry):
+            return entry
+        return TrayEntry(text=str(entry))
+
+    def _get_tray_entry(self, index: int) -> TrayEntry:
+        entry = self._coerce_tray_entry(self._tray_stack[index])
+        self._tray_stack[index] = entry
+        return entry
+
+    def _acknowledge_tray_entry(self, index: int) -> None:
+        if index < 0 or index >= len(self._tray_stack):
+            return
+        entry = self._get_tray_entry(index)
+        if entry.owner == "assistant" and not entry.acknowledged:
+            entry.acknowledged = True
+
+    def _add_tray_entry(
+        self,
+        text: str,
+        *,
+        owner: str = "user",
+        activate: bool = True,
+    ) -> TrayEntry:
+        entry = TrayEntry(
+            text=text,
+            owner=owner,
+            acknowledged=(owner != "assistant"),
         )
+        self._tray_stack.append(entry)
+        self._tray_index = len(self._tray_stack) - 1
 
-        if self._glow is not None:
-            if hasattr(self._glow, "show_tray_dim"):
-                self._glow.show_tray_dim()
-            else:
-                self._glow.hide()
+        if activate:
+            self._tray_active = True
+            self._detector.tray_active = True
+            logger.info(
+                "Entering tray (entries=%d index=%d text_len=%d)",
+                len(self._tray_stack),
+                self._tray_index,
+                len(text),
+            )
 
-        self._show_tray_current()
+            if self._glow is not None:
+                if hasattr(self._glow, "show_tray_dim"):
+                    self._glow.show_tray_dim()
+                else:
+                    self._glow.hide()
 
-    def _show_tray_current(self) -> None:
+            self._show_tray_current()
+
+        return entry
+
+    def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
         if not self._tray_stack:
             self._dismiss_tray()
@@ -1179,12 +1281,15 @@ class SpokeAppDelegate(NSObject):
         # Defensive bounds clamp
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
-        text = self._tray_stack[self._tray_index]
+        if acknowledge:
+            self._acknowledge_tray_entry(self._tray_index)
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
         # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
         if self._overlay is not None:
-            self._overlay.show_tray(text)
+            self._overlay.show_tray(text, owner=entry.display_owner)
         if self._menubar is not None:
             pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
             self._menubar.set_status_text(f"Tray [{pos}]")
@@ -1209,6 +1314,7 @@ class SpokeAppDelegate(NSObject):
         """Shift tap (no spacebar) during tray = dismiss."""
         if self._tray_active:
             logger.info("Shift tap during tray — dismiss")
+            self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
 
     def _on_audio_shift_tap(self) -> None:
@@ -1257,7 +1363,7 @@ class SpokeAppDelegate(NSObject):
             self._dismiss_tray()
         else:
             self._tray_index += 1
-            self._show_tray_current()
+            self._show_tray_current(acknowledge=True)
 
     def _tray_navigate_down(self) -> None:
         """Navigate down toward older entries. Stop at bottom."""
@@ -1265,7 +1371,7 @@ class SpokeAppDelegate(NSObject):
             return
         if self._tray_index > 0:
             self._tray_index -= 1
-            self._show_tray_current()
+            self._show_tray_current(acknowledge=True)
 
     def _tray_delete_current(self) -> None:
         """Delete the currently displayed tray entry."""
@@ -1278,13 +1384,14 @@ class SpokeAppDelegate(NSObject):
         # Adjust index: stay at same position or move up if we were at the end
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
-        self._show_tray_current()
+        self._show_tray_current(acknowledge=True)
 
     def _tray_insert_current(self) -> None:
         """Insert the current tray entry at cursor and consume it."""
         if not self._tray_active or not self._tray_stack:
             return
-        text = self._tray_stack[self._tray_index]
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
 
         # Dismiss tray first, then inject. Dismissing before inject ensures
         # the tray overlay doesn't interfere with focus on the target app.
@@ -1331,7 +1438,8 @@ class SpokeAppDelegate(NSObject):
             return
         if not self._tray_active:
             return
-        text = self._tray_stack[self._tray_index]
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
 
         # Remove consumed entry from stack
         del self._tray_stack[self._tray_index]
@@ -1351,6 +1459,38 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
 
+    def _add_assistant_content_to_tray(self, text: str) -> dict:
+        """Place assistant-created content into the tray on the main thread.
+
+        Must be called from a background thread — uses waitUntilDone=True to
+        synchronously dispatch tray mutation onto the main thread. Relies on
+        tool calls being executed sequentially (the command.py tool loop) so
+        that _tray_tool_result is never written concurrently.
+        """
+        self._tray_tool_result = None
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "toolAddToTray:",
+            {"text": text},
+            True,
+        )
+        return self._tray_tool_result or {"error": "Tray update failed"}
+
+    def toolAddToTray_(self, payload: dict) -> None:
+        """Main-thread tray mutation entrypoint for command tool calls."""
+        text = payload.get("text", "")
+        reveal_now = bool(self._tray_active)
+        self._add_tray_entry(
+            text,
+            owner="assistant",
+            activate=reveal_now,
+        )
+        self._tray_tool_result = {
+            "status": "added",
+            "tray_visible": reveal_now,
+            "stack_size": len(self._tray_stack),
+            "owner": "assistant",
+        }
+
     # ── command pathway ────────────────────────────────────
 
     def _send_text_as_command(self, text: str) -> None:
@@ -1363,6 +1503,7 @@ class SpokeAppDelegate(NSObject):
         self._transcription_token += 1
         token = self._transcription_token
         self._transcribing = True
+        self._command_tool_used_tts = False
         self._transcribe_start = time.monotonic()
 
         if self._menubar is not None:
@@ -1379,15 +1520,21 @@ class SpokeAppDelegate(NSObject):
         def _stream():
             full_response = ""
             try:
-                for content_token in self._command_client.stream_command(text):
+                for event in self._command_client.stream_command_events(
+                    text,
+                    tools=self._tool_schemas,
+                    tool_executor=self._make_tool_executor(),
+                ):
                     if token != self._transcription_token:
                         break  # stale
-                    full_response += content_token
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "commandToken:",
-                        {"token": token, "text": content_token},
-                        False,
-                    )
+                    if event.kind == "assistant_delta":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:",
+                            {"token": token, "text": event.text},
+                            False,
+                        )
+                    elif event.kind == "assistant_final":
+                        full_response = event.text
             except Exception:
                 logger.exception("Command stream failed")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1401,8 +1548,56 @@ class SpokeAppDelegate(NSObject):
 
         threading.Thread(target=_stream, daemon=True).start()
 
+    def _make_tool_executor(self):
+        """Build a tool executor closure with current app state."""
+        scene_cache = self._scene_cache
+        raw_tts_client = getattr(self, "_tts_client", None)
+        tts_client = raw_tts_client
+        # Get last assistant response for last_response refs
+        last_response = None
+        try:
+            history = self._command_client.history if self._command_client else []
+            if history:
+                _, last_response = history[-1]
+        except (TypeError, ValueError):
+            pass
+
+        if raw_tts_client is not None:
+            delegate = self
+
+            class _ToolTTSProxy:
+                def __init__(self, client):
+                    self._client = client
+
+                def speak_async(self, text, *args, **kwargs):
+                    result = self._client.speak_async(text, *args, **kwargs)
+                    delegate._command_tool_used_tts = True
+                    return result
+
+                def speak(self, text, *args, **kwargs):
+                    result = self._client.speak(text, *args, **kwargs)
+                    delegate._command_tool_used_tts = True
+                    return result
+
+                def __getattr__(self, name):
+                    return getattr(self._client, name)
+
+            tts_client = _ToolTTSProxy(raw_tts_client)
+
+        def _executor(name, arguments, **kwargs):
+            return execute_tool(
+                name=name,
+                arguments=arguments,
+                scene_cache=scene_cache,
+                last_response=last_response,
+                tts_client=tts_client,
+                tray_writer=self._add_assistant_content_to_tray,
+            )
+        return _executor
+
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe then send command to OMLX."""
+        self._command_tool_used_tts = False
         # Wait for preview loop to finish
         if self._preview_thread is not None:
             if getattr(self, "_preview_done", None) is not None:
@@ -1448,15 +1643,21 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         try:
-            for content_token in self._command_client.stream_command(utterance):
+            for event in self._command_client.stream_command_events(
+                utterance,
+                tools=self._tool_schemas,
+                tool_executor=self._make_tool_executor(),
+            ):
                 if token != self._transcription_token:
                     break  # stale
-                full_response += content_token
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToken:",
-                    {"token": token, "text": content_token},
-                    False,
-                )
+                if event.kind == "assistant_delta":
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandToken:",
+                        {"token": token, "text": event.text},
+                        False,
+                    )
+                elif event.kind == "assistant_final":
+                    full_response = event.text
         except Exception:
             logger.exception("Command stream failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1512,6 +1713,12 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         overlay = self._command_overlay
+        response = payload.get("response", "")
+        if overlay is not None and response:
+            try:
+                overlay.set_response_text(response)
+            except Exception:
+                logger.exception("Command overlay failed to apply final response text")
         if overlay is not None:
             try:
                 overlay.finish()
@@ -1520,9 +1727,10 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
         # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
-        response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
-        if response and tts is not None:
+        tool_used_tts = getattr(self, "_command_tool_used_tts", False)
+        self._command_tool_used_tts = False
+        if response and tts is not None and not tool_used_tts:
             if self._glow is not None:
                 self._glow.hide()
             if overlay is not None:
@@ -1748,6 +1956,9 @@ class SpokeAppDelegate(NSObject):
                     "models": self._select_model(None),
                 },
             }
+            launch_target = self._launch_target_menu_state()
+            if launch_target is not None:
+                state["launch_target"] = launch_target
             if self._command_client is not None:
                 state["assistant"] = {
                     "selected": self._command_model_id,
@@ -1797,6 +2008,9 @@ class SpokeAppDelegate(NSObject):
         if role == "assistant":
             self._apply_command_model_selection(model_id)
             return
+        if role == "launch_target":
+            self._apply_launch_target_selection(model_id)
+            return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
             return
@@ -1827,6 +2041,63 @@ class SpokeAppDelegate(NSObject):
         else:
             transcription_model = model_id
         self._apply_model_selection(preview_model, transcription_model)
+
+    def _current_checkout_root(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _launch_target_menu_state(self) -> dict | None:
+        targets = iter_launch_targets()
+        if not targets:
+            return None
+        current_target = current_launch_target_id(self._current_checkout_root())
+        return {
+            "title": "Launch Target",
+            "selected": current_target,
+            "items": [
+                (target["id"], target["label"], target["enabled"]) for target in targets
+            ],
+        }
+
+    def _persist_launch_target_selection(self, target_id: str) -> bool:
+        return save_selected_launch_target(target_id)
+
+    def _invoke_launch_target_helper(self, target_id: str) -> bool:
+        helper_path = Path(__file__).resolve().parents[1] / "scripts" / "launch-target.sh"
+        if not helper_path.is_file():
+            logger.warning("Launch target helper is missing: %s", helper_path)
+            return False
+        import subprocess
+
+        subprocess.Popen(
+            ["/bin/bash", str(helper_path), target_id],
+            cwd=helper_path.parent.parent,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        return True
+
+    def _apply_launch_target_selection(self, target_id: str) -> None:
+        current_target = current_launch_target_id(self._current_checkout_root())
+        if not self._persist_launch_target_selection(target_id):
+            logger.warning(
+                "Skipping launch-target switch because %s could not be persisted",
+                target_id,
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save launch target")
+            return
+        if target_id == current_target:
+            return
+        logger.info("Switching launch target (handoff): %s -> %s", current_target, target_id)
+        if not self._invoke_launch_target_helper(target_id):
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't switch launch target")
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text(f"Switching to {target_id}…")
 
     def _apply_model_selection(self, preview_model: str, transcription_model: str) -> None:
         if not self._model_allowed(preview_model):
@@ -2122,27 +2393,51 @@ class SpokeAppDelegate(NSObject):
     def _discover_command_models(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        model_ids: list[str] = []
+        server_model_ids: list[str] = []
         if self._command_client is not None:
             try:
-                model_ids = self._command_client.list_models()
+                server_model_ids = self._command_client.list_models()
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
         local_model_ids = _iter_local_command_model_ids(local_model_dir)
-        model_ids.extend(local_model_ids)
-        if selected_model and selected_model not in model_ids:
-            model_ids.insert(0, selected_model)
+        if local_model_ids:
+            local_model_set = set(local_model_ids)
+            model_ids = [
+                model_id
+                for model_id in server_model_ids
+                if model_id in local_model_set
+            ]
+            model_ids.extend(
+                model_id for model_id in local_model_ids if model_id not in model_ids
+            )
+        else:
+            model_ids = server_model_ids
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
             if not model_id or model_id in seen:
                 continue
             seen.add(model_id)
-            options.append((model_id, model_id, True))
+            options.append((model_id, model_id, model_id == selected_model))
         return options
+
+    def _seed_command_model_options(
+        self, selected_model: str
+    ) -> list[tuple[str, str, bool]]:
+        """Seed the Assistant menu from local disk without hitting /v1/models."""
+        local_model_dir = Path(
+            os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+        ).expanduser()
+        local_model_ids = _iter_local_command_model_ids(local_model_dir)
+        if local_model_ids:
+            return [
+                (model_id, model_id, model_id == selected_model)
+                for model_id in local_model_ids
+            ]
+        return [(selected_model, selected_model, True)] if selected_model else []
 
     def _refresh_command_model_options_async(self) -> None:
         if self._command_client is None or self._command_models_refresh_in_flight:
@@ -2165,10 +2460,7 @@ class SpokeAppDelegate(NSObject):
 
     def commandModelsDiscovered_(self, payload: dict) -> None:
         self._command_models_refresh_in_flight = False
-        current_model = self._command_model_id
         options = payload.get("options") or []
-        if current_model not in [model_id for model_id, _, _ in options]:
-            options = [(current_model, current_model, True), *options]
         self._command_model_options = options
         if self._menubar is not None:
             self._menubar.refresh_menu()

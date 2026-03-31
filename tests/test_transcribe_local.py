@@ -84,6 +84,50 @@ class TestLocalTranscriptionClient:
         assert call_kwargs[1]["decode_timeout"] is None
         assert call_kwargs[1]["eager_eval"] is True
 
+    @patch("spoke.transcribe_local.supports_eager_eval", return_value=True)
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_omits_default_timeout_when_eager_eval_enabled(
+        self, mock_mlx_whisper, _mock_supports_eager_eval
+    ):
+        """Default timeout guard should not mask the eager_eval path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
+        client = LocalTranscriptionClient(
+            model="test/model",
+            decode_timeout=30.0,
+            eager_eval=True,
+        )
+
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "hello world"
+        call_kwargs = mock_mlx_whisper.transcribe.call_args
+        assert "decode_timeout" not in call_kwargs.kwargs
+        assert call_kwargs.kwargs["eager_eval"] is True
+
+    @patch("spoke.transcribe_local.supports_eager_eval", return_value=True)
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_preserves_explicit_timeout_when_eager_eval_enabled(
+        self, mock_mlx_whisper, _mock_supports_eager_eval
+    ):
+        """Non-default timeout choices should still be forwarded explicitly."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
+        client = LocalTranscriptionClient(
+            model="test/model",
+            decode_timeout=12.5,
+            eager_eval=True,
+        )
+
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "hello world"
+        call_kwargs = mock_mlx_whisper.transcribe.call_args
+        assert call_kwargs.kwargs["decode_timeout"] == 12.5
+        assert call_kwargs.kwargs["eager_eval"] is True
+
     @patch("spoke.transcribe_local.supports_eager_eval", return_value=False)
     @patch("spoke.transcribe_local.logger")
     @patch("spoke.transcribe_local.mlx_whisper", create=True)

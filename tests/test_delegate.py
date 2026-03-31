@@ -34,6 +34,9 @@ def _make_delegate(main_module, monkeypatch):
     delegate._last_preview_text = ""
     delegate._command_client = None
     delegate._command_overlay = None
+    delegate._scene_cache = None
+    delegate._tts_client = None
+    delegate._command_tool_used_tts = False
     # Tray state
     delegate._tray_stack = []
     delegate._tray_index = 0
@@ -906,6 +909,46 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_handle_model_menu_none_exposes_launch_targets_from_registry(
+        self, main_module, monkeypatch
+    ):
+        """A populated launch-target registry should surface a dedicated submenu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._launch_target_menu_state = MagicMock(
+            return_value={
+                "title": "Launch Target",
+                "selected": "main",
+                "items": [
+                    ("main", "Main", True),
+                    ("smoke", "Smoke", True),
+                ],
+            }
+        )
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["launch_target"] == {
+            "title": "Launch Target",
+            "selected": "main",
+            "items": [
+                ("main", "Main", True),
+                ("smoke", "Smoke", True),
+            ],
+        }
+
+    def test_selecting_launch_target_persists_choice_and_invokes_helper(
+        self, main_module, monkeypatch
+    ):
+        """Choosing a new launch target should save it and hand off to the launcher helper."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._persist_launch_target_selection = MagicMock(return_value=True)
+        d._invoke_launch_target_helper = MagicMock(return_value=True)
+
+        d._handle_model_menu_action(("launch_target", "smoke"))
+
+        d._persist_launch_target_selection.assert_called_once_with("smoke")
+        d._invoke_launch_target_helper.assert_called_once_with("smoke")
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -983,11 +1026,13 @@ class TestDualModelConfiguration:
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Assistant discovery should include local LM Studio models alongside /v1/models."""
+        """Assistant discovery should keep only curated installed local MLX models."""
         model_root = tmp_path / "models"
-        (model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit").mkdir(
-            parents=True
-        )
+        curated = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
         (model_root / "unsloth" / "Qwen3-4B-Instruct-2507-GGUF").mkdir(parents=True)
         monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
 
@@ -998,26 +1043,23 @@ class TestDualModelConfiguration:
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
         assert options == [
-            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-            ("qwen3-14b", "qwen3-14b", True),
             (
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
-                True,
-            ),
-            (
-                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-                True,
+                False,
             ),
         ]
 
-    def test_discover_command_models_keeps_selected_model_when_server_is_unavailable(
+    def test_discover_command_models_drops_stale_selected_model_when_server_is_unavailable(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Selected assistant model should stay visible even if only local inventory is available."""
+        """A stale selected assistant model should disappear when it is not actually available."""
         model_root = tmp_path / "models"
-        (model_root / "mlx-community" / "Qwen3-0.6B-8bit").mkdir(parents=True)
+        curated = model_root / "lmstudio-community" / "Qwen2.5-Coder-3B-Instruct-MLX-8bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors").write_text("weights")
         monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
 
         d = _make_delegate(main_module, monkeypatch)
@@ -1027,8 +1069,35 @@ class TestDualModelConfiguration:
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
         assert options == [
-            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-            ("mlx-community/Qwen3-0.6B-8bit", "mlx-community/Qwen3-0.6B-8bit", True),
+            (
+                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+                False,
+            ),
+        ]
+
+    def test_seed_command_model_options_prefers_curated_local_inventory(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Initial Assistant menu should seed from the local curated shortlist without /v1/models."""
+        model_root = tmp_path / "models"
+        curated = model_root / "alexgusevski" / "LFM2.5-1.2B-Nova-Function-Calling-mlx"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+
+        options = d._seed_command_model_options("qwen3p5-35B-A3B")
+
+        assert options == [
+            (
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                False,
+            ),
         ]
 
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
@@ -1197,22 +1266,27 @@ class TestDualModelConfiguration:
             lambda self: "qwen3-14b",
             raising=False,
         )
-        monkeypatch.setattr(
-            main_module.SpokeAppDelegate,
-            "_discover_command_models",
-            lambda self, selected_model: [("qwen3-14b", "qwen3-14b", True)],
-            raising=False,
-        )
-
         with patch.object(main_module, "CommandClient") as MockCommand:
             MockCommand.return_value = MagicMock()
-            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-            result = d.init()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", False)],
+            ) as mock_seed:
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
 
         assert result is not None
         MockCommand.assert_called_once_with(model="qwen3-14b")
         assert d._command_model_id == "qwen3-14b"
-        assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
+        mock_seed.assert_called_once_with("qwen3-14b")
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            )
+        ]
 
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch
@@ -1230,13 +1304,25 @@ class TestDualModelConfiguration:
         with patch.object(main_module, "CommandClient") as MockCommand:
             command_client = MagicMock()
             MockCommand.return_value = command_client
-            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-            result = d.init()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", False)],
+            ) as mock_seed:
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
 
         assert result is not None
         MockCommand.assert_called_once_with(model="qwen3-14b")
         command_client.list_models.assert_not_called()
-        assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
+        mock_seed.assert_called_once_with("qwen3-14b")
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            )
+        ]
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch
@@ -1632,6 +1718,36 @@ class TestWarmupContract:
         ]
         d._menubar.refresh_menu.assert_called_once_with()
 
+    def test_command_models_discovered_does_not_reinsert_missing_current_model(
+        self, main_module, monkeypatch
+    ):
+        """Async completion should not put a stale saved assistant model back into the menu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = True
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    (
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        False,
+                    ),
+                ]
+            }
+        )
+
+        assert d._command_models_refresh_in_flight is False
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            ),
+        ]
+        d._menubar.refresh_menu.assert_called_once_with()
+
 
 class TestWarmupHoldGuard:
     """Test that pre-ready holds cannot push the UI back to a false ready state."""
@@ -1902,6 +2018,8 @@ class TestCommandTranscribeWorker:
         d._transcribe_start = time.monotonic()
         d._transcription_token = 1
         d._command_first_token = False
+        d._scene_cache = None
+        d._tool_schemas = None
         return d
 
     def test_successful_transcribe_and_stream(self, main_module, monkeypatch):
@@ -1909,7 +2027,11 @@ class TestCommandTranscribeWorker:
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.transcribe.return_value = "open the file"
         d._client.supports_streaming = False
-        d._command_client.stream_command.return_value = iter(["Hello", " world"])
+        d._command_client.stream_command_events.return_value = iter([
+            MagicMock(kind="assistant_delta", text="Hello"),
+            MagicMock(kind="assistant_delta", text=" world"),
+            MagicMock(kind="assistant_final", text="Hello world"),
+        ])
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -1919,6 +2041,8 @@ class TestCommandTranscribeWorker:
         assert "commandUtteranceReady:" in selectors
         assert selectors.count("commandToken:") == 2
         assert "commandComplete:" in selectors
+        complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
+        assert complete_call[0][1]["response"] == "Hello world"
 
     def test_empty_utterance_recalls_last_response(self, main_module, monkeypatch):
         """Empty transcription with shift = recall last response."""
@@ -1932,7 +2056,7 @@ class TestCommandTranscribeWorker:
         selectors = [c[0][0] for c in calls]
         assert "_recallLastResponse:" in selectors
         # Should NOT have tried to stream
-        d._command_client.stream_command.assert_not_called()
+        d._command_client.stream_command_events.assert_not_called()
 
     def test_transcription_failure_dispatches_error(self, main_module, monkeypatch):
         """Transcription exception → commandFailed."""
@@ -1946,14 +2070,14 @@ class TestCommandTranscribeWorker:
         selectors = [c[0][0] for c in calls]
         assert "commandFailed:" in selectors
         # Should NOT have tried to stream
-        d._command_client.stream_command.assert_not_called()
+        d._command_client.stream_command_events.assert_not_called()
 
     def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
         """Streaming exception → commandFailed after utterance dispatched."""
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
-        d._command_client.stream_command.side_effect = ConnectionError("OMLX down")
+        d._command_client.stream_command_events.side_effect = ConnectionError("OMLX down")
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -1969,13 +2093,13 @@ class TestCommandTranscribeWorker:
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
 
-        def token_gen(utterance):
-            yield "first"
+        def token_gen(utterance, **kwargs):
+            yield MagicMock(kind="assistant_delta", text="first")
             d._transcription_token = 99  # simulate new recording invalidating
-            yield "should not appear"
-            yield "also should not appear"
+            yield MagicMock(kind="assistant_delta", text="should not appear")
+            yield MagicMock(kind="assistant_final", text="also should not appear")
 
-        d._command_client.stream_command.side_effect = token_gen
+        d._command_client.stream_command_events.side_effect = token_gen
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -1992,7 +2116,10 @@ class TestCommandTranscribeWorker:
         d._client.has_active_stream = True
         d._preview_client = d._client  # same object
         d._client.finish_stream.return_value = "streamed utterance"
-        d._command_client.stream_command.return_value = iter(["ok"])
+        d._command_client.stream_command_events.return_value = iter([
+            MagicMock(kind="assistant_delta", text="ok"),
+            MagicMock(kind="assistant_final", text="ok"),
+        ])
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -2004,7 +2131,7 @@ class TestCommandTranscribeWorker:
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.supports_streaming = False
         d._client.transcribe.return_value = "hello"
-        d._command_client.stream_command.return_value = iter([])
+        d._command_client.stream_command_events.return_value = iter([])
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -2086,32 +2213,6 @@ class TestCommandCallbacks:
         d._command_overlay.invert_thinking_timer.assert_not_called()
         d._command_overlay.append_token.assert_called_with("more")
 
-    def test_command_complete_finishes_overlay(self, main_module, monkeypatch):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_overlay = MagicMock()
-        d._transcription_token = 1
-        d._transcribing = True
-
-        d.commandComplete_({"token": 1})
-
-        assert d._transcribing is False
-        d._command_overlay.finish.assert_called_once()
-        d._glow.hide.assert_called()
-
-    def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_overlay = MagicMock()
-        d._command_overlay._visible = False
-        d._transcription_token = 1
-        d._transcribing = True
-
-        d.commandFailed_({"token": 1, "error": "OMLX down"})
-
-        assert d._transcribing is False
-        d._command_overlay.show.assert_called()
-        d._command_overlay.append_token.assert_called()
-        d._command_overlay.finish.assert_called()
-
     def test_command_token_invert_failure_still_appends_token(
         self, main_module, monkeypatch, caplog
     ):
@@ -2127,6 +2228,31 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called_with("first")
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
+
+    def test_command_complete_finishes_overlay(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandComplete_({"token": 1})
+
+        assert d._transcribing is False
+        d._command_overlay.finish.assert_called_once()
+        d._glow.hide.assert_called()
+
+    def test_command_complete_replaces_overlay_with_final_response(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandComplete_({"token": 1, "response": "Done."})
+
+        d._command_overlay.set_response_text.assert_called_once_with("Done.")
+        d._command_overlay.finish.assert_called_once()
 
     def test_command_complete_finish_failure_still_starts_autoplay(
         self, main_module, monkeypatch, caplog
@@ -2164,6 +2290,64 @@ class TestCommandCallbacks:
         d._command_overlay.tts_stop.assert_called_once()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         assert "Command autoplay failed to start" in caplog.text
+
+    def test_tool_executor_marks_tool_tts_usage(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._tts_client = MagicMock()
+
+        executor = d._make_tool_executor()
+        result = executor("read_aloud", {"source_ref": "literal:hello world"})
+
+        assert result == "Speaking: hello world"
+        assert d._command_tool_used_tts is True
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+
+    def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._add_assistant_content_to_tray = MagicMock(
+            return_value={"status": "added", "tray_visible": False, "stack_size": 1}
+        )
+
+        executor = d._make_tool_executor()
+        result = executor("add_to_tray", {"text": "save this"})
+
+        d._add_assistant_content_to_tray.assert_called_once_with("save this")
+        parsed = json.loads(result)
+        assert parsed["status"] == "added"
+
+    def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._tts_client = MagicMock()
+        d._tts_client.speak_async.side_effect = RuntimeError("device unavailable")
+
+        executor = d._make_tool_executor()
+        result = executor("read_aloud", {"source_ref": "literal:hello world"})
+
+        assert result == "Error speaking text: TTS playback failed"
+        assert d._command_tool_used_tts is False
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+
+    def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandFailed_({"token": 1, "error": "OMLX down"})
+
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called()
+        d._command_overlay.append_token.assert_called()
+        d._command_overlay.finish.assert_called()
 
     def test_tts_amplitude_update_failure_is_suppressed(
         self, main_module, monkeypatch, caplog
@@ -2328,6 +2512,43 @@ class TestShortShiftHold:
         assert d._tray_active is True
         assert d._tray_index == 0
         d._overlay.show_tray.assert_called()
+
+    def test_short_shift_enter_hold_recalls_command_overlay(self, main_module, monkeypatch):
+        """When both Shift and Enter were used, Enter should win for assistant recall."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._tray_stack = ["previous text"]
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._on_hold_end(shift_held=True, enter_held=True)
+
+        assert d._tray_active is False
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("hello")
+        d._command_overlay.append_token.assert_called()
+        d._command_overlay.finish.assert_called_once()
+        d._overlay.show_tray.assert_not_called()
+
+    def test_short_shift_enter_hold_dismisses_visible_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        """The same combined gesture should dismiss the assistant overlay with Shift still held."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._tray_stack = ["previous text"]
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+
+        d._on_hold_end(shift_held=True, enter_held=True)
+
+        assert d._tray_active is False
+        d._command_overlay.cancel_dismiss.assert_called_once()
+        d._overlay.show_tray.assert_not_called()
 
 
 class TestCoerceSettings:

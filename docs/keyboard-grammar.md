@@ -36,6 +36,7 @@ Each key has a consistent identity across the entire grammar:
 | Spacebar hold (≥ 400ms), clean release | **Text pathway** — record, transcribe, paste at cursor |
 | Spacebar hold, shift held at release | **Enter tray** — record, transcribe, stage for review |
 | Spacebar hold, enter held at release | **Send to assistant** — record, transcribe, stream to assistant |
+| Spacebar hold, tap shift, then release spacebar | **Latched recording** — keep recording hands-free until explicit tray or assistant exit |
 | Short spacebar hold (< 800ms), shift at release | **Recall** — enter tray with last tray entry (no recording) |
 
 The hold threshold defaults to 400ms (configurable via `SPOKE_HOLD_MS`, which
@@ -83,6 +84,13 @@ IDLE ──[spacebar down]──→ WAITING ──[400ms timer]──→ RECORDI
 - **WAITING**: spacebar is down, hold timer running. Key repeats suppressed.
 - **RECORDING**: audio capture active, overlays visible.
 
+Latched recording adds one more state on top of the base hold detector:
+
+- **LATCHED**: recording remains active after spacebar is released.
+- **Shift tap during RECORDING** enters **LATCHED**.
+- **Enter** exits **LATCHED** to the assistant pathway.
+- **Shift + spacebar release** exits **LATCHED** to the tray.
+
 Synthetic space forwarding on early release uses a 100ms auto-clear timeout in
 case the forwarded events are lost.
 
@@ -103,7 +111,7 @@ case the forwarded events are lost.
 This is the fast path for confident sends — you know before you finish
 speaking that this is a command. Hold enter, release spacebar, done.
 
-## Latched recording extension (planned)
+## Latched recording
 
 Latched recording is a mid-capture state transition, not a change in
 end-of-recording intent. The utterance's disposition is still chosen only
@@ -300,6 +308,10 @@ unrelated transitions that rhyme.
 The fast command path moves from shift to enter. The accidental-send problem
 (shift held by mistake) goes away entirely — shift now means "review," never
 "send."
+
+For assistant recall, Enter also wins if both modifiers are involved during a
+short empty hold. That lets a slightly sloppy Shift+Enter overlap still
+toggle the assistant overlay instead of falling back to tray recall.
 
 ### Relationship to recovery mode
 

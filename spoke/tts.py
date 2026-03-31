@@ -8,6 +8,7 @@ and playback on a background thread.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import threading
@@ -85,7 +86,7 @@ def _split_sentences(text: str) -> list[str]:
             continue
 
         end = i + 1
-        while end < len(text) and text[end] in "\"'\u201d\u2019)]}":
+        while end < len(text) and text[end] in "\"'”’)]}":
             end += 1
         candidate = text[start:end].strip()
         lowered = candidate.lower()
@@ -119,6 +120,21 @@ def _split_sentences(text: str) -> list[str]:
 
 def tts_load(model_id: str):
     """Load a Voxtral TTS model.  Separated for easy patching in tests."""
+    if "voxtral" in model_id.lower():
+        try:
+            mlx_audio_pkg = importlib.import_module("mlx_audio")
+            importlib.import_module("mlx_audio.tts.models.voxtral_tts")
+        except Exception as exc:
+            mlx_audio_path = getattr(mlx_audio_pkg, "__file__", "<unresolved>") if "mlx_audio_pkg" in locals() else "<unresolved>"
+            py_path = os.environ.get("PYTHONPATH", "")
+            raise RuntimeError(
+                "Voxtral TTS backend is unavailable in the active mlx_audio runtime. "
+                f"Resolved mlx_audio from {mlx_audio_path}. "
+                f"PYTHONPATH={py_path or '<unset>'}. "
+                "Expected mlx_audio.tts.models.voxtral_tts to be importable. "
+                "If you are using a local smoke/runtime checkout, ensure the branch-local "
+                ".spoke-smoke-env restores the intended PYTHONPATH override."
+            ) from exc
     from mlx_audio.tts import load
     return load(model_id)
 
