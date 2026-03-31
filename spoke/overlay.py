@@ -760,7 +760,9 @@ class TranscriptionOverlay(NSObject):
         # the visual).  Phase shift: fill uses squared response so it leads
         # the glow — visible before the glow builds up, and at low RMS the
         # fill is already present against the undimmed background.
-        fill_drive = scaled * scaled  # squared — leads the glow's log curve
+        # On dark backgrounds use linear response so soft sounds register.
+        # On light backgrounds use squared so the fill leads the glow.
+        fill_drive = _lerp(scaled, scaled * scaled, t)
         fill_min = _lerp(0.06, 0.42, t)   # 50% darker at rest
         fill_max = _lerp(0.70, 0.99, t)   # 2x darker at saturation (dark: 0.50->0.70)
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
