@@ -895,15 +895,9 @@ class CommandOverlay(NSObject):
             ridge_alpha_field = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
             ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha_field)
 
-            # Glow fill profile — same as preview overlay
+            # Lorentzian fill profile — same as preview overlay
             from .overlay import _glow_fill_alpha
-            fill_alpha = _glow_fill_alpha(
-                sdf,
-                peak_falloff=3.0 * scale,
-                peak_power=6.0,
-                interior_floor=0.40,
-                interior_softness=40.0 * scale,
-            )
+            fill_alpha = _glow_fill_alpha(sdf, width=4.0 * scale)
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
             )

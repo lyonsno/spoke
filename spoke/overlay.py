@@ -230,29 +230,18 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _glow_fill_alpha(signed_distance, peak_falloff: float, peak_power: float,
-                     interior_floor: float, interior_softness: float):
-    """Fill profile that peaks at the boundary and settles to a gentle interior wash.
+def _glow_fill_alpha(signed_distance, width: float):
+    """Lorentzian fill profile — sharp peak at boundary, long gradual tails.
 
-    Cross-section: sharp exponential peak at the boundary (d=0) dropping
-    rapidly inward to an interior floor, then a very gradual slope to the
-    center.  Same peak falls off outward as glow bleed.
-
-    The result is max(ridge_peak, interior_ramp) so the peak always dominates
-    at the boundary and the interior is a gentle translucent wash.
+    Cross-section is 1 / (1 + (d/width)^2): steep near the peak, always
+    curving, never flattening.  The slope is always changing — steep at
+    first, then gently bending toward zero without ever going flat.
+    Same shape on both sides (inward and outward glow bleed).
     """
     import numpy as np
 
-    # Ridge peak — exponential spike at the boundary, falls both directions
     d = np.abs(signed_distance)
-    peak = np.exp(-np.power(d / max(peak_falloff, 1e-6), peak_power, dtype=np.float32))
-
-    # Interior ramp — rises from 0 at boundary to interior_floor deep inside
-    # Uses a gentler curve so the wash is very gradual
-    inside_t = np.clip(-signed_distance / max(interior_softness, 1e-6), 0.0, 1.0)
-    interior = interior_floor * inside_t
-
-    return np.maximum(peak, interior).astype(np.float32)
+    return (1.0 / (1.0 + np.square(d / max(width, 1e-6)))).astype(np.float32)
 
 
 def _fill_field_to_image(alpha, r: int, g: int, b: int):
@@ -848,16 +837,10 @@ class TranscriptionOverlay(NSObject):
             return
         try:
             scale = getattr(self, '_fill_scale', 2.0)
-            # Glow fill profile: sharp peak at boundary (1.0), rapid drop
-            # inward to ~0.4, very gradual slope to center.  Same peak
-            # bleeds outward as glow.
-            fill_alpha = _glow_fill_alpha(
-                self._fill_sdf,
-                peak_falloff=3.0 * scale,    # px — width of the boundary peak
-                peak_power=6.0,              # sharp but not hairline
-                interior_floor=0.40,         # gentle wash at center
-                interior_softness=40.0 * scale,  # very gradual ramp inward
-            )
+            # Lorentzian fill profile: sharp peak at boundary, long gradual
+            # tails that never flatten.  Width controls how quickly it drops
+            # from the peak — smaller = sharper spike, larger = broader bell.
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=4.0 * scale)
 
             t = getattr(self, '_brightness', 0.0)
             bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
