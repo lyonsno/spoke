@@ -346,22 +346,10 @@ class TranscriptionOverlay(NSObject):
         self._ridge_layer.setOpacity_(0.0)
         self._ridge_layer.setContentsScale_(self._ridge_scale)
 
-        # Bloom layer — wider, softer falloff for ambient halo
-        self._ridge_bloom_layer = CALayer.alloc().init()
-        self._ridge_bloom_layer.setFrame_(((0, 0), (win_w, win_h)))
-        self._ridge_bloom_layer.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-            ).CGColor()
-        )
-        self._ridge_bloom_layer.setOpacity_(0.0)
-        self._ridge_bloom_layer.setContentsScale_(self._ridge_scale)
-
         # Build initial SDF masks
         self._apply_ridge_masks(w, h)
 
-        wrapper.layer().insertSublayer_below_(self._ridge_bloom_layer, content.layer())
-        wrapper.layer().insertSublayer_above_(self._ridge_layer, self._ridge_bloom_layer)
+        wrapper.layer().insertSublayer_below_(self._ridge_layer, content.layer())
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -681,8 +669,6 @@ class TranscriptionOverlay(NSObject):
         # should be around 2-4% opacity; at full amplitude it can reach ~15%.
         if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
             self._ridge_layer.setOpacity_(min(opacity * 0.15, 0.20))
-        if hasattr(self, '_ridge_bloom_layer') and self._ridge_bloom_layer is not None:
-            self._ridge_bloom_layer.setOpacity_(min(opacity * 0.06, 0.08))
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -725,11 +711,6 @@ class TranscriptionOverlay(NSObject):
                 _OVERLAY_CORNER_RADIUS, scale,
                 _RIDGE_FALLOFF, _RIDGE_POWER,
             )
-            bloom_image, self._bloom_payload = _build_ridge_image(
-                total_w, total_h, width, height,
-                _OVERLAY_CORNER_RADIUS, scale,
-                _RIDGE_BLOOM_FALLOFF, _RIDGE_BLOOM_POWER,
-            )
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
 
@@ -741,14 +722,6 @@ class TranscriptionOverlay(NSObject):
             ridge_mask.setContentsGravity_("resize")
             self._ridge_layer.setMask_(ridge_mask)
             self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
-
-        if hasattr(self, '_ridge_bloom_layer') and self._ridge_bloom_layer is not None:
-            bloom_mask = CALayer.alloc().init()
-            bloom_mask.setFrame_(((0, 0), (total_w, total_h)))
-            bloom_mask.setContents_(bloom_image)
-            bloom_mask.setContentsGravity_("resize")
-            self._ridge_bloom_layer.setMask_(bloom_mask)
-            self._ridge_bloom_layer.setFrame_(((0, 0), (total_w, total_h)))
 
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""

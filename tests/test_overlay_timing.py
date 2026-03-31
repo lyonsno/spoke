@@ -71,39 +71,33 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_ridge_glow_amplitude_drives_ridge_layers(
+    def test_ridge_glow_amplitude_drives_ridge_layer(
         self, mock_pyobjc
     ):
-        """Ridge and bloom layers should respond to glow amplitude with smoothing."""
+        """Ridge layer should respond to glow amplitude with smoothing."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
             overlay._visible = True
             overlay._ridge_layer = MagicMock()
-            overlay._ridge_bloom_layer = MagicMock()
             overlay._smoothed_glow_opacity = 0.0
 
             # Feed steady low signal to let the independent smoothing converge
             for _ in range(30):
                 overlay.update_glow_amplitude(0.1)
             ridge_opacity = overlay._ridge_layer.setOpacity_.call_args[0][0]
-            bloom_opacity = overlay._ridge_bloom_layer.setOpacity_.call_args[0][0]
-            # Smoothed value converges near 0.1; ridge scales by 0.15, bloom by 0.06
+            # Smoothed value converges near 0.1; ridge scales by 0.15
             assert ridge_opacity == pytest.approx(0.015, abs=0.005)
-            assert bloom_opacity == pytest.approx(0.006, abs=0.003)
 
             overlay._ridge_layer.reset_mock()
-            overlay._ridge_bloom_layer.reset_mock()
 
             # Feed high signal
             for _ in range(30):
                 overlay.update_glow_amplitude(1.0)
             ridge_at_peak = overlay._ridge_layer.setOpacity_.call_args[0][0]
-            bloom_at_peak = overlay._ridge_bloom_layer.setOpacity_.call_args[0][0]
-            # Ridge capped at 0.20, bloom at 0.08
+            # Ridge capped at 0.20
             assert ridge_at_peak <= 0.20
-            assert bloom_at_peak <= 0.08
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -149,7 +143,6 @@ class TestAdaptiveOverlayCompositing:
         overlay._text_amplitude = 0.0
         overlay._content_view = MagicMock()
         overlay._ridge_layer = MagicMock()
-        overlay._ridge_bloom_layer = MagicMock()
         overlay._brightness = 0.0
         overlay._brightness_target = 0.0
         return overlay
