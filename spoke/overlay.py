@@ -753,12 +753,15 @@ class TranscriptionOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         )
 
-        # SDF fill breathes with amplitude.  Brightness-adaptive ranges:
-        # Dark backgrounds: very transparent at rest, moderate peak
-        # Light backgrounds: the SDF peak should saturate near-full
-        fill_drive = scaled
-        fill_min = _lerp(0.04, 0.28, t)   # light: subtle at rest, 50% more transparent
-        fill_max = _lerp(0.50, 0.99, t)   # light: peak saturates full black
+        # SDF fill breathes with amplitude.  On light backgrounds the fill
+        # is relatively MORE assertive (because the glow is dimming the same
+        # area).  On dark backgrounds the fill is subtle (the glow carries
+        # the visual).  Phase shift: fill uses squared response so it leads
+        # the glow — visible before the glow builds up, and at low RMS the
+        # fill is already present against the undimmed background.
+        fill_drive = scaled * scaled  # squared — leads the glow's log curve
+        fill_min = _lerp(0.03, 0.20, t)   # dark: barely there; light: present at rest
+        fill_max = _lerp(0.35, 0.99, t)   # dark: modest; light: saturates
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
