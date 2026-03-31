@@ -44,23 +44,6 @@ After pointing the smoke target, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality
 from logs or process state.
 
-When changing or resetting box-local hotkeys:
-
-- treat `~/.config/wezterm/wezterm.lua` and `~/.config/spoke/*-target` files as one contract
-- prefer retargeting the target files over editing scripts when only the launched worktree changes
-- check the corresponding `~/Library/Logs/spoke-*-launch.log` before assuming the binding itself is dead
-- record durable hotkey/reset rules in repo docs and `spoke` Epistaxis
-
-When the launch-target menu feature is in play:
-
-- treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
-- agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
-- there is no dedicated `smoke_branch` slot; additional prepared surfaces should appear as their own explicit registry entries
-- prefer stable ids and short human labels
-- when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
-- do not silently assume the selected target also carries the launch-target submenu; call that out when preparing a target that does not
-- record durable registry conventions or machine-local target changes in `spoke` Epistaxis
-
 ## Building the .app bundle
 
 For .app distribution testing (not normal dev smoke testing):
@@ -94,6 +77,21 @@ For full clean builds (after dependency changes, spec file changes, or when
 - Do NOT change the bundle identifier to work around TCC — Sequoia won't prompt for Accessibility for unknown ad-hoc apps.
 - Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
 - After rebuilding and relaunching, **ask the user if the spacebar is working** before doing anything else. There is no way to verify event tap functionality from logs or process state.
+
+## Local assistant (command pathway)
+
+The assistant requires a local OpenAI-compatible model server. The app defaults
+to `http://localhost:8001` (OMLX) when `SPOKE_COMMAND_URL` is not set.
+
+Authentication: the app reads `SPOKE_COMMAND_API_KEY` first, then falls back to
+`OMLX_SERVER_API_KEY` from the environment. Both are typically set in the
+user's shell profile. If the assistant menu appears but is empty ("couldn't
+reach the model"), the most likely cause is the model server not running or the
+API key not reaching the app process.
+
+When preparing a new worktree or smoke surface, do not assume the assistant
+will work without checking. The command pathway is always enabled but the model
+server and API key must be reachable from the launched process.
 
 ## Epistaxis
 
