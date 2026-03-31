@@ -380,7 +380,9 @@ class TTSClient:
                     while True:
                         if self._cancelled:
                             return
+                        logger.info("TTS speak: acquiring GPU lock for chunk %d", chunk_count + 1)
                         with lock_ctx:
+                            logger.info("TTS speak: GPU lock acquired, calling next(results)")
                             try:
                                 result = next(results)
                             except StopIteration:
