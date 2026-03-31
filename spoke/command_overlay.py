@@ -209,18 +209,24 @@ class CommandOverlay(NSObject):
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
         content.layer().setMasksToBounds_(False)
-        bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
-        )
+        content.layer().setBackgroundColor_(None)
 
-        # Distance-field ridge — same system as the preview overlay
-        from .overlay import _RIDGE_FALLOFF, _RIDGE_POWER, _GLOW_COLOR as _OVERLAY_GLOW_COLOR, _overlay_layer_colors
+        # Distance-field ridge + fill — same system as the preview overlay
+        from .overlay import (
+            _RIDGE_FALLOFF, _RIDGE_POWER, _GLOW_COLOR as _OVERLAY_GLOW_COLOR,
+            _overlay_layer_colors, _fill_field_to_image, _interior_fill_alpha,
+        )
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
         _, middle_rgb, _ = _overlay_layer_colors(_OVERLAY_GLOW_COLOR)
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
+        # Fill layer — colored SDF image with baked alpha
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setContentsGravity_("resize")
+
+        # Ridge layer
         self._ridge_layer = CALayer.alloc().init()
         self._ridge_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._ridge_layer.setBackgroundColor_(
@@ -232,7 +238,8 @@ class CommandOverlay(NSObject):
         self._ridge_layer.setContentsScale_(self._ridge_scale)
 
         self._apply_ridge_masks(w, h)
-        wrapper.layer().insertSublayer_below_(self._ridge_layer, content.layer())
+        wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        wrapper.layer().insertSublayer_below_(self._ridge_layer, self._fill_layer)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -866,10 +873,11 @@ class CommandOverlay(NSObject):
     # ── ridge masks ────────────────────────────────────────
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
-        """Compute SDF and apply ridge + fill masks for the given overlay size."""
+        """Compute SDF and apply ridge mask + build fill image."""
         from .overlay import (
             _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
+            _fill_field_to_image, _BG_COLOR_DARK,
         )
         f = _OUTER_FEATHER
         scale = getattr(self, '_ridge_scale', 2.0)
@@ -877,7 +885,6 @@ class CommandOverlay(NSObject):
         total_h = height + 2 * f
 
         try:
-            import numpy as np
             from .glow import _alpha_field_to_image
 
             sdf = _overlay_rounded_rect_sdf(
@@ -888,12 +895,16 @@ class CommandOverlay(NSObject):
             ridge_alpha_field = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
             ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha_field)
 
-            content_sdf = _overlay_rounded_rect_sdf(
-                width, height, width, height,
-                _OVERLAY_CORNER_RADIUS, scale,
+            # Build colored fill image with baked alpha
+            _FILL_EDGE_SOFTNESS = 6.0
+            fill_alpha = _interior_fill_alpha(sdf, _FILL_EDGE_SOFTNESS * scale)
+            bg_r, bg_g, bg_b = _background_color_for_brightness(
+                getattr(self, '_brightness', 0.0)
             )
-            fill_alpha = _interior_fill_alpha(content_sdf, 6.0 * scale)
-            fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
+            fill_image, self._fill_payload = _fill_field_to_image(
+                fill_alpha,
+                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+            )
         except (ImportError, Exception):
             return
 
@@ -905,12 +916,9 @@ class CommandOverlay(NSObject):
             self._ridge_layer.setMask_(ridge_mask)
             self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
 
-        if hasattr(self, '_content_view') and self._content_view is not None:
-            fill_mask = CALayer.alloc().init()
-            fill_mask.setFrame_(((0, 0), (width, height)))
-            fill_mask.setContents_(fill_image)
-            fill_mask.setContentsGravity_("resize")
-            self._content_view.layer().setMask_(fill_mask)
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setContents_(fill_image)
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
 
     # ── layout ──────────────────────────────────────────────
 

@@ -166,8 +166,8 @@ def _max_overlay_height(screen_height: float) -> float:
 # intensity rising toward the boundary, peaking there, then falling off
 # outside.
 
-_RIDGE_FALLOFF = 2.5      # px — very tight peak, reads as a crisp edge
-_RIDGE_POWER = 12.0       # exponent — high value eliminates the plateau
+_RIDGE_FALLOFF = 1.2      # px — near-hairline peak at backing scale
+_RIDGE_POWER = 16.0       # exponent — extremely sharp falloff
 _RIDGE_BLOOM_FALLOFF = 8.0   # px — gentle ambient halo
 _RIDGE_BLOOM_POWER = 3.0
 
