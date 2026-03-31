@@ -103,11 +103,16 @@ class TestTTSClient:
         fake_result.audio = MagicMock()
         fake_result.sample_rate = 24000
         fake_model = MagicMock()
-        fake_model.generate.return_value = iter([fake_result])
+        
+        client = self._make_client()
+        
+        def mock_generate(**kwargs):
+            client.cancel()  # Cancel mid-flight before returning audio
+            return iter([fake_result])
+            
+        fake_model.generate.side_effect = mock_generate
         mock_load.return_value = fake_model
 
-        client = self._make_client()
-        client.cancel()  # cancel before speak
         client.speak("Hello world")
 
         mock_sd.OutputStream.assert_not_called()
