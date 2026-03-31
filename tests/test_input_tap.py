@@ -599,6 +599,20 @@ class TestLatchedRecording:
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
         assert det._state == mod._State.IDLE
 
+    def test_spacebar_tap_in_latched_inserts_at_cursor(
+        self, input_tap_module
+    ):
+        """Spacebar tap (no shift) in LATCHED should insert text at cursor."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+        assert det._state == mod._State.IDLE
+
     def test_shift_space_release_from_latched_recording_routes_to_tray(
         self, input_tap_module
     ):

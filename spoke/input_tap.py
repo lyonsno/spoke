@@ -344,10 +344,13 @@ class SpacebarHoldDetector(NSObject):
 
             if getattr(self, '_latched_space_down', False):
                 self._latched_space_down = False
+                self._cancel_safety_timer()
+                self._state = _State.IDLE
                 if shift_held:
-                    self._cancel_safety_timer()
-                    self._state = _State.IDLE
                     self._on_hold_end(shift_held=True, enter_held=enter_held)
+                else:
+                    # Spacebar tap without shift = insert text at cursor
+                    self._on_hold_end(shift_held=False, enter_held=False)
                 return True
 
             # Swallow the original release that let the user go hands-free.
