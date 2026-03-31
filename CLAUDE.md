@@ -55,6 +55,15 @@ When changing or resetting box-local hotkeys:
 - check the corresponding `~/Library/Logs/spoke-*-launch.log` before assuming the binding itself is dead
 - record durable hotkey/reset rules in repo docs and `spoke` Epistaxis
 
+When the launch-target menu feature is in play:
+
+- treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
+- agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
+- prefer stable ids and short human labels
+- when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
+- do not silently assume the selected target also carries the launch-target submenu; call that out when preparing a target that does not
+- record durable registry conventions or machine-local target changes in `spoke` Epistaxis
+
 ## Building the .app bundle
 
 For .app distribution testing (not normal dev smoke testing):
