@@ -58,11 +58,10 @@ def _make_overlay(mock_pyobjc):
     overlay._tts_amplitude = 0.0
     overlay._tts_active = False
     overlay._tts_blend = 0.0
+    overlay._tool_mode = False
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
-    overlay._inner_shadow = MagicMock()
-    overlay._outer_glow_tight = MagicMock()
-    overlay._outer_glow_wide = MagicMock()
+    overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     return overlay, mod
@@ -238,8 +237,27 @@ class TestShowFinishHide:
         overlay.set_response_text("Done.")
 
         assert overlay._response_text == "Done."
-        overlay._text_view.setString_.assert_called_once_with("")
+        # New path uses setAttributedString_ to rebuild in one shot, not setString_("")
+        overlay._text_view.textStorage().setAttributedString_.assert_called_once()
         overlay.append_token.assert_called_once_with("Done.")
+
+    def test_set_response_text_with_utterance_calls_layout_once(self, mock_pyobjc):
+        """set_response_text must not trigger an intermediate layout with only the
+        utterance text — that shrinks the window before growing it, causing visible flicker."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "What is the capital of France?"
+        overlay._response_text = "Paris."
+
+        layout_calls = []
+        overlay._update_layout = MagicMock(side_effect=lambda: layout_calls.append(1))
+
+        overlay.set_response_text("Paris is the capital of France.")
+
+        assert len(layout_calls) == 1, (
+            f"set_response_text called _update_layout {len(layout_calls)} time(s); "
+            "expected exactly 1 — intermediate calls shrink the window causing flicker"
+        )
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -376,3 +394,37 @@ class TestGeometryCaps:
         expected_height = 640.0
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
+
+
+class TestToolState:
+    """Test the tool execution visual state machine."""
+
+    def test_set_tool_active_shows_label(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._thinking_label.setHidden_.reset_mock()
+        
+        overlay.set_tool_active(True)
+        
+        assert overlay._tool_mode is True
+        overlay._thinking_label.setHidden_.assert_called_with(False)
+        overlay._thinking_label.setStringValue_.assert_called_with("tool…")
+
+    def test_thinking_tick_shows_tool_in_tool_mode(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.set_tool_active(True)
+        overlay._thinking_label.setStringValue_.reset_mock()
+        
+        overlay.thinkingTick_(None)
+        
+        overlay._thinking_label.setStringValue_.assert_called_with("tool…")
+
+    def test_set_tool_active_false_preserves_mode_until_tick(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.set_tool_active(True)
+        overlay.set_tool_active(False)
+        
+        assert overlay._tool_mode is False
+        overlay.thinkingTick_(None)
+        # Now it should show seconds again
+        assert "s" in overlay._thinking_label.setStringValue_.call_args[0][0]

@@ -90,6 +90,9 @@ with log_file.open("a", encoding="utf-8") as log:
             raise SystemExit(1)
 
         child_env = os.environ.copy()
+        # Clear inherited runtime overrides so the target's own env wins
+        child_env.pop("SPOKE_VENV_PYTHON", None)
+        child_env.pop("PYTHONPATH", None)
         child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))
         child_env["REPO_ROOT"] = str(repo_root)
         child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id

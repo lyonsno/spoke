@@ -319,6 +319,9 @@ class SpacebarHoldDetector(NSObject):
             elif enter_held:
                 # Enter + quick tap = route through hold_end for recall/dismiss
                 self._on_hold_end(shift_held=False, enter_held=True)
+            elif getattr(self, '_command_overlay_just_dismissed', False):
+                # This tap was an overlay dismiss — suppress the space character.
+                pass
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
@@ -387,6 +390,10 @@ class SpacebarHoldDetector(NSObject):
         """Called when spacebar has been held past the threshold."""
         self._hold_timer = None
         if self._state != _State.WAITING:
+            return
+        # If the spacebar keyDown already triggered an overlay dismiss,
+        # skip the hold start — the user is toggling visibility, not dictating.
+        if getattr(self, '_command_overlay_just_dismissed', False):
             return
         self._state = _State.RECORDING
         self._start_safety_timer()
@@ -554,10 +561,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             ):
                 dismiss = getattr(det, '_on_command_overlay_dismiss', None)
                 if dismiss is not None:
-                    logger.info("Instant dismiss — command_overlay_active -> False")
-                    det.command_overlay_active = False
-                    det._command_overlay_just_dismissed = True
+                    logger.info("Instant dismiss — marshaling to main thread")
                     dismiss()
+            else:
+                # New spacebar press that isn't a dismiss — clear _just_dismissed
+                # so the recall path works for this fresh gesture.
+                det._command_overlay_just_dismissed = False
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True

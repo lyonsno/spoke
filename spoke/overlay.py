@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import colorsys
 import logging
+import math
 import os
 
 import objc
@@ -69,7 +70,7 @@ def _scale_color_saturation(
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
 _TEXT_ALPHA_MAX_LIGHT = 0.90
-_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.05)  # sensitive but not pegged
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
@@ -77,18 +78,23 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
 # Adaptive compositing endpoints.
-_BG_COLOR_DARK = (0.1, 0.1, 0.12)
-_TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
-_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
-_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
+# On dark backgrounds: light/white fill, dark text — the overlay is a
+# bright ghostly bubble that reads as additive glow.
+# On light backgrounds: dark fill, text becomes transparent cutout —
+# the overlay is a dark bubble with letter-shaped holes.
+# Match the edge glow color on dark backgrounds — desaturated blue-white
+_BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.40)
+_TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
+_BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
+_TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
-    (0.38, 0.52, 1.0), 1.28
-)  # still bluer than the bezel glow, but 20% calmer than the last pass
+    (0.38, 0.52, 1.0), 0.13
+)  # ~10% of original saturation — subtle tint, not a neon outline
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
-_OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
+_OUTER_FEATHER = 220.0  # glow bleed past overlay edge — wide for the stretched-exp tails
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
@@ -153,11 +159,272 @@ def _max_overlay_height(screen_height: float) -> float:
     return max(_OVERLAY_HEIGHT, capped_height)
 
 
+# ── distance-field ridge ────────────────────────────────────
+
+# Ridge shape: exponential peak at the bubble boundary that reads as a
+# glowing edge rather than a stroked outline.  Interior fill preserved,
+# intensity rising toward the boundary, peaking there, then falling off
+# outside.
+
+_RIDGE_FALLOFF = 1.2      # px — near-hairline peak at backing scale
+_RIDGE_POWER = 16.0       # exponent — extremely sharp falloff
+_RIDGE_BLOOM_FALLOFF = 8.0   # px — gentle ambient halo
+_RIDGE_BLOOM_POWER = 3.0
+
+# Crossover opacity bump — Gaussian centered at brightness 0.5
+_CROSSOVER_CENTER = 0.35
+_CROSSOVER_WIDTH = 0.12
+_CROSSOVER_AMPLITUDE = 0.25
+
+# Light-mode fill
+_BG_ALPHA_LIGHT_BASE = 0.85
+_BG_ALPHA_LIGHT_AMP = 0.10
+
+
+def _overlay_rounded_rect_sdf(
+    field_width: float, field_height: float,
+    rect_width: float, rect_height: float,
+    corner_radius: float, scale: float,
+):
+    """Signed distance field for a rounded rectangle centered in a larger field.
+
+    The field covers field_width x field_height pixels; the rounded rect is
+    rect_width x rect_height, centered within it.  This lets the SDF extend
+    smoothly past the rect boundary into the surrounding margin.
+    """
+    import numpy as np
+
+    pw, ph = int(field_width * scale), int(field_height * scale)
+    rw, rh = rect_width * scale, rect_height * scale
+    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
+    cx = x - pw * 0.5
+    cy = y - ph * 0.5
+    r = corner_radius * scale
+    qx = np.abs(cx) - (rw * 0.5 - r)
+    qy = np.abs(cy) - (rh * 0.5 - r)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return (outside + inside - r).astype(np.float32)
+
+
+def _ridge_alpha(signed_distance, falloff: float, power: float):
+    """Exponential ridge: peaks at boundary (d=0), falls off symmetrically."""
+    import numpy as np
+
+    d = np.abs(signed_distance)
+    return np.exp(-np.power(d / max(falloff, 1e-6), power, dtype=np.float32))
+
+
+def _interior_fill_alpha(signed_distance, edge_softness: float):
+    """Interior fill that fades smoothly to zero at the boundary.
+
+    Fully opaque deep inside (negative distance), smoothly transitions
+    to zero at and beyond the boundary.  edge_softness controls how many
+    pixels before the boundary the fade begins.
+    """
+    import numpy as np
+
+    # sigmoid-like ramp: 1 deep inside, 0 at boundary, smooth transition
+    t = np.clip(-signed_distance / max(edge_softness, 1e-6), 0.0, 1.0)
+    # smoothstep for a soft edge
+    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.775):
+    """Asymmetric stretched-exponential fill profile.
+
+    Inside (negative distance): sharp cusp at boundary, drops rapidly
+    then floors at interior_floor — the interior never goes below this.
+    Outside (positive distance): same sharp cusp, drops all the way to
+    zero with a long gradual tail.
+
+    Both sides use exp(-sqrt(|d|/width)) for the pointed cusp and
+    gradually decelerating falloff.
+    """
+    import numpy as np
+
+    d = np.abs(signed_distance)
+    raw = np.exp(-np.sqrt(d / max(width, 1e-6)))
+
+    # Inside: remap so it goes from 1.0 at boundary toward interior_floor
+    inside = interior_floor + (1.0 - interior_floor) * raw
+
+    # Outside: raw curve goes all the way to zero
+    return np.where(signed_distance <= 0.0, inside, raw).astype(np.float32)
+
+
+def _fill_field_to_image(alpha, r: int, g: int, b: int):
+    """Convert a float alpha field into a colored CGImage with per-pixel alpha.
+
+    Unlike _alpha_field_to_image (which produces a white+alpha mask),
+    this produces a colored image with the fill color baked in and
+    premultiplied alpha.  Suitable for setting directly as a CALayer's
+    contents without needing a separate mask layer.
+    """
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
+
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    # Premultiply: channel = channel_value * alpha / 255
+    rgba[..., 0] = np.clip(r * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip(g * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip(b * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 3] = mask_alpha
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _build_ridge_image(field_width: float, field_height: float,
+                       rect_width: float, rect_height: float,
+                       corner_radius: float, scale: float,
+                       falloff: float, power: float):
+    """Build a CGImage mask for the ridge effect at the given overlay size."""
+    from .glow import _alpha_field_to_image
+
+    sdf = _overlay_rounded_rect_sdf(field_width, field_height,
+                                     rect_width, rect_height,
+                                     corner_radius, scale)
+    alpha = _ridge_alpha(sdf, falloff * scale, power)
+    return _alpha_field_to_image(alpha)
+
+
 def _window_origin_y(visible_height: float) -> float:
     base_y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
     if _EXPAND_UPWARD:
         return base_y
     return base_y - (visible_height - _OVERLAY_HEIGHT)
+
+
+def _asymmetric_rounded_rect_sdf(
+    x,
+    y,
+    width: float,
+    height: float,
+    top_radius: float,
+    bottom_radius: float,
+):
+    import numpy as np
+
+    half_width = width * 0.5
+    half_height = height * 0.5
+    radii = np.where(y >= 0.0, top_radius, bottom_radius).astype(np.float32, copy=False)
+    qx = np.abs(x) - (half_width - radii)
+    qy = np.abs(y) - (half_height - radii)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return outside + inside - radii
+
+
+def _overlay_signed_distance_field(width: float, height: float, top_radius: float, bottom_radius: float):
+    """Signed distance field for the overlay's rounded rect."""
+    import numpy as np
+
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+
+    return _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        top_radius,
+        bottom_radius,
+    )
+
+
+def _distance_field_alpha(signed_distance, falloff: float, power: float):
+    import numpy as np
+
+    distance = np.clip(-signed_distance, 0.0, None)
+    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
+    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
+
+
+def _alpha_field_to_image(alpha):
+    """Convert a float alpha field into a CGImage suitable for a CALayer mask."""
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., 0] = 255
+    rgba[..., 1] = 255
+    rgba[..., 2] = 255
+    rgba[..., 3] = mask_alpha
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _continuous_overlay_glow_specs():
+    """Procedural additive passes driven from the distance field."""
+    return [
+        {
+            "name": "core",
+            "falloff": 3.2,
+            "power": 2.7,
+            "fill_role": "inner",
+            "fill_alpha": 0.28,
+        },
+        {
+            "name": "tight_bloom",
+            "falloff": 7.2,
+            "power": 3.2,
+            "fill_role": "middle",
+            "fill_alpha": 0.18,
+        },
+        {
+            "name": "wide_bloom",
+            "falloff": 15.0,
+            "power": 3.7,
+            "fill_role": "outer",
+            "fill_alpha": 0.12,
+        },
+    ]
 
 
 class TranscriptionOverlay(NSObject):
@@ -238,99 +505,68 @@ class TranscriptionOverlay(NSObject):
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        content.layer().setMasksToBounds_(True)
+        # No corner radius on the content view — the distance-field ridge
+        # defines the visual boundary.  Text is inset enough not to bleed.
+        content.layer().setMasksToBounds_(False)
         # Anchor point at center so scale animations expand symmetrically.
         # Setting anchorPoint shifts the layer visually, so also set position
         # to the center of the content frame to compensate.
         content.layer().setAnchorPoint_((0.5, 0.5))
         content.layer().setPosition_((f + _OVERLAY_WIDTH / 2, f + _OVERLAY_HEIGHT / 2))
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
-        )
+        # Content view has NO background — the fill comes from a separate
+        # SDF-masked layer.  Setting to None rather than clearColor ensures
+        # no compositing boundary exists at the view's frame edge.
+        content.layer().setBackgroundColor_(None)
+
+        w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
+        _, middle_rgb, _ = _overlay_layer_colors(_GLOW_COLOR)
+
+        # Determine backing scale for SDF resolution
+        self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
+
+        # Fill layer — the interior fill is baked into a colored CGImage with
+        # per-pixel alpha from the SDF smoothstep.  No mask layer needed —
+        # the alpha falloff is in the image itself.  The fill color is updated
+        # by rebuilding the image in update_text_amplitude.
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setContentsGravity_("resize")
+
+        # Build initial SDF fill image
+        self._apply_ridge_masks(w, h)
+
+        wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
         # Glow color setup
         inner_rgb, middle_rgb, outer_rgb = _overlay_layer_colors(_GLOW_COLOR)
-        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
-        )
-        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-        )
-        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
-        )
-        clear_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+        
+        # Inner and outer glows — procedural distance field
+        scale = self._ridge_scale
+        pw, ph = int(round(w * scale)), int(round(h * scale))
+        sdf = _overlay_signed_distance_field(pw, ph, _OVERLAY_CORNER_RADIUS * scale, _OVERLAY_CORNER_RADIUS * scale)
 
-        # Inner glow — inward shadow via even-odd cutout on wrapper
-        # Paths are in the layer's local coordinate space (origin 0,0).
-        # The layer is sized to w+2*margin, h+2*margin and positioned so
-        # the "hole" aligns with the content view.
-        w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
-        margin = _INNER_GLOW_DEPTH + 50
-        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+        self._glow_pass_layers = []
+        self._mask_payloads = []
 
-        lw, lh = w + 2 * margin, h + 2 * margin  # layer size
+        for spec in _continuous_overlay_glow_specs():
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((f, f), (w, h)))
+            layer.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
 
-        self._inner_shadow = CAShapeLayer.alloc().init()
-        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+            alpha = _distance_field_alpha(sdf, spec["falloff"] * scale, spec["power"])
+            mask_image, payload = _alpha_field_to_image(alpha)
+            self._mask_payloads.append(payload)
 
-        # All paths in layer-local coords: (0,0) is top-left of the layer
-        outer = CGPathCreateWithRoundedRect(
-            ((0, 0), (lw, lh)), 0, 0, None
-        )
-        inner = CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        )
-        combined = CGPathCreateMutableCopy(outer)
-        CGPathAddPath(combined, None, inner)
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(mask_image)
+            mask_layer.setContentsScale_(scale)
+            layer.setMask_(mask_layer)
 
-        self._inner_shadow.setPath_(combined)
-        self._inner_shadow.setFillRule_(kEO)
-        self._inner_shadow.setFillColor_(inner_glow.colorWithAlphaComponent_(0.15).CGColor())
-        self._inner_shadow.setShadowColor_(inner_glow.CGColor())
-        self._inner_shadow.setShadowOffset_((0, 0))
-        self._inner_shadow.setShadowRadius_(2.4)  # very tight — sharp exponential feel
-        self._inner_shadow.setShadowOpacity_(1.0)
+            wrapper.layer().addSublayer_(layer)
+            self._glow_pass_layers.append({"layer": layer, "spec": spec})
 
-        # Mask: only show inside the overlay's rounded rect
-        inner_mask = CAShapeLayer.alloc().init()
-        inner_mask.setFrame_(((0, 0), (lw, lh)))
-        inner_mask.setPath_(CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        ))
-        self._inner_shadow.setMask_(inner_mask)
-
-        wrapper.layer().addSublayer_(self._inner_shadow)
-
-        # Outer feather — two stacked shadows for a dramatic smeared glow
-        # Layer 1: tight, bright — defines the edge
-        self._outer_glow_tight = CALayer.alloc().init()
-        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
-        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_tight.setBackgroundColor_(
-            middle_glow.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_tight.setShadowColor_(middle_glow.CGColor())
-        self._outer_glow_tight.setShadowOffset_((0, 0))
-        self._outer_glow_tight.setShadowRadius_(6.2)
-        self._outer_glow_tight.setShadowOpacity_(0.3)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
-
-        # Layer 2: wide, diffuse — the smear
-        self._outer_glow_wide = CALayer.alloc().init()
-        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
-        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_wide.setBackgroundColor_(
-            outer_glow.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_wide.setShadowColor_(outer_glow.CGColor())
-        self._outer_glow_wide.setShadowOffset_((0, 0))
-        self._outer_glow_wide.setShadowRadius_(14.0)
-        self._outer_glow_wide.setShadowOpacity_(0.5)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+        self._apply_glow_color(_GLOW_COLOR)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -343,6 +579,14 @@ class TranscriptionOverlay(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setBorderType_(0)
         self._scroll_view.setAutoresizingMask_(18)
+        # Explicitly clear the clip view's background — NSClipView can
+        # draw its own background even when the scroll view doesn't.
+        clip_view = self._scroll_view.contentView()
+        if clip_view and hasattr(clip_view, 'setDrawsBackground_'):
+            clip_view.setDrawsBackground_(False)
+        if clip_view and hasattr(clip_view, 'setWantsLayer_'):
+            clip_view.setWantsLayer_(True)
+            clip_view.layer().setBackgroundColor_(None)
 
         text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
@@ -377,13 +621,10 @@ class TranscriptionOverlay(NSObject):
             if self._scroll_view is not None:
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
-            t = getattr(self, "_brightness", 0.0)
-            br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-            self._content_view.layer().setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    br, bg, bb, _BG_ALPHA_MIN
-                ).CGColor()
-            )
+            # Content view stays transparent; reset the fill layer opacity
+            self._content_view.layer().setBackgroundColor_(None)
+            if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+                self._fill_layer.setOpacity_(_BG_ALPHA_MIN)
         self._cancel_fade()
         self._cancel_typewriter()
         self._visible = True
@@ -564,12 +805,17 @@ class TranscriptionOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
 
-        # Heavy smoothing — rise slow, decay slow. Text should breathe,
-        # not flicker. Rise 0.15, decay 0.92 gives ~1s response time.
+        # Smoothing — rise same as before, decay holds longer then accelerates.
+        # The fill lingers after you stop speaking, then drops away cleanly.
         if amplitude > self._text_amplitude:
             self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
-            self._text_amplitude *= _SMOOTH_DECAY
+            # Slow decay — the fill lingers after speaking but still visibly
+            # moves.  Rate 0.99 when high (~70 frames to halve = ~1.2 seconds),
+            # accelerates to 0.95 near zero for clean finish.
+            gap = self._text_amplitude
+            ease = 0.95 + 0.04 * min(gap / 0.3, 1.0)  # 0.99 when high, 0.95 near zero
+            self._text_amplitude *= ease
 
         # Chase brightness target over roughly half a second at the live update cadence.
         _BRIGHTNESS_CHASE = 0.08
@@ -581,59 +827,115 @@ class TranscriptionOverlay(NSObject):
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
         t = getattr(self, "_brightness", 0.0)
-        text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
-        text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
-        text_t = t ** 1.3
-        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
+
+        # Text: anchored near-opaque.  Dark on white backgrounds, white on
+        # dark backgrounds.  Text does NOT breathe with amplitude — it stays
+        # legible and stable.  The SDF fill breathes instead.
+        # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
+        # On light backgrounds, slight RMS waiver: floor 0.80, ceiling 1.0.
+        if t > 0.15:
+            _TEXT_ANCHOR_ALPHA = _lerp(0.80, 1.0, scaled)
+        else:
+            _TEXT_ANCHOR_ALPHA = 0.88
+        # Text contrasts against the fill: light fill (dark bg) → dark text,
+        # dark fill (light bg) → white text.
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+
+        # Ease-out snap: chase the target with a fast-start, slow-finish curve.
+        # ~200ms at 60Hz = ~12 frames.  The ease-out makes the snap feel
+        # satisfying — it commits immediately then settles.
+        current_text_lum = getattr(self, '_text_lum', target_text_lum)
+        _TEXT_SNAP_SPEED = 0.35  # ease-out: big initial jump, then settles
+        current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
+        self._text_lum = current_text_lum
+        tr = tg = tb = current_text_lum
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         )
 
-        # Darken/lighten the frosted panel as amplitude rises.
-        bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
-        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-        if hasattr(self, '_content_view') and self._content_view is not None:
-            self._content_view.layer().setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, bg_alpha).CGColor()
+        # SDF fill breathes with amplitude.  On light backgrounds the fill
+        # is relatively MORE assertive (because the glow is dimming the same
+        # area).  On dark backgrounds the fill is subtle (the glow carries
+        # the visual).  Phase shift: fill uses squared response so it leads
+        # the glow — visible before the glow builds up, and at low RMS the
+        # fill is already present against the undimmed background.
+        # On dark backgrounds use linear response so soft sounds register.
+        # On light backgrounds use squared so the fill leads the glow.
+        fill_drive = _lerp(scaled, scaled * scaled, t)
+        fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
+        fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
+        fill_opacity = _lerp(fill_min, fill_max, fill_drive)
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
+            # Rebuild the fill image when brightness changes enough to
+            # affect the baked color.
+            last_t = getattr(self, '_fill_image_brightness', -1.0)
+            if abs(t - last_t) > 0.03:
+                self._fill_image_brightness = t
+                # Recompute the full SDF + fill image at the current overlay
+                # size.  Using _update_fill_image with a stale SDF caused
+                # corner distortion when the overlay had resized since the
+                # SDF was last computed.
+                content = getattr(self, '_content_view', None)
+                if content:
+                    try:
+                        cf = content.frame()
+                        self._apply_ridge_masks(cf.size.width, cf.size.height)
+                    except Exception:
+                        pass
+
+    def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
+        """Push the current glow color through the procedural glow passes."""
+        inner_rgb, middle_rgb, outer_rgb = _overlay_layer_colors(base_color)
+        colors = {
+            "inner": NSColor.colorWithSRGBRed_green_blue_alpha_(
+                inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
+            ),
+            "middle": NSColor.colorWithSRGBRed_green_blue_alpha_(
+                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+            ),
+            "outer": NSColor.colorWithSRGBRed_green_blue_alpha_(
+                outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
+            ),
+        }
+        for entry in self._glow_pass_layers:
+            layer = entry["layer"]
+            spec = entry["spec"]
+            fill_color = colors[spec["fill_role"]]
+            layer.setBackgroundColor_(
+                fill_color.colorWithAlphaComponent_(spec["fill_alpha"]).CGColor()
             )
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
-        """Update inner and outer glow opacity to match the screen glow.
+        """Update overlay glow opacity to match the screen glow.
 
         opacity should be the screen glow's current opacity (0.0–1.0).
         cap_factor scales the glow down during the recording cap countdown
         (1.0 = full, ramps toward 0.25 near the cap).
-
-        Has its own smoothing (60% of screen glow's attack speed) so the
-        overlay glow responds more gently than the screen edge.
         """
         if not self._visible:
             return
-        # Independent smoothing — 60% of the screen glow's attack
-        _OVERLAY_GLOW_RISE = 0.54   # 60% of screen glow's 0.90
-        _OVERLAY_GLOW_DECAY = 0.70  # 60% blend toward screen glow's 0.50
-        if not hasattr(self, '_smoothed_glow_opacity'):
-            self._smoothed_glow_opacity = 0.0
-        if opacity > self._smoothed_glow_opacity:
-            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * _OVERLAY_GLOW_RISE
-        else:
-            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * (1.0 - _OVERLAY_GLOW_DECAY)
-        opacity = self._smoothed_glow_opacity
 
         # Apply recording-cap countdown scaling
         if cap_factor < 1.0:
             cap_floor = 0.25
             scale = cap_floor + (1.0 - cap_floor) * cap_factor
             opacity *= scale
+        # Ridge layer removed — the SDF fill edge carries the boundary.
+
+        # Scale and cap the peak for the overlay layers
+        inner_opacity = min(opacity * 1.4, _INNER_GLOW_PEAK_TARGET)
         outer_opacity = _compress_outer_glow_peak(opacity)
-        if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(
-                min(opacity * 1.68, _INNER_GLOW_PEAK_TARGET * 1.2)
-            )
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * _WIDE_OUTER_GLOW_SCALE, 1.0))
+
+        for entry in self._glow_pass_layers:
+            layer = entry["layer"]
+            spec = entry["spec"]
+            if spec["fill_role"] == "inner":
+                layer.setOpacity_(inner_opacity)
+            else:
+                layer.setOpacity_(outer_opacity)
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -658,43 +960,66 @@ class TranscriptionOverlay(NSObject):
             if hasattr(self._scroll_view, "reflectScrolledClipView_"):
                 self._scroll_view.reflectScrolledClipView_(clip_view)
 
+    def _apply_ridge_masks(self, width: float, height: float) -> None:
+        """Compute SDF and apply ridge + bloom masks for the given overlay size.
+
+        The SDF is computed for the content rect (width x height) and embedded
+        in a larger field covering the full window (content + feather margin)
+        so the outer falloff bleeds into the feather zone.
+        """
+        f = _OUTER_FEATHER
+        scale = getattr(self, '_ridge_scale', 2.0)
+        total_w = width + 2 * f
+        total_h = height + 2 * f
+
+        try:
+            sdf = _overlay_rounded_rect_sdf(
+                total_w, total_h, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+            )
+
+            _FILL_EDGE_SOFTNESS = 6.0
+            self._fill_sdf = sdf
+            self._fill_scale = scale
+        except (ImportError, Exception):
+            return  # numpy or Quartz not available (test environment)
+
+        # Build and apply the colored fill image
+        self._update_fill_image(total_w, total_h)
+
+    def _update_fill_image(self, total_w: float, total_h: float) -> None:
+        """Rebuild the colored fill image from the stashed SDF and current fill color."""
+        if not hasattr(self, '_fill_sdf') or self._fill_sdf is None:
+            return
+        if not hasattr(self, '_fill_layer') or self._fill_layer is None:
+            return
+        try:
+            scale = getattr(self, '_fill_scale', 2.0)
+            # Stretched-exponential fill: knife-edge cusp, heavy tails.
+            # Width 2.5 = very aggressive initial drop from peak.
+            # Interior floor varies with brightness: low on dark backgrounds
+            # (more contrast between peak and interior), high on light
+            # backgrounds (more uniform/material).
+            t = getattr(self, '_brightness', 0.0)
+            floor = _lerp(0.55, 0.775, t)
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
+
+            t = getattr(self, '_brightness', 0.0)
+            bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+            # Scale color to 0-255
+            fill_image, self._fill_payload = _fill_field_to_image(
+                fill_alpha,
+                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+            )
+            self._fill_layer.setContents_(fill_image)
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+        except (ImportError, Exception):
+            pass
+
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""
-        f = _OUTER_FEATHER
         w = _OVERLAY_WIDTH
-
-        if hasattr(self, '_inner_shadow'):
-            margin = _INNER_GLOW_DEPTH + 50
-            lw, lh = w + 2 * margin, visible_height + 2 * margin
-            from Quartz import CGPathAddPath, CGPathCreateMutableCopy
-
-            self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
-            outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
-            inner = CGPathCreateWithRoundedRect(
-                ((margin, margin), (w, visible_height)),
-                _OVERLAY_CORNER_RADIUS,
-                _OVERLAY_CORNER_RADIUS,
-                None,
-            )
-            combined = CGPathCreateMutableCopy(outer)
-            CGPathAddPath(combined, None, inner)
-            self._inner_shadow.setPath_(combined)
-            mask = self._inner_shadow.mask()
-            if mask:
-                mask.setFrame_(((0, 0), (lw, lh)))
-                mask.setPath_(
-                    CGPathCreateWithRoundedRect(
-                        ((margin, margin), (w, visible_height)),
-                        _OVERLAY_CORNER_RADIUS,
-                        _OVERLAY_CORNER_RADIUS,
-                        None,
-                    )
-                )
-
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setFrame_(((f, f), (w, visible_height)))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setFrame_(((f, f), (w, visible_height)))
+        self._apply_ridge_masks(w, visible_height)
 
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""

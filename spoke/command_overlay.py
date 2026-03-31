@@ -68,7 +68,7 @@ _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
 _PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
-_OUTER_FEATHER = 40.0
+_OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp tails
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
@@ -121,6 +121,117 @@ def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, flo
     return _lerp_color(_THINKING_CUTOUT_DARK, _THINKING_CUTOUT_LIGHT, _clamp01(brightness))
 
 
+def _asymmetric_rounded_rect_sdf(
+    x,
+    y,
+    width: float,
+    height: float,
+    top_radius: float,
+    bottom_radius: float,
+):
+    import numpy as np
+
+    half_width = width * 0.5
+    half_height = height * 0.5
+    radii = np.where(y >= 0.0, top_radius, bottom_radius).astype(np.float32, copy=False)
+    qx = np.abs(x) - (half_width - radii)
+    qy = np.abs(y) - (half_height - radii)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return outside + inside - radii
+
+
+def _overlay_signed_distance_field(width: float, height: float, top_radius: float, bottom_radius: float):
+    """Signed distance field for the overlay's rounded rect."""
+    import numpy as np
+
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+
+    return _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        top_radius,
+        bottom_radius,
+    )
+
+
+def _distance_field_alpha(signed_distance, falloff: float, power: float):
+    import numpy as np
+
+    distance = np.clip(-signed_distance, 0.0, None)
+    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
+    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
+
+
+def _alpha_field_to_image(alpha):
+    """Convert a float alpha field into a CGImage suitable for a CALayer mask."""
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., 0] = 255
+    rgba[..., 1] = 255
+    rgba[..., 2] = 255
+    rgba[..., 3] = mask_alpha
+    from Foundation import NSData
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _continuous_overlay_glow_specs():
+    """Procedural additive passes driven from the distance field."""
+    return [
+        {
+            "name": "core",
+            "falloff": 3.2,
+            "power": 2.7,
+            "fill_role": "inner",
+            "fill_alpha": 0.28,
+        },
+        {
+            "name": "tight_bloom",
+            "falloff": 7.2,
+            "power": 3.2,
+            "fill_role": "middle",
+            "fill_alpha": 0.18,
+        },
+        {
+            "name": "wide_bloom",
+            "falloff": 15.0,
+            "power": 3.7,
+            "fill_role": "outer",
+            "fill_alpha": 0.12,
+        },
+    ]
+
+
 class CommandOverlay(NSObject):
     """Overlay for displaying streamed command responses."""
 
@@ -153,7 +264,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
-
+        self._tool_mode = False
         # Linger timer
         self._linger_timer: NSTimer | None = None
 
@@ -208,76 +319,54 @@ class CommandOverlay(NSObject):
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        content.layer().setMasksToBounds_(True)
-        bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
-        )
+        content.layer().setMasksToBounds_(False)
+        content.layer().setBackgroundColor_(None)
 
-        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        # Distance-field ridge + fill — same system as the preview overlay
+        from .overlay import (
+            _GLOW_COLOR as _OVERLAY_GLOW_COLOR,
+            _overlay_layer_colors,
         )
-
-        # Inner glow
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
-        margin = _INNER_GLOW_DEPTH + 50
-        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+        _, middle_rgb, _ = _overlay_layer_colors(_OVERLAY_GLOW_COLOR)
 
-        lw, lh = w + 2 * margin, h + 2 * margin
+        self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        self._inner_shadow = CAShapeLayer.alloc().init()
-        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+        # Fill layer — colored SDF image with baked alpha, same as preview overlay
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setContentsGravity_("resize")
 
-        outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
-        inner = CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        )
-        combined = CGPathCreateMutableCopy(outer)
-        CGPathAddPath(combined, None, inner)
+        self._apply_ridge_masks(w, h)
+        wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
-        self._inner_shadow.setPath_(combined)
-        self._inner_shadow.setFillRule_(kEO)
-        self._inner_shadow.setFillColor_(glow_nscolor.colorWithAlphaComponent_(0.12).CGColor())
-        self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
-        self._inner_shadow.setShadowOffset_((0, 0))
-        self._inner_shadow.setShadowRadius_(2.4)
-        self._inner_shadow.setShadowOpacity_(0.8)
+        # Inner and outer glows — procedural distance field
+        scale = self._ridge_scale
+        pw, ph = int(round(w * scale)), int(round(h * scale))
+        sdf = _overlay_signed_distance_field(pw, ph, _OVERLAY_CORNER_RADIUS * scale, _OVERLAY_CORNER_RADIUS * scale)
 
-        inner_mask = CAShapeLayer.alloc().init()
-        inner_mask.setFrame_(((0, 0), (lw, lh)))
-        inner_mask.setPath_(CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        ))
-        self._inner_shadow.setMask_(inner_mask)
-        wrapper.layer().addSublayer_(self._inner_shadow)
+        self._glow_pass_layers = []
+        self._mask_payloads = []
 
-        # Outer glow layers
-        self._outer_glow_tight = CALayer.alloc().init()
-        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
-        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_tight.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
-        self._outer_glow_tight.setShadowOffset_((0, 0))
-        self._outer_glow_tight.setShadowRadius_(6.2)
-        self._outer_glow_tight.setShadowOpacity_(0.2)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
+        for spec in _continuous_overlay_glow_specs():
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((f, f), (w, h)))
+            layer.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
 
-        self._outer_glow_wide = CALayer.alloc().init()
-        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
-        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_wide.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
-        self._outer_glow_wide.setShadowOffset_((0, 0))
-        self._outer_glow_wide.setShadowRadius_(14.0)
-        self._outer_glow_wide.setShadowOpacity_(0.4)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+            alpha = _distance_field_alpha(sdf, spec["falloff"] * scale, spec["power"])
+            mask_image, payload = _alpha_field_to_image(alpha)
+            self._mask_payloads.append(payload)
+
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(mask_image)
+            mask_layer.setContentsScale_(scale)
+            layer.setMask_(mask_layer)
+
+            wrapper.layer().addSublayer_(layer)
+            self._glow_pass_layers.append({"layer": layer, "spec": spec})
+
+        self._apply_glow_layer_colors(glow_nscolor)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -290,6 +379,13 @@ class CommandOverlay(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setBorderType_(0)
         self._scroll_view.setAutoresizingMask_(18)
+        # Kill clip view background — same fix as preview overlay
+        clip_view = self._scroll_view.contentView()
+        if clip_view and hasattr(clip_view, 'setDrawsBackground_'):
+            clip_view.setDrawsBackground_(False)
+        if clip_view and hasattr(clip_view, 'setWantsLayer_'):
+            clip_view.setWantsLayer_(True)
+            clip_view.layer().setBackgroundColor_(None)
 
         text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
@@ -392,6 +488,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
+        self._tool_mode = False
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -519,18 +616,60 @@ class CommandOverlay(NSObject):
         self._update_layout()
 
     def set_response_text(self, text: str) -> None:
-        """Replace the visible assistant response with final canonical text."""
+        """Replace the visible assistant response with final canonical text.
+
+        Rebuilds the full attributed string (utterance + response) in one shot
+        so that _update_layout is called exactly once.  Calling set_utterance
+        then append_token would call _update_layout twice: first with only the
+        utterance (shrinking the window back to minimum height), then again with
+        the full response — producing a visible size flicker.
+        """
         self._response_text = ""
         if self._text_view is None or not self._visible:
             self._response_text = text
             return
 
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
+        )
+
+        combined = NSMutableAttributedString.alloc().initWithString_("")
+
         if self._utterance_text:
-            self.set_utterance(self._utterance_text)
-        else:
-            self._text_view.setString_("")
+            user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+            utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
+            utt.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+                (0, len(self._utterance_text)),
+            )
+            glow = NSShadow.alloc().init()
+            glow.setShadowColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
+            )
+            glow.setShadowOffset_((0, 0))
+            glow.setShadowBlurRadius_(3.0)
+            utt.addAttribute_value_range_(
+                NSShadowAttributeName, glow, (0, len(self._utterance_text))
+            )
+            combined.appendAttributedString_(utt)
+
+            if text:
+                sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+                sep.addAttribute_value_range_(
+                    NSForegroundColorAttributeName,
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                    (0, 2),
+                )
+                combined.appendAttributedString_(sep)
+
+        self._text_view.textStorage().setAttributedString_(combined)
 
         if text:
+            self._response_text = ""
             self.append_token(text)
         else:
             self._update_layout()
@@ -593,6 +732,16 @@ class CommandOverlay(NSObject):
             NSShadowAttributeName, glow, (0, len(token))
         )
         return frag
+
+    def set_tool_active(self, active: bool) -> None:
+        """Show or hide the tool execution indicator."""
+        self._tool_mode = active
+        if active and self._visible:
+            if self._thinking_label is not None:
+                self._thinking_label.setHidden_(False)
+                self._thinking_label.setStringValue_("tool…")
+            if self._thinking_timer is None:
+                self._start_thinking_timer()
 
     def finish(self) -> None:
         """Called when the response stream is complete.
@@ -680,6 +829,15 @@ class CommandOverlay(NSObject):
                 self._cancel_pulse()  # now kill the pulse
             else:
                 self._window.setAlphaValue_(1.0)
+
+    def _apply_glow_layer_colors(self, glow_nscolor: NSColor) -> None:
+        """Update the background color of each procedural glow layer."""
+        for entry in self._glow_pass_layers:
+            layer = entry["layer"]
+            spec = entry["spec"]
+            layer.setBackgroundColor_(
+                glow_nscolor.colorWithAlphaComponent_(spec["fill_alpha"]).CGColor()
+            )
 
     def pulseStep_(self, timer) -> None:
         """Dual-phase pulse: user and assistant text breathe independently.
@@ -822,18 +980,19 @@ class CommandOverlay(NSObject):
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
         glow_opacity = 0.5 + 0.3 * breath
-        if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
-            self._inner_shadow.setFillColor_(
-                glow_nscolor.colorWithAlphaComponent_(0.12).CGColor()
-            )
-            self._inner_shadow.setShadowOpacity_(glow_opacity)
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
-            self._outer_glow_tight.setShadowOpacity_(min(glow_opacity * 0.4, _OUTER_GLOW_PEAK_TARGET))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
-            self._outer_glow_wide.setShadowOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
+        # Drive the SDF fill layer with the pulse — the fill breathes
+        # with the assistant's thinking/response animation.
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+
+        self._apply_glow_layer_colors(glow_nscolor)
+        for entry in self._glow_pass_layers:
+            layer = entry["layer"]
+            spec = entry["spec"]
+            if spec["fill_role"] == "inner":
+                layer.setOpacity_(glow_opacity)
+            else:
+                layer.setOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -882,7 +1041,8 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = False
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(False)
-            self._thinking_label.setStringValue_("0.0s")
+            if self._tool_mode: self._thinking_label.setStringValue_("tool…")
+            else: self._thinking_label.setStringValue_("0.0s")
             # Glowing number: violet text on transparent background
             self._thinking_label.setTextColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -915,7 +1075,45 @@ class CommandOverlay(NSObject):
         """Update the thinking counter every 100ms."""
         self._thinking_seconds += 0.1
         if self._thinking_label is not None and not self._thinking_label.isHidden():
-            self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+            if self._tool_mode: self._thinking_label.setStringValue_("tool…")
+            else: self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+
+    # ── ridge masks ────────────────────────────────────────
+
+    def _apply_ridge_masks(self, width: float, height: float) -> None:
+        """Compute SDF and apply ridge mask + build fill image."""
+        from .overlay import (
+            _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
+            _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
+            _fill_field_to_image, _BG_COLOR_DARK,
+        )
+        f = _OUTER_FEATHER
+        scale = getattr(self, '_ridge_scale', 2.0)
+        total_w = width + 2 * f
+        total_h = height + 2 * f
+
+        try:
+            from .overlay import _glow_fill_alpha
+
+            sdf = _overlay_rounded_rect_sdf(
+                total_w, total_h, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+            )
+
+            fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+            bg_r, bg_g, bg_b = _background_color_for_brightness(
+                getattr(self, '_brightness', 0.0)
+            )
+            fill_image, self._fill_payload = _fill_field_to_image(
+                fill_alpha,
+                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+            )
+        except (ImportError, Exception):
+            return
+
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setContents_(fill_image)
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
 
     # ── layout ──────────────────────────────────────────────
 

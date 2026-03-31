@@ -997,3 +997,158 @@ class TestTrayAwareness:
 
         on_delete.assert_not_called()
         assert on_end.call_count == 2  # both were navigate
+
+
+class TestCommandOverlayFlags:
+    """Test input tap behavior for command_overlay_active and related flags."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        on_dismiss = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._on_command_overlay_dismiss = on_dismiss
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._release_decision_timer = None
+        det._tap = None
+        det._tap_source = None
+        det._awaiting_space_release = False
+        det._latched_space_down = False
+        det._latched_space_released = False
+        det._shift_latched = False
+        det._shift_at_press = False
+        det._shift_down_during_hold = False
+        det._enter_held = False
+        det._enter_latched = False
+        det._pending_release_active = False
+        det._pending_release_shift_held = False
+        det.tray_active = False
+        det.command_overlay_active = False
+        det._command_overlay_just_dismissed = False
+        det._tray_shift_down = False
+        det._tray_space_between = False
+        det._tray_last_shift_space_up = 0.0
+        det._tray_gesture_consumed = False
+        det._idle_shift_down = False
+        det._idle_shift_interrupted = False
+        det._on_shift_tap = None
+        det._on_shift_tap_during_hold = None
+        det._on_shift_tap_idle = None
+        det._on_enter_pressed = None
+        det._on_tray_delete = None
+        return det, on_start, on_end, on_dismiss
+
+    def test_enter_suppressed_when_overlay_active(self, input_tap_module):
+        """Enter keyDown should be suppressed (return None) when command_overlay_active=True."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _ = self._make_detector(input_tap_module)
+        det.command_overlay_active = True
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result is None  # suppressed
+        assert det._enter_held is True  # still tracked
+
+    def test_enter_passes_through_when_overlay_not_active(self, input_tap_module):
+        """Enter keyDown should pass through when command_overlay_active=False."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _ = self._make_detector(input_tap_module)
+        det.command_overlay_active = False
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result is event  # passed through
+        assert det._enter_held is True
+
+    def test_instant_dismiss_on_spacebar_keydown_when_overlay_active(self, input_tap_module):
+        """Spacebar keyDown while command_overlay_active=True should call dismiss callback."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, on_dismiss = self._make_detector(input_tap_module)
+        det.command_overlay_active = True
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result is None  # suppressed by handle_key_down
+        on_dismiss.assert_called_once()
+        # Note: command_overlay_active and _just_dismissed are set by the
+        # delegate's dismissCommandOverlay_ (the callback target), not by
+        # the input tap directly. The input tap's contract is to call dismiss.
+
+    def test_just_dismissed_set_by_dismiss_callback(self, input_tap_module):
+        """Instant dismiss callback fires on spacebar keyDown; the callback is
+        responsible for setting _command_overlay_just_dismissed=True.  Simulate
+        the delegate's behavior in the callback to verify the full contract."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _ = self._make_detector(input_tap_module)
+        det.command_overlay_active = True
+
+        # Wire dismiss callback to set flags like the real delegate does
+        def dismiss_sets_flags():
+            det.command_overlay_active = False
+            det._command_overlay_just_dismissed = True
+
+        det._on_command_overlay_dismiss = dismiss_sets_flags
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert det.command_overlay_active is False
+        assert det._command_overlay_just_dismissed is True
+
+    def test_enter_quick_tap_routes_to_hold_end_in_waiting_state(self, input_tap_module):
+        """Enter+spacebar quick tap in WAITING state should route to _on_hold_end
+        with enter_held=True."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        # Press Enter first (sets _enter_held and _enter_latched in WAITING)
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        # Enter keyDown while WAITING → sets _enter_latched
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert det._enter_latched is True
+
+        # Release spacebar before hold timer → WAITING quick release path
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        # Should route through on_hold_end with enter_held=True
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._state == mod._State.IDLE

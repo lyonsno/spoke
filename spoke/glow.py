@@ -69,18 +69,18 @@ _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.424  # bright scenes move 20% closer to fully opaque
 # Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.90  # near-instant response to voice
-_DECAY_FACTOR = 0.50  # very quick falloff between words
+_RISE_FACTOR = 0.99  # 3x faster (was 0.90)
+_DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
 
-# Fade timing
-_FADE_IN_S = 0.08
-_FADE_OUT_S = 0.2
-_GLOW_SHOW_FADE_S = 0.2
-_GLOW_HIDE_FADE_S = 0.6
+# Fade timing (all 3x faster)
+_FADE_IN_S = 0.026
+_FADE_OUT_S = 0.066
+_GLOW_SHOW_FADE_S = 0.066
+_GLOW_HIDE_FADE_S = 0.2
 _GLOW_SHOW_TIMING = "easeIn"
-_DIM_SHOW_FADE_S = 1.08
-_DIM_HIDE_FADE_S = 2.4
-_WINDOW_TEARDOWN_CUSHION_S = 0.05
+_DIM_SHOW_FADE_S = 0.36
+_DIM_HIDE_FADE_S = 0.8
+_WINDOW_TEARDOWN_CUSHION_S = 0.016
 
 
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0  # seconds between recurring samples
@@ -89,7 +89,7 @@ _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 3.05
+_VIGNETTE_OPACITY_SCALE = 3.05  # back to original
 _TEXTURE_ANIMATION_INTERVAL = 0.08
 _TEXTURE_MIN_GRID_WIDTH = 96
 _TEXTURE_MIN_GRID_HEIGHT = 64
@@ -350,13 +350,59 @@ def _distance_field_opacity(distance: float, falloff: float, power: float) -> fl
     return math.exp(-(normalized ** power))
 
 
-def _distance_field_alpha(signed_distance, falloff: float, power: float):
+def _generate_brownian_mist(width: int, height: int, scale: float) -> "np.ndarray":
+    """Generate structured ridged noise with domain warping (supple tendrils)."""
+    import numpy as np
+    from scipy.ndimage import zoom
+
+    noise = np.zeros((height, width), dtype=np.float32)
+    # Domain warping: use initial noise octaves to warp the sampling of later ones.
+    warp_x = np.zeros((height, width), dtype=np.float32)
+    warp_y = np.zeros((height, width), dtype=np.float32)
+
+    lacunarity = 2.1
+    gain = 0.52
+
+    for octave in range(6):
+        freq = (lacunarity ** octave) * 0.65 / scale
+        amp = gain ** octave
+        rw, rh = max(int(width * freq), 2), max(int(height * freq), 2)
+
+        # Warp the sampling grid for this octave
+        if octave > 0:
+            # Simple warp: shift the seed indices based on previous noise
+            # This creates the "supple" organic flow lines.
+            shift = (octave * 4.0) / scale
+            warp_x += zoom(np.random.rand(rh, rw).astype(np.float32) - 0.5, (height / rh, width / rw), order=1)[:height, :width] * shift
+            warp_y += zoom(np.random.rand(rh, rw).astype(np.float32) - 0.5, (height / rh, width / rw), order=1)[:height, :width] * shift
+
+        seed = np.random.rand(rh, rw).astype(np.float32)
+        octave_noise = zoom(seed, (height / rh, width / rw), order=1)[:height, :width]
+
+        # Apply warp to the current octave
+        v = 1.0 - np.abs(octave_noise - 0.5) * 2.0
+        # Multifractal scaling: noise is "sharpened" as it gets smaller
+        noise += (v ** (2.5 + octave * 0.2)) * amp
+
+    n_min, n_max = noise.min(), noise.max()
+    if n_max > n_min:
+        noise = (noise - n_min) / (n_max - n_min)
+    return noise
+
+def _distance_field_alpha(signed_distance, falloff: float, power: float, noise_field: "np.ndarray" | None = None):
     import numpy as np
 
     distance = np.clip(-signed_distance, 0.0, None)
     alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
-    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
 
+    if noise_field is not None:
+        noise_strength = alpha 
+        # User Directive: "make it very faint" (0.25 -> 0.10)
+        # We take high peaks of the ridged noise (filaments) via noise^4
+        structured_noise = np.power(noise_field, 4.0)
+        alpha = alpha * (1.0 - structured_noise * noise_strength * 0.10)
+
+    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
 
 def _alpha_field_to_image(alpha):
     """Convert a float alpha field into a CGImage suitable for a CALayer mask."""
@@ -394,14 +440,18 @@ def _alpha_field_to_image(alpha):
     return image, payload
 
 
-def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
+def _distance_field_masks_for_specs(geometry: dict, specs: list[dict], noise_field: "np.ndarray" | None = None) -> list[dict]:
+    import numpy as np
     signed_distance = _display_signed_distance_field(geometry)
+    scale = geometry["scale"]
+
     masks = []
     for spec in specs:
         alpha = _distance_field_alpha(
             signed_distance,
-            spec["falloff"] * geometry["scale"],
+            spec["falloff"] * scale,
             spec["power"],
+            noise_field=noise_field,
         )
         image, payload = _alpha_field_to_image(alpha)
         masks.append({"image": image, "payload": payload, "spec": spec})
@@ -444,25 +494,25 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 3.0,
-            "power": 2.65,
-            "alpha": 0.44,
+            "falloff": 2.5,
+            "power": 2.4,       # relaxed from 3.5 — softer edge
+            "alpha": 0.65,      # eased from 0.88
             "color_scale": 0.08,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 7.0,
-            "power": 3.1,
-            "alpha": 0.21,
+            "falloff": 6.0,
+            "power": 2.6,       # relaxed from 3.5
+            "alpha": 0.35,      # eased from 0.52
             "color_scale": 0.10,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 14.0,
-            "power": 3.55,
-            "alpha": 0.19,
+            "falloff": 12.0,
+            "power": 3.0,       # relaxed from 3.8
+            "alpha": 0.28,      # eased from 0.45
             "color_scale": 0.12,
         },
     ]
@@ -723,34 +773,21 @@ class GlowOverlay(NSObject):
         content = self._window.contentView()
         content.setWantsLayer_(True)
 
+        # ── Procedural additive and subtractive passes ─────────
         w, h = frame.size.width, frame.size.height
         mask_scale = _screen_backing_scale(self._screen)
         geometry = _display_shape_geometry(self._screen, w, h, mask_scale)
         geometry["scale"] = mask_scale
 
-        glow_colors = _glow_role_colors(_GLOW_COLOR)
+        # Shared noise field for visual consistency across additive/subtractive
+        import numpy as np
+        pw, ph = geometry["pixel_width"], geometry["pixel_height"]
+        noise_field = _generate_brownian_mist(pw, ph, mask_scale)
 
-        # ── Optional screen dim: subtle dark backdrop for glow contrast ──
-        self._dim_layer = None
-        if _DIM_SCREEN:
-            self._dim_layer = CALayer.alloc().init()
-            self._dim_layer.setFrame_(((0, 0), (w, h)))
-            self._dim_layer.setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 1.0).CGColor()
-            )
-            self._dim_layer.setOpacity_(0.0)
-            content.layer().addSublayer_(self._dim_layer)
-
-        # ── Container layer: holds shadow + masked fill ──────────
-        # We control opacity on this layer to drive the whole effect.
-        self._glow_layer = CALayer.alloc().init()
-        self._glow_layer.setFrame_(((0, 0), (w, h)))
-        self._glow_layer.setOpacity_(0.0)
-
-        # Procedural additive passes: one continuous field, different falloff curves.
+        # Additive glow passes
         glow_pass_layers = []
         self._mask_payloads = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs(), noise_field=noise_field):
             spec = entry["spec"]
             layer = CALayer.alloc().init()
             layer.setFrame_(((0, 0), (w, h)))
@@ -764,16 +801,14 @@ class GlowOverlay(NSObject):
             glow_pass_layers.append({"layer": layer, "spec": spec})
 
         self._glow_pass_layers = glow_pass_layers
-        self._shadow_shape = glow_pass_layers[-1]["layer"] if glow_pass_layers else None
 
-        # ── Subtractive vignette: darkened colored edges for light backgrounds ──
-        # Same distance-field geometry as the additive glow, with tinted falloff.
+        # Subtractive vignette passes
         self._vignette_layer = CALayer.alloc().init()
         self._vignette_layer.setFrame_(((0, 0), (w, h)))
         self._vignette_layer.setOpacity_(0.0)
 
         vignette_pass_layers = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs()):
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs(), noise_field=noise_field):
             spec = entry["spec"]
             layer = CALayer.alloc().init()
             layer.setFrame_(((0, 0), (w, h)))

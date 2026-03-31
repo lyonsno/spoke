@@ -202,8 +202,8 @@ class TestExecuteTool:
         )
         assert "hello world" in result
 
-    def test_execute_read_aloud_uses_async_tts_when_available(self):
-        """read_aloud should not block the tool round when background TTS is available."""
+    def test_execute_read_aloud_uses_blocking_speak(self):
+        """read_aloud should block until TTS finishes so multi-call turns play sequentially."""
         mod = _import_tools()
         tts_client = MagicMock()
 
@@ -213,15 +213,14 @@ class TestExecuteTool:
             tts_client=tts_client,
         )
 
-        tts_client.speak_async.assert_called_once_with("hello world")
-        tts_client.speak.assert_not_called()
+        tts_client.speak.assert_called_once_with("hello world")
         assert result == "Speaking: hello world"
 
     def test_execute_read_aloud_tts_failure_returns_error(self):
         """Immediate TTS launch failures should surface as tool errors."""
         mod = _import_tools()
         tts_client = MagicMock()
-        tts_client.speak_async.side_effect = RuntimeError("audio device unavailable")
+        tts_client.speak.side_effect = RuntimeError("audio device unavailable")
 
         result = mod.execute_tool(
             name="read_aloud",
