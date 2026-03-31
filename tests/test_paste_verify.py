@@ -1,13 +1,95 @@
 """Tests for post-paste OCR verification."""
 
+import builtins
 import importlib
+import logging
 import sys
+import types
 from unittest.mock import patch
 
 
 def _import_module():
     sys.modules.pop("spoke.paste_verify", None)
     return importlib.import_module("spoke.paste_verify")
+
+
+def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, error=None, lines=()):
+    class _FakeCandidate:
+        def __init__(self, text):
+            self._text = text
+
+        def string(self):
+            return self._text
+
+    class _FakeObservation:
+        def __init__(self, text):
+            self._text = text
+
+        def topCandidates_(self, count):
+            return [_FakeCandidate(self._text)]
+
+    observations = [_FakeObservation(line) for line in lines]
+
+    class _FakeRequest:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def init(self):
+            return self
+
+        def setRecognitionLevel_(self, level):
+            self.level = level
+
+        def setUsesLanguageCorrection_(self, enabled):
+            self.enabled = enabled
+
+        def results(self):
+            return observations
+
+    class _FakeHandler:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithCGImage_options_(self, cgimage, options):
+            self.cgimage = cgimage
+            self.options = options
+            return self
+
+        def performRequests_error_(self, requests, options):
+            return success, error
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Vision",
+        types.SimpleNamespace(
+            VNRecognizeTextRequest=_FakeRequest,
+            VNImageRequestHandler=_FakeHandler,
+            VNRequestTextRecognitionLevelFast="fast",
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "Quartz",
+        types.SimpleNamespace(
+            CGWindowListCreateImage=lambda *args: image,
+            kCGWindowListOptionOnScreenOnly=1,
+            kCGNullWindowID=0,
+            CGRectInfinite="infinite",
+        ),
+    )
+
+
+def _dense_background(*segments):
+    """Build a text-dense OCR scene with lots of unrelated chrome-like noise."""
+    noise = [
+        "menu bar file edit view history window help",
+        "project notes inbox account security notifications",
+        "recent activity dashboard settings browser tabs sidebar",
+        "search results panel status indicators connection details",
+    ]
+    return " ".join([*noise[:2], *segments, *noise[2:]])
 
 
 class TestTextAppearsOnScreen:
@@ -158,10 +240,68 @@ class TestTextAppearsOnScreen:
             "the and is to for with from that this"
         ) is False
 
-    def test_url_bar_overflow_with_context_visible(self):
-        """Long text pasted into URL bar — most clipped, word+context visible."""
+    def test_dense_background_scattered_words_do_not_match(self):
+        """Scattered expected words in a dense background should not count as success."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "The preliminary investigation revealed surprising results",
+            _dense_background(
+                "investigation tools revealed panel with surprising charts",
+                "result settings and unrelated summaries",
+            ),
+        ) is False
+
+    def test_dense_background_partial_phrase_without_strong_context_does_not_match(self):
+        """A tempting middle phrase alone should not survive a text-dense scene."""
         mod = _import_module()
         assert mod.text_appears_on_screen(
             "Please navigate to the authentication dashboard and check credentials",
-            "chrome tabs authentication dashboard browser stuff"
+            _dense_background(
+                "authentication settings dashboard chrome credentials help center",
+                "account security authentication dashboard",
+            ),
+        ) is False
+
+    def test_dense_background_end_phrase_with_context_still_matches(self):
+        """A strong boundary phrase should still confirm success amid dense background."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "Please open the quarterly revenue workbook and verify surprising results",
+            _dense_background(
+                "clipboard history unrelated tabs and account chrome",
+                "verify surprising results more unrelated text",
+            ),
         ) is True
+
+
+class TestCaptureScreenText:
+    def test_missing_vision_logs_warning(self, monkeypatch, caplog):
+        mod = _import_module()
+        real_import = builtins.__import__
+
+        def _import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "Vision":
+                raise ModuleNotFoundError("No module named 'Vision'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _import)
+
+        with caplog.at_level(logging.WARNING):
+            assert mod.capture_screen_text() == ""
+
+        assert "Paste verify OCR unavailable" in caplog.text
+
+    def test_screen_capture_none_logs_warning(self, monkeypatch, caplog):
+        mod = _import_module()
+        _install_fake_ocr_modules(monkeypatch, image=None)
+
+        with caplog.at_level(logging.WARNING):
+            assert mod.capture_screen_text() == ""
+
+        assert "screen capture returned no image" in caplog.text
+
+    def test_success_returns_joined_text(self, monkeypatch):
+        mod = _import_module()
+        _install_fake_ocr_modules(monkeypatch, lines=("first line", "second line"))
+
+        assert mod.capture_screen_text() == "first line second line"

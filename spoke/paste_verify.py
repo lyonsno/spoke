@@ -15,10 +15,13 @@ from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
 
+_missing_ocr_dependency_logged = False
+
 # Minimum fuzzy match ratio to consider the paste successful.
 # Generous because OCR may misread a few characters, and the pasted
 # text might only be partially visible (scrolled, clipped, etc.).
 _MATCH_THRESHOLD = 0.5
+_MIN_CONTIGUOUS_MATCH = 0.35
 
 # Minimum length of pasted text to bother verifying — very short
 # strings (1-2 words) are too likely to appear in UI chrome.
@@ -31,6 +34,7 @@ def capture_screen_text() -> str:
     Returns a single string with all OCR results concatenated.
     Returns empty string on any failure.
     """
+    global _missing_ocr_dependency_logged
     try:
         from Vision import VNRecognizeTextRequest, VNImageRequestHandler, VNRequestTextRecognitionLevelFast
         from Quartz import (
@@ -44,7 +48,7 @@ def capture_screen_text() -> str:
             CGRectInfinite, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, 0
         )
         if image is None:
-            logger.debug("Screen capture returned None")
+            logger.warning("Paste verify OCR failed: screen capture returned no image")
             return ""
 
         handler = VNImageRequestHandler.alloc().initWithCGImage_options_(image, None)
@@ -54,11 +58,12 @@ def capture_screen_text() -> str:
 
         success, error = handler.performRequests_error_([request], None)
         if not success:
-            logger.debug("Vision OCR failed: %s", error)
+            logger.warning("Paste verify OCR failed: Vision request unsuccessful: %s", error)
             return ""
 
         results = request.results()
         if not results:
+            logger.warning("Paste verify OCR produced no text observations")
             return ""
 
         lines = []
@@ -68,6 +73,11 @@ def capture_screen_text() -> str:
                 lines.append(candidates[0].string())
 
         return " ".join(lines)
+    except ModuleNotFoundError as exc:
+        if not _missing_ocr_dependency_logged:
+            logger.warning("Paste verify OCR unavailable: missing dependency: %s", exc)
+            _missing_ocr_dependency_logged = True
+        return ""
     except Exception:
         logger.debug("Screen OCR failed", exc_info=True)
         return ""
@@ -109,13 +119,17 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
     # the longest one. Sum their lengths for total character coverage.
     blocks = matcher.get_matching_blocks()
     total_matched = sum(b.size for b in blocks)
+    longest_match = max((b.size for b in blocks), default=0)
     coverage = total_matched / len(expected_norm) if expected_norm else 0
+    contiguous_coverage = longest_match / len(expected_norm) if expected_norm else 0
 
     logger.info(
-        "Paste verify: %d/%d chars matched (%.0f%% coverage, %d blocks, threshold %.0f%%)",
+        "Paste verify: %d/%d chars matched (%.0f%% coverage, %.0f%% contiguous, %d blocks, thresholds %.0f%%/%.0f%%)",
         total_matched, len(expected_norm), coverage * 100,
+        contiguous_coverage * 100,
         len(blocks) - 1,  # last block is always (len_a, len_b, 0)
         _MATCH_THRESHOLD * 100,
+        _MIN_CONTIGUOUS_MATCH * 100,
     )
     if logger.isEnabledFor(logging.DEBUG):
         # Show the first 100 chars of expected and a sample of screen text
@@ -127,13 +141,14 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
             end = min(len(screen_norm), best.b + best.size + 20)
             logger.debug("  best match region: %r", screen_norm[start:end])
 
-    if coverage >= _MATCH_THRESHOLD:
+    if coverage >= _MATCH_THRESHOLD and contiguous_coverage >= _MIN_CONTIGUOUS_MATCH:
         return True
 
-    # Fallback: if even one distinctive word from the expected text appears
-    # on screen, the paste almost certainly went through — the rest is just
-    # scrolled, clipped, or at screen edges the OCR can't read.
-    return _has_distinctive_word_match(expected_norm, screen_norm)
+    # Fallback: accept only a strong distinctive probe match. A few words from
+    # a dense background can inflate total character coverage, so the fallback
+    # requires either both sides of an internal word or a boundary word with
+    # its available side context.
+    return _has_strong_distinctive_match(expected_norm, screen_norm)
 
 
 # Words too common to be a reliable signal that paste succeeded.
@@ -197,6 +212,43 @@ def _has_distinctive_word_match(expected: str, screen: str) -> bool:
                 if probe in screen:
                     logger.info("Paste verify: boundary word match '%s'", word)
                     return True
+
+    return False
+
+
+def _has_strong_distinctive_match(expected: str, screen: str) -> bool:
+    """Check for a stronger distinctive-word signal than a single probe hit.
+
+    Internal words must match with context on both sides. Boundary words can
+    match with the one side of context they actually have in the expected text.
+    This keeps small clipped edge fragments viable without blessing dense
+    background scenes that happen to share a couple of isolated words.
+    """
+    for match_start in _iter_distinctive_word_positions(expected):
+        word_end = expected.index(" ", match_start) if " " in expected[match_start:] else len(expected)
+        word = expected[match_start:word_end]
+
+        left_ok = False
+        if match_start >= 2:
+            left_probe = expected[match_start - 2:word_end]
+            left_ok = left_probe in screen
+
+        right_ok = False
+        if word_end + 2 <= len(expected):
+            right_probe = expected[match_start:word_end + 2]
+            right_ok = right_probe in screen
+
+        if match_start == 0 and right_ok:
+            logger.info("Paste verify: strong start-boundary probe for '%s'", word)
+            return True
+
+        if word_end == len(expected) and left_ok:
+            logger.info("Paste verify: strong end-boundary probe for '%s'", word)
+            return True
+
+        if left_ok and right_ok:
+            logger.info("Paste verify: strong two-sided probe for '%s'", word)
+            return True
 
     return False
 
