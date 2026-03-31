@@ -614,6 +614,19 @@ class TestLatchedRecording:
         on_end.assert_called_once_with(shift_held=True, enter_held=False)
         assert det._state == mod._State.IDLE
 
+    def test_spacebar_tap_during_latched_recording_submits_text(self, input_tap_module):
+        """Quick spacebar tap in LATCHED mode should end recording and submit."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+
+        # Tap spacebar: key-down then key-up without shift
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._state == mod._State.IDLE
+
 
 class TestTrayAwareness:
     """Test input tap behavior when tray_active is set."""
