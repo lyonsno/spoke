@@ -316,6 +316,9 @@ class SpacebarHoldDetector(NSObject):
             elif shift_held:
                 # Shift + quick tap = signal for tray recall (no space)
                 self._on_hold_end(shift_held=True, enter_held=enter_held)
+            elif enter_held:
+                # Enter + quick tap = route through hold_end for recall/dismiss
+                self._on_hold_end(shift_held=False, enter_held=True)
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
