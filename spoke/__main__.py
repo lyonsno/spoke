@@ -965,14 +965,17 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             else:
-                command_visible = (
-                    self._command_overlay is not None
-                    and getattr(self._command_overlay, '_visible', False)
-                )
-                if command_visible:
-                    logger.info("Empty recording — dismissing command overlay")
-                    self._command_overlay.cancel_dismiss()
-                    self._detector.command_overlay_active = False
+                # Only dismiss if the overlay wasn't already dismissed by the
+                # instant-press handler (which clears command_overlay_active).
+                if self._detector.command_overlay_active:
+                    command_visible = (
+                        self._command_overlay is not None
+                        and getattr(self._command_overlay, '_visible', False)
+                    )
+                    if command_visible:
+                        logger.info("Empty recording — dismissing command overlay")
+                        self._command_overlay.cancel_dismiss()
+                        self._detector.command_overlay_active = False
 
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
