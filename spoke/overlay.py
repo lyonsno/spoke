@@ -68,7 +68,7 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_ALPHA_MAX_LIGHT = _TEXT_ALPHA_MAX + (1.0 - _TEXT_ALPHA_MAX) * 0.5
+_TEXT_ALPHA_MAX_LIGHT = 0.90
 _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
@@ -80,7 +80,7 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _BG_COLOR_DARK = (0.1, 0.1, 0.12)
 _TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
 _BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
-_TEXT_COLOR_LIGHT = (0.016, 0.016, 0.02)
+_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -91,6 +91,7 @@ _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
+_WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -627,12 +628,12 @@ class TranscriptionOverlay(NSObject):
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowOpacity_(
-                min(opacity * 1.4, _INNER_GLOW_PEAK_TARGET)
+                min(opacity * 1.68, _INNER_GLOW_PEAK_TARGET * 1.2)
             )
         if hasattr(self, '_outer_glow_tight'):
             self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * 1.12, 1.0))
+            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * _WIDE_OUTER_GLOW_SCALE, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
