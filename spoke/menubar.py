@@ -206,6 +206,17 @@ class MenuBarIcon(NSObject):
                         )
                     )
                     added_menu_section = True
+                tts = model_state.get("tts")
+                if tts:
+                    menu.addItem_(
+                        self._build_choice_submenu_item(
+                            "TTS",
+                            "tts",
+                            tts["selected"],
+                            tts["models"],
+                        )
+                    )
+                    added_menu_section = True
                 local_whisper = model_state.get("local_whisper")
                 if local_whisper:
                     menu.addItem_(
