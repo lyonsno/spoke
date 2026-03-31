@@ -1364,10 +1364,14 @@ class SpokeAppDelegate(NSObject):
             self._dismiss_tray()
 
     def _dismiss_command_overlay(self) -> None:
-        """Instant-dismiss the command overlay (called from event tap thread)."""
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "dismissCommandOverlay:", None, False,
-        )
+        """Instant-dismiss the command overlay.
+
+        Called from the event tap callback, which runs on the main runloop.
+        We call dismissCommandOverlay_ directly instead of deferring via
+        performSelectorOnMainThread, so that the flag writes happen before
+        handle_key_down and _on_hold_end see them in the same runloop pass.
+        """
+        self.dismissCommandOverlay_(None)
 
     def dismissCommandOverlay_(self, _) -> None:
         """Main thread: dismiss the command overlay and cancel TTS.
@@ -1613,6 +1617,15 @@ class SpokeAppDelegate(NSObject):
                     "commandFailed:", {"token": token, "error": "Command failed"}, False
                 )
                 return
+            finally:
+                # Save history even if the generator was interrupted by a stale
+                # token break — otherwise the model loses all conversation context.
+                if full_response:
+                    self._command_client._history.append((text, full_response))
+                    max_h = self._command_client._max_history
+                    if len(self._command_client._history) > max_h:
+                        self._command_client._history.pop(0)
+                    logger.info("Command history saved: %d turns", len(self._command_client._history))
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandComplete:", {"token": token, "response": full_response}, False
