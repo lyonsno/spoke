@@ -49,6 +49,7 @@ from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
+from .transcribe_cohere import LocalCohereClient
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient
 
@@ -1895,6 +1896,7 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
+        ("CohereLabs/cohere-transcribe-03-2026", "Cohere Transcribe (4bit, ~1.5GB)"),
     ]
 
     def _select_model(self, model_id):
@@ -2335,6 +2337,9 @@ class SpokeAppDelegate(NSObject):
         if whisper_url:
             logger.info("Using sidecar transcription: %s (%s)", whisper_url, model_id)
             return TranscriptionClient(base_url=whisper_url, model=model_id)
+        if model_id.startswith("CohereLabs/"):
+            logger.info("Using Cohere Transcribe: %s", model_id)
+            return LocalCohereClient(model=model_id)
         if model_id.startswith("Qwen/"):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
