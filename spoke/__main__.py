@@ -61,6 +61,14 @@ _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
 ]
 
+_TTS_MODELS = [
+    ("mlx-community/Voxtral-4B-TTS-2603-mlx-4bit", "Voxtral 4B (4-bit)"),
+    ("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit", "Qwen3-TTS 1.7B CustomVoice (8-bit)"),
+    ("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit", "Qwen3-TTS 0.6B CustomVoice (8-bit)"),
+    ("mlx-community/VibeVoice-Realtime-0.5B-fp16", "VibeVoice 0.5B Realtime (fp16)"),
+    ("mlx-community/Kokoro-82M-bf16", "Kokoro 82M (bf16)"),
+]
+
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
 
@@ -229,10 +237,14 @@ class SpokeAppDelegate(NSObject):
             self._command_models_refresh_in_flight = False
             self._command_overlay = None
 
-        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
+        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
+        # Preference-based model override takes priority over env var.
+        tts_model_pref = self._load_preferences().get("tts_model")
+        if tts_model_pref:
+            os.environ["SPOKE_TTS_MODEL"] = tts_model_pref
         self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
         if self._tts_client is not None:
-            logger.info("TTS enabled: voice=%s", self._tts_client._voice)
+            logger.info("TTS enabled: model=%s voice=%s", self._tts_client._model_id, self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
         self._tray_stack: list[str] = []
@@ -1817,6 +1829,17 @@ class SpokeAppDelegate(NSObject):
                         ),
                     ],
                 }
+            tts = getattr(self, "_tts_client", None)
+            if tts is not None:
+                current_tts_model = tts._model_id
+                tts_models = [
+                    (model_id, label, True)
+                    for model_id, label in _TTS_MODELS
+                ]
+                state["tts"] = {
+                    "selected": current_tts_model,
+                    "models": tts_models,
+                }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
             self._select_model(selection)
@@ -1824,6 +1847,9 @@ class SpokeAppDelegate(NSObject):
         role, model_id = selection
         if role == "assistant":
             self._apply_command_model_selection(model_id)
+            return
+        if role == "tts":
+            self._apply_tts_model_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -2246,6 +2272,27 @@ class SpokeAppDelegate(NSObject):
             return
         self._command_model_id = model_id
         os.environ["SPOKE_COMMAND_MODEL"] = model_id
+        self._relaunch()
+
+    def _apply_tts_model_selection(self, model_id: str) -> None:
+        tts = getattr(self, "_tts_client", None)
+        current_model = tts._model_id if tts else None
+        if model_id == current_model:
+            return
+        logger.info(
+            "Switching TTS model (relaunching): %s -> %s",
+            current_model,
+            model_id,
+        )
+        payload = self._load_preferences()
+        payload["tts_model"] = model_id
+        if not self._save_preferences(payload):
+            logger.warning(
+                "Skipping relaunch because the TTS model selection could not be persisted"
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save TTS model selection")
+            return
         self._relaunch()
 
     def _prepare_clients(self) -> None:
