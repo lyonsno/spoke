@@ -601,8 +601,11 @@ class SpokeAppDelegate(NSObject):
         # a new command response arrives and supersedes the old one.
         # Clear Enter suppression — new hold replaces/dismisses the overlay.
         self._detector.command_overlay_active = False
-        self._detector._command_overlay_just_dismissed = False
-        logger.info("command_overlay_active -> False (hold start)")
+        # Do NOT clear _just_dismissed here — it must survive until
+        # _on_hold_end so the empty-recording path can see it.
+        # Otherwise a slow dismiss tap (>400ms) would recall immediately.
+        logger.info("command_overlay_active -> False (hold start), _just_dismissed=%s (preserved)",
+                     self._detector._command_overlay_just_dismissed)
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -1000,6 +1003,10 @@ class SpokeAppDelegate(NSObject):
                             except Exception:
                                 logger.exception("Recall overlay failed")
 
+            # Clear _just_dismissed now that the decision has been made.
+            # This flag only needs to survive from instant-dismiss through
+            # the current hold's _on_hold_end.
+            self._detector._command_overlay_just_dismissed = False
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return

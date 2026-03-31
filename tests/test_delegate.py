@@ -2639,8 +2639,13 @@ class TestCommandOverlayDismissRecallCycle:
         d._command_overlay.finish.assert_called_once()
         assert d._detector.command_overlay_active is True
 
-    def test_hold_start_clears_just_dismissed_flag(self, main_module, monkeypatch):
-        """_on_hold_start should clear _command_overlay_just_dismissed for the next tap."""
+    def test_hold_start_clears_overlay_active_but_preserves_just_dismissed(self, main_module, monkeypatch):
+        """_on_hold_start clears command_overlay_active but preserves _just_dismissed.
+
+        _just_dismissed must survive until _on_hold_end so the empty-recording
+        recall path can see it.  If hold_start cleared it, a slow dismiss tap
+        (>400ms, reaching RECORDING) would recall the overlay it just dismissed.
+        """
         d = _make_delegate(main_module, monkeypatch)
         d._detector.command_overlay_active = True
         d._detector._command_overlay_just_dismissed = True
@@ -2648,7 +2653,33 @@ class TestCommandOverlayDismissRecallCycle:
         d._on_hold_start()
 
         assert d._detector.command_overlay_active is False
-        assert d._detector._command_overlay_just_dismissed is False
+        assert d._detector._command_overlay_just_dismissed is True
+
+    def test_slow_dismiss_tap_does_not_recall(self, main_module, monkeypatch):
+        """A dismiss tap slow enough to reach RECORDING should not recall on release.
+
+        Sequence: instant dismiss (sets _just_dismissed=True) → hold_start
+        (clears overlay_active, preserves _just_dismissed) → empty recording
+        release → should NOT recall because _just_dismissed is True.
+        """
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        # Step 1: instant dismiss already fired (simulated)
+        d._detector.command_overlay_active = False
+        d._detector._command_overlay_just_dismissed = True
+
+        # Step 2: hold_start fires (hold timer reached RECORDING)
+        d._on_hold_start()
+
+        # Step 3: empty recording release
+        d._capture.stop.return_value = b""
+        d._on_hold_end(shift_held=False, enter_held=False)
+
+        # Should NOT have recalled
+        d._command_overlay.show.assert_not_called()
 
     def test_command_utterance_ready_sets_overlay_active(self, main_module, monkeypatch):
         """commandUtteranceReady_ should set command_overlay_active = True."""
@@ -2718,23 +2749,29 @@ class TestCommandOverlayDismissRecallCycle:
     def test_hold_start_then_empty_recording_recalls_when_history_exists(
         self, main_module, monkeypatch
     ):
-        """hold_start clears flags → empty recording → recall when history exists."""
+        """New gesture after dismiss → empty recording → recall when history exists.
+
+        _just_dismissed is cleared by the event tap on spacebar keyDown when the
+        overlay is not active (the else branch).  _on_hold_start preserves it for
+        the same-tap case but it should already be False for a new gesture.
+        """
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=False)
 
-        # Start with overlay active and just_dismissed set
-        d._detector.command_overlay_active = True
-        d._detector._command_overlay_just_dismissed = True
+        # Simulate new gesture: event tap keyDown cleared _just_dismissed,
+        # overlay was not active so it didn't dismiss.
+        d._detector.command_overlay_active = False
+        d._detector._command_overlay_just_dismissed = False
 
-        # hold_start clears both flags
+        # hold_start preserves _just_dismissed (False in this case)
         d._on_hold_start()
         assert d._detector.command_overlay_active is False
         assert d._detector._command_overlay_just_dismissed is False
 
-        # Now empty recording with enter_held: should recall (active=False, just_dismissed=False)
+        # Now empty recording with enter_held: should recall
         d._on_hold_end(shift_held=False, enter_held=True)
         d._command_overlay.show.assert_called_once()
         d._command_overlay.finish.assert_called_once()

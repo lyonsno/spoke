@@ -556,6 +556,10 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 if dismiss is not None:
                     logger.info("Instant dismiss — marshaling to main thread")
                     dismiss()
+            else:
+                # New spacebar press that isn't a dismiss — clear _just_dismissed
+                # so the recall path works for this fresh gesture.
+                det._command_overlay_just_dismissed = False
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
