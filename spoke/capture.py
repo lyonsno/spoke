@@ -4,15 +4,18 @@ Records 16 kHz mono float32 audio and provides:
 - Per-chunk RMS amplitude callback for visual feedback
 - WAV byte output for transcription
 - Growing-buffer snapshots for incremental transcription (Phase 3)
+- Silence-sliced segment callbacks for opportunistic transcription (Phase 5)
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import queue
 import struct
 import threading
 import wave
+from collections import deque
 from typing import Callable
 
 import numpy as np
@@ -24,6 +27,15 @@ SAMPLE_RATE = 16_000
 CHANNELS = 1
 DTYPE = "float32"
 BLOCKSIZE = 1024  # ~64 ms at 16 kHz — 16Hz amplitude updates
+
+# VAD parameters for opportunistic slicing
+MIN_SPEECH_FRAMES = 3      # ~192ms of consecutive speech to trigger
+MIN_SILENCE_FRAMES = 12    # ~768ms of consecutive silence to slice
+PRE_SPEECH_MARGIN = 6      # ~384ms padding before speech
+NOISE_FLOOR_WINDOW = 50    # ~3.2s of history for noise floor
+THRESHOLD_MULTIPLIER = 2.5
+MIN_THRESHOLD = 0.001
+MAX_SEGMENT_CHUNKS = 468   # ~30s maximum segment duration
 
 
 class AudioCapture:
@@ -41,7 +53,20 @@ class AudioCapture:
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._amplitude_cb: Callable[[float], None] | None = None
+        self._segment_cb: Callable[[bytes], None] | None = None
         self._read_cursor: int = 0  # index into _frames for incremental reads
+        
+        # VAD state
+        self._is_speech: bool = False
+        self._speech_trigger_count: int = 0
+        self._silence_trigger_count: int = 0
+        self._noise_floor_history: deque[float] = deque(maxlen=NOISE_FLOOR_WINDOW)
+        self._current_segment_chunks: list[np.ndarray] = []
+        self._ring_buffer: deque[np.ndarray] = deque(maxlen=PRE_SPEECH_MARGIN)
+        
+        # Async encoding state
+        self._encode_queue: queue.Queue | None = None
+        self._encode_thread: threading.Thread | None = None
 
     def warmup(self) -> None:
         """Pre-initialize PortAudio so first start() is fast."""
@@ -77,7 +102,11 @@ class AudioCapture:
         except Exception:
             logger.debug("PortAudio initialize failed", exc_info=True)
 
-    def start(self, amplitude_callback: Callable[[float], None] | None = None) -> None:
+    def start(
+        self, 
+        amplitude_callback: Callable[[float], None] | None = None,
+        segment_callback: Callable[[bytes], None] | None = None
+    ) -> None:
         """Begin recording.
 
         Parameters
@@ -85,6 +114,9 @@ class AudioCapture:
         amplitude_callback : callable, optional
             Called with RMS amplitude (float, 0.0–1.0) per audio chunk.
             Called from the PortAudio thread — keep it fast.
+        segment_callback : callable, optional
+            Called with bounded WAV bytes when a silence boundary is reached.
+            Invoked from a background worker thread.
         """
         # Stop any existing stream to avoid leaking PortAudio resources
         if self._stream is not None:
@@ -94,6 +126,21 @@ class AudioCapture:
         self._frames = []
         self._read_cursor = 0
         self._amplitude_cb = amplitude_callback
+        self._segment_cb = segment_callback
+        
+        # Reset VAD state
+        self._is_speech = False
+        self._speech_trigger_count = 0
+        self._silence_trigger_count = 0
+        self._noise_floor_history.clear()
+        self._current_segment_chunks = []
+        self._ring_buffer.clear()
+        
+        if self._segment_cb is not None:
+            self._encode_queue = queue.Queue()
+            self._encode_thread = threading.Thread(target=self._encode_worker, daemon=True)
+            self._encode_thread.start()
+
         last_exc: Exception | None = None
         for attempt in range(2):
             stream = None
@@ -128,7 +175,14 @@ class AudioCapture:
                             exc_info=True,
                         )
                 self._stream = None
+        
         self._amplitude_cb = None
+        self._segment_cb = None
+        if self._encode_queue is not None:
+            self._encode_queue.put(None)
+            self._encode_queue = None
+            self._encode_thread = None
+            
         assert last_exc is not None
         raise last_exc
 
@@ -143,12 +197,36 @@ class AudioCapture:
                     "Audio capture produced zero chunks — resetting PortAudio"
                 )
                 self._reset_portaudio()
+            
+            # Emit final segment if we were in the middle of speech
+            if self._segment_cb is not None and self._is_speech and self._current_segment_chunks:
+                segment_samples = np.concatenate(self._current_segment_chunks)
+                if self._encode_queue is not None:
+                    self._encode_queue.put(segment_samples)
+                    
+            if self._encode_queue is not None:
+                self._encode_queue.put(None)  # Sentinel to stop thread
+            if self._encode_thread is not None:
+                self._encode_thread.join(timeout=1.0)
+
+            self._encode_queue = None
+            self._encode_thread = None
+            self._current_segment_chunks = []
+            self._ring_buffer.clear()
+            self._noise_floor_history.clear()
+
             self._amplitude_cb = None
+            self._segment_cb = None
             return self._encode_wav(self._get_all_frames())
 
         # No active stream — clear any stale frames and return empty
         self._frames = []
         self._amplitude_cb = None
+        self._segment_cb = None
+        self._current_segment_chunks = []
+        self._ring_buffer.clear()
+        self._noise_floor_history.clear()
+        
         return b""
 
     def get_buffer(self) -> bytes:
@@ -177,6 +255,22 @@ class AudioCapture:
         return self._stream is not None and self._stream.active
 
     # ── private ─────────────────────────────────────────────
+    
+    def _encode_worker(self) -> None:
+        """Background thread to encode and dispatch segments to avoid blocking PortAudio."""
+        while True:
+            if self._encode_queue is None:
+                break
+            try:
+                samples = self._encode_queue.get()
+                if samples is None:
+                    break
+                
+                if self._segment_cb is not None:
+                    wav_bytes = self._encode_wav(samples)
+                    self._segment_cb(wav_bytes)
+            except Exception:
+                logger.error("Error in segment callback worker", exc_info=True)
 
     def _audio_callback(
         self,
@@ -194,9 +288,51 @@ class AudioCapture:
         with self._lock:
             self._frames.append(chunk)
 
+        rms = float(np.sqrt(np.mean(chunk ** 2)))
+
         if self._amplitude_cb is not None:
-            rms = float(np.sqrt(np.mean(chunk ** 2)))
             self._amplitude_cb(rms)
+            
+        if self._segment_cb is not None:
+            # VAD / silence slicing logic
+            self._noise_floor_history.append(rms)
+            noise_floor = min(self._noise_floor_history) if self._noise_floor_history else 0.0
+            threshold = max(noise_floor * THRESHOLD_MULTIPLIER, MIN_THRESHOLD)
+
+            if not self._is_speech:
+                self._ring_buffer.append(chunk)
+
+                if rms > threshold:
+                    self._speech_trigger_count += 1
+                    if self._speech_trigger_count >= MIN_SPEECH_FRAMES:
+                        self._is_speech = True
+                        self._current_segment_chunks.extend(self._ring_buffer)
+                        self._ring_buffer.clear()
+                else:
+                    self._speech_trigger_count = 0
+            else:
+                self._current_segment_chunks.append(chunk)
+                
+                force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
+                
+                if force_slice or rms <= threshold:
+                    if rms <= threshold:
+                        self._silence_trigger_count += 1
+                    else:
+                        self._silence_trigger_count = MIN_SILENCE_FRAMES  # Force immediate slice
+                        
+                    if self._silence_trigger_count >= MIN_SILENCE_FRAMES:
+                        self._is_speech = False
+                        self._speech_trigger_count = 0
+                        self._silence_trigger_count = 0
+                        
+                        if self._encode_queue is not None:
+                            segment_samples = np.concatenate(self._current_segment_chunks)
+                            self._encode_queue.put(segment_samples)
+                            
+                        self._current_segment_chunks = []
+                else:
+                    self._silence_trigger_count = 0
 
     def _get_all_frames(self) -> np.ndarray:
         """Concatenate all captured frames into a single array."""

@@ -250,3 +250,79 @@ class TestStartStop:
         wav = cap.stop()
         assert wav == b""
         assert len(cap._frames) == 0
+
+class TestVADSlicing:
+    """Test the VAD state machine and silence slicing logic."""
+
+    @patch("spoke.capture.sd")
+    def test_vad_no_slice_on_continuous_speech(self, mock_sd):
+        """Continuous speech without sufficient silence should not trigger slicing."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        
+        # Prime the noise floor with silence
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        # Simulate continuous speech chunks (high RMS)
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(10):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+            
+        cap._segment_cb.assert_not_called()
+        assert cap._is_speech
+
+    @patch("spoke.capture.sd")
+    def test_vad_slices_after_silence(self, mock_sd):
+        """Speech followed by silence should emit a bounded segment."""
+        cap = AudioCapture()
+        mock_cb = MagicMock()
+        cap.start(segment_callback=mock_cb)
+        
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        # Simulate speech
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+            
+        assert cap._is_speech
+        
+        # Simulate silence
+        for _ in range(12):  # MIN_SILENCE_FRAMES
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        assert not cap._is_speech
+        cap.stop()
+        
+        mock_cb.assert_called_once()
+        
+        # The argument should be wav bytes
+        wav_bytes = mock_cb.call_args[0][0]
+        assert isinstance(wav_bytes, bytes)
+        assert len(wav_bytes) > 44
+
+    @patch("spoke.capture.sd")
+    def test_vad_stop_emits_final_segment(self, mock_sd):
+        """Stopping capture while in speech should emit the final segment."""
+        cap = AudioCapture()
+        mock_segment_cb = MagicMock()
+        cap.start(segment_callback=mock_segment_cb)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+            
+        assert cap._is_speech
+        
+        cap.stop()
+        mock_segment_cb.assert_called_once()
