@@ -70,7 +70,7 @@ def _scale_color_saturation(
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
 _TEXT_ALPHA_MAX_LIGHT = 0.90
-_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.025)  # more sensitive to soft sounds
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.05)  # sensitive but not pegged
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
@@ -709,11 +709,11 @@ class TranscriptionOverlay(NSObject):
         if amplitude > self._text_amplitude:
             self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
-            # Very slow decay — the fill lingers for a long time after speaking.
-            # Rate 0.998 when high (~350 frames to halve = ~6 seconds),
-            # accelerates to 0.96 near zero for a clean finish.
+            # Slow decay — the fill lingers after speaking but still visibly
+            # moves.  Rate 0.99 when high (~70 frames to halve = ~1.2 seconds),
+            # accelerates to 0.95 near zero for clean finish.
             gap = self._text_amplitude
-            ease = 0.96 + 0.038 * min(gap / 0.2, 1.0)  # 0.998 when high, 0.96 near zero
+            ease = 0.95 + 0.04 * min(gap / 0.3, 1.0)  # 0.99 when high, 0.95 near zero
             self._text_amplitude *= ease
 
         # Chase brightness target over roughly half a second at the live update cadence.
