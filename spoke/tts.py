@@ -225,7 +225,25 @@ class TTSClient:
     def _ensure_model(self):
         """Load the model on first use."""
         if self._model is None:
-            logger.info("Loading TTS model %s …", self._model_id)
+            # Check if model is already in local HF cache
+            from huggingface_hub import scan_cache_dir
+            try:
+                cache_info = scan_cache_dir()
+                cached_repos = [repo.repo_id for repo in cache_info.repos]
+                is_cached = self._model_id in cached_repos
+            except Exception:
+                is_cached = False
+
+            if not is_cached:
+                logger.warning(
+                    "TTS model %s not found in local cache. "
+                    "First use will DOWNLOAD ~3GB (this may take several minutes "
+                    "depending on your connection and will look like a hang).",
+                    self._model_id
+                )
+            else:
+                logger.info("Loading TTS model %s from cache …", self._model_id)
+
             self._model = tts_load(self._model_id)
             logger.info("TTS model loaded.")
 

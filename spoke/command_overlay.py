@@ -121,6 +121,117 @@ def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, flo
     return _lerp_color(_THINKING_CUTOUT_DARK, _THINKING_CUTOUT_LIGHT, _clamp01(brightness))
 
 
+def _asymmetric_rounded_rect_sdf(
+    x,
+    y,
+    width: float,
+    height: float,
+    top_radius: float,
+    bottom_radius: float,
+):
+    import numpy as np
+
+    half_width = width * 0.5
+    half_height = height * 0.5
+    radii = np.where(y >= 0.0, top_radius, bottom_radius).astype(np.float32, copy=False)
+    qx = np.abs(x) - (half_width - radii)
+    qy = np.abs(y) - (half_height - radii)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return outside + inside - radii
+
+
+def _overlay_signed_distance_field(width: float, height: float, top_radius: float, bottom_radius: float):
+    """Signed distance field for the overlay's rounded rect."""
+    import numpy as np
+
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+
+    return _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        top_radius,
+        bottom_radius,
+    )
+
+
+def _distance_field_alpha(signed_distance, falloff: float, power: float):
+    import numpy as np
+
+    distance = np.clip(-signed_distance, 0.0, None)
+    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
+    return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
+
+
+def _alpha_field_to_image(alpha):
+    """Convert a float alpha field into a CGImage suitable for a CALayer mask."""
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., 0] = 255
+    rgba[..., 1] = 255
+    rgba[..., 2] = 255
+    rgba[..., 3] = mask_alpha
+    from Foundation import NSData
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _continuous_overlay_glow_specs():
+    """Procedural additive passes driven from the distance field."""
+    return [
+        {
+            "name": "core",
+            "falloff": 3.2,
+            "power": 2.7,
+            "fill_role": "inner",
+            "fill_alpha": 0.28,
+        },
+        {
+            "name": "tight_bloom",
+            "falloff": 7.2,
+            "power": 3.2,
+            "fill_role": "middle",
+            "fill_alpha": 0.18,
+        },
+        {
+            "name": "wide_bloom",
+            "falloff": 15.0,
+            "power": 3.7,
+            "fill_role": "outer",
+            "fill_alpha": 0.12,
+        },
+    ]
+
+
 class CommandOverlay(NSObject):
     """Overlay for displaying streamed command responses."""
 
@@ -228,6 +339,34 @@ class CommandOverlay(NSObject):
 
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+
+        # Inner and outer glows — procedural distance field
+        scale = self._ridge_scale
+        pw, ph = int(round(w * scale)), int(round(h * scale))
+        sdf = _overlay_signed_distance_field(pw, ph, _OVERLAY_CORNER_RADIUS * scale, _OVERLAY_CORNER_RADIUS * scale)
+
+        self._glow_pass_layers = []
+        self._mask_payloads = []
+
+        for spec in _continuous_overlay_glow_specs():
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((f, f), (w, h)))
+            layer.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
+
+            alpha = _distance_field_alpha(sdf, spec["falloff"] * scale, spec["power"])
+            mask_image, payload = _alpha_field_to_image(alpha)
+            self._mask_payloads.append(payload)
+
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(mask_image)
+            mask_layer.setContentsScale_(scale)
+            layer.setMask_(mask_layer)
+
+            wrapper.layer().addSublayer_(layer)
+            self._glow_pass_layers.append({"layer": layer, "spec": spec})
+
+        self._apply_glow_layer_colors(glow_nscolor)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -691,6 +830,15 @@ class CommandOverlay(NSObject):
             else:
                 self._window.setAlphaValue_(1.0)
 
+    def _apply_glow_layer_colors(self, glow_nscolor: NSColor) -> None:
+        """Update the background color of each procedural glow layer."""
+        for entry in self._glow_pass_layers:
+            layer = entry["layer"]
+            spec = entry["spec"]
+            layer.setBackgroundColor_(
+                glow_nscolor.colorWithAlphaComponent_(spec["fill_alpha"]).CGColor()
+            )
+
     def pulseStep_(self, timer) -> None:
         """Dual-phase pulse: user and assistant text breathe independently.
 
@@ -836,6 +984,15 @@ class CommandOverlay(NSObject):
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+
+        self._apply_glow_layer_colors(glow_nscolor)
+        for entry in self._glow_pass_layers:
+            layer = entry["layer"]
+            spec = entry["spec"]
+            if spec["fill_role"] == "inner":
+                layer.setOpacity_(glow_opacity)
+            else:
+                layer.setOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""

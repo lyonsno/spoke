@@ -2372,6 +2372,7 @@ dependencies = [
 tts = [
     { name = "mistral-common", extra = ["audio"] },
     { name = "mlx-audio", extra = ["tts"] },
+    { name = "mlx-lm" },
 ]
 
 [package.dev-dependencies]
@@ -2386,6 +2387,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'tts'" },
     { name = "mlx-audio", extras = ["tts"], marker = "extra == 'tts'" },
+    { name = "mlx-lm", marker = "extra == 'tts'" },
     { name = "mlx-qwen3-asr", specifier = ">=0.3.2" },
     { name = "mlx-whisper", git = "https://github.com/lyonsno/mlx-whisper-patched.git?rev=eb06ea05a77037e971139d11195c675277836272" },
     { name = "numpy" },
