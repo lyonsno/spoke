@@ -428,6 +428,14 @@ class TranscriptionOverlay(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setBorderType_(0)
         self._scroll_view.setAutoresizingMask_(18)
+        # Explicitly clear the clip view's background — NSClipView can
+        # draw its own background even when the scroll view doesn't.
+        clip_view = self._scroll_view.contentView()
+        if clip_view and hasattr(clip_view, 'setDrawsBackground_'):
+            clip_view.setDrawsBackground_(False)
+        if clip_view and hasattr(clip_view, 'setWantsLayer_'):
+            clip_view.setWantsLayer_(True)
+            clip_view.layer().setBackgroundColor_(None)
 
         text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
@@ -471,13 +479,17 @@ class TranscriptionOverlay(NSObject):
                     _dump_view(sv, indent + 1)
         try:
             _dump_view(wrapper)
-            # Also dump the content view's subviews explicitly
-            for sv in content.subviews():
-                _dump_view(sv, indent=2)
-                for ssv in sv.subviews() if hasattr(sv, 'subviews') else []:
-                    _dump_view(ssv, indent=3)
-                    for sssv in ssv.subviews() if hasattr(ssv, 'subviews') else []:
-                        _dump_view(sssv, indent=4)
+            # Check scroll view internals
+            clip = self._scroll_view.contentView() if self._scroll_view else None
+            if clip:
+                draws_bg = clip.drawsBackground() if hasattr(clip, 'drawsBackground') else '?'
+                clip_layer = clip.layer() if hasattr(clip, 'layer') else None
+                clip_bg = clip_layer.backgroundColor() if clip_layer else None
+                logger.info(
+                    "ClipView: drawsBackground=%s hasBG=%s frame=%s",
+                    draws_bg, clip_bg is not None,
+                    clip.frame() if hasattr(clip, 'frame') else '?',
+                )
         except Exception:
             logger.exception("View dump failed")
         logger.info("Transcription overlay created")
