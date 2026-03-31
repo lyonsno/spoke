@@ -310,6 +310,46 @@ class TestTrayStack:
         assert entry.acknowledged is True
         d._overlay.show_tray.assert_called_with("from assistant", owner="user")
 
+    def test_acknowledged_assistant_entry_renders_as_user_on_revisit(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_stack = [
+            main_module.TrayEntry("user text"),
+            main_module.TrayEntry("from assistant", owner="assistant", acknowledged=True),
+        ]
+        d._tray_index = 0
+        d._tray_active = True
+        d._detector.tray_active = True
+
+        # Navigate up to the acknowledged assistant entry
+        d._on_tray_navigate_up()
+
+        entry = d._tray_stack[1]
+        assert entry.owner == "assistant"
+        assert entry.acknowledged is True
+        d._overlay.show_tray.assert_called_with("from assistant", owner="user")
+
+    def test_tray_stack_assertions_use_entry_not_string(
+        self, main_module, monkeypatch
+    ):
+        """Verify that TrayEntry equality with strings doesn't mask ownership."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        _run_main_thread_selector(d)
+
+        d._add_assistant_content_to_tray("same text")
+        d._enter_tray("same text")
+
+        # Both entries have the same .text but different ownership
+        assert len(d._tray_stack) == 2
+        assert d._tray_stack[0].owner == "assistant"
+        assert d._tray_stack[1].owner == "user"
+        # String equality hides the difference — this is the hazard
+        assert d._tray_stack[0] == "same text"
+        assert d._tray_stack[1] == "same text"
+        # But direct TrayEntry comparison distinguishes them
+        assert d._tray_stack[0] != d._tray_stack[1]
+
 
 class TestTrayGestures:
     """Gestures available while the tray is active."""
