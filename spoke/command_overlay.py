@@ -518,6 +518,23 @@ class CommandOverlay(NSObject):
 
         self._update_layout()
 
+    def set_response_text(self, text: str) -> None:
+        """Replace the visible assistant response with final canonical text."""
+        self._response_text = ""
+        if self._text_view is None or not self._visible:
+            self._response_text = text
+            return
+
+        if self._utterance_text:
+            self.set_utterance(self._utterance_text)
+        else:
+            self._text_view.setString_("")
+
+        if text:
+            self.append_token(text)
+        else:
+            self._update_layout()
+
     def _current_hue_rgb(self):
         """Get the current hue rotation color as (r, g, b)."""
         hue = getattr(self, '_color_phase', 0.0)

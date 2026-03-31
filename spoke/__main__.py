@@ -1340,19 +1340,21 @@ class SpokeAppDelegate(NSObject):
         def _stream():
             full_response = ""
             try:
-                for content_token in self._command_client.stream_command(
+                for event in self._command_client.stream_command_events(
                     text,
                     tools=self._tool_schemas,
                     tool_executor=self._make_tool_executor(),
                 ):
                     if token != self._transcription_token:
                         break  # stale
-                    full_response += content_token
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "commandToken:",
-                        {"token": token, "text": content_token},
-                        False,
-                    )
+                    if event.kind == "assistant_delta":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:",
+                            {"token": token, "text": event.text},
+                            False,
+                        )
+                    elif event.kind == "assistant_final":
+                        full_response = event.text
             except Exception:
                 logger.exception("Command stream failed")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1388,12 +1390,14 @@ class SpokeAppDelegate(NSObject):
                     self._client = client
 
                 def speak_async(self, text, *args, **kwargs):
+                    result = self._client.speak_async(text, *args, **kwargs)
                     delegate._command_tool_used_tts = True
-                    return self._client.speak_async(text, *args, **kwargs)
+                    return result
 
                 def speak(self, text, *args, **kwargs):
+                    result = self._client.speak(text, *args, **kwargs)
                     delegate._command_tool_used_tts = True
-                    return self._client.speak(text, *args, **kwargs)
+                    return result
 
                 def __getattr__(self, name):
                     return getattr(self._client, name)
@@ -1458,19 +1462,21 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         try:
-            for content_token in self._command_client.stream_command(
+            for event in self._command_client.stream_command_events(
                 utterance,
                 tools=self._tool_schemas,
                 tool_executor=self._make_tool_executor(),
             ):
                 if token != self._transcription_token:
                     break  # stale
-                full_response += content_token
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToken:",
-                    {"token": token, "text": content_token},
-                    False,
-                )
+                if event.kind == "assistant_delta":
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandToken:",
+                        {"token": token, "text": event.text},
+                        False,
+                    )
+                elif event.kind == "assistant_final":
+                    full_response = event.text
         except Exception:
             logger.exception("Command stream failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1526,6 +1532,12 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         overlay = self._command_overlay
+        response = payload.get("response", "")
+        if overlay is not None and response:
+            try:
+                overlay.set_response_text(response)
+            except Exception:
+                logger.exception("Command overlay failed to apply final response text")
         if overlay is not None:
             try:
                 overlay.finish()
@@ -1534,7 +1546,6 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
         # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
-        response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
         tool_used_tts = getattr(self, "_command_tool_used_tts", False)
         self._command_tool_used_tts = False

@@ -1983,7 +1983,11 @@ class TestCommandTranscribeWorker:
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.transcribe.return_value = "open the file"
         d._client.supports_streaming = False
-        d._command_client.stream_command.return_value = iter(["Hello", " world"])
+        d._command_client.stream_command_events.return_value = iter([
+            MagicMock(kind="assistant_delta", text="Hello"),
+            MagicMock(kind="assistant_delta", text=" world"),
+            MagicMock(kind="assistant_final", text="Hello world"),
+        ])
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -1993,6 +1997,8 @@ class TestCommandTranscribeWorker:
         assert "commandUtteranceReady:" in selectors
         assert selectors.count("commandToken:") == 2
         assert "commandComplete:" in selectors
+        complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
+        assert complete_call[0][1]["response"] == "Hello world"
 
     def test_empty_utterance_recalls_last_response(self, main_module, monkeypatch):
         """Empty transcription with shift = recall last response."""
@@ -2006,7 +2012,7 @@ class TestCommandTranscribeWorker:
         selectors = [c[0][0] for c in calls]
         assert "_recallLastResponse:" in selectors
         # Should NOT have tried to stream
-        d._command_client.stream_command.assert_not_called()
+        d._command_client.stream_command_events.assert_not_called()
 
     def test_transcription_failure_dispatches_error(self, main_module, monkeypatch):
         """Transcription exception → commandFailed."""
@@ -2020,14 +2026,14 @@ class TestCommandTranscribeWorker:
         selectors = [c[0][0] for c in calls]
         assert "commandFailed:" in selectors
         # Should NOT have tried to stream
-        d._command_client.stream_command.assert_not_called()
+        d._command_client.stream_command_events.assert_not_called()
 
     def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
         """Streaming exception → commandFailed after utterance dispatched."""
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
-        d._command_client.stream_command.side_effect = ConnectionError("OMLX down")
+        d._command_client.stream_command_events.side_effect = ConnectionError("OMLX down")
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -2044,12 +2050,12 @@ class TestCommandTranscribeWorker:
         d._client.supports_streaming = False
 
         def token_gen(utterance, **kwargs):
-            yield "first"
+            yield MagicMock(kind="assistant_delta", text="first")
             d._transcription_token = 99  # simulate new recording invalidating
-            yield "should not appear"
-            yield "also should not appear"
+            yield MagicMock(kind="assistant_delta", text="should not appear")
+            yield MagicMock(kind="assistant_final", text="also should not appear")
 
-        d._command_client.stream_command.side_effect = token_gen
+        d._command_client.stream_command_events.side_effect = token_gen
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -2066,7 +2072,10 @@ class TestCommandTranscribeWorker:
         d._client.has_active_stream = True
         d._preview_client = d._client  # same object
         d._client.finish_stream.return_value = "streamed utterance"
-        d._command_client.stream_command.return_value = iter(["ok"])
+        d._command_client.stream_command_events.return_value = iter([
+            MagicMock(kind="assistant_delta", text="ok"),
+            MagicMock(kind="assistant_final", text="ok"),
+        ])
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -2078,7 +2087,7 @@ class TestCommandTranscribeWorker:
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.supports_streaming = False
         d._client.transcribe.return_value = "hello"
-        d._command_client.stream_command.return_value = iter([])
+        d._command_client.stream_command_events.return_value = iter([])
 
         d._command_transcribe_worker(b"wav-data", 1)
 
@@ -2188,6 +2197,19 @@ class TestCommandCallbacks:
         d._command_overlay.finish.assert_called_once()
         d._glow.hide.assert_called()
 
+    def test_command_complete_replaces_overlay_with_final_response(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandComplete_({"token": 1, "response": "Done."})
+
+        d._command_overlay.set_response_text.assert_called_once_with("Done.")
+        d._command_overlay.finish.assert_called_once()
+
     def test_command_complete_finish_failure_still_starts_autoplay(
         self, main_module, monkeypatch, caplog
     ):
@@ -2236,6 +2258,22 @@ class TestCommandCallbacks:
 
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+
+    def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._tts_client = MagicMock()
+        d._tts_client.speak_async.side_effect = RuntimeError("device unavailable")
+
+        executor = d._make_tool_executor()
+        result = executor("read_aloud", {"source_ref": "literal:hello world"})
+
+        assert result == "Error speaking text: TTS playback failed"
+        assert d._command_tool_used_tts is False
         d._tts_client.speak_async.assert_called_once_with("hello world")
 
     def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):

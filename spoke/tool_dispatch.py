@@ -172,8 +172,10 @@ def _execute_read_aloud(
                 speak_async(text)
                 return f"Speaking: {text}"
             tts_client.speak(text)
+            return f"Speaking: {text}"
         except Exception:
             logger.warning("TTS playback failed", exc_info=True)
+            return "Error speaking text: TTS playback failed"
 
     return f"Spoke: {text}"
 
