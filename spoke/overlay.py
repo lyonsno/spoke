@@ -757,7 +757,7 @@ class TranscriptionOverlay(NSObject):
         # Dark backgrounds: very transparent at rest, moderate peak
         # Light backgrounds: the SDF peak should saturate near-full
         fill_drive = scaled
-        fill_min = _lerp(0.04, 0.55, t)   # light: visible even at rest
+        fill_min = _lerp(0.04, 0.28, t)   # light: subtle at rest, 50% more transparent
         fill_max = _lerp(0.50, 0.99, t)   # light: peak saturates full black
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
