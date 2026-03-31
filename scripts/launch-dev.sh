@@ -58,6 +58,12 @@ unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
 unset SPOKE_WHISPER_MODEL
 
+# Source per-worktree env overrides (API keys, model dirs, voice, etc.)
+if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then
+  printf 'Sourcing %s/.spoke-smoke-env\n' "$REPO_ROOT" >>"$LOG_FILE"
+  . "$REPO_ROOT/.spoke-smoke-env"
+fi
+
 /usr/bin/python3 - <<'PY'
 import os
 import subprocess
