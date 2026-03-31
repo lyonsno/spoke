@@ -349,8 +349,8 @@ class SpacebarHoldDetector(NSObject):
                 if shift_held:
                     self._on_hold_end(shift_held=True, enter_held=enter_held)
                 else:
-                    # Spacebar tap without shift = submit (same as Enter)
-                    self._on_hold_end(shift_held=False, enter_held=True)
+                    # Spacebar tap without shift = insert text at cursor
+                    self._on_hold_end(shift_held=False, enter_held=False)
                 return True
 
             # Swallow the original release that let the user go hands-free.
