@@ -192,20 +192,33 @@ def _execute_read_aloud(
 
     # Speak via TTS if available
     if tts_client is not None:
-        logger.info("read_aloud: tts_client present, model=%s, text=%d chars",
-                     getattr(tts_client, "_model_id", "?"), len(text))
+        model_id = getattr(tts_client, "_model_id", "unknown")
+        cancelled = getattr(tts_client, "_cancelled", "unknown")
+        model_loaded = getattr(tts_client, "_model", None) is not None
+        logger.info("read_aloud: tts_client present, model=%s, model_loaded=%s, cancelled=%s, text=%d chars",
+                     model_id, model_loaded, cancelled, len(text))
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
             logger.info("read_aloud: speak finished")
             return f"Speaking: {text}"
-        except Exception:
-            logger.warning("TTS playback failed", exc_info=True)
-            return "Error speaking text: TTS playback failed"
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            logger.warning("TTS playback failed: %s\n%s", exc, tb)
+            return (
+                f"Error speaking text: TTS playback failed. "
+                f"model={model_id}, model_loaded={model_loaded}, "
+                f"cancelled={cancelled}, error={type(exc).__name__}: {exc}"
+            )
     else:
         logger.warning("read_aloud: no tts_client available")
-
-    return f"Spoke: {text}"
+        return (
+            "Error: TTS client is not available. "
+            "This means SPOKE_TTS_VOICE is not set in the environment, "
+            "or the TTS client failed to initialize at startup. "
+            "Tell the user: TTS is not configured."
+        )
 
 
 def _execute_add_to_tray(
