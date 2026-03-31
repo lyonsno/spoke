@@ -599,6 +599,8 @@ class SpokeAppDelegate(NSObject):
         if tts is not None:
             # User speech should interrupt assistant speech before we reopen input.
             tts.cancel()
+        # Clear Enter suppression — new hold replaces/dismisses the overlay.
+        self._detector.command_overlay_active = False
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -932,6 +934,7 @@ class SpokeAppDelegate(NSObject):
                     # Already showing — dismiss it
                     logger.info("Enter+empty — dismissing command overlay")
                     self._command_overlay.cancel_dismiss()
+                    self._detector.command_overlay_active = False
                 else:
                     # Not showing — recall last response
                     history = self._command_client.history
@@ -944,6 +947,7 @@ class SpokeAppDelegate(NSObject):
                                 self._command_overlay.set_utterance(last_utterance)
                                 self._command_overlay.append_token(last_response)
                                 self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
                             except Exception:
                                 logger.exception("Recall overlay failed")
                     else:
@@ -967,6 +971,7 @@ class SpokeAppDelegate(NSObject):
                 if command_visible:
                     logger.info("Empty recording — dismissing command overlay")
                     self._command_overlay.cancel_dismiss()
+                    self._detector.command_overlay_active = False
 
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
@@ -1119,6 +1124,7 @@ class SpokeAppDelegate(NSObject):
                     for ch in last_response:
                         self._command_overlay.append_token(ch)
                     self._command_overlay.finish()
+                    self._detector.command_overlay_active = True
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
                 return
@@ -1694,6 +1700,7 @@ class SpokeAppDelegate(NSObject):
             self._sync_command_overlay_brightness(immediate=True)
             self._command_overlay.show()
             self._command_overlay.set_utterance(utterance)
+            self._detector.command_overlay_active = True
         self._command_first_token = True
         if self._menubar is not None:
             self._menubar.set_status_text("Thinking…")
@@ -1834,6 +1841,7 @@ class SpokeAppDelegate(NSObject):
                 logger.exception("Command overlay append failed during error presentation")
             try:
                 self._command_overlay.finish()
+                self._detector.command_overlay_active = True
             except Exception:
                 logger.exception("Command overlay finish failed during error presentation")
         if self._menubar is not None:

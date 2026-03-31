@@ -122,6 +122,9 @@ class SpacebarHoldDetector(NSObject):
         # forwarding a space character, and shift gestures route to
         # tray navigation callbacks.
         self.tray_active = False
+        # Command overlay suppression — set by the delegate when the
+        # command overlay is visible.  When True, Enter is suppressed.
+        self.command_overlay_active = False
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -205,6 +208,7 @@ class SpacebarHoldDetector(NSObject):
         self._pending_release_active = False
         self._pending_release_shift_held = False
         self.tray_active = False
+        self.command_overlay_active = False
         self._idle_shift_down = False
         self._idle_shift_interrupted = False
         self._state = _State.IDLE
@@ -525,6 +529,10 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 if on_enter is not None:
                     on_enter()
                     return None  # suppress enter during tray
+            # Suppress Enter while the command overlay is visible so it
+            # doesn't leak through to the underlying app.
+            if getattr(det, 'command_overlay_active', False):
+                return None
             # Enter passes through to the OS when tray is not active
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
