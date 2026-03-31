@@ -217,6 +217,20 @@ class TestExecuteTool:
         tts_client.speak.assert_not_called()
         assert result == "Speaking: hello world"
 
+    def test_execute_read_aloud_tts_failure_returns_error(self):
+        """Immediate TTS launch failures should surface as tool errors."""
+        mod = _import_tools()
+        tts_client = MagicMock()
+        tts_client.speak_async.side_effect = RuntimeError("audio device unavailable")
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "literal:hello world"},
+            tts_client=tts_client,
+        )
+
+        assert result == "Error speaking text: TTS playback failed"
+
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""
         mod = _import_tools()

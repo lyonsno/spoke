@@ -7,10 +7,11 @@ of recent exchanges for conversational context.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import os
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Literal
 
 import urllib.request
 import urllib.error
@@ -41,6 +42,16 @@ _SYSTEM_PROMPT = (
     "wants content kept for later use rather than spoken immediately. Do not restate "
     "visible text in your response when a ref can be spoken instead."
 )
+
+
+@dataclass(frozen=True)
+class CommandStreamEvent:
+    """Semantic event emitted while streaming a command response."""
+
+    kind: Literal["assistant_delta", "assistant_final", "tool_call"]
+    text: str = ""
+    tool_name: str | None = None
+    tool_arguments: str | None = None
 
 
 class CommandClient:
@@ -117,19 +128,45 @@ class CommandClient:
         tools: list[dict] | None = None,
         tool_executor: Callable[..., str] | None = None,
     ) -> Generator[str, None, str]:
-        """Send a command utterance and yield content tokens as they arrive.
+        """Compatibility wrapper yielding only assistant content deltas.
+
+        New code should prefer ``stream_command_events()`` so it can
+        distinguish provisional deltas, final assistant content, and tool
+        calls without guessing from raw text alone.
+        """
+        final_response = ""
+        for event in self.stream_command_events(
+            utterance,
+            tools=tools,
+            tool_executor=tool_executor,
+        ):
+            if event.kind == "assistant_delta":
+                yield event.text
+            elif event.kind == "assistant_final":
+                final_response = event.text
+
+        return final_response
+
+    def stream_command_events(
+        self,
+        utterance: str,
+        *,
+        tools: list[dict] | None = None,
+        tool_executor: Callable[..., str] | None = None,
+    ) -> Generator[CommandStreamEvent, None, str]:
+        """Send a command utterance and yield semantic stream events.
 
         Returns the full assembled response text when the stream ends.
         The response is automatically added to the ring buffer.
 
-        Parameters
-        ----------
-        tools : list[dict], optional
-            OpenAI function-calling tool schemas to include in the request.
-        tool_executor : callable, optional
-            Function that executes a tool call locally. Called as
-            ``tool_executor(name=..., arguments=...)``. Required if
-            tools are provided and the model calls one.
+        Events
+        ------
+        assistant_delta:
+            Provisional visible assistant text from the current round.
+        assistant_final:
+            Final canonical assistant text that should be treated as durable.
+        tool_call:
+            Completed function call emitted by the model for the current round.
         """
         messages = self._build_messages(utterance)
         full_response = ""
@@ -209,7 +246,10 @@ class CommandClient:
                                 logger.info("First content token on round %d: %r", _round, token[:50] if len(token) > 50 else token)
                                 first_token_logged = True
                             round_content += token
-                            yield token
+                            yield CommandStreamEvent(
+                                kind="assistant_delta",
+                                text=token,
+                            )
 
                         # Tool call deltas — accumulate
                         tool_calls_delta = delta.get("tool_calls")
@@ -237,6 +277,12 @@ class CommandClient:
                     len(completed_calls),
                     ", ".join(c["function"]["name"] for c in completed_calls),
                 )
+                for call in completed_calls:
+                    yield CommandStreamEvent(
+                        kind="tool_call",
+                        tool_name=call["function"]["name"],
+                        tool_arguments=call["function"]["arguments"],
+                    )
 
                 # Add the assistant's tool-call message with any content
                 # from this round (required by OpenAI API spec)
@@ -276,6 +322,7 @@ class CommandClient:
 
             # No tool calls — this round's content is the final response
             full_response = round_content
+            yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
         # Add to ring buffer (content only, no reasoning)
