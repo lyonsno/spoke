@@ -60,6 +60,7 @@ When changing or resetting local smoke hotkeys:
 - prefer retargeting `~/.config/spoke/*-target` files over editing launcher scripts when only the destination worktree changes
 - if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
 - if a launcher needs a known-good interpreter because a fresh worktree venv crashes, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path into the shared launcher
+- treat `.spoke-smoke-env` as a durable launcher contract, not an informal shell snippet: keep any required command/TTS runtime vars explicit there, and do not assume the default repo venv will still provide Voxtral or other local smoke-only backends on future branches
 - record any durable remap or reset rule in repo docs and `spoke` Epistaxis rather than leaving it only in thread history
 
 ## Launch target registry policy

@@ -932,6 +932,39 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_launch_target_menu_state_prefers_persisted_registry_selection(
+        self, main_module, monkeypatch
+    ):
+        """Launch target menu should show the persisted registry selection, not the current checkout."""
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(
+            main_module,
+            "iter_launch_targets",
+            lambda: [
+                {"id": "main", "label": "Main", "enabled": True},
+                {"id": "dev", "label": "Dev", "enabled": True},
+            ],
+        )
+        monkeypatch.setattr(
+            main_module,
+            "load_launch_target_registry",
+            lambda: {"selected": "main", "targets": []},
+        )
+        monkeypatch.setattr(
+            main_module,
+            "current_launch_target_id",
+            lambda _path: "dev",
+        )
+
+        assert d._launch_target_menu_state() == {
+            "title": "Launch Target",
+            "selected": "main",
+            "items": [
+                ("main", "Main", True),
+                ("dev", "Dev", True),
+            ],
+        }
+
     def test_selecting_launch_target_persists_choice_and_invokes_helper(
         self, main_module, monkeypatch
     ):
@@ -1022,7 +1055,7 @@ class TestDualModelConfiguration:
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Assistant discovery should keep only curated installed local MLX models."""
+        """Assistant discovery should preserve server models and append curated local ones."""
         model_root = tmp_path / "models"
         curated = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
         curated.mkdir(parents=True)
@@ -1039,6 +1072,8 @@ class TestDualModelConfiguration:
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
         assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", False),
             (
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",

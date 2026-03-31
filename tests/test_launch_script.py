@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+from spoke.launch_targets import parse_env_overrides
+
 
 def _script_text() -> str:
     script = Path(__file__).resolve().parent.parent / "scripts" / "launch-dev.sh"
@@ -233,6 +235,25 @@ def test_inline_launch_target_launcher_starts_requested_target(tmp_path):
         time.sleep(0.02)
     else:
         raise AssertionError("expected selected target output to reach launch log")
+
+
+def test_parse_env_overrides_expands_shell_style_defaults_and_suffixes(tmp_path, monkeypatch):
+    """Launch-target env parsing should support the small shell subset used in smoke env files."""
+    env_file = tmp_path / ".spoke-smoke-env"
+    monkeypatch.setenv("HOME", "/Users/tester")
+    monkeypatch.delenv("SPOKE_COMMAND_URL", raising=False)
+    monkeypatch.setenv("PYTHONPATH", "/base/path")
+    env_file.write_text(
+        'export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"\n'
+        'export SPOKE_COMMAND_MODEL_DIR="$HOME/dev/scripts/quant/models"\n'
+        'export PYTHONPATH="/Users/noahlyons/dev/mlx-audio-pr-607-voxtral-tts${PYTHONPATH:+:$PYTHONPATH}"\n'
+    )
+
+    assert parse_env_overrides(env_file) == {
+        "SPOKE_COMMAND_URL": "http://localhost:8001",
+        "SPOKE_COMMAND_MODEL_DIR": "/Users/tester/dev/scripts/quant/models",
+        "PYTHONPATH": "/Users/noahlyons/dev/mlx-audio-pr-607-voxtral-tts:/base/path",
+    }
 
 
 def test_inline_launcher_routes_child_output_into_log(tmp_path):

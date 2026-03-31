@@ -38,7 +38,13 @@ The user triggers the smoke Automator hotkey themselves. Do not kill the
 running process or relaunch — `launch-smoke.sh` handles that.
 
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
-(e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
+(e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`). Treat that file as launcher
+input, not just shell folklore: if a smoke surface depends on local command/TTS
+runtime overrides, record the exact vars there and keep them coherent. In
+particular, a Voxtral TTS-capable surface on this box should not rely on the
+default repo venv alone; it needs the expected command auth plus the local
+`mlx-audio` override (`SPOKE_COMMAND_API_KEY`, `SPOKE_TTS_MODEL`, `PYTHONPATH`)
+or an equivalent tested runtime address.
 
 After pointing the smoke target, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality

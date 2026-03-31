@@ -42,6 +42,7 @@ from .input_tap import SpacebarHoldDetector
 from .launch_targets import (
     current_launch_target_id,
     iter_launch_targets,
+    load_launch_target_registry,
     save_selected_launch_target,
 )
 from .menubar import MenuBarIcon
@@ -2044,10 +2045,13 @@ class SpokeAppDelegate(NSObject):
         targets = iter_launch_targets()
         if not targets:
             return None
-        current_target = current_launch_target_id(self._current_checkout_root())
+        registry = load_launch_target_registry()
+        selected_target = registry.get("selected")
+        if not selected_target:
+            selected_target = current_launch_target_id(self._current_checkout_root())
         return {
             "title": "Launch Target",
-            "selected": current_target,
+            "selected": selected_target,
             "items": [
                 (target["id"], target["label"], target["enabled"]) for target in targets
             ],
@@ -2363,12 +2367,7 @@ class SpokeAppDelegate(NSObject):
         ).expanduser()
         local_model_ids = _iter_local_command_model_ids(local_model_dir)
         if local_model_ids:
-            local_model_set = set(local_model_ids)
-            model_ids = [
-                model_id
-                for model_id in server_model_ids
-                if model_id in local_model_set
-            ]
+            model_ids = list(server_model_ids)
             model_ids.extend(
                 model_id for model_id in local_model_ids if model_id not in model_ids
             )

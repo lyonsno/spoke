@@ -6,10 +6,15 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LAUNCH_TARGETS_PATH = Path.home() / ".config" / "spoke" / "launch_targets.json"
+_ENV_EXPR_RE = re.compile(
+    r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<op>[-+])(?P<arg>[^}]*))?\}"
+    r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
+)
 
 
 def launch_targets_path() -> Path:
@@ -105,6 +110,29 @@ def save_selected_launch_target(target_id: str, path: Path | None = None) -> boo
         return False
 
 
+def _expand_env_value(value: str, base_env: dict[str, str] | None = None) -> str:
+    env = dict(base_env or os.environ)
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group("braced") or match.group("plain")
+        current = env.get(var_name, "")
+        op = match.group("op")
+        arg = match.group("arg") or ""
+        if op == "-":
+            return current or _ENV_EXPR_RE.sub(_replace, arg)
+        if op == "+":
+            return _ENV_EXPR_RE.sub(_replace, arg) if current else ""
+        return current
+
+    expanded = value
+    for _ in range(8):
+        updated = _ENV_EXPR_RE.sub(_replace, expanded)
+        if updated == expanded:
+            break
+        expanded = updated
+    return expanded
+
+
 def parse_env_overrides(env_file: Path) -> dict[str, str]:
     overrides: dict[str, str] = {}
     try:
@@ -129,5 +157,7 @@ def parse_env_overrides(env_file: Path) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         if key:
-            overrides[key] = value
+            merged_env = os.environ.copy()
+            merged_env.update(overrides)
+            overrides[key] = _expand_env_value(value, merged_env)
     return overrides
