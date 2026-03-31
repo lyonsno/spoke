@@ -448,6 +448,29 @@ class TranscriptionOverlay(NSObject):
 
         self._window.setAlphaValue_(0.0)
 
+        # Debug: dump layer tree to find the plateau source
+        def _dump_layer(layer, indent=0):
+            prefix = "  " * indent
+            frame = layer.frame()
+            bg = layer.backgroundColor()
+            cr = layer.cornerRadius()
+            mask = layer.mask()
+            opacity = layer.opacity()
+            clips = layer.masksToBounds()
+            logger.info(
+                "%sLayer %s: frame=(%d,%d,%d,%d) cornerRadius=%.1f opacity=%.2f masksToBounds=%s hasMask=%s hasBG=%s",
+                prefix, type(layer).__name__,
+                frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
+                cr, opacity, clips, mask is not None, bg is not None,
+            )
+            sublayers = layer.sublayers()
+            if sublayers:
+                for sub in sublayers:
+                    _dump_layer(sub, indent + 1)
+        try:
+            _dump_layer(wrapper.layer())
+        except Exception:
+            logger.exception("Layer dump failed")
         logger.info("Transcription overlay created")
 
     def show(self) -> None:
