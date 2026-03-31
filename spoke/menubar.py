@@ -152,6 +152,12 @@ class MenuBarIcon(NSObject):
         source_item.setEnabled_(False)
         menu.addItem_(source_item)
 
+        branch_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            getattr(self, "_branch_label", "Branch: unknown"), None, ""
+        )
+        branch_item.setEnabled_(False)
+        menu.addItem_(branch_item)
+
         added_menu_section = False
         if getattr(self, '_on_select_model', None) is not None:
             model_state = self._on_select_model(None)

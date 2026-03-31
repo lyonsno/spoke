@@ -81,6 +81,17 @@ def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, 
     )
 
 
+def _dense_background(*segments):
+    """Build a text-dense OCR scene with lots of unrelated chrome-like noise."""
+    noise = [
+        "menu bar file edit view history window help",
+        "project notes inbox account security notifications",
+        "recent activity dashboard settings browser tabs sidebar",
+        "search results panel status indicators connection details",
+    ]
+    return " ".join([*noise[:2], *segments, *noise[2:]])
+
+
 class TestTextAppearsOnScreen:
     """Test the fuzzy matching logic (no OCR dependency needed)."""
 
