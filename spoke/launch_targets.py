@@ -11,6 +11,7 @@ import re
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LAUNCH_TARGETS_PATH = Path.home() / ".config" / "spoke" / "launch_targets.json"
+_DEFAULT_SHARED_LAUNCH_ENV_PATH = Path.home() / ".config" / "spoke" / "launch-env.sh"
 _ENV_EXPR_RE = re.compile(
     r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<op>[-+])(?P<arg>[^}]*))?\}"
     r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
@@ -22,6 +23,13 @@ def launch_targets_path() -> Path:
     if override:
         return Path(override).expanduser()
     return _DEFAULT_LAUNCH_TARGETS_PATH
+
+
+def shared_launch_env_path() -> Path:
+    override = os.environ.get("SPOKE_SHARED_LAUNCH_ENV_PATH")
+    if override:
+        return Path(override).expanduser()
+    return _DEFAULT_SHARED_LAUNCH_ENV_PATH
 
 
 def load_launch_target_registry(path: Path | None = None) -> dict:
@@ -160,4 +168,11 @@ def parse_env_overrides(env_file: Path) -> dict[str, str]:
             merged_env = os.environ.copy()
             merged_env.update(overrides)
             overrides[key] = _expand_env_value(value, merged_env)
+    return overrides
+
+
+def load_launch_env_overrides(repo_root: Path) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for env_file in (shared_launch_env_path(), repo_root / ".spoke-smoke-env"):
+        overrides.update(parse_env_overrides(env_file))
     return overrides

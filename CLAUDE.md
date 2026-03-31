@@ -44,7 +44,9 @@ runtime overrides, record the exact vars there and keep them coherent. In
 particular, a Voxtral TTS-capable surface on this box should not rely on the
 default repo venv alone; it needs the expected command auth plus the local
 `mlx-audio` override (`SPOKE_COMMAND_API_KEY`, `SPOKE_TTS_MODEL`, `PYTHONPATH`)
-or an equivalent tested runtime address.
+or an equivalent tested runtime address. Shared box-local defaults belong in
+`~/.config/spoke/launch-env.sh`; `.spoke-smoke-env` should only carry the
+branch-specific delta on top of that shared launch env.
 
 After pointing the smoke target, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality

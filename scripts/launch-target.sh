@@ -33,7 +33,7 @@ helper_repo_root = Path(os.environ["HELPER_REPO_ROOT"])
 if str(helper_repo_root) not in sys.path:
     sys.path.insert(0, str(helper_repo_root))
 
-from spoke.launch_targets import parse_env_overrides, resolve_launch_target
+from spoke.launch_targets import load_launch_env_overrides, resolve_launch_target
 
 
 def _resolve_uv_bin(repo_root: Path, child_env: dict[str, str]) -> Optional[Path]:
@@ -90,7 +90,7 @@ with log_file.open("a", encoding="utf-8") as log:
             raise SystemExit(1)
 
         child_env = os.environ.copy()
-        child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))
+        child_env.update(load_launch_env_overrides(repo_root))
         child_env["REPO_ROOT"] = str(repo_root)
         child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id
         child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")

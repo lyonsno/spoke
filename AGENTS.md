@@ -60,6 +60,7 @@ When changing or resetting local smoke hotkeys:
 - prefer retargeting `~/.config/spoke/*-target` files over editing launcher scripts when only the destination worktree changes
 - if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
 - if a launcher needs a known-good interpreter because a fresh worktree venv crashes, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path into the shared launcher
+- keep box-local launch defaults in `~/.config/spoke/launch-env.sh`; treat per-worktree `.spoke-smoke-env` files as branch-specific overrides layered on top of that shared launch env
 - treat `.spoke-smoke-env` as a durable launcher contract, not an informal shell snippet: keep any required command/TTS runtime vars explicit there, and do not assume the default repo venv will still provide Voxtral or other local smoke-only backends on future branches
 - record any durable remap or reset rule in repo docs and `spoke` Epistaxis rather than leaving it only in thread history
 
@@ -69,6 +70,7 @@ When the launch-target menu feature is in play:
 
 - treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
 - agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
+- when a surface is ready for human smoke, add it to the registry and rely on the shared launch env plus any branch-specific `.spoke-smoke-env` override instead of copy-pasting the full box-local runtime block into every worktree
 - there is no dedicated `smoke_branch` slot; additional prepared surfaces should appear as their own explicit registry entries
 - prefer stable ids and short human labels; the entry should identify a purposeful surface, not a temporary hunk of local reasoning
 - when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned

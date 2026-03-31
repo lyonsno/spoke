@@ -58,6 +58,14 @@ unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
 unset SPOKE_WHISPER_MODEL
 
+# Source shared box-local launch defaults first, then worktree-specific overrides.
+SHARED_ENV_FILE="${SPOKE_SHARED_LAUNCH_ENV_PATH:-$HOME/.config/spoke/launch-env.sh}"
+if [ -f "$SHARED_ENV_FILE" ]; then
+  printf 'Sourcing shared launch env: %s\n' "$SHARED_ENV_FILE" >>"$LOG_FILE"
+  # shellcheck source=/dev/null
+  . "$SHARED_ENV_FILE"
+fi
+
 # Source per-worktree env overrides (API keys, model dirs, voice, etc.)
 if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then
   printf 'Sourcing %s/.spoke-smoke-env\n' "$REPO_ROOT" >>"$LOG_FILE"

@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from spoke.launch_targets import parse_env_overrides
+from spoke.launch_targets import load_launch_env_overrides, parse_env_overrides
 
 
 def _script_text() -> str:
@@ -134,6 +134,14 @@ def test_launch_script_seeds_default_command_url():
     assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' in text
 
 
+def test_launch_scripts_source_shared_launch_env_before_worktree_overrides():
+    """Launchers should apply box-local defaults once, then let the worktree override them."""
+    assert 'SHARED_ENV_FILE="${SPOKE_SHARED_LAUNCH_ENV_PATH:-$HOME/.config/spoke/launch-env.sh}"' in _script_text()
+    assert 'SHARED_ENV_FILE="${SPOKE_SHARED_LAUNCH_ENV_PATH:-$HOME/.config/spoke/launch-env.sh}"' in _smoke_script_text()
+    assert '. "$SHARED_ENV_FILE"' in _script_text()
+    assert '. "$SHARED_ENV_FILE"' in _smoke_script_text()
+
+
 def test_launch_script_supports_configured_dev_target():
     """The dev launcher should allow a stable Automator binding to target a fresh worktree."""
     text = _script_text()
@@ -253,6 +261,39 @@ def test_parse_env_overrides_expands_shell_style_defaults_and_suffixes(tmp_path,
         "SPOKE_COMMAND_URL": "http://localhost:8001",
         "SPOKE_COMMAND_MODEL_DIR": "/Users/tester/dev/scripts/quant/models",
         "PYTHONPATH": "/Users/noahlyons/dev/mlx-audio-pr-607-voxtral-tts:/base/path",
+    }
+
+
+def test_load_launch_env_overrides_layers_shared_defaults_before_worktree_values(
+    tmp_path, monkeypatch
+):
+    """Shared launch defaults should apply automatically, with per-worktree values winning."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PYTHONPATH", "/base/path")
+    monkeypatch.delenv("SPOKE_COMMAND_URL", raising=False)
+
+    shared_env = home / ".config" / "spoke" / "launch-env.sh"
+    shared_env.parent.mkdir(parents=True)
+    shared_env.write_text(
+        'export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"\n'
+        'export SPOKE_TTS_MODEL="shared-model"\n'
+        'export PYTHONPATH="/shared${PYTHONPATH:+:$PYTHONPATH}"\n'
+    )
+    monkeypatch.setenv("SPOKE_SHARED_LAUNCH_ENV_PATH", str(shared_env))
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".spoke-smoke-env").write_text(
+        'export SPOKE_TTS_MODEL="repo-model"\n'
+        'export SPOKE_VENV_PYTHON="/repo/.venv/bin/python"\n'
+    )
+
+    assert load_launch_env_overrides(repo_root) == {
+        "SPOKE_COMMAND_URL": "http://localhost:8001",
+        "SPOKE_TTS_MODEL": "repo-model",
+        "PYTHONPATH": "/shared:/base/path",
+        "SPOKE_VENV_PYTHON": "/repo/.venv/bin/python",
     }
 
 
