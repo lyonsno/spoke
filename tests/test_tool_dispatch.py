@@ -501,3 +501,58 @@ class TestExecuteToolIntegration:
         parsed = json.loads(result)
         assert "find_me" in parsed.get("matches", "")
 
+
+    def test_execute_read_file_edge_cases(self, tmp_path):
+        mod = _import_tools()
+        # Null file_path
+        res1 = json.loads(mod.execute_tool("read_file", {"file_path": None}))
+        assert "error" in res1
+        
+        # Hallucinated end_line=0
+        f = tmp_path / "zero.txt"
+        f.write_text("line1\nline2")
+        res2 = json.loads(mod.execute_tool("read_file", {"file_path": str(f), "end_line": 0}))
+        assert "error" in res2
+        assert "end_line must be >= 1" in res2["error"]
+
+    def test_execute_write_file_sandbox(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        
+        # Null file_path
+        res1 = json.loads(mod.execute_tool("write_file", {"file_path": None}))
+        assert "error" in res1
+        
+        import os
+        # Set a predictable home dir for test
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else path)
+        
+        # Writing to home dir is allowed
+        res2 = json.loads(mod.execute_tool("write_file", {"file_path": str(tmp_path / "ok.txt"), "content": "ok"}))
+        assert res2.get("status") == "success"
+        
+        # Writing to sensitive .ssh is denied
+        res3 = json.loads(mod.execute_tool("write_file", {"file_path": str(tmp_path / ".ssh" / "id_rsa"), "content": "bad"}))
+        assert "error" in res3
+        assert "Write access denied" in res3["error"]
+        
+        # Writing to system root is denied
+        res4 = json.loads(mod.execute_tool("write_file", {"file_path": "/etc/passwd", "content": "bad"}))
+        assert "error" in res4
+        assert "Write access denied outside" in res4["error"]
+
+    def test_execute_search_file_edge_cases(self):
+        mod = _import_tools()
+        # Null pattern
+        res1 = json.loads(mod.execute_tool("search_file", {"pattern": None}))
+        assert "error" in res1
+        
+        # Timeout simulated via monkeypatch
+        import subprocess
+        class TimeoutMock:
+            def __init__(self, *args, **kwargs):
+                raise subprocess.TimeoutExpired(cmd="grep", timeout=10)
+        
+        with unittest.mock.patch("subprocess.run", new=TimeoutMock):
+            res2 = json.loads(mod.execute_tool("search_file", {"pattern": "slow", "dir_path": "."}))
+            assert "error" in res2
+            assert "timed out" in res2["error"]
