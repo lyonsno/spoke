@@ -52,9 +52,9 @@ _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
 _GLOW_BASE_OPACITY = 0.0966  # 140% of the calmer baseline so the border keeps dancing at rest
 _GLOW_PEAK_TARGET = 0.1904
-_GLOW_BASE_OPACITY_DARK = 0.248    # 3x original
-_GLOW_BASE_OPACITY_LIGHT = 0.824   # 3x original
-_GLOW_PEAK_TARGET_DARK = 0.504     # 3x original
+_GLOW_BASE_OPACITY_DARK = 0.0826
+_GLOW_BASE_OPACITY_LIGHT = 0.2744
+_GLOW_PEAK_TARGET_DARK = 0.168
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
@@ -409,10 +409,10 @@ def _continuous_glow_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 2.5,     # tighter — steeper edge
-            "power": 3.5,       # sharper falloff
+            "falloff": 3.2,
+            "power": 2.7,
             "fill_role": "inner",
-            "fill_alpha": 0.72,  # 3x darker
+            "fill_alpha": 0.28,
         },
         {
             "name": "tight_bloom",
@@ -420,7 +420,7 @@ def _continuous_glow_pass_specs():
             "falloff": 7.2,
             "power": 3.2,
             "fill_role": "middle",
-            "fill_alpha": 0.48,  # 3x
+            "fill_alpha": 0.18,
         },
         {
             "name": "wide_bloom",
@@ -428,7 +428,7 @@ def _continuous_glow_pass_specs():
             "falloff": 15.0,
             "power": 3.7,
             "fill_role": "outer",
-            "fill_alpha": 0.30,  # 3x
+            "fill_alpha": 0.12,
         },
     ]
 
@@ -439,9 +439,9 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 3.0,
-            "power": 2.65,
-            "alpha": 0.44,
+            "falloff": 2.5,     # tighter — steeper edge
+            "power": 3.2,       # sharper falloff
+            "alpha": 0.88,      # 2x
             "color_scale": 0.08,
         },
         {
@@ -449,7 +449,7 @@ def _continuous_vignette_pass_specs():
             "path_kind": "distance_field",
             "falloff": 7.0,
             "power": 3.1,
-            "alpha": 0.21,
+            "alpha": 0.52,      # 2.5x
             "color_scale": 0.10,
         },
         {
@@ -457,7 +457,7 @@ def _continuous_vignette_pass_specs():
             "path_kind": "distance_field",
             "falloff": 14.0,
             "power": 3.55,
-            "alpha": 0.19,
+            "alpha": 0.45,      # 2.4x
             "color_scale": 0.12,
         },
     ]
