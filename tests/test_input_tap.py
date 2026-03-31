@@ -599,6 +599,43 @@ class TestLatchedRecording:
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
         assert det._state == mod._State.IDLE
 
+    def test_initial_spacebar_release_in_latched_is_swallowed(
+        self, input_tap_module
+    ):
+        """The first spacebar release after entering LATCHED should be swallowed
+        (the user is going hands-free), not trigger text insertion."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+
+        # Key-repeat from the original hold, then release
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_not_called()
+        assert det._state == mod._State.LATCHED
+
+    def test_spacebar_tap_in_latched_inserts_at_cursor(
+        self, input_tap_module
+    ):
+        """A fresh spacebar tap (after the initial release) in LATCHED should
+        insert text at cursor."""
+        mod = input_tap_module
+        det, _, on_end = self._make_detector(input_tap_module)
+        det._state = mod._State.LATCHED
+
+        # Simulate the initial release (go hands-free)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_not_called()
+        assert det._state == mod._State.LATCHED
+
+        # Now a fresh press+release = insert at cursor
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+        assert det._state == mod._State.IDLE
+
     def test_shift_space_release_from_latched_recording_routes_to_tray(
         self, input_tap_module
     ):
@@ -607,6 +644,11 @@ class TestLatchedRecording:
         det, _, on_end = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
+        # Simulate the initial release (go hands-free)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_not_called()
+
+        # Now shift+space = tray route
         shift_flag = mod.kCGEventFlagMaskShift
         assert det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag) is True
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag) is True
@@ -620,7 +662,11 @@ class TestLatchedRecording:
         det, _, on_end = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
-        # Tap spacebar: key-down then key-up without shift
+        # Simulate the initial release (go hands-free)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_not_called()
+
+        # Fresh tap: key-down then key-up without shift
         assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 

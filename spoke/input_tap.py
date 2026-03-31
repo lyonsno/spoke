@@ -113,6 +113,7 @@ class SpacebarHoldDetector(NSObject):
         self._tap_source = None
         self._awaiting_space_release = False
         self._latched_space_down = False
+        self._latched_space_released = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
 
@@ -241,7 +242,11 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.LATCHED:
             self._shift_at_press = bool(flags & kCGEventFlagMaskShift)
             self._shift_latched = self._shift_at_press
-            self._latched_space_down = True
+            # Only count as a fresh press if the spacebar was fully released
+            # since entering LATCHED.  Key-repeats from the original hold
+            # arrive as keyDown events but should not arm the exit path.
+            if getattr(self, '_latched_space_released', False):
+                self._latched_space_down = True
             return True
 
         # Already WAITING or RECORDING — suppress key repeats
@@ -353,7 +358,10 @@ class SpacebarHoldDetector(NSObject):
                     self._on_hold_end(shift_held=False, enter_held=False)
                 return True
 
-            # Swallow the original release that let the user go hands-free.
+            # Swallow the original release that let the user go hands-free,
+            # and mark that the spacebar is now fully released so a fresh
+            # press+release cycle can arm the exit path.
+            self._latched_space_released = True
             return True
 
         return False
@@ -573,6 +581,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             ):
                 det._shift_latched = False
                 det._latched_space_down = False
+                det._latched_space_released = False
                 det._state = _State.LATCHED
                 logger.info("Shift tapped during active recording — latched recording")
 
