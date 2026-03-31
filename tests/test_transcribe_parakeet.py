@@ -310,12 +310,19 @@ class TestParakeetWiring:
         assert result == _PARAKEET_MODEL_ID
 
     def test_model_allowed_false_when_no_files(self, tmp_path, monkeypatch):
-        """_model_allowed must return False when Parakeet files are absent."""
+        """_model_allowed must return False when Parakeet files are absent.
+
+        Both the env-var path and the HF snapshot fallback must be neutralized
+        so the test is not sensitive to whether the real model is cached locally.
+        """
+        from pathlib import Path
         from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
-        # Point at an empty dir
+        # Point env var at an empty dir (no AudioEncoder.mlmodelc)
         monkeypatch.setenv("SPOKE_PARAKEET_MODEL_DIR", str(tmp_path))
+        # Redirect Path.home() so the HF snapshot fallback also finds nothing
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         assert SpokeAppDelegate._model_allowed(_PARAKEET_MODEL_ID) is False
 
     def test_model_allowed_true_when_encoder_present(self, tmp_path, monkeypatch):
