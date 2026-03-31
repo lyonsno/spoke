@@ -31,7 +31,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from .capture import AudioCapture
-from .command import CommandClient, _DEFAULT_COMMAND_MODEL
+from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .focus_check import has_focused_text_input
 from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
@@ -171,8 +171,8 @@ class SpokeAppDelegate(NSObject):
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
 
-        # Command pathway — initialized if SPOKE_COMMAND_URL is configured
-        command_url = os.environ.get("SPOKE_COMMAND_URL", "")
+        # Command pathway — always enabled, defaults to localhost:8001
+        command_url = os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
         if command_url:
             self._command_model_id = (
                 os.environ.get("SPOKE_COMMAND_MODEL")
