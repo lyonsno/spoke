@@ -742,8 +742,14 @@ class TranscriptionOverlay(NSObject):
 
             # Interior fill mask — smoothstep fade at the boundary so the
             # content view's fill doesn't create a hard rectangular edge.
+            # This SDF covers just the content rect (not the full window)
+            # since the fill mask applies to the content view's local coords.
             _FILL_EDGE_SOFTNESS = 6.0  # px of fade before the boundary
-            fill_alpha = _interior_fill_alpha(sdf, _FILL_EDGE_SOFTNESS * scale)
+            content_sdf = _overlay_rounded_rect_sdf(
+                width, height, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+            )
+            fill_alpha = _interior_fill_alpha(content_sdf, _FILL_EDGE_SOFTNESS * scale)
             fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)

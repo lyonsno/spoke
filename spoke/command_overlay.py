@@ -888,7 +888,11 @@ class CommandOverlay(NSObject):
             ridge_alpha_field = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
             ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha_field)
 
-            fill_alpha = _interior_fill_alpha(sdf, 6.0 * scale)
+            content_sdf = _overlay_rounded_rect_sdf(
+                width, height, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+            )
+            fill_alpha = _interior_fill_alpha(content_sdf, 6.0 * scale)
             fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
         except (ImportError, Exception):
             return
