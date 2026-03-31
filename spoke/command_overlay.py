@@ -68,7 +68,7 @@ _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
 _PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
-_OUTER_FEATHER = 40.0
+_OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp tails
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
@@ -208,76 +208,26 @@ class CommandOverlay(NSObject):
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        content.layer().setMasksToBounds_(True)
-        bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
-        )
+        content.layer().setMasksToBounds_(False)
+        content.layer().setBackgroundColor_(None)
 
-        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        # Distance-field ridge + fill — same system as the preview overlay
+        from .overlay import (
+            _GLOW_COLOR as _OVERLAY_GLOW_COLOR,
+            _overlay_layer_colors,
         )
-
-        # Inner glow
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
-        margin = _INNER_GLOW_DEPTH + 50
-        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+        _, middle_rgb, _ = _overlay_layer_colors(_OVERLAY_GLOW_COLOR)
 
-        lw, lh = w + 2 * margin, h + 2 * margin
+        self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        self._inner_shadow = CAShapeLayer.alloc().init()
-        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+        # Fill layer — colored SDF image with baked alpha, same as preview overlay
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setContentsGravity_("resize")
 
-        outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
-        inner = CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        )
-        combined = CGPathCreateMutableCopy(outer)
-        CGPathAddPath(combined, None, inner)
-
-        self._inner_shadow.setPath_(combined)
-        self._inner_shadow.setFillRule_(kEO)
-        self._inner_shadow.setFillColor_(glow_nscolor.colorWithAlphaComponent_(0.12).CGColor())
-        self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
-        self._inner_shadow.setShadowOffset_((0, 0))
-        self._inner_shadow.setShadowRadius_(2.4)
-        self._inner_shadow.setShadowOpacity_(0.8)
-
-        inner_mask = CAShapeLayer.alloc().init()
-        inner_mask.setFrame_(((0, 0), (lw, lh)))
-        inner_mask.setPath_(CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        ))
-        self._inner_shadow.setMask_(inner_mask)
-        wrapper.layer().addSublayer_(self._inner_shadow)
-
-        # Outer glow layers
-        self._outer_glow_tight = CALayer.alloc().init()
-        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
-        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_tight.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
-        self._outer_glow_tight.setShadowOffset_((0, 0))
-        self._outer_glow_tight.setShadowRadius_(6.2)
-        self._outer_glow_tight.setShadowOpacity_(0.2)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
-
-        self._outer_glow_wide = CALayer.alloc().init()
-        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
-        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_wide.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
-        self._outer_glow_wide.setShadowOffset_((0, 0))
-        self._outer_glow_wide.setShadowRadius_(14.0)
-        self._outer_glow_wide.setShadowOpacity_(0.4)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+        self._apply_ridge_masks(w, h)
+        wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -290,6 +240,13 @@ class CommandOverlay(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setBorderType_(0)
         self._scroll_view.setAutoresizingMask_(18)
+        # Kill clip view background — same fix as preview overlay
+        clip_view = self._scroll_view.contentView()
+        if clip_view and hasattr(clip_view, 'setDrawsBackground_'):
+            clip_view.setDrawsBackground_(False)
+        if clip_view and hasattr(clip_view, 'setWantsLayer_'):
+            clip_view.setWantsLayer_(True)
+            clip_view.layer().setBackgroundColor_(None)
 
         text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
@@ -822,18 +779,10 @@ class CommandOverlay(NSObject):
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
         glow_opacity = 0.5 + 0.3 * breath
-        if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
-            self._inner_shadow.setFillColor_(
-                glow_nscolor.colorWithAlphaComponent_(0.12).CGColor()
-            )
-            self._inner_shadow.setShadowOpacity_(glow_opacity)
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
-            self._outer_glow_tight.setShadowOpacity_(min(glow_opacity * 0.4, _OUTER_GLOW_PEAK_TARGET))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
-            self._outer_glow_wide.setShadowOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
+        # Drive the SDF fill layer with the pulse — the fill breathes
+        # with the assistant's thinking/response animation.
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -916,6 +865,43 @@ class CommandOverlay(NSObject):
         self._thinking_seconds += 0.1
         if self._thinking_label is not None and not self._thinking_label.isHidden():
             self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+
+    # ── ridge masks ────────────────────────────────────────
+
+    def _apply_ridge_masks(self, width: float, height: float) -> None:
+        """Compute SDF and apply ridge mask + build fill image."""
+        from .overlay import (
+            _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
+            _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
+            _fill_field_to_image, _BG_COLOR_DARK,
+        )
+        f = _OUTER_FEATHER
+        scale = getattr(self, '_ridge_scale', 2.0)
+        total_w = width + 2 * f
+        total_h = height + 2 * f
+
+        try:
+            from .overlay import _glow_fill_alpha
+
+            sdf = _overlay_rounded_rect_sdf(
+                total_w, total_h, width, height,
+                _OVERLAY_CORNER_RADIUS, scale,
+            )
+
+            fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+            bg_r, bg_g, bg_b = _background_color_for_brightness(
+                getattr(self, '_brightness', 0.0)
+            )
+            fill_image, self._fill_payload = _fill_field_to_image(
+                fill_alpha,
+                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+            )
+        except (ImportError, Exception):
+            return
+
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setContents_(fill_image)
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
 
     # ── layout ──────────────────────────────────────────────
 
