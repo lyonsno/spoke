@@ -760,8 +760,8 @@ class TranscriptionOverlay(NSObject):
         # the glow — visible before the glow builds up, and at low RMS the
         # fill is already present against the undimmed background.
         fill_drive = scaled * scaled  # squared — leads the glow's log curve
-        fill_min = _lerp(0.03, 0.20, t)   # dark: barely there; light: present at rest
-        fill_max = _lerp(0.35, 0.99, t)   # dark: modest; light: saturates
+        fill_min = _lerp(0.03, 0.80, t)   # light: 4x more visible at rest
+        fill_max = _lerp(0.35, 0.99, t)   # light: saturates
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
