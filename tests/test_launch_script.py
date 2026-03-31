@@ -187,6 +187,8 @@ def test_launch_target_script_reads_named_target_registry():
     assert 'TARGET_ID="${1:-${TARGET_ID:-}}"' in text
     assert "spoke-launch-target.log" in text
     assert "SPOKE_LAUNCH_TARGET_ID" in text
+    assert 'pkill -TERM -f "python.*spoke"' not in text
+    assert ".spoke.lock" not in text
 
 
 def test_inline_launch_target_launcher_starts_requested_target(tmp_path):

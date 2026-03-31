@@ -22,7 +22,6 @@ export HELPER_REPO_ROOT TARGETS_FILE TARGET_ID LOG_FILE
 /usr/bin/python3 - <<'PY'
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -111,18 +110,9 @@ with log_file.open("a", encoding="utf-8") as log:
             log.write("No repo .venv Python found and UV launcher is unavailable.\n")
             raise SystemExit(1)
 
-        subprocess.run(
-            ["pkill", "-TERM", "-f", "python.*spoke"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        time.sleep(0.5)
-        lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
-        lock_file.unlink(missing_ok=True)
-
         log.write(f"Launching Spoke target {target_id} from {repo_root}\n")
         log.write(f"Launcher child command: {command!r}\n")
+        log.write("Launch target handoff: deferring prior-instance shutdown to single-instance guard.\n")
         log.flush()
 
         subprocess.Popen(
