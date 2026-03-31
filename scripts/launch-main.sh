@@ -1,17 +1,15 @@
 #!/bin/bash
-# Launch spoke dev build. Bind to a hotkey via macOS Shortcuts or Automator.
+# Launch spoke main build. Bind to a hotkey via macOS Shortcuts or Automator.
 # Lets the single-instance guard handle any existing instance.
 #
-# If ~/.config/spoke/dev-target exists, launch from the absolute repo/worktree
+# If ~/.config/spoke/main-target exists, launch from the absolute repo/worktree
 # path written there. Otherwise fall back to the checkout containing this script.
-# This keeps the Automator binding stable while letting the actual launch target
-# move to a fresh main/dev worktree.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEV_TARGET_FILE="${HOME}/.config/spoke/dev-target"
+MAIN_TARGET_FILE="${HOME}/.config/spoke/main-target"
 LOG_DIR="${HOME}/Library/Logs"
-LOG_FILE="${LOG_DIR}/spoke-dev-launch.log"
+LOG_FILE="${LOG_DIR}/spoke-main-launch.log"
 LOCK_FILE="${LOG_DIR}/.spoke.lock"
 
 mkdir -p "$LOG_DIR"
@@ -19,21 +17,29 @@ mkdir -p "$LOG_DIR"
 REPO_ROOT="$DEFAULT_REPO_ROOT"
 TARGET_SOURCE="script checkout"
 
-if [ -f "$DEV_TARGET_FILE" ]; then
-  IFS= read -r CONFIGURED_REPO_ROOT < "$DEV_TARGET_FILE"
+if [ -f "$MAIN_TARGET_FILE" ]; then
+  IFS= read -r CONFIGURED_REPO_ROOT < "$MAIN_TARGET_FILE"
   if [ -z "$CONFIGURED_REPO_ROOT" ] || [ ! -d "$CONFIGURED_REPO_ROOT" ]; then
-    osascript -e "display notification \"Target gone: $CONFIGURED_REPO_ROOT\" with title \"Spoke Dev\" subtitle \"Set ~/.config/spoke/dev-target\"" 2>/dev/null
+    osascript -e "display notification \"Target gone: $CONFIGURED_REPO_ROOT\" with title \"Spoke Main\" subtitle \"Set ~/.config/spoke/main-target\"" 2>/dev/null
     afplay /System/Library/Sounds/Basso.aiff 2>/dev/null &
     exit 0
   fi
   REPO_ROOT="$CONFIGURED_REPO_ROOT"
-  TARGET_SOURCE="~/.config/spoke/dev-target"
+  TARGET_SOURCE="~/.config/spoke/main-target"
+fi
+
+# Source per-target env overrides from the pinned main worktree if present.
+# This keeps local main-smoke repairs in the target worktree instead of
+# requiring edits to the shared launcher.
+if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.spoke-smoke-env"
 fi
 
 {
   printf '\n=== %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
   printf 'Launcher PID %d (PPID %d) invoked from %s\n' "$$" "$PPID" "$PWD"
-  printf 'Launching Spoke from %s (%s)\n' "$REPO_ROOT" "$TARGET_SOURCE"
+  printf 'Launching Spoke main from %s (%s)\n' "$REPO_ROOT" "$TARGET_SOURCE"
 } >>"$LOG_FILE"
 
 OLD_PID=""
@@ -57,12 +63,6 @@ export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"
 unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
 unset SPOKE_WHISPER_MODEL
-
-# Source per-worktree env overrides (API keys, model dirs, voice, etc.)
-if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then
-  printf 'Sourcing %s/.spoke-smoke-env\n' "$REPO_ROOT" >>"$LOG_FILE"
-  . "$REPO_ROOT/.spoke-smoke-env"
-fi
 
 /usr/bin/python3 - <<'PY'
 import os

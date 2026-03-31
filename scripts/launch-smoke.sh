@@ -51,7 +51,7 @@ fi
 
 export REPO_ROOT LOG_FILE
 export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
-export UV_BIN="${UV_BIN:-/Users/noahlyons/.pyenv/shims/uv}"
+export UV_BIN="${UV_BIN:-}"
 unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
 unset SPOKE_WHISPER_MODEL

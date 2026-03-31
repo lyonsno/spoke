@@ -143,6 +143,37 @@ class TestMenuBarIcon:
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
         assert any(call.args == (expected_title, None, "") for call in calls)
 
+    def test_build_menu_shows_branch_discriminant(self, menubar_module, monkeypatch):
+        """setup() should show the running git branch when available."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+        monkeypatch.setattr(menubar_module, "_branch_menu_label", lambda repo_root=None: "Branch: smoke")
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Branch: smoke", None, "") for call in calls)
+
+    def test_branch_menu_label_falls_back_to_detached_head(self, menubar_module, monkeypatch):
+        """Detached checkouts should still expose a legible identifier."""
+        outputs = iter(["", "abc1234"])
+
+        monkeypatch.setattr(menubar_module, "_run_git", lambda repo_root, *args: next(outputs))
+
+        assert menubar_module._branch_menu_label() == "Branch: detached@abc1234"
+
     def test_build_menu_shows_local_whisper_submenu(self, menubar_module):
         """Local-mode callback state should build a Local Whisper submenu."""
         AppKit = __import__("AppKit")

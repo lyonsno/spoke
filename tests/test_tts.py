@@ -438,36 +438,50 @@ class TestTTSConfig:
         tts_extra = pyproject["project"]["optional-dependencies"]["tts"]
         assert "mistral-common[audio]" in tts_extra
 
-    @patch.dict("os.environ", {"PYTHONPATH": "/tmp/local-mlx-audio"})
-    def test_tts_load_surfaces_actionable_voxtral_backend_error(self, monkeypatch):
-        """Missing Voxtral backend should fail with the resolved mlx_audio path in the error."""
-        import sys
-        from spoke.tts import tts_load
+    def test_generate_kwargs_filters_by_signature(self):
+        """_generate_kwargs only passes params the model's generate() accepts."""
+        from spoke.tts import _generate_kwargs
 
-        fake_mlx_audio = types.ModuleType("mlx_audio")
-        fake_mlx_audio.__file__ = "/tmp/local-mlx-audio/mlx_audio/__init__.py"
-        fake_tts = types.ModuleType("mlx_audio.tts")
-        fake_tts.load = MagicMock()
+        # Model that only accepts text and voice (like Kokoro/Irodori)
+        def generate(self, text: str, voice: str = None, **kwargs): pass
+        model = MagicMock()
+        model.generate = generate
 
-        monkeypatch.setitem(sys.modules, "mlx_audio", fake_mlx_audio)
-        monkeypatch.setitem(sys.modules, "mlx_audio.tts", fake_tts)
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="default",
+            temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert kwargs == {"text": "hi", "voice": "default",
+                          "temperature": 0.5, "top_k": 50, "top_p": 0.95}
 
-        def fake_import_module(name):
-            if name == "mlx_audio":
-                return fake_mlx_audio
-            if name == "mlx_audio.tts.models.voxtral_tts":
-                raise ModuleNotFoundError(name)
-            raise AssertionError(f"unexpected import: {name}")
+    def test_generate_kwargs_passes_all_for_voxtral(self):
+        """Voxtral-style signature gets all params forwarded."""
+        from spoke.tts import _generate_kwargs
 
-        with patch("spoke.tts.importlib.import_module", side_effect=fake_import_module):
-            with pytest.raises(RuntimeError) as excinfo:
-                tts_load("mlx-community/Voxtral-4B-TTS-2603-mlx-6bit")
+        def generate(self, text: str, voice: str = "casual_male",
+                     temperature: float = 0.8, top_k: int = 50,
+                     top_p: float = 0.95, **kwargs): pass
+        model = MagicMock()
+        model.generate = generate
 
-        message = str(excinfo.value)
-        assert "Voxtral TTS backend is unavailable" in message
-        assert "/tmp/local-mlx-audio/mlx_audio/__init__.py" in message
-        assert "PYTHONPATH=/tmp/local-mlx-audio" in message
-        assert ".spoke-smoke-env" in message
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="af", temperature=0.3, top_k=10, top_p=0.9,
+        )
+        assert kwargs == {"text": "hi", "voice": "af",
+                          "temperature": 0.3, "top_k": 10, "top_p": 0.9}
+
+    def test_generate_kwargs_strict_signature_drops_unknown(self):
+        """Model without **kwargs only gets params it declares."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(self, text: str, voice: str = None, speed: float = 1.0): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="en", temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert kwargs == {"text": "hi", "voice": "en"}
 
 
 class TestGPULockDiscipline:
