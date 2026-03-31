@@ -2661,6 +2661,102 @@ class TestCommandOverlayDismissRecallCycle:
 
         assert d._detector.command_overlay_active is True
 
+    def test_four_step_dismiss_recall_cycle(self, main_module, monkeypatch):
+        """4-step cycle: dismiss → recall → dismiss → recall with enter_held."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        # Step 1: dismiss (active=True → False)
+        d._on_hold_end(shift_held=False, enter_held=True)
+        assert d._detector.command_overlay_active is False
+        d._command_overlay.cancel_dismiss.assert_called_once()
+
+        # Step 2: recall (active=False → True)
+        d._command_overlay.reset_mock()
+        d._on_hold_end(shift_held=False, enter_held=True)
+        assert d._detector.command_overlay_active is True
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+
+        # Step 3: dismiss again (active=True → False)
+        d._command_overlay.reset_mock()
+        d._on_hold_end(shift_held=False, enter_held=True)
+        assert d._detector.command_overlay_active is False
+        d._command_overlay.cancel_dismiss.assert_called_once()
+
+        # Step 4: recall again (active=False → True)
+        d._command_overlay.reset_mock()
+        d._on_hold_end(shift_held=False, enter_held=True)
+        assert d._detector.command_overlay_active is True
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+
+    def test_instant_dismiss_then_hold_end_no_recall(self, main_module, monkeypatch):
+        """Single-gesture simulation: instant dismiss sets _just_dismissed, then
+        immediate _on_hold_end with empty audio must not recall (stutter prevention)."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        # Simulate instant dismiss on spacebar keyDown (event tap thread):
+        # sets command_overlay_active=False, _just_dismissed=True
+        d._detector.command_overlay_active = False
+        d._detector._command_overlay_just_dismissed = True
+
+        # Then _on_hold_end fires with empty audio (plain tap, no enter)
+        d._on_hold_end(shift_held=False, enter_held=False)
+
+        # Must not recall — _just_dismissed blocks it
+        d._command_overlay.show.assert_not_called()
+
+    def test_hold_start_then_empty_recording_recalls_when_history_exists(
+        self, main_module, monkeypatch
+    ):
+        """hold_start clears flags → empty recording → recall when history exists."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        # Start with overlay active and just_dismissed set
+        d._detector.command_overlay_active = True
+        d._detector._command_overlay_just_dismissed = True
+
+        # hold_start clears both flags
+        d._on_hold_start()
+        assert d._detector.command_overlay_active is False
+        assert d._detector._command_overlay_just_dismissed is False
+
+        # Now empty recording with enter_held: should recall (active=False, just_dismissed=False)
+        d._on_hold_end(shift_held=False, enter_held=True)
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_enter_spacebar_while_overlay_active_dismisses(self, main_module, monkeypatch):
+        """Enter+spacebar tap while overlay is active should dismiss via enter_held path."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        # Enter held + empty recording while overlay active → dismiss
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.cancel_dismiss.assert_called_once()
+        assert d._detector.command_overlay_active is False
+        # show should NOT be called — this is a dismiss, not recall
+        d._command_overlay.show.assert_not_called()
+
 
 class TestCoerceSettings:
     """Test _coerce_decode_timeout_setting and _coerce_eager_eval_setting parsers."""
