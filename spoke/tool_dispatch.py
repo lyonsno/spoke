@@ -376,8 +376,20 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
     content = arguments.get("content", "")
     if not file_path:
         return {"error": "file_path is required"}
+    if content is None:
+        content = ""
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        abs_path = os.path.abspath(file_path)
+        home_dir = os.path.expanduser("~")
+        for sensitive in [".ssh", ".gnupg", ".aws", "Library/Keychains"]:
+            if abs_path.startswith(os.path.join(home_dir, sensitive)):
+                return {"error": f"Write access denied to sensitive directory: {sensitive}"}
+
+        # Guard against system roots
+        if not abs_path.startswith(home_dir) and not abs_path.startswith("/private/tmp") and not abs_path.startswith("/tmp") and not abs_path.startswith("/var/folders") and not abs_path.startswith("/private/var/folders"):
+            return {"error": "Write access denied outside of user home or tmp directories."}
+
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         return {"status": "success", "file_path": file_path}
