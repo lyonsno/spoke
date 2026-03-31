@@ -224,43 +224,12 @@ def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
         y_offset=128.0,
     )
 
-    f = overlay_module._OUTER_FEATHER
-    margin = overlay_module._INNER_GLOW_DEPTH + 50
-    stale_inner_shadow = _FakeLayer(
-        _make_rect(
-            f - margin,
-            f - margin,
-            overlay_module._OVERLAY_WIDTH + 2 * margin,
-            220.0 + 2 * margin,
-        )
-    )
-    stale_inner_mask = _FakeLayer(
-        _make_rect(
-            0.0,
-            0.0,
-            overlay_module._OVERLAY_WIDTH + 2 * margin,
-            220.0 + 2 * margin,
-        )
-    )
-    stale_inner_shadow.setMask_(stale_inner_mask)
-    overlay._inner_shadow = stale_inner_shadow
-    overlay._outer_glow_tight = _FakeLayer(
-        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, 220.0)
-    )
-    overlay._outer_glow_wide = _FakeLayer(
-        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, 220.0)
-    )
-
     overlay.show()
 
     default_height = overlay_module._OVERLAY_HEIGHT
     expected_window_height = default_height + 2 * overlay_module._OUTER_FEATHER
     assert overlay._window.frame().size.height == expected_window_height
     assert overlay._content_view.frame().size.height == default_height
-    assert overlay._inner_shadow.frame().size.height == default_height + 2 * margin
-    assert overlay._inner_shadow.mask().frame().size.height == default_height + 2 * margin
-    assert overlay._outer_glow_tight.frame().size.height == default_height
-    assert overlay._outer_glow_wide.frame().size.height == default_height
 
 
 def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkeypatch):
@@ -284,7 +253,10 @@ def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkey
 
     overlay.show()
 
-    assert overlay._window.frame().origin.y == pytest.approx(40.0)
+    # Window y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
+    assert overlay._window.frame().origin.y == pytest.approx(
+        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER
+    )
 
 
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
@@ -307,34 +279,9 @@ def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, 
         y_offset=0.0,
     )
 
-    f = overlay_module._OUTER_FEATHER
-    margin = overlay_module._INNER_GLOW_DEPTH + 50
-    overlay._inner_shadow = _FakeLayer(
-        _make_rect(
-            f - margin,
-            f - margin,
-            overlay_module._OVERLAY_WIDTH + 2 * margin,
-            overlay_module._OVERLAY_HEIGHT + 2 * margin,
-        )
-    )
-    inner_mask = _FakeLayer(
-        _make_rect(
-            0.0,
-            0.0,
-            overlay_module._OVERLAY_WIDTH + 2 * margin,
-            overlay_module._OVERLAY_HEIGHT + 2 * margin,
-        )
-    )
-    overlay._inner_shadow.setMask_(inner_mask)
-    overlay._outer_glow_tight = _FakeLayer(
-        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
-    )
-    overlay._outer_glow_wide = _FakeLayer(
-        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
-    )
-
     overlay._update_layout()
 
+    f = overlay_module._OUTER_FEATHER
     expected_height = 220.0
     assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)

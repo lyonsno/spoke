@@ -81,6 +81,17 @@ def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, 
     )
 
 
+def _dense_background(*segments):
+    """Build a text-dense OCR scene with lots of unrelated chrome-like noise."""
+    noise = [
+        "menu bar file edit view history window help",
+        "project notes inbox account security notifications",
+        "recent activity dashboard settings browser tabs sidebar",
+        "search results panel status indicators connection details",
+    ]
+    return " ".join([*noise[:2], *segments, *noise[2:]])
+
+
 class TestTextAppearsOnScreen:
     """Test the fuzzy matching logic (no OCR dependency needed)."""
 
@@ -229,12 +240,37 @@ class TestTextAppearsOnScreen:
             "the and is to for with from that this"
         ) is False
 
-    def test_url_bar_overflow_with_context_visible(self):
-        """Long text pasted into URL bar — most clipped, word+context visible."""
+    def test_dense_background_scattered_words_do_not_match(self):
+        """Scattered expected words in a dense background should not count as success."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "The preliminary investigation revealed surprising results",
+            _dense_background(
+                "investigation tools revealed panel with surprising charts",
+                "result settings and unrelated summaries",
+            ),
+        ) is False
+
+    def test_dense_background_partial_phrase_without_strong_context_does_not_match(self):
+        """A tempting middle phrase alone should not survive a text-dense scene."""
         mod = _import_module()
         assert mod.text_appears_on_screen(
             "Please navigate to the authentication dashboard and check credentials",
-            "chrome tabs authentication dashboard browser stuff"
+            _dense_background(
+                "authentication settings dashboard chrome credentials help center",
+                "account security authentication dashboard",
+            ),
+        ) is False
+
+    def test_dense_background_end_phrase_with_context_still_matches(self):
+        """A strong boundary phrase should still confirm success amid dense background."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "Please open the quarterly revenue workbook and verify surprising results",
+            _dense_background(
+                "clipboard history unrelated tabs and account chrome",
+                "verify surprising results more unrelated text",
+            ),
         ) is True
 
 

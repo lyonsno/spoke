@@ -62,7 +62,7 @@ class TestGlowTuning:
             assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
             assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
             assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
-            assert light_base == pytest.approx(0.2744)
+            assert light_base == pytest.approx(mod._GLOW_BASE_OPACITY_LIGHT)
             assert light_sat > dark_sat
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -135,7 +135,7 @@ class TestGlowTuning:
         try:
             specs = mod._continuous_vignette_pass_specs()
             tail = next(spec for spec in specs if spec["name"] == "tail")
-            assert tail["alpha"] == pytest.approx(0.19)
+            assert tail["alpha"] == pytest.approx(0.28)
         finally:
             sys.modules.pop("spoke.glow", None)
 

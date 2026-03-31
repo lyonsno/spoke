@@ -122,6 +122,12 @@ class SpacebarHoldDetector(NSObject):
         # forwarding a space character, and shift gestures route to
         # tray navigation callbacks.
         self.tray_active = False
+        # Command overlay suppression — set by the delegate when the
+        # command overlay is visible.  When True, Enter is suppressed
+        # and spacebar keyDown instantly dismisses the overlay.
+        self.command_overlay_active = False
+        self._command_overlay_just_dismissed = False
+        self._on_command_overlay_dismiss: Callable[[], None] | None = None
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -205,6 +211,7 @@ class SpacebarHoldDetector(NSObject):
         self._pending_release_active = False
         self._pending_release_shift_held = False
         self.tray_active = False
+        self.command_overlay_active = False
         self._idle_shift_down = False
         self._idle_shift_interrupted = False
         self._state = _State.IDLE
@@ -309,6 +316,12 @@ class SpacebarHoldDetector(NSObject):
             elif shift_held:
                 # Shift + quick tap = signal for tray recall (no space)
                 self._on_hold_end(shift_held=True, enter_held=enter_held)
+            elif enter_held:
+                # Enter + quick tap = route through hold_end for recall/dismiss
+                self._on_hold_end(shift_held=False, enter_held=True)
+            elif getattr(self, '_command_overlay_just_dismissed', False):
+                # This tap was an overlay dismiss — suppress the space character.
+                pass
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
@@ -377,6 +390,10 @@ class SpacebarHoldDetector(NSObject):
         """Called when spacebar has been held past the threshold."""
         self._hold_timer = None
         if self._state != _State.WAITING:
+            return
+        # If the spacebar keyDown already triggered an overlay dismiss,
+        # skip the hold start — the user is toggling visibility, not dictating.
+        if getattr(self, '_command_overlay_just_dismissed', False):
             return
         self._state = _State.RECORDING
         self._start_safety_timer()
@@ -525,12 +542,31 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 if on_enter is not None:
                     on_enter()
                     return None  # suppress enter during tray
+            # Suppress Enter while the command overlay is visible so it
+            # doesn't leak through to the underlying app.
+            if getattr(det, 'command_overlay_active', False):
+                return None
             # Enter passes through to the OS when tray is not active
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            # Instant dismiss: if the command overlay is visible, dismiss it
+            # on the first spacebar press instead of waiting for a hold.
+            if (
+                getattr(det, 'command_overlay_active', False)
+                and det._state == _State.IDLE
+                and not getattr(det, 'tray_active', False)
+            ):
+                dismiss = getattr(det, '_on_command_overlay_dismiss', None)
+                if dismiss is not None:
+                    logger.info("Instant dismiss — marshaling to main thread")
+                    dismiss()
+            else:
+                # New spacebar press that isn't a dismiss — clear _just_dismissed
+                # so the recall path works for this fresh gesture.
+                det._command_overlay_just_dismissed = False
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True

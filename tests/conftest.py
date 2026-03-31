@@ -93,14 +93,20 @@ def _make_fake_appkit():
         "NSPasteboard",
         "NSPasteboardItem",
         "NSScreen",
+        "NSMutableAttributedString",
         "NSScrollView",
         "NSStatusBar",
+        "NSShadow",
         "NSTextView",
         "NSView",
         "NSWindow",
     ]:
         setattr(a, name, MagicMock())
     a.NSApplicationActivationPolicyAccessory = 2
+    a.NSForegroundColorAttributeName = "NSForegroundColor"
+    a.NSFontAttributeName = "NSFont"
+    a.NSShadowAttributeName = "NSShadow"
+    a.NSParagraphStyleAttributeName = "NSParagraphStyle"
     a.NSVariableStatusItemLength = -1
     a.NSPasteboardTypeString = "public.utf8-plain-text"
     a.NSBackingStoreBuffered = 2

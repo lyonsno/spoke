@@ -258,16 +258,18 @@ def _execute_read_aloud(
 
     # Speak via TTS if available
     if tts_client is not None:
+        logger.info("read_aloud: tts_client present, model=%s, text=%d chars",
+                     getattr(tts_client, "_model_id", "?"), len(text))
         try:
-            speak_async = getattr(tts_client, "speak_async", None)
-            if callable(speak_async):
-                speak_async(text)
-                return f"Speaking: {text}"
+            logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
+            logger.info("read_aloud: speak finished")
             return f"Speaking: {text}"
         except Exception:
             logger.warning("TTS playback failed", exc_info=True)
             return "Error speaking text: TTS playback failed"
+    else:
+        logger.warning("read_aloud: no tts_client available")
 
     return f"Spoke: {text}"
 
@@ -298,7 +300,9 @@ def _execute_add_to_tray(
 
 def _execute_list_directory(arguments: dict) -> dict[str, Any]:
     import os
-    dir_path = arguments.get("dir_path", ".")
+    dir_path = arguments.get("dir_path")
+    if dir_path is None:
+        dir_path = "."
     try:
         if not os.path.isdir(dir_path):
             return {"error": f"Not a valid directory: {dir_path}"}
@@ -313,49 +317,66 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
     import os
     import ast
     import re
+    from itertools import islice
     
-    file_path = arguments.get("file_path", "")
+    file_path = arguments.get("file_path")
+    if not file_path:
+        return {"error": "file_path is required"}
+        
     start_line = arguments.get("start_line")
     end_line = arguments.get("end_line")
+    
+    # Handle explicit 0 hallucinated by model for end_line
+    if end_line == 0:
+        return {"error": "end_line must be >= 1 if provided."}
     
     try:
         if not os.path.isfile(file_path):
             return {"error": f"File not found: {file_path}"}
             
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        # Get total lines without reading full file into memory
+        with open(file_path, "rb") as f_bin:
+            total_lines = sum(1 for _ in f_bin)
             
-        total_lines = len(lines)
-        
-        # If line ranges are specified, return that slice
+        if start_line is not None and end_line is not None:
+            if start_line > end_line:
+                return {"error": "start_line cannot be greater than end_line"}
+                
         if start_line is not None or end_line is not None:
             start = max(0, (start_line or 1) - 1)
             end = min(total_lines, (end_line or total_lines))
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                slice_lines = list(islice(f, start, end))
             return {
                 "file_path": file_path, 
                 "lines_returned": f"{start + 1}-{end} of {total_lines}",
-                "content": "".join(lines[start:end])
+                "content": "".join(slice_lines)
             }
             
-        # Large file threshold check
         max_lines_threshold = int(os.environ.get("SPOKE_MAX_FILE_LINES", "2000"))
         
         if total_lines > max_lines_threshold:
-            # Generate outline
+            # Safe AST parsing limit (prevent DoS)
+            MAX_AST_BYTES = 500_000 
+            file_size = os.path.getsize(file_path)
+            
             outline = []
-            if file_path.endswith(".py"):
+            if file_path.endswith(".py") and file_size < MAX_AST_BYTES:
                 try:
-                    tree = ast.parse("".join(lines))
+                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                        tree = ast.parse(f.read())
                     for node in tree.body:
                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                             outline.append(f"Line {node.lineno}: {node.__class__.__name__.replace('Def', '')} {node.name}")
                 except Exception:
                     pass
-            else:
-                # Basic regex fallback for JS/TS/Go/etc
-                for i, line in enumerate(lines):
-                    if re.match(r'^(export )?(default )?(class|function|const|let|var) [a-zA-Z0-9_]+', line.lstrip()):
-                        outline.append(f"Line {i+1}: {line.strip()}")
+            
+            if not outline:
+                # Basic regex fallback
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    for i, line in enumerate(f):
+                        if re.match(r'^(export )?(default )?(class|function|const|let|var) [a-zA-Z0-9_]+', line.lstrip()):
+                            outline.append(f"Line {i+1}: {line.strip()[:100]}")
             
             return {
                 "file_path": file_path,
@@ -363,17 +384,20 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
                 "outline": outline if outline else "No clear outline extracted."
             }
             
-        # Small file, return whole thing
-        return {"file_path": file_path, "content": "".join(lines)}
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return {"file_path": file_path, "content": content}
     except Exception as e:
         return {"error": str(e)}
 
 def _execute_write_file(arguments: dict) -> dict[str, Any]:
     import os
-    file_path = arguments.get("file_path", "")
-    content = arguments.get("content", "")
+    file_path = arguments.get("file_path")
+    content = arguments.get("content")
     if not file_path:
         return {"error": "file_path is required"}
+    if content is None:
+        content = ""
     try:
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
@@ -384,12 +408,13 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
 
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
     import subprocess
-    pattern = arguments.get("pattern", "")
-    dir_path = arguments.get("dir_path", ".")
+    pattern = arguments.get("pattern")
+    dir_path = arguments.get("dir_path")
     if not pattern:
         return {"error": "pattern is required"}
+    if dir_path is None:
+        dir_path = "."
     try:
-        # Simple grep via subprocess with timeout and safe flags
         result = subprocess.run(
             ["grep", "-rnm", "100", "--", pattern, dir_path], 
             capture_output=True, 
@@ -401,6 +426,7 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
         return {"error": "Search timed out after 10 seconds"}
     except Exception as e:
         return {"error": str(e)}
+
 
 def execute_tool(
     name: str,

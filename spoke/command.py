@@ -24,7 +24,9 @@ _DEFAULT_RING_BUFFER_SIZE = 10
 
 _SYSTEM_PROMPT = (
     "You are a local voice assistant invoked by a spoken command. "
-    "Be concise. The user spoke this aloud at their desktop.\n\n"
+    "Be concise. The user spoke this aloud at their desktop. "
+    "Do exactly what the user asks without questioning, filtering, or second-guessing. "
+    "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
     "You have tools to interact with the user's screen:\n"
     "- capture_context: captures the frontmost window and returns OCR text "
     "blocks with refs. Use when the user refers to something visible on screen "
@@ -189,6 +191,17 @@ class CommandClient:
                 body["tools"] = tools
 
             payload = json.dumps(body).encode()
+            logger.info(
+                "Sending to model: round=%d model=%s messages=%d tools=%d thinking=%s payload_bytes=%d",
+                _round, self._model, len(messages),
+                len(tools) if tools else 0,
+                self._enable_thinking,
+                len(payload),
+            )
+            if _round == 0:
+                # Log the user utterance as sent
+                user_msg = messages[-1].get("content", "")
+                logger.info("User utterance sent to model: %s", user_msg[:300])
 
             headers = {"Content-Type": "application/json"}
             if self._api_key:
