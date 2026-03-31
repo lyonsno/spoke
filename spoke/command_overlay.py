@@ -477,18 +477,60 @@ class CommandOverlay(NSObject):
         self._update_layout()
 
     def set_response_text(self, text: str) -> None:
-        """Replace the visible assistant response with final canonical text."""
+        """Replace the visible assistant response with final canonical text.
+
+        Rebuilds the full attributed string (utterance + response) in one shot
+        so that _update_layout is called exactly once.  Calling set_utterance
+        then append_token would call _update_layout twice: first with only the
+        utterance (shrinking the window back to minimum height), then again with
+        the full response — producing a visible size flicker.
+        """
         self._response_text = ""
         if self._text_view is None or not self._visible:
             self._response_text = text
             return
 
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
+        )
+
+        combined = NSMutableAttributedString.alloc().initWithString_("")
+
         if self._utterance_text:
-            self.set_utterance(self._utterance_text)
-        else:
-            self._text_view.setString_("")
+            user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+            utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
+            utt.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+                (0, len(self._utterance_text)),
+            )
+            glow = NSShadow.alloc().init()
+            glow.setShadowColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
+            )
+            glow.setShadowOffset_((0, 0))
+            glow.setShadowBlurRadius_(3.0)
+            utt.addAttribute_value_range_(
+                NSShadowAttributeName, glow, (0, len(self._utterance_text))
+            )
+            combined.appendAttributedString_(utt)
+
+            if text:
+                sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+                sep.addAttribute_value_range_(
+                    NSForegroundColorAttributeName,
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                    (0, 2),
+                )
+                combined.appendAttributedString_(sep)
+
+        self._text_view.textStorage().setAttributedString_(combined)
 
         if text:
+            self._response_text = ""
             self.append_token(text)
         else:
             self._update_layout()
