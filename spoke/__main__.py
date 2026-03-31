@@ -1370,13 +1370,20 @@ class SpokeAppDelegate(NSObject):
         )
 
     def dismissCommandOverlay_(self, _) -> None:
-        """Main thread: dismiss the command overlay and cancel TTS."""
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            tts.cancel()
+        """Main thread: dismiss the command overlay and cancel TTS.
+
+        All flag writes happen here on the main thread, not in the event
+        tap callback.  This prevents interleaving with _on_hold_start and
+        _on_hold_end which also run on the main thread.
+        """
+        # Don't cancel TTS — audio keeps playing after overlay dismiss.
+        # TTS is only cancelled when a new command response supersedes the old one.
         overlay_visible = self._command_overlay is not None and getattr(self._command_overlay, '_visible', False)
         logger.info("dismissCommandOverlay_: overlay_visible=%s command_overlay_active=%s",
                      overlay_visible, self._detector.command_overlay_active)
+        self._detector.command_overlay_active = False
+        self._detector._command_overlay_just_dismissed = True
+        logger.info("command_overlay_active -> False, _just_dismissed -> True (instant dismiss, main thread)")
         if overlay_visible:
             self._command_overlay.cancel_dismiss()
         if self._menubar is not None:

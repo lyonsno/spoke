@@ -461,5 +461,5 @@ class TTSClient:
         the fade-out write on the playback thread.
         """
         import traceback
-        logger.info("TTS cancel() called from:\n%s", "".join(traceback.format_stack()[-4:-1]))
+        logger.info("TTS cancel() called from:\n%s", "".join(traceback.format_stack()[-8:-1]))
         self._cancelled = True
