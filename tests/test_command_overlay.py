@@ -236,8 +236,27 @@ class TestShowFinishHide:
         overlay.set_response_text("Done.")
 
         assert overlay._response_text == "Done."
-        overlay._text_view.setString_.assert_called_once_with("")
+        # New path uses setAttributedString_ to rebuild in one shot, not setString_("")
+        overlay._text_view.textStorage().setAttributedString_.assert_called_once()
         overlay.append_token.assert_called_once_with("Done.")
+
+    def test_set_response_text_with_utterance_calls_layout_once(self, mock_pyobjc):
+        """set_response_text must not trigger an intermediate layout with only the
+        utterance text — that shrinks the window before growing it, causing visible flicker."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "What is the capital of France?"
+        overlay._response_text = "Paris."
+
+        layout_calls = []
+        overlay._update_layout = MagicMock(side_effect=lambda: layout_calls.append(1))
+
+        overlay.set_response_text("Paris is the capital of France.")
+
+        assert len(layout_calls) == 1, (
+            f"set_response_text called _update_layout {len(layout_calls)} time(s); "
+            "expected exactly 1 — intermediate calls shrink the window causing flicker"
+        )
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
