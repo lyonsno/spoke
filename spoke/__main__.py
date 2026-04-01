@@ -624,6 +624,14 @@ class SpokeAppDelegate(NSObject):
     def amplitudeUpdate_(self, rms_number) -> None:
         """Main thread: forward amplitude to glow and overlay text."""
         rms = float(rms_number)
+        
+        # VAD gating: if we are in silence, clamp the raw RMS to 0.0.
+        # This prevents background noise (keyboard clacks, rustling) from 
+        # driving the visual glow and text breathing when speech isn't detected.
+        # The glow system's own `_DECAY_FACTOR` will provide a smooth "ease out"
+        # as it falls from its last speech value to zero.
+        if not getattr(self, "_is_speech", True):
+            rms = 0.0
 
         # Recording cap: check elapsed time on every amplitude tick
         if self._local_mode and _MAX_RECORD_SECS is not None and not self._cap_fired:
