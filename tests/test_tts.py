@@ -3,8 +3,10 @@
 import logging
 import threading
 import time
+import tomllib
 import types
 from unittest.mock import patch, MagicMock, call
+from pathlib import Path
 
 import pytest
 
@@ -354,6 +356,47 @@ class TestTTSClient:
             assert client._audio_fade_start_gain == pytest.approx(0.0)
             assert client._audio_fade_target_gain == pytest.approx(1.0)
 
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_logs_playback_start_and_finish(self, mock_load, mock_sd, caplog):
+        """speak() should log playback boundaries with enough context to debug silent output."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+        mock_sd.default.device = [0, 1]
+        mock_sd.query_devices.side_effect = lambda idx: {"name": "MacBook Pro Speakers"} if idx == 1 else {"name": "MacBook Pro Microphone"}
+
+        client = self._make_client()
+        with caplog.at_level(logging.INFO, logger="spoke.tts"):
+            client.speak("Hello world")
+
+        assert "TTS playback starting:" in caplog.text
+        assert "MacBook Pro Speakers" in caplog.text
+        assert "TTS playback finished:" in caplog.text
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_logs_playback_failure_context_before_raising(self, mock_load, mock_sd, caplog):
+        """Playback exceptions should be logged with device context before bubbling up."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+        mock_sd.default.device = [0, 1]
+        mock_sd.query_devices.side_effect = lambda idx: {"name": "MacBook Pro Speakers"} if idx == 1 else {"name": "MacBook Pro Microphone"}
+
+        fake_stream = MagicMock()
+        fake_stream.write.side_effect = RuntimeError("boom")
+        mock_sd.OutputStream.return_value = fake_stream
+
+        client = self._make_client()
+        with caplog.at_level(logging.INFO, logger="spoke.tts"):
+            with pytest.raises(RuntimeError, match="boom"):
+                client.speak("Hello world")
+
+        assert "TTS playback failed:" in caplog.text
+        assert "MacBook Pro Speakers" in caplog.text
+
 
 class TestTTSConfig:
     """Test TTS configuration via environment variables."""
@@ -387,36 +430,58 @@ class TestTTSConfig:
         client = TTSClient.from_env()
         assert client._model_id == "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
 
-    @patch.dict("os.environ", {"PYTHONPATH": "/tmp/local-mlx-audio"})
-    def test_tts_load_surfaces_actionable_voxtral_backend_error(self, monkeypatch):
-        """Missing Voxtral backend should fail with the resolved mlx_audio path in the error."""
-        import sys
-        from spoke.tts import tts_load
+    def test_tts_extra_includes_mistral_common_audio(self):
+        """The TTS extra should pull in the Mistral speech tokenizer dependency directly."""
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        pyproject = tomllib.loads(pyproject_path.read_text())
 
-        fake_mlx_audio = types.ModuleType("mlx_audio")
-        fake_mlx_audio.__file__ = "/tmp/local-mlx-audio/mlx_audio/__init__.py"
-        fake_tts = types.ModuleType("mlx_audio.tts")
-        fake_tts.load = MagicMock()
+        tts_extra = pyproject["project"]["optional-dependencies"]["tts"]
+        assert "mistral-common[audio]" in tts_extra
 
-        monkeypatch.setitem(sys.modules, "mlx_audio", fake_mlx_audio)
-        monkeypatch.setitem(sys.modules, "mlx_audio.tts", fake_tts)
+    def test_generate_kwargs_filters_by_signature(self):
+        """_generate_kwargs only passes params the model's generate() accepts."""
+        from spoke.tts import _generate_kwargs
 
-        def fake_import_module(name):
-            if name == "mlx_audio":
-                return fake_mlx_audio
-            if name == "mlx_audio.tts.models.voxtral_tts":
-                raise ModuleNotFoundError(name)
-            raise AssertionError(f"unexpected import: {name}")
+        # Model that only accepts text and voice (like Kokoro/Irodori)
+        def generate(self, text: str, voice: str = None, **kwargs): pass
+        model = MagicMock()
+        model.generate = generate
 
-        with patch("spoke.tts.importlib.import_module", side_effect=fake_import_module):
-            with pytest.raises(RuntimeError) as excinfo:
-                tts_load("mlx-community/Voxtral-4B-TTS-2603-mlx-6bit")
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="default",
+            temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert kwargs == {"text": "hi", "voice": "default",
+                          "temperature": 0.5, "top_k": 50, "top_p": 0.95}
 
-        message = str(excinfo.value)
-        assert "Voxtral TTS backend is unavailable" in message
-        assert "/tmp/local-mlx-audio/mlx_audio/__init__.py" in message
-        assert "PYTHONPATH=/tmp/local-mlx-audio" in message
-        assert ".spoke-smoke-env" in message
+    def test_generate_kwargs_passes_all_for_voxtral(self):
+        """Voxtral-style signature gets all params forwarded."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(self, text: str, voice: str = "casual_male",
+                     temperature: float = 0.8, top_k: int = 50,
+                     top_p: float = 0.95, **kwargs): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="af", temperature=0.3, top_k=10, top_p=0.9,
+        )
+        assert kwargs == {"text": "hi", "voice": "af",
+                          "temperature": 0.3, "top_k": 10, "top_p": 0.9}
+
+    def test_generate_kwargs_strict_signature_drops_unknown(self):
+        """Model without **kwargs only gets params it declares."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(self, text: str, voice: str = None, speed: float = 1.0): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model, text="hi", voice="en", temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert kwargs == {"text": "hi", "voice": "en"}
 
 
 class TestGPULockDiscipline:
@@ -622,6 +687,7 @@ class TestCommandCompletionAutoplay:
         delegate._command_overlay = MagicMock()
         delegate._menubar = MagicMock()
         delegate._tts_client = tts_client
+        delegate._command_tool_used_tts = False
         return delegate
 
     def test_command_complete_triggers_tts(self, main_module):
@@ -637,6 +703,18 @@ class TestCommandCompletionAutoplay:
         assert args[0] == "Hello there"
         assert kwargs.get("amplitude_callback") is not None
         assert kwargs.get("done_callback") is not None
+
+    def test_command_complete_skips_autoplay_when_tool_already_spoke(self, main_module):
+        """If read_aloud already launched speech this turn, skip final-response autoplay."""
+        tts = MagicMock()
+        delegate = self._make_delegate(main_module, tts_client=tts)
+        delegate._command_tool_used_tts = True
+
+        delegate.commandComplete_({"token": 1, "response": "Reading that now"})
+
+        tts.speak_async.assert_not_called()
+        delegate._command_overlay.tts_start.assert_not_called()
+        assert delegate._command_tool_used_tts is False
 
     def test_command_complete_no_tts_when_disabled(self, main_module):
         """When TTS client is None, commandComplete_ works normally without TTS."""

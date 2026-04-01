@@ -28,8 +28,8 @@ class TestOverlayTiming:
             overlay.update_text_amplitude(10.0)
 
             _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
-            assert applied_alpha <= mod._TEXT_ALPHA_MAX
-            assert applied_alpha == pytest.approx(mod._TEXT_ALPHA_MAX)
+            # Text is anchored at a fixed high alpha, not driven by amplitude
+            assert applied_alpha == pytest.approx(0.88)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -71,65 +71,35 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_outer_glow_peak_is_softened_without_changing_low_level_response(
+    def test_glow_amplitude_smoothing_converges(
         self, mock_pyobjc
     ):
-        """Low glow levels should stay intact while the peak outer bloom is capped."""
+        """Glow amplitude smoothing should converge toward the input signal."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
             overlay._visible = True
-            overlay._inner_shadow = MagicMock()
-            overlay._outer_glow_tight = MagicMock()
-            overlay._outer_glow_wide = MagicMock()
             overlay._smoothed_glow_opacity = 0.0
 
-            # Feed steady signal to let the independent smoothing converge
             for _ in range(30):
-                overlay.update_glow_amplitude(0.1)
-            inner_opacity = overlay._inner_shadow.setShadowOpacity_.call_args[0][0]
-            # Smoothed value * 1.4 — converges close to 0.1 * 1.4 = 0.14
-            assert inner_opacity == pytest.approx(0.14, abs=0.01)
-            tight_opacity = overlay._outer_glow_tight.setShadowOpacity_.call_args[0][0]
-            assert tight_opacity < 0.1  # capped outer glow stays low
-
-            overlay._inner_shadow.reset_mock()
-            overlay._outer_glow_tight.reset_mock()
-            overlay._outer_glow_wide.reset_mock()
-
-            for _ in range(30):
-                overlay.update_glow_amplitude(1.0)
-            inner_at_peak = overlay._inner_shadow.setShadowOpacity_.call_args[0][0]
-            assert inner_at_peak == pytest.approx(mod._INNER_GLOW_PEAK_TARGET, abs=0.02)
-            peak_tight_opacity = overlay._outer_glow_tight.setShadowOpacity_.call_args[0][0]
-            peak_wide_opacity = overlay._outer_glow_wide.setShadowOpacity_.call_args[0][0]
-            assert peak_tight_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.7, abs=0.02)
-            assert peak_wide_opacity == pytest.approx(min(mod._OUTER_GLOW_PEAK_TARGET * 1.12, 1.0), abs=0.02)
-
-            overlay._inner_shadow.reset_mock()
-            overlay._outer_glow_tight.reset_mock()
-            overlay._outer_glow_wide.reset_mock()
-
-            # Single additional call at high value — smoothed, capped, scaled
-            overlay.update_glow_amplitude(0.81)
-            capped_tight_opacity = overlay._outer_glow_tight.setShadowOpacity_.call_args[0][0]
-            capped_wide_opacity = overlay._outer_glow_wide.setShadowOpacity_.call_args[0][0]
-            assert capped_tight_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.7, abs=0.02)
-            assert capped_wide_opacity == pytest.approx(min(mod._OUTER_GLOW_PEAK_TARGET * 1.12, 1.0), abs=0.02)
+                overlay.update_glow_amplitude(0.5)
+            # Smoothing should converge near the input
+            assert overlay._smoothed_glow_opacity == pytest.approx(0.5, abs=0.05)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_overlay_glow_color_gets_much_bluer_than_the_edge_glow_base(self, mock_pyobjc):
-        """The overlay can run bluer than the bezel glow so it still reads against the keyboard."""
+    def test_overlay_glow_color_is_desaturated_tint(self, mock_pyobjc):
+        """The overlay glow should be a subtle tint, not a saturated neon outline."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            previous_overlay_sat = colorsys.rgb_to_hsv(0.38, 0.52, 1.0)[1]
+            base_sat = colorsys.rgb_to_hsv(0.38, 0.52, 1.0)[1]
             overlay_sat = colorsys.rgb_to_hsv(*mod._GLOW_COLOR)[1]
 
-            assert overlay_sat == pytest.approx(min(previous_overlay_sat * 1.28, 1.0), rel=0.02)
-            assert overlay_sat > previous_overlay_sat
+            # ~10% of the base saturation
+            assert overlay_sat == pytest.approx(base_sat * 0.13, rel=0.05)
+            assert overlay_sat < 0.15
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -160,9 +130,7 @@ class TestAdaptiveOverlayCompositing:
         overlay._text_view = MagicMock()
         overlay._text_amplitude = 0.0
         overlay._content_view = MagicMock()
-        overlay._inner_shadow = MagicMock()
-        overlay._outer_glow_tight = MagicMock()
-        overlay._outer_glow_wide = MagicMock()
+        overlay._fill_layer = MagicMock()
         overlay._brightness = 0.0
         overlay._brightness_target = 0.0
         return overlay
@@ -197,7 +165,7 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_dark_background_uses_dark_bg_light_text(self, mock_pyobjc):
+    def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -207,45 +175,22 @@ class TestAdaptiveOverlayCompositing:
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
 
+            # Text should be dark (dark text on light fill for dark backgrounds)
             color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
             text_color_args = None
-            bg_color_args = None
             for call in color_calls:
                 r, g, b, _ = call[0]
-                if r == pytest.approx(1.0) and g == pytest.approx(1.0) and b == pytest.approx(1.0):
+                if r < 0.1 and g < 0.1 and b < 0.1:
                     text_color_args = call[0]
-                if r < 0.2 and g < 0.2 and b < 0.2:
-                    bg_color_args = call[0]
             assert text_color_args is not None
-            assert bg_color_args is not None
+
+            # Fill layer opacity should be set
+            assert overlay._fill_layer.setOpacity_.called
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_uses_light_bg_dark_text(self, mock_pyobjc):
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
-        try:
-            overlay = self._make_overlay(mod)
-            overlay.set_brightness(1.0, immediate=True)
-
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
-            overlay.update_text_amplitude(10.0)
-
-            color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
-            text_color_args = None
-            bg_color_args = None
-            for call in color_calls:
-                r, g, b, a = call[0]
-                if r < 0.3 and g < 0.3 and b < 0.3 and a > 0.5:
-                    text_color_args = call[0]
-                if r > 0.7 and g > 0.7 and b > 0.7:
-                    bg_color_args = call[0]
-            assert text_color_args is not None
-            assert bg_color_args is not None
-        finally:
-            sys.modules.pop("spoke.overlay", None)
-
-    def test_light_background_saturated_text_alpha_moves_halfway_to_full_opacity(self, mock_pyobjc):
+    def test_light_background_text_is_white_on_dark_fill(self, mock_pyobjc):
+        """On bright backgrounds, text is white against the dark fill."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -256,12 +201,30 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             text_r, text_g, text_b, text_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
-            assert text_r < 0.3 and text_g < 0.3 and text_b < 0.3
-            assert text_alpha == pytest.approx(0.875)
+            # White text on dark fill for light backgrounds
+            assert text_r > 0.7 and text_g > 0.7 and text_b > 0.7
+            assert text_alpha > 0.5
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_preview_text_moves_halfway_toward_black(self, mock_pyobjc):
+    def test_light_background_fill_is_opaque(self, mock_pyobjc):
+        """On bright backgrounds, the fill layer becomes near-opaque to support the cutout."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._fill_layer.reset_mock()
+            overlay.update_text_amplitude(10.0)
+
+            # Fill layer opacity should be high on light backgrounds
+            fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+            assert fill_opacity > 0.8  # near-opaque fill
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_preview_text_reaches_true_white(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -272,31 +235,31 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             text_r, text_g, text_b, _ = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
-            assert text_r == pytest.approx(0.016)
-            assert text_g == pytest.approx(0.016)
-            assert text_b == pytest.approx(0.02)
+            assert text_r == pytest.approx(1.0)
+            assert text_g == pytest.approx(1.0)
+            assert text_b == pytest.approx(1.0)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_mid_brightness_has_contrast_gap(self, mock_pyobjc):
+    def test_fill_opacity_responds_to_amplitude(self, mock_pyobjc):
+        """The SDF fill should breathe with amplitude — low at silence, high when speaking."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
-            overlay.set_brightness(0.5, immediate=True)
 
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            # Low amplitude
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(0.0)
+            alpha_silent = overlay._fill_layer.setOpacity_.call_args[0][0]
+
+            # High amplitude
+            overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
+            alpha_loud = overlay._fill_layer.setOpacity_.call_args[0][0]
 
-            color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
-            text_r, text_g, text_b, _ = color_calls[0][0]
-            bg_r, bg_g, bg_b, _ = color_calls[1][0]
-
-            text_lum = 0.299 * text_r + 0.587 * text_g + 0.114 * text_b
-            bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
-
-            assert text_lum > bg_lum + 0.08
-            assert 0.3 < bg_lum < 0.7
+            assert alpha_loud > alpha_silent + 0.3
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -309,27 +272,25 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_brightness_cross_fade_is_continuous(self, mock_pyobjc):
+    def test_text_color_contrasts_with_fill(self, mock_pyobjc):
+        """Text should be dark on light fill (dark bg) and white on dark fill (light bg)."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            def get_bg_rgb(brightness):
-                overlay = self._make_overlay(mod)
-                overlay.set_brightness(brightness, immediate=True)
+            # Dark background → light fill → dark text
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(0.0, immediate=True)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay.update_text_amplitude(10.0)
+            text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
+            assert text_r < 0.1  # dark text
+
+            # Light background → dark fill → white text (ease-out snap converges)
+            overlay.set_brightness(1.0, immediate=True)
+            for _ in range(20):
                 mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
                 overlay.update_text_amplitude(10.0)
-                for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list:
-                    r, g, b, _ = call[0]
-                    return (r, g, b)
-                return None
-
-            c1 = get_bg_rgb(0.4)
-            c2 = get_bg_rgb(0.5)
-            c3 = get_bg_rgb(0.6)
-
-            assert c1 is not None and c2 is not None and c3 is not None
-            for i in range(3):
-                assert abs(c2[i] - c1[i]) < 0.25
-                assert abs(c3[i] - c2[i]) < 0.25
+            text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
+            assert text_r > 0.9  # white text
         finally:
             sys.modules.pop("spoke.overlay", None)

@@ -60,9 +60,7 @@ def _make_overlay(mock_pyobjc):
     overlay._tts_blend = 0.0
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
-    overlay._inner_shadow = MagicMock()
-    overlay._outer_glow_tight = MagicMock()
-    overlay._outer_glow_wide = MagicMock()
+    overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     return overlay, mod
@@ -223,6 +221,23 @@ class TestShowFinishHide:
         overlay._window = None
         overlay.show()
         assert overlay._visible is False
+
+    def test_set_response_text_replaces_existing_response(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = ""
+        overlay._response_text = "Let me check."
+
+        def _append(text):
+            overlay._response_text += text
+
+        overlay.append_token = MagicMock(side_effect=_append)
+
+        overlay.set_response_text("Done.")
+
+        assert overlay._response_text == "Done."
+        overlay._text_view.setString_.assert_called_once_with("")
+        overlay.append_token.assert_called_once_with("Done.")
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

@@ -1,14 +1,15 @@
-"""Local text-to-speech via Voxtral on MLX.
+"""Local text-to-speech via mlx_audio.
 
-Loads a Voxtral TTS model lazily and plays generated audio through
-sounddevice.  Designed to be driven from the command-completion pathway
-in __main__.py — speak_async() returns immediately, running generation
-and playback on a background thread.
+Loads any mlx_audio-supported TTS model lazily and plays generated audio
+through sounddevice.  Designed to be driven from the command-completion
+pathway in __main__.py — speak_async() returns immediately, running
+generation and playback on a background thread.
 """
 
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import threading
@@ -86,7 +87,7 @@ def _split_sentences(text: str) -> list[str]:
             continue
 
         end = i + 1
-        while end < len(text) and text[end] in "\"'\u201d\u2019)]}":
+        while end < len(text) and text[end] in "\"'”’)]}":
             end += 1
         candidate = text[start:end].strip()
         lowered = candidate.lower()
@@ -119,24 +120,61 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def tts_load(model_id: str):
-    """Load a Voxtral TTS model.  Separated for easy patching in tests."""
+    """Load an mlx_audio TTS model.  Separated for easy patching in tests."""
+    # Pre-import model backends so mlx_audio.tts.load() can find them.
+    # The Voxtral backend lives in a PYTHONPATH fork that isn't auto-discovered.
     if "voxtral" in model_id.lower():
         try:
-            mlx_audio_pkg = importlib.import_module("mlx_audio")
             importlib.import_module("mlx_audio.tts.models.voxtral_tts")
-        except Exception as exc:
-            mlx_audio_path = getattr(mlx_audio_pkg, "__file__", "<unresolved>") if "mlx_audio_pkg" in locals() else "<unresolved>"
+        except ImportError:
+            mlx_audio_path = "<unresolved>"
+            try:
+                import mlx_audio
+                mlx_audio_path = getattr(mlx_audio, "__file__", "<unresolved>")
+            except ImportError:
+                pass
             py_path = os.environ.get("PYTHONPATH", "")
             raise RuntimeError(
                 "Voxtral TTS backend is unavailable in the active mlx_audio runtime. "
                 f"Resolved mlx_audio from {mlx_audio_path}. "
                 f"PYTHONPATH={py_path or '<unset>'}. "
-                "Expected mlx_audio.tts.models.voxtral_tts to be importable. "
-                "If you are using a local smoke/runtime checkout, ensure the branch-local "
-                ".spoke-smoke-env restores the intended PYTHONPATH override."
-            ) from exc
+                "Ensure .spoke-smoke-env sets PYTHONPATH to the mlx-audio fork with Voxtral support."
+            )
     from mlx_audio.tts import load
     return load(model_id)
+
+
+def _generate_kwargs(model, *, text: str, voice: str,
+                     temperature: float, top_k: int, top_p: float) -> dict:
+    """Build kwargs for model.generate(), passing only params it accepts.
+
+    If the model's generate() signature can't be introspected (e.g. it
+    accepts **kwargs with no named params beyond self), all params are
+    forwarded — the model can ignore what it doesn't need.
+    """
+    try:
+        sig = inspect.signature(model.generate)
+        params = sig.parameters
+    except (ValueError, TypeError):
+        params = {}
+    # If there are no named params (just *args/**kwargs), pass everything
+    has_var_keyword = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    named = {n for n, p in params.items()
+             if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                           inspect.Parameter.KEYWORD_ONLY)}
+    all_extras = {"voice": voice, "temperature": temperature,
+                  "top_k": top_k, "top_p": top_p}
+    kwargs: dict = {"text": text}
+    if not named or has_var_keyword:
+        # Can't tell what's accepted — forward everything
+        kwargs.update(all_extras)
+    else:
+        for k, v in all_extras.items():
+            if k in named:
+                kwargs[k] = v
+    return kwargs
 
 
 class TTSClient:
@@ -330,17 +368,23 @@ class TTSClient:
         microphone amplitude callback used by the glow overlay).
         """
         if not text:
+            logger.info("TTS speak: empty text, skipping")
             return
 
         from contextlib import nullcontext
 
         sentences = _split_sentences(text)
         if not sentences:
+            logger.info("TTS speak: no sentences after split, skipping")
             return
 
+        logger.info("TTS speak: %d sentences, %d chars, model=%s, cancelled=%s",
+                     len(sentences), len(text), self._model_id, self._cancelled)
+        self._cancelled = False
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
         with self._speak_lock:
             if self._cancelled:
+                logger.info("TTS speak: cancelled before start")
                 return
             with self._audio_fade_lock:
                 self._playback_active = True
@@ -350,21 +394,31 @@ class TTSClient:
                         return
 
                     with lock_ctx:
+                        logger.info("TTS speak: ensuring model loaded (sentence %d/%d)",
+                                     sentences.index(sentence) + 1, len(sentences))
                         self._ensure_model()
                         if self._cancelled:
+                            logger.info("TTS speak: cancelled after model load")
                             return
-                        results = self._model.generate(
+                        gen_kwargs = _generate_kwargs(
+                            self._model,
                             text=sentence,
                             voice=self._voice,
                             temperature=self._temperature,
                             top_k=self._top_k,
                             top_p=self._top_p,
                         )
+                        results = self._model.generate(**gen_kwargs)
+                        logger.info("TTS speak: generate() returned, iterating results")
 
+                    chunk_count = 0
                     while True:
                         if self._cancelled:
+                            logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
                             return
+                        logger.info("TTS speak: acquiring GPU lock for chunk %d", chunk_count + 1)
                         with lock_ctx:
+                            logger.info("TTS speak: GPU lock acquired, calling next(results)")
                             try:
                                 result = next(results)
                             except StopIteration:
@@ -373,7 +427,12 @@ class TTSClient:
                                 audio=np.asarray(result.audio, dtype=np.float32),
                                 sample_rate=int(result.sample_rate),
                             )
+                            chunk_count += 1
+                            if chunk_count == 1:
+                                logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
+                                           len(materialized.audio), materialized.sample_rate)
                         self._play_result(materialized, amplitude_callback=amplitude_callback)
+                    logger.info("TTS speak: finished sentence (%d chunks played)", chunk_count)
             finally:
                 with self._audio_fade_lock:
                     self._playback_active = False
@@ -401,4 +460,6 @@ class TTSClient:
         and exits cleanly. Does not call stream.abort() — avoids racing with
         the fade-out write on the playback thread.
         """
+        import traceback
+        logger.info("TTS cancel() called from:\n%s", "".join(traceback.format_stack()[-8:-1]))
         self._cancelled = True

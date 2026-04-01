@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch spoke smoke-test build. Bind to a hotkey via macOS Shortcuts or Automator.
-# Kills any existing instance first.
+# Lets the single-instance guard handle any existing instance.
 #
 # The smoke target is read from ~/.config/spoke/smoke-target, which should
 # contain the absolute path to the repo/worktree to launch from.
@@ -11,6 +11,7 @@
 SMOKE_TARGET_FILE="${HOME}/.config/spoke/smoke-target"
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-smoke-launch.log"
+LOCK_FILE="${LOG_DIR}/.spoke.lock"
 mkdir -p "$LOG_DIR"
 
 # Read smoke target
@@ -28,14 +29,25 @@ if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ]; then
   exit 0
 fi
 
-pkill -TERM -f "python.*spoke" 2>/dev/null
-sleep 0.5
-rm -f ~/Library/Logs/.spoke.lock
-
 {
   printf '\n=== %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  printf 'Launcher PID %d (PPID %d) invoked from %s\n' "$$" "$PPID" "$PWD"
   printf 'Launching Spoke smoke from %s\n' "$REPO_ROOT"
 } >>"$LOG_FILE"
+
+OLD_PID=""
+if [ -r "$LOCK_FILE" ]; then
+  OLD_PID="$(tr -d '[:space:]' < "$LOCK_FILE")"
+fi
+
+if [[ "$OLD_PID" =~ ^[0-9]+$ ]]; then
+  {
+    printf 'Launcher preflight: observed lock-holder pid %s in %s\n' "$OLD_PID" "$LOCK_FILE"
+    printf 'Launcher preflight: deferring termination to single-instance guard\n'
+  } >>"$LOG_FILE"
+else
+  printf 'Launcher preflight: no numeric lock-holder pid in %s\n' "$LOCK_FILE" >>"$LOG_FILE"
+fi
 
 export REPO_ROOT LOG_FILE
 export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
@@ -62,8 +74,8 @@ from typing import Optional
 
 
 def _resolve_uv_bin(repo_root: Path) -> Optional[Path]:
-    candidates: list[Path] = []
     env_uv_bin = os.environ.get("UV_BIN")
+    candidates: list[Path] = []
     if env_uv_bin:
         candidates.append(Path(env_uv_bin))
     candidates.append(repo_root / ".venv" / "bin" / "uv")
@@ -130,6 +142,10 @@ with log_file.open("a", encoding="utf-8") as log:
             )
             log.flush()
             raise SystemExit(1)
+
+        log.write(f"Launcher PID context: pid={os.getpid()} ppid={os.getppid()}\n")
+        log.write(f"Launcher child command: {command!r}\n")
+        log.flush()
 
         subprocess.Popen(
             command,

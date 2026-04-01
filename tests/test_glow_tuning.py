@@ -62,7 +62,7 @@ class TestGlowTuning:
             assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
             assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
             assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
-            assert light_base == pytest.approx(0.2744)
+            assert light_base == pytest.approx(mod._GLOW_BASE_OPACITY_LIGHT)
             assert light_sat > dark_sat
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -115,7 +115,27 @@ class TestGlowTuning:
             assert dark_add > dark_sub
             assert mid_sub > 0.5
             assert light_add == pytest.approx(0.0)
-            assert light_sub > 1.0
+            assert light_sub == pytest.approx(1.664)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_light_background_dimmer_moves_closer_to_opaque(self, mock_pyobjc):
+        """Bright scenes should darken more assertively behind the border treatment."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.424)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_light_background_vignette_tail_doubles_in_strength(self, mock_pyobjc):
+        """The widest bright-scene edge tail should read much more strongly on white backgrounds."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            specs = mod._continuous_vignette_pass_specs()
+            tail = next(spec for spec in specs if spec["name"] == "tail")
+            assert tail["alpha"] == pytest.approx(0.28)
         finally:
             sys.modules.pop("spoke.glow", None)
 

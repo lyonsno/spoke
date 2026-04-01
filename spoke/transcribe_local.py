@@ -119,15 +119,23 @@ class LocalTranscriptionClient:
         kwargs = {
             "path_or_hf_repo": self._model,
             "language": "en",
-            "decode_timeout": self._decode_timeout,
         }
         if supports_eager_eval():
+            # Do not let Spoke's default timeout mask the eager_eval path.
+            # Explicit non-default timeout choices still take precedence.
+            if not (
+                self._eager_eval and self._decode_timeout == _DEFAULT_DECODE_TIMEOUT
+            ):
+                kwargs["decode_timeout"] = self._decode_timeout
             kwargs["eager_eval"] = self._eager_eval
         elif self._eager_eval and not self._warned_eager_eval_unsupported:
+            kwargs["decode_timeout"] = self._decode_timeout
             logger.warning(
                 "Installed mlx-whisper does not support eager_eval yet; ignoring the setting"
             )
             self._warned_eager_eval_unsupported = True
+        else:
+            kwargs["decode_timeout"] = self._decode_timeout
 
         result = mlx_whisper.transcribe(audio, **kwargs)
 

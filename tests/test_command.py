@@ -40,6 +40,7 @@ class TestCommandClient:
         msgs = client._build_messages("hello world")
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
+        assert "add_to_tray" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
 
     def test_build_messages_with_history(self):
@@ -196,6 +197,59 @@ class TestStreamCommand:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("test"))
         assert tokens == ["Hello", " world"]
+
+    def test_stream_events_keep_tool_round_tokens_provisional(self):
+        """Tool-round deltas may stream, but only the final assistant reply is canonized."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+
+        tool_round_chunks = [
+            self._content_chunk("Let me check. "),
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        call_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            return first_resp if call_count["n"] == 1 else second_resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            events = list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=lambda **kwargs: '{"ok": true}',
+                )
+            )
+
+        assert call_count["n"] == 2
+        assert [
+            (event.kind, event.text, event.tool_name)
+            for event in events
+        ] == [
+            ("assistant_delta", "Let me check. ", None),
+            ("tool_call", "", "capture_context"),
+            ("assistant_delta", "Done.", None),
+            ("assistant_final", "Done.", None),
+        ]
+        assert client._history == [("check it", "Done.")]
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
