@@ -322,7 +322,7 @@ class CommandClient:
                 continue
 
             # No tool calls — this round's content is the final response
-            full_response = round_content
+            full_response += round_content
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 

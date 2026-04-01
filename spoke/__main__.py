@@ -1529,6 +1529,12 @@ class SpokeAppDelegate(NSObject):
                             {"token": token, "text": event.text},
                             False,
                         )
+                    elif event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolCall:",
+                            {"token": token, "tool_name": event.tool_name or "tool"},
+                            False,
+                        )
                     elif event.kind == "assistant_final":
                         full_response = event.text
             except Exception:
@@ -1652,6 +1658,12 @@ class SpokeAppDelegate(NSObject):
                         {"token": token, "text": event.text},
                         False,
                     )
+                elif event.kind == "tool_call":
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandToolCall:",
+                        {"token": token, "tool_name": event.tool_name or "tool"},
+                        False,
+                    )
                 elif event.kind == "assistant_final":
                     full_response = event.text
         except Exception:
@@ -1699,9 +1711,27 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Responding…")
         if overlay is not None:
             try:
+                overlay.clear_tool_status()
+            except Exception:
+                logger.exception("Command overlay failed to clear tool status")
+            try:
                 overlay.append_token(payload["text"])
             except Exception:
                 logger.exception("Command overlay failed to append streamed token")
+
+    def commandToolCall_(self, payload: dict) -> None:
+        """Main thread: a tool call is about to execute."""
+        if payload["token"] != self._transcription_token:
+            return
+        tool_name = payload.get("tool_name", "tool")
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.show_tool_status(tool_name)
+            except Exception:
+                logger.exception("Command overlay failed to show tool status")
+        if self._menubar is not None:
+            self._menubar.set_status_text(f"Using {tool_name}…")
 
     def commandComplete_(self, payload: dict) -> None:
         """Main thread: command response finished streaming."""
@@ -1710,12 +1740,19 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         overlay = self._command_overlay
         response = payload.get("response", "")
-        if overlay is not None and response:
-            try:
-                overlay.set_response_text(response)
-            except Exception:
-                logger.exception("Command overlay failed to apply final response text")
         if overlay is not None:
+            try:
+                overlay.clear_tool_status()
+            except Exception:
+                logger.exception("Command overlay failed to clear tool status on complete")
+            # Only overwrite if the overlay's streamed text diverged from
+            # the final accumulated response (e.g. if streaming was interrupted).
+            # This preserves per-token color/glow formatting from streaming.
+            if response and getattr(overlay, "_response_text", "") != response:
+                try:
+                    overlay.set_response_text(response)
+                except Exception:
+                    logger.exception("Command overlay failed to apply final response text")
             try:
                 overlay.finish()
             except Exception:

@@ -518,6 +518,47 @@ class CommandOverlay(NSObject):
 
         self._update_layout()
 
+    def show_tool_status(self, tool_name: str) -> None:
+        """Show a transient 'Using <tool>…' indicator in the overlay."""
+        if self._text_view is None or not self._visible:
+            return
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        label = f"\n⟳ {tool_name}…"
+        frag = NSMutableAttributedString.alloc().initWithString_(label)
+        r, g, b = self._current_hue_rgb()
+        r, g, b = _response_color_for_brightness((r, g, b), self._brightness)
+        frag.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 0.5),
+            (0, len(label)),
+        )
+        frag.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_FONT_SIZE * 0.85, 0.0),
+            (0, len(label)),
+        )
+        # Remember position so we can remove it when the next round starts
+        storage = self._text_view.textStorage()
+        self._tool_status_range = (storage.length(), len(label))
+        storage.appendAttributedString_(frag)
+        self._update_layout()
+
+    def clear_tool_status(self) -> None:
+        """Remove the transient tool-status indicator if present."""
+        rng = getattr(self, "_tool_status_range", None)
+        if rng is None:
+            return
+        storage = self._text_view.textStorage()
+        start, length = rng
+        # Guard against stale range
+        if start + length <= storage.length():
+            storage.deleteCharactersInRange_((start, length))
+        self._tool_status_range = None
+
     def set_response_text(self, text: str) -> None:
         """Replace the visible assistant response with final canonical text."""
         self._response_text = ""
