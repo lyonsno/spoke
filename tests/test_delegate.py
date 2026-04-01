@@ -2950,3 +2950,87 @@ class TestGetClipboardPreviewText:
             ("NSStringPboardType", b"fallback"),
         ]
         assert d._get_clipboard_preview_text(saved) == "fallback"
+
+
+class TestVADPreviewGating:
+    """Test that the preview loop respects VAD silence to save compute."""
+
+    def test_preview_loop_batch_skips_inference_on_silence(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._preview_session_token = 1
+        d._preview_active = True
+        d._capture = MagicMock()
+        d._capture.get_buffer.return_value = b"wav"
+        d._preview_client = MagicMock()
+        
+        # Simulate silence
+        d._is_speech = False
+        d._force_preview_update = False
+        
+        sleep_count = [0]
+        def _sleep(*args):
+            sleep_count[0] += 1
+            if sleep_count[0] > 1:
+                d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_batch()
+
+        # Should not have called transcribe because of silence
+        d._preview_client.transcribe.assert_not_called()
+
+    def test_preview_loop_batch_forces_update_on_silence_transition(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._preview_session_token = 1
+        d._preview_active = True
+        d._capture = MagicMock()
+        d._capture.get_buffer.return_value = b"wav"
+        d._preview_client = MagicMock()
+        
+        # Simulate transition to silence (force update)
+        d._is_speech = False
+        d._force_preview_update = True
+        
+        sleep_count = [0]
+        def _sleep(*args):
+            sleep_count[0] += 1
+            if sleep_count[0] > 1:
+                d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_batch()
+
+        # Should have called transcribe exactly once
+        d._preview_client.transcribe.assert_called_once()
+        assert d._force_preview_update is False
+
+    def test_preview_loop_streaming_skips_inference_on_silence(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._preview_session_token = 1
+        d._preview_active = True
+        d._capture = MagicMock()
+        d._capture.get_new_frames.return_value = MagicMock(size=1024)
+        d._preview_client = MagicMock()
+        
+        d._is_speech = False
+        d._force_preview_update = False
+        
+        sleep_count = [0]
+        def _sleep(*args):
+            sleep_count[0] += 1
+            if sleep_count[0] > 1:
+                d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_streaming()
+
+        d._preview_client.feed.assert_not_called()

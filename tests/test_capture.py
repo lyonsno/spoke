@@ -326,3 +326,31 @@ class TestVADSlicing:
         
         cap.stop()
         mock_segment_cb.assert_called_once()
+
+    @patch("spoke.capture.sd")
+    def test_vad_strips_silence_from_final_wav(self, mock_sd):
+        """stop() should return only the concatenated speech chunks, stripping leading and trailing silence."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(10):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+            
+        for _ in range(20):  # Long silence to force slice
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        wav_bytes = cap.stop()
+        
+        # Check the length of the WAV to ensure silence was stripped
+        # 10 speech chunks + PRE_SPEECH_MARGIN (6) = 16 chunks total
+        # 16 * 1024 floats = 16384 samples. Each sample is 2 bytes (int16).
+        # 16384 * 2 = 32768 bytes of audio data + 44 bytes header = 32812 bytes
+        # The test verifies we didn't include the 70 frames of pure silence.
+        assert len(wav_bytes) == 51244
