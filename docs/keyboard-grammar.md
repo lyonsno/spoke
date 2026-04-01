@@ -28,6 +28,35 @@ Each key has a consistent identity across the entire grammar:
   tray, scrub through history, dismiss, delete.
 - **Enter** = send to assistant. The universal "submit" key.
 
+## Pending operator-chord revision
+
+This section is a design target for the next grammar pass. It is not yet the
+live implementation. The current code still uses the older "enter held at
+spacebar release" route for the assistant pathway.
+
+The converged direction is to move operator controls onto explicit
+space-rooted rocked chords so bare keys mostly stay with the foreground app.
+
+### Settled assistant pair
+
+| Gesture | Intended result |
+|---|---|
+| `Space down` -> `Enter down` -> `Space up` while `Enter` is still down | **Toggle assistant overlay**. Consume the gesture as operator control rather than normal dictation completion. |
+| `Space down` -> `Enter down` -> `Enter up` -> `Space up` within ~200-400ms | **Send to assistant**. Route the captured utterance to the assistant instead of the normal text path. |
+
+### Disarm rule
+
+If `Enter up` occurs but `Space up` does not follow within the short expiry
+window, the send chord disarms and recording continues as ordinary spacebar
+behavior. This avoids leaving the system in a hidden armed state after an
+ambiguous or abandoned Enter tap.
+
+### Reserved affordances
+
+Longer two-key holds remain intentionally unspent for now. They are reserved
+for later visible-mode affordances rather than being activated immediately as
+hidden modal grammar.
+
 ## Core gestures
 
 | Gesture | Result |
