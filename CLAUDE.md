@@ -8,6 +8,14 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
+## Integration Policy (Stall Protocol)
+
+As of 2026-03-31, the standard integration branches (`main`, `dev`) are classified as **Stalled Substrate**. They contain persistent bugs and are no longer valid targets for clean feature landing.
+
+- **Do not land work in `dev` or `main`** unless specifically instructed to perform substrate surgery.
+- **Nominated Integration Pilot (NIP)**: All new work must target the current NIP branch, as declared in the `Surface Ledger` section of the `spoke_epistaxis.md` file.
+- **Harmonic Re-founding**: If you discover a clean path forward, nominate a fresh branch as the new NIP and move all active attractors to it.
+
 ## Testing
 
 Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
