@@ -469,6 +469,132 @@ class TestStreamCleanup:
         assert client._history == [("second", "clean")]
 
 
+class TestToolCallRendering:
+    """Test that tool-call deltas are surfaced as visible inline text."""
+
+    def _content_chunk(self, token):
+        return {
+            "choices": [{"index": 0, "delta": {"content": token}}]
+        }
+
+    def _tool_call_chunk(self, name):
+        return {
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {"name": name},
+                    }]
+                },
+            }]
+        }
+
+    def _tool_call_args_chunk(self, args_fragment):
+        """Tool-call delta with only arguments (no name) — typical for streamed args."""
+        return {
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {"arguments": args_fragment},
+                    }]
+                },
+            }]
+        }
+
+    def test_tool_call_yields_calling_indicator(self):
+        """A tool-call delta with a function name should yield '[calling name…]'."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            self._content_chunk("Let me check. "),
+            self._tool_call_chunk("capture_context"),
+            self._content_chunk("Done."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            tokens = list(client.stream_command("read the screen"))
+        assert tokens == [
+            "Let me check. ",
+            "\n[calling capture_context…]\n",
+            "Done.",
+        ]
+
+    def test_tool_call_included_in_full_response(self):
+        """The full_response stored in history should include tool-call text."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            self._content_chunk("A"),
+            self._tool_call_chunk("read_aloud"),
+            self._content_chunk("B"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            list(client.stream_command("test"))
+        assert len(client._history) == 1
+        _, response = client._history[0]
+        assert "A" in response
+        assert "[calling read_aloud…]" in response
+        assert "B" in response
+
+    def test_tool_call_without_name_is_silent(self):
+        """Tool-call deltas that carry only arguments (no name) should not yield text."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            self._content_chunk("thinking"),
+            self._tool_call_args_chunk('{"text": "hello"}'),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            tokens = list(client.stream_command("test"))
+        assert tokens == ["thinking"]
+
+    def test_multiple_tool_calls_in_single_delta(self):
+        """Multiple tool calls in one delta should each yield an indicator."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            {
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"name": "capture_context"}},
+                            {"index": 1, "function": {"name": "read_aloud"}},
+                        ]
+                    },
+                }]
+            },
+            self._content_chunk("All done."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            tokens = list(client.stream_command("do two things"))
+        assert "\n[calling capture_context…]\n" in tokens
+        assert "\n[calling read_aloud…]\n" in tokens
+        assert "All done." in tokens
+
+
 class TestShiftReleaseRouting:
     """Test that shift-release is detected and routes to command path."""
 
