@@ -568,7 +568,12 @@ class SpokeAppDelegate(NSObject):
                 )
             self._overlay.show()
         try:
-            self._capture.start(amplitude_callback=self._on_amplitude)
+            def on_vad_state(is_speech: bool):
+                if self._menubar is not None:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "updateVadState:", is_speech, False
+                    )
+            self._capture.start(amplitude_callback=self._on_amplitude, vad_state_callback=on_vad_state)
         except Exception:
             logger.exception("Audio capture failed to start")
             if self._glow is not None:
@@ -584,6 +589,8 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
+        self._is_speech = False
+        self._force_preview_update = False
         if getattr(self, "_preview_done", None) is not None:
             self._preview_done.clear()
 
@@ -601,6 +608,18 @@ class SpokeAppDelegate(NSObject):
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "amplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
         )
+
+    def updateVadState_(self, is_speech_number) -> None:
+        is_speech = bool(is_speech_number)
+
+        # If transitioning from speech to silence, force one last preview update
+        if getattr(self, "_is_speech", False) and not is_speech:
+            self._force_preview_update = True
+
+        self._is_speech = is_speech
+
+        if self._menubar is not None:
+            self._menubar.set_vad_state(is_speech, self._transcribing or self._capture.is_recording)
 
     def amplitudeUpdate_(self, rms_number) -> None:
         """Main thread: forward amplitude to glow and overlay text."""
@@ -682,6 +701,16 @@ class SpokeAppDelegate(NSObject):
 
                 frames = self._capture.get_new_frames()
 
+                is_speech = getattr(self, "_is_speech", True)
+                force_update = getattr(self, "_force_preview_update", False)
+                if not is_speech and not force_update:
+                    elapsed = time.monotonic() - loop_start
+                    remaining = _FEED_INTERVAL - elapsed
+                    if remaining > 0 and self._preview_active:
+                        time.sleep(remaining)
+                    continue
+                self._force_preview_update = False
+
                 try:
                     with self._local_inference_context(self._preview_client):
                         text = self._preview_client.feed(frames)
@@ -735,6 +764,16 @@ class SpokeAppDelegate(NSObject):
                 if not wav_bytes:
                     time.sleep(0.1 if self._local_mode else 0.2)
                     continue
+
+                is_speech = getattr(self, "_is_speech", True)
+                force_update = getattr(self, "_force_preview_update", False)
+                if not is_speech and not force_update:
+                    elapsed = time.monotonic() - loop_start
+                    remaining = _MIN_INTERVAL - elapsed
+                    if remaining > 0 and self._preview_active:
+                        time.sleep(remaining)
+                    continue
+                self._force_preview_update = False
 
                 try:
                     with self._local_inference_context(self._preview_client):
@@ -833,6 +872,7 @@ class SpokeAppDelegate(NSObject):
         if not shift_held and not enter_held and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
+            self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
 
         if not wav_bytes:

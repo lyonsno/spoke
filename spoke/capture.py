@@ -105,7 +105,8 @@ class AudioCapture:
     def start(
         self, 
         amplitude_callback: Callable[[float], None] | None = None,
-        segment_callback: Callable[[bytes], None] | None = None
+        segment_callback: Callable[[bytes], None] | None = None,
+        vad_state_callback: Callable[[bool], None] | None = None
     ) -> None:
         """Begin recording.
 
@@ -127,6 +128,7 @@ class AudioCapture:
         self._read_cursor = 0
         self._amplitude_cb = amplitude_callback
         self._segment_cb = segment_callback
+        self._vad_cb = vad_state_callback
         
         # Reset VAD state
         self._is_speech = False
@@ -134,6 +136,7 @@ class AudioCapture:
         self._silence_trigger_count = 0
         self._noise_floor_history.clear()
         self._current_segment_chunks = []
+        self._speech_chunks = []
         self._ring_buffer.clear()
         
         if self._segment_cb is not None:
@@ -217,7 +220,20 @@ class AudioCapture:
 
             self._amplitude_cb = None
             self._segment_cb = None
-            return self._encode_wav(self._get_all_frames())
+            
+            # Use trimmed chunks if available
+            speech_chunks = getattr(self, "_speech_chunks", None)
+            if speech_chunks is not None and len(speech_chunks) > 0:
+                final_chunks = list(speech_chunks)
+                if self._is_speech:
+                    final_chunks.extend(self._current_segment_chunks)
+                wav_bytes = self._encode_wav(np.concatenate(final_chunks))
+            else:
+                wav_bytes = self._encode_wav(self._get_all_frames())
+
+            if hasattr(self, '_speech_chunks'):
+                self._speech_chunks = []
+            return wav_bytes
 
         # No active stream — clear any stale frames and return empty
         self._frames = []
@@ -293,11 +309,15 @@ class AudioCapture:
         if self._amplitude_cb is not None:
             self._amplitude_cb(rms)
             
-        if self._segment_cb is not None:
-            # VAD / silence slicing logic
+        if self._segment_cb is not None or hasattr(self, '_vad_cb'):
+            # Ensure it runs if either callback is present!
             self._noise_floor_history.append(rms)
             noise_floor = min(self._noise_floor_history) if self._noise_floor_history else 0.0
             threshold = max(noise_floor * THRESHOLD_MULTIPLIER, MIN_THRESHOLD)
+            
+            # Debug log every 50 chunks (~3 seconds)
+            if len(self._frames) % 50 == 0:
+                logger.info(f"VAD tick: rms={rms:.4f}, thr={threshold:.4f}, is_speech={self._is_speech}, trigger={self._speech_trigger_count}/{MIN_SPEECH_FRAMES}")
 
             if not self._is_speech:
                 self._ring_buffer.append(chunk)
@@ -306,12 +326,20 @@ class AudioCapture:
                     self._speech_trigger_count += 1
                     if self._speech_trigger_count >= MIN_SPEECH_FRAMES:
                         self._is_speech = True
+                        if hasattr(self, '_vad_cb') and self._vad_cb is not None:
+                            self._vad_cb(True)
                         self._current_segment_chunks.extend(self._ring_buffer)
+                        if getattr(self, '_speech_chunks', None) is None:
+                            self._speech_chunks = []
+                        self._speech_chunks.extend(self._ring_buffer)
                         self._ring_buffer.clear()
                 else:
                     self._speech_trigger_count = 0
             else:
                 self._current_segment_chunks.append(chunk)
+                if getattr(self, '_speech_chunks', None) is None:
+                    self._speech_chunks = []
+                self._speech_chunks.append(chunk)
                 
                 force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
                 
@@ -323,6 +351,8 @@ class AudioCapture:
                         
                     if self._silence_trigger_count >= MIN_SILENCE_FRAMES:
                         self._is_speech = False
+                        if hasattr(self, '_vad_cb') and self._vad_cb is not None:
+                            self._vad_cb(False)
                         self._speech_trigger_count = 0
                         self._silence_trigger_count = 0
                         

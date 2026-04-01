@@ -105,9 +105,14 @@ class MenuBarIcon(NSObject):
         self._idle_image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
             "mic", "Spoke — idle"
         )
+        if self._idle_image is not None:
+            self._idle_image.setTemplate_(True)
+            
         self._recording_image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
             "mic.fill", "Spoke — recording"
         )
+        if self._recording_image is not None:
+            self._recording_image.setTemplate_(True)
 
         button = self._status_item.button()
         if button is not None:
@@ -122,6 +127,44 @@ class MenuBarIcon(NSObject):
         if button is None:
             return
         button.setImage_(self._recording_image if recording else self._idle_image)
+
+    def set_vad_state(self, is_speech: bool, is_recording: bool) -> None:
+        """Update menubar visual based on recording and VAD state."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if self._status_item is None or self._status_item.button() is None:
+            return
+
+        button = self._status_item.button()
+        
+        if not is_recording:
+            button.setImage_(self._idle_image)
+            return
+
+        from AppKit import NSColor, NSImage, NSSize, NSRect, NSCompositeSourceAtop, NSImageNameStatusAvailable, NSImageNameStatusPartiallyAvailable
+        
+        # If contentTintColor makes it disappear (maybe macOS version issue), 
+        # let's just use different built-in SF symbols or images that have those colors.
+        # But wait, we can just tint the image manually.
+        
+        base_img = self._recording_image
+        if base_img is None:
+            return
+            
+        color = NSColor.greenColor() if is_speech else NSColor.redColor()
+        
+        # Create a new tinted image
+        tinted = base_img.copy()
+        tinted.setTemplate_(False)
+        tinted.lockFocus()
+        color.set()
+        from AppKit import NSRectFillUsingOperation
+        rect = ((0, 0), tinted.size())
+        NSRectFillUsingOperation(rect, NSCompositeSourceAtop)
+        tinted.unlockFocus()
+        
+        button.setImage_(tinted)
 
     def set_status_text(self, text: str) -> None:
         """Update the status label in the dropdown menu."""
