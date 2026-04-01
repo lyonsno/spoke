@@ -50,11 +50,11 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.0966  # 140% of the calmer baseline so the border keeps dancing at rest
-_GLOW_PEAK_TARGET = 0.1904
-_GLOW_BASE_OPACITY_DARK = 0.0826
-_GLOW_BASE_OPACITY_LIGHT = 0.2744
-_GLOW_PEAK_TARGET_DARK = 0.168
+_GLOW_BASE_OPACITY = 0.1449  # 140% of the calmer baseline so the border keeps dancing at rest
+_GLOW_PEAK_TARGET = 0.90
+_GLOW_BASE_OPACITY_DARK = 0.375
+_GLOW_BASE_OPACITY_LIGHT = 0.4116
+_GLOW_PEAK_TARGET_DARK = 0.90
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
@@ -73,21 +73,31 @@ _CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.424  # bright scenes move 20% closer to fully opaque
-# Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.95  # faster attack — vignette snaps to voice
-_DECAY_FACTOR = 0.50  # very quick falloff between words
+_DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.636  # pumped 50%
 
-# Fade timing
-_FADE_IN_S = 0.08
-_FADE_OUT_S = 0.2
-_GLOW_SHOW_FADE_S = 0.2
-_GLOW_HIDE_FADE_S = 0.6
+def _dim_target_for_brightness(brightness: float) -> float:
+    # Spike to 0.80 at mid-gray
+    if brightness <= 0.5:
+        t = brightness / 0.5
+        return _DIM_OPACITY_DARK + t * (0.80 - _DIM_OPACITY_DARK)
+    else:
+        t = (brightness - 0.5) / 0.5
+        return 0.80 + t * (_DIM_OPACITY_LIGHT - 0.80)
+
+# Amplitude smoothing: rise fast, decay slow
+_RISE_FACTOR = 0.99  # 3x faster (was 0.90)
+_DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
+
+# Fade timing (all 3x faster)
+_FADE_IN_S = 0.026
+_FADE_OUT_S = 0.066
+_GLOW_SHOW_FADE_S = 0.066
+_GLOW_HIDE_FADE_S = 0.2
 _GLOW_SHOW_TIMING = "easeIn"
-_DIM_SHOW_FADE_S = 1.08
-_DIM_HIDE_FADE_S = 2.4
-_WINDOW_TEARDOWN_CUSHION_S = 0.05
+_DIM_SHOW_FADE_S = 0.36
+_DIM_HIDE_FADE_S = 0.8
+_WINDOW_TEARDOWN_CUSHION_S = 0.016
 
 
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0  # seconds between recurring samples
@@ -96,7 +106,7 @@ _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 3.05  # back to original
+_VIGNETTE_OPACITY_SCALE = 4.575  # back to original
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -306,7 +316,13 @@ def _asymmetric_rounded_rect_sdf(
     qx = np.abs(x) - (half_width - radii)
     qy = np.abs(y) - (half_height - radii)
     outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
-    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    
+    # Smooth the inner corner ridge where the negative distances meet
+    corner_smoothing = 24.0
+    seam = np.maximum(corner_smoothing - np.abs(qx - qy), 0.0)
+    smoothed_max = np.maximum(qx, qy) + (seam * seam) * (0.25 / corner_smoothing)
+    
+    inside = np.minimum(smoothed_max, 0.0)
     return outside + inside - radii
 
 
@@ -474,7 +490,6 @@ def _continuous_vignette_pass_specs():
             "color_scale": 0.12,
         },
     ]
-
 
 def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSColor]:
     """Build additive glow colors keyed by intensity role."""
@@ -684,7 +699,7 @@ class GlowOverlay(NSObject):
         # Fade in screen dim — adaptive opacity based on screen brightness.
         # Sample once per recording, not per-frame.
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_target_for_brightness(brightness)
             logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
 
             pres = self._dim_layer.presentationLayer()
@@ -730,7 +745,7 @@ class GlowOverlay(NSObject):
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_target_for_brightness(new_brightness)
             from Quartz import CABasicAnimation, CAMediaTimingFunction
             pres = self._dim_layer.presentationLayer()
             current = pres.opacity() if pres is not None else self._dim_layer.opacity()
