@@ -932,6 +932,32 @@ class TestDualModelConfiguration:
             "note": "Routing forced by env: SPOKE_COMMAND_URL",
         }
 
+    def test_handle_model_menu_none_ignores_stale_localhost_env_for_sidecar(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_model_options = [("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True)]
+        d._command_backend = "sidecar"
+        d._command_sidecar_url = "http://192.168.68.127:8001"
+        d._command_url = "http://192.168.68.127:8001"
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["command_backend"] == {
+            "title": "Assistant Backend: Sidecar",
+            "items": [
+                ("local", "Local (localhost:8001)", False, True),
+                ("sidecar", "Sidecar (192.168.68.127:8001)", True, True),
+            ],
+        }
+        assert model_state["command_endpoint"] == {
+            "title": "Assistant Endpoint: 192.168.68.127:8001",
+            "note": "Routing source: saved sidecar URL",
+        }
+
     def test_handle_model_menu_none_surfaces_tts_backend_and_endpoint(
         self, main_module, monkeypatch
     ):
@@ -1446,6 +1472,16 @@ class TestDualModelConfiguration:
                 False,
             )
         ]
+
+    def test_resolve_command_url_prefers_saved_sidecar_url_over_stale_localhost_env(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "sidecar"
+        d._command_sidecar_url = "http://192.168.68.127:8001"
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+
+        assert d._resolve_command_url() == "http://192.168.68.127:8001"
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch

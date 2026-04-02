@@ -1896,7 +1896,7 @@ class SpokeAppDelegate(NSObject):
                     "selected": self._command_model_id,
                     "models": self._command_model_options,
                 }
-                env_command_url = os.environ.get("SPOKE_COMMAND_URL")
+                env_command_url = self._effective_command_env_url()
                 cmd_url = getattr(self, "_command_url", "") or ""
                 cmd_sidecar_url = getattr(self, "_command_sidecar_url", "")
                 cmd_backend = getattr(self, "_command_backend", "local")
@@ -2348,9 +2348,23 @@ class SpokeAppDelegate(NSObject):
         payload[key] = value
         return self._save_preferences(payload)
 
+    def _effective_command_env_url(self) -> str | None:
+        env_url = os.environ.get("SPOKE_COMMAND_URL")
+        if not env_url:
+            return None
+        command_backend = getattr(self, "_command_backend", "local")
+        command_sidecar_url = getattr(self, "_command_sidecar_url", "")
+        if (
+            command_backend == "sidecar"
+            and command_sidecar_url
+            and env_url.rstrip("/") == _DEFAULT_COMMAND_URL.rstrip("/")
+        ):
+            return None
+        return env_url
+
     def _resolve_command_url(self) -> str:
         """Return the effective command URL based on backend preference."""
-        env_url = os.environ.get("SPOKE_COMMAND_URL")
+        env_url = self._effective_command_env_url()
         if env_url:
             return env_url
         if self._command_backend == "sidecar" and self._command_sidecar_url:
