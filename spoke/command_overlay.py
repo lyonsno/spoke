@@ -80,8 +80,6 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
 
 # Adaptive compositing for command output.
-_BG_COLOR_DARK = (0.1, 0.1, 0.12)
-_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
 _USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
 _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
@@ -106,7 +104,9 @@ def _lerp_color(
 
 
 def _background_color_for_brightness(brightness: float) -> tuple[float, float, float]:
-    return _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, _clamp01(brightness))
+    from .overlay import _BG_COLOR_DARK as _PREVIEW_BG_COLOR_DARK, _BG_COLOR_LIGHT as _PREVIEW_BG_COLOR_LIGHT
+
+    return _lerp_color(_PREVIEW_BG_COLOR_DARK, _PREVIEW_BG_COLOR_LIGHT, _clamp01(brightness))
 
 
 def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -1037,10 +1037,14 @@ class CommandOverlay(NSObject):
     def _apply_surface_theme(self) -> None:
         if self._content_view is None:
             return
-        bg_r, bg_g, bg_b = _background_color_for_brightness(self._brightness)
-        self._content_view.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, _BG_ALPHA).CGColor()
-        )
+        # Keep the content view transparent so the same SDF fill/material carries
+        # the assistant window chrome as the preview overlay.
+        self._content_view.layer().setBackgroundColor_(None)
+        last_t = getattr(self, "_fill_image_brightness", -1.0)
+        if abs(self._brightness - last_t) > 0.03:
+            self._fill_image_brightness = self._brightness
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
         self._apply_thinking_label_theme()
 
     def _apply_thinking_label_theme(self) -> None:

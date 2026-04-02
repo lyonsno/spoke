@@ -357,20 +357,30 @@ class TestAdaptiveCompositing:
         assert overlay._brightness == pytest.approx(0.8)
         assert overlay._brightness_target == pytest.approx(0.8)
 
-    def test_show_uses_light_background_after_brightness_snap(self, mock_pyobjc):
+    def test_show_keeps_content_background_clear_after_brightness_snap(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay.set_brightness(1.0, immediate=True)
 
-        mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+        overlay._content_view.layer.return_value.setBackgroundColor_.reset_mock()
         overlay.show()
 
-        bg_call = None
-        for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list:
-            r, g, b, a = call[0]
-            if a == pytest.approx(mod._BG_ALPHA) and min(r, g, b) > 0.85:
-                bg_call = call[0]
-                break
-        assert bg_call is not None
+        overlay._content_view.layer.return_value.setBackgroundColor_.assert_called_with(None)
+
+    def test_background_fill_tracks_preview_overlay_chrome(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        sys.modules.pop("spoke.overlay", None)
+        command_mod = importlib.import_module("spoke.command_overlay")
+        overlay_mod = importlib.import_module("spoke.overlay")
+        try:
+            assert command_mod._background_color_for_brightness(0.0) == pytest.approx(
+                overlay_mod._BG_COLOR_DARK
+            )
+            assert command_mod._background_color_for_brightness(1.0) == pytest.approx(
+                overlay_mod._BG_COLOR_LIGHT
+            )
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+            sys.modules.pop("spoke.overlay", None)
 
     def test_response_color_darkens_for_bright_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
