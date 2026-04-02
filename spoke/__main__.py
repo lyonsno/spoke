@@ -2489,12 +2489,27 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
-                state["tts_voice"] = {
-                    "title": f"TTS Voice: {current_voice or '(not set)'}",
-                    "items": [
-                        ("configure_voice", "Set TTS Voice\u2026", False, True),
-                    ],
-                }
+                if tts_backend == "sidecar":
+                    sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
+                else:
+                    sidecar_voices = []
+                if sidecar_voices:
+                    voice_models = [
+                        (v, v, v == current_voice) for v in sidecar_voices
+                    ]
+                    state["tts_voice"] = {
+                        "type": "choice",
+                        "selected": current_voice,
+                        "models": voice_models,
+                    }
+                else:
+                    state["tts_voice"] = {
+                        "type": "toggle",
+                        "title": f"TTS Voice: {current_voice or '(not set)'}",
+                        "items": [
+                            ("configure_voice", "Set TTS Voice\u2026", False, True),
+                        ],
+                    }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
             self._select_model(selection)
@@ -2956,6 +2971,31 @@ class SpokeAppDelegate(NSObject):
                 options.append((model_id, model_id, model_id == current_model))
         return options
 
+    def _discover_tts_sidecar_voices(self, model_name: str = "") -> list[str]:
+        """Fetch available voices from the TTS sidecar's /v1/voices endpoint."""
+        url = getattr(self, "_tts_sidecar_url", "")
+        if not url:
+            return []
+        import urllib.request
+        import urllib.error
+        import urllib.parse
+        voices_url = f"{url.rstrip('/')}/v1/voices"
+        if model_name:
+            voices_url += f"?model_name={urllib.parse.quote(model_name)}"
+        try:
+            req = urllib.request.Request(voices_url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception:
+            logger.warning("Failed to fetch TTS sidecar voices from %s", voices_url, exc_info=True)
+            return []
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        voices: list[str] = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                voices.extend(entry.get("voices", []))
+        return voices
+
     def _apply_tts_backend_selection(self, backend: str) -> None:
         """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
         if backend == "configure_tts":
@@ -3331,6 +3371,14 @@ class SpokeAppDelegate(NSObject):
         if selection == "configure_voice":
             self._configure_tts_voice()
             return
+        # Direct voice name selection from discovered voices
+        tts = getattr(self, "_tts_client", None)
+        current_voice = getattr(tts, "_voice", "") if tts else ""
+        if selection == current_voice:
+            return
+        self._save_preference("tts_voice", selection)
+        logger.info("TTS voice changed: %s -> %s", current_voice, selection)
+        self._relaunch()
 
     def _configure_tts_voice(self) -> None:
         """Show a dialog to set the TTS voice name."""
