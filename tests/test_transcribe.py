@@ -242,6 +242,21 @@ class TestTranscriptionFiltering:
             "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis"
         )
 
+    def test_safe_nonword_followup_regressions_are_repaired(self):
+        """Safe non-word ontology misses should normalize without broadening to real words."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
     def test_whitespace_only_is_hallucination(self):
         """Whitespace-only result should be treated as hallucination."""
         client = TranscriptionClient(base_url="http://x")

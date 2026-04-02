@@ -230,6 +230,20 @@ class TestLocalTranscriptionClient:
         )
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_safe_nonword_followup_regressions(self, mock_mlx_whisper):
+        """Safe non-word ontology misses should normalize without broadening to real words."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient

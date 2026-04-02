@@ -112,11 +112,13 @@ family as the rest of the UI. Current observed failure examples include:
 - `Uxis`, `of seizes`, `Oxygesis`, `Oxesis`, `auxesus` -> `aúxesis`
 - `Syllogy`, `silagee`, `sueji`, `Silegy` -> `syllogé`
 - `appless kept says`, `upper skepticism`, `Aposcepsis`, `Episcapsis` -> `aposképsis`
-- `kerigma`, `kergma`, `Curigma`, `Karigma`, `Charygma` -> `kérygma`
+- `kerigma`, `kergma`, `Curigma`, `Karigma`, `Charygma`, `chorigma` -> `kérygma`
 - `epinorthosis`, `Epin orthosis`, `Evanorthosis` -> `epanórthosis`
+- `epispokisis`, `epispokosis` -> `epispókisis`
 - `semi-hostess`, `semi-oce's`, `Semion`, `Semian` -> `sēmeiōsis`, `sēmeion`
-- `Probolia`, `Proboli`, `probly` -> `probolé`
+- `Probolia`, `Proboli`, `probly`, `probaly`, `probally` -> `probolé`
 - `Autopuise`, `Autopoises`, `Otopoiesis` -> `autopoíesis`
+- `ooxisis` -> `aúxesis`
 - `Catastasis` -> `katástasis`
 - `Lysis` -> `lýsis`
 

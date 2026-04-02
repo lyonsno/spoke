@@ -148,6 +148,12 @@ class TestRepairOntologyTerms:
             "Epístaxis Epanórthosis Sēmeion Kérygma Sēmeion"
         )
 
+    def test_repairs_safe_nonword_followup_regressions(self):
+        text = "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        assert repair_ontology_terms(text) == (
+            "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
     def test_logs_when_repair_fires(self, caplog):
         with caplog.at_level(logging.INFO, logger="spoke.dedup"):
             repaired = repair_ontology_terms("And then read Epistaxes.")
