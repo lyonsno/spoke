@@ -170,7 +170,7 @@ def test_launch_scripts_preserve_spaces_in_target_paths():
 
 
 def test_launch_script_logs_preflight_kill_diagnostics():
-    """The launcher should log its preflight without broad process killing."""
+    """The main launcher should terminate the prior local python-based spoke process."""
     text = _script_text()
 
     assert "Launcher PID" in text
@@ -209,8 +209,18 @@ def test_launch_target_script_reads_named_target_registry():
     assert 'TARGET_ID="${1:-${TARGET_ID:-}}"' in text
     assert "spoke-launch-target.log" in text
     assert "SPOKE_LAUNCH_TARGET_ID" in text
-    assert 'pkill -TERM -f "python.*spoke"' not in text
-    assert ".spoke.lock" not in text
+    assert '"pkill", "-TERM", "-f", "python.*spoke"' in text
+    assert ".spoke.lock" in text
+
+
+def test_main_launch_script_replaces_existing_local_python_spoke_process():
+    """The main launcher should kill the previous local python-based spoke before launching."""
+    text = _main_script_text()
+
+    assert '"pkill", "-TERM", "-f", "python.*spoke"' in text
+    assert 'lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"' in text
+    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' not in text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in text
 
 
 def test_inline_launch_target_launcher_starts_requested_target(tmp_path):

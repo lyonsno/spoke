@@ -96,7 +96,6 @@ with log_file.open("a", encoding="utf-8") as log:
         child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))
         child_env["REPO_ROOT"] = str(repo_root)
         child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id
-        child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")
         child_env.pop("SPOKE_PREVIEW_MODEL", None)
         child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
         child_env.pop("SPOKE_WHISPER_MODEL", None)
@@ -115,7 +114,16 @@ with log_file.open("a", encoding="utf-8") as log:
 
         log.write(f"Launching Spoke target {target_id} from {repo_root}\n")
         log.write(f"Launcher child command: {command!r}\n")
-        log.write("Launch target handoff: deferring prior-instance shutdown to single-instance guard.\n")
+        subprocess.run(
+            ["pkill", "-TERM", "-f", "python.*spoke"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        time.sleep(0.5)
+        lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
+        lock_file.unlink(missing_ok=True)
+        log.write("Launch target handoff: terminated prior local python-based spoke processes.\n")
         log.flush()
 
         subprocess.Popen(
