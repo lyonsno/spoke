@@ -2687,6 +2687,63 @@ class TestShortShiftHold:
         d._overlay.show_tray.assert_not_called()
 
 
+class TestShortEnterHold:
+    """Test assistant recall/dismiss robustness for short enter-holds."""
+
+    def test_short_enter_hold_without_speech_recalls_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._is_speech = False
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("hello")
+        d._command_overlay.append_token.assert_called()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_short_enter_hold_without_speech_dismisses_visible_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._is_speech = False
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.cancel_dismiss.assert_called_once()
+        d._command_overlay.show.assert_not_called()
+        assert d._detector.command_overlay_active is False
+
+    def test_short_enter_hold_with_speech_keeps_audio_for_transcription(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._is_speech = True
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+            d._on_hold_end(shift_held=False, enter_held=True)
+
+        MockThread.assert_called_once()
+        mock_thread.start.assert_called_once()
+
+
 class TestCommandOverlayDismissRecallCycle:
     """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
 

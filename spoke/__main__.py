@@ -979,6 +979,12 @@ class SpokeAppDelegate(NSObject):
         if shift_held and elapsed < 0.8:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
+        elif enter_held and elapsed < 0.8 and not getattr(self, "_is_speech", False):
+            logger.info(
+                "Short enter-hold without speech (%.0fms) — assistant recall path",
+                elapsed * 1000,
+            )
+            wav_bytes = b""
 
         # Glow/dimmer: hide immediately for text insertion
         if not shift_held and not enter_held and self._glow is not None:
