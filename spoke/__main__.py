@@ -1771,6 +1771,7 @@ class SpokeAppDelegate(NSObject):
         # Stream the command in a background thread
         def _stream():
             full_response = ""
+            stale_break = False
             try:
                 for event in self._command_client.stream_command_events(
                     text,
@@ -1778,6 +1779,7 @@ class SpokeAppDelegate(NSObject):
                     tool_executor=self._make_tool_executor(),
                 ):
                     if token != self._transcription_token:
+                        stale_break = True
                         break  # stale
                     if event.kind == "assistant_delta":
                         full_response += event.text
@@ -1787,7 +1789,8 @@ class SpokeAppDelegate(NSObject):
                             False,
                         )
                     elif event.kind == "assistant_final":
-                        full_response = event.text
+                        if not full_response:
+                            full_response = event.text
             except Exception:
                 logger.exception("Command stream failed")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1795,9 +1798,9 @@ class SpokeAppDelegate(NSObject):
                 )
                 return
             finally:
-                # Save history even if the generator was interrupted by a stale
-                # token break — otherwise the model loses all conversation context.
-                if full_response:
+                # Repair history only when a stale token break interrupts the
+                # streaming loop before the command client can finalize the turn.
+                if stale_break and full_response:
                     self._command_client._history.append((text, full_response))
                     max_h = self._command_client._max_history
                     if len(self._command_client._history) > max_h:
@@ -1904,6 +1907,7 @@ class SpokeAppDelegate(NSObject):
 
         # Step 2: Stream the command response
         full_response = ""
+        stale_break = False
         try:
             for event in self._command_client.stream_command_events(
                 utterance,
@@ -1911,21 +1915,37 @@ class SpokeAppDelegate(NSObject):
                 tool_executor=self._make_tool_executor(),
             ):
                 if token != self._transcription_token:
+                    stale_break = True
                     break  # stale
-                if event.kind == "assistant_delta":
+                if event.kind == "assistant_delta" or event.kind == "tool_call":
+                    if event.text:
+                        full_response += event.text
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "commandToken:",
                         {"token": token, "text": event.text},
                         False,
                     )
                 elif event.kind == "assistant_final":
-                    full_response = event.text
+                    if not full_response:
+                        full_response = event.text
         except Exception:
             logger.exception("Command stream failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandFailed:", {"token": token, "error": "Command failed"}, False
             )
             return
+        finally:
+            # Repair history only when a stale token break interrupts the
+            # streaming loop before the command client can finalize the turn.
+            if stale_break and full_response:
+                self._command_client._history.append((utterance, full_response))
+                max_h = self._command_client._max_history
+                if len(self._command_client._history) > max_h:
+                    self._command_client._history.pop(0)
+                logger.info(
+                    "Command history saved after stale token break: %d turns",
+                    len(self._command_client._history),
+                )
 
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "commandComplete:", {"token": token, "response": full_response}, False
