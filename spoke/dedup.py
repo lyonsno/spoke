@@ -4,7 +4,8 @@ Whisper has two known failure modes:
 1. Decoder loop: repeats the last word/phrase indefinitely
 2. Silence hallucination: outputs "Thank you." or similar on silent input
 
-This module detects both and cleans the output.
+This module also carries bounded post-transcription repairs for observed
+Epistaxis ontology vocabulary failures.
 """
 
 from __future__ import annotations
@@ -13,6 +14,16 @@ import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+_ONTOLOGY_REPAIRS = (
+    (r"\bepistaxism\b", "Epistaxis main"),
+    (r"\bepistaxistopos\b", "Epistaxis topos"),
+    (r"\b(?:epistaxes|epistax|nepistaxis|epistexis|epistek|epistaxity)\b", "Epistaxis"),
+    (r"\b(?:topoie|topoit)\b", "topoi"),
+    (r"\ban (?:afro|afra)\b", "anaphora"),
+    (r"\bafra\b", "anaphora"),
+)
 
 
 def truncate_repetition(text: str, min_phrase_len: int = 3, min_repeats: int = 3) -> str:
@@ -93,3 +104,18 @@ _SILENCE_HALLUCINATIONS = {
 def is_hallucination(text: str) -> bool:
     """Return True if the text is a known Whisper silence hallucination."""
     return text.strip().lower() in _SILENCE_HALLUCINATIONS
+
+
+def repair_ontology_terms(text: str) -> str:
+    """Repair observed Epistaxis ontology vocabulary failures.
+
+    This is intentionally log-backed and bounded. Only variants seen in
+    launch logs are repaired here.
+    """
+    repaired = text
+    for pattern, replacement in _ONTOLOGY_REPAIRS:
+        repaired = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
+
+    if repaired != text:
+        logger.info("Repaired ontology vocabulary: %r -> %r", text, repaired)
+    return repaired

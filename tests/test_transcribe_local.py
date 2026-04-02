@@ -174,6 +174,16 @@ class TestLocalTranscriptionClient:
         assert client.transcribe(buf.getvalue()) == "hello"
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_observed_ontology_failures(self, mock_mlx_whisper):
+        """Observed launch-log ontology failures should normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "Read Epistaxistopos and an Afro."}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == "Read Epistaxis topos and anaphora."
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient

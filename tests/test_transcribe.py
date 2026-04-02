@@ -182,6 +182,17 @@ class TestTranscriptionFiltering:
 
         assert client.transcribe(b"wav") == "The quick brown fox jumps over the lazy dog."
 
+    def test_observed_ontology_failures_are_repaired(self):
+        """Observed launch-log ontology failures should normalize on the Whisper path."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "Read Nepistaxis and update the Topoie."}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == "Read Epistaxis and update the topoi."
+
     def test_whitespace_only_is_hallucination(self):
         """Whitespace-only result should be treated as hallucination."""
         client = TranscriptionClient(base_url="http://x")
