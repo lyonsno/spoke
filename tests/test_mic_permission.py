@@ -263,8 +263,9 @@ class TestSigtermMenuBarCleanup:
                     ) as mock_alloc:
                         mock_alloc.return_value.init.return_value = delegate
 
-                        with patch("PyObjCTools.AppHelper.runEventLoop"):
-                            main_module.main()
+                        with patch.object(main_module, "_acquire_instance_lock"):
+                            with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                main_module.main()
 
         assert signal_mod.SIGTERM in captured_handlers, (
             "main() did not install a SIGTERM handler"
@@ -302,20 +303,22 @@ class TestSigtermMenuBarCleanup:
                                     ) as mock_alloc:
                                         mock_alloc.return_value.init.return_value = delegate
 
-                                        with patch("PyObjCTools.AppHelper.runEventLoop"):
-                                            main_module.main()
+                                        with patch.object(main_module, "_acquire_instance_lock"):
+                                            with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                                main_module.main()
 
                                         captured_handlers[signal_mod.SIGTERM](
                                             signal_mod.SIGTERM, None
                                         )
 
-        mock_logger.info.assert_any_call(
-            "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",
-            4242,
-            2121,
-            "/tmp/spoke",
-            "4242",
-        )
+        sigterm_calls = [
+            c
+            for c in mock_logger.info.call_args_list
+            if c[0][0] == "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)"
+        ]
+        assert len(sigterm_calls) == 1, "Expected exactly one SIGTERM log line"
+        _, pid, ppid, cwd, _ = sigterm_calls[0][0]
+        assert (pid, ppid, cwd) == (4242, 2121, "/tmp/spoke")
 
 
 class TestMicProbeCallbacks:
