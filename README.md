@@ -28,6 +28,7 @@ Quick taps still produce a normal space. Longer holds trigger recording, show th
 - Voice command pathway via Shift+Space — sends utterances to a local LLM with streaming response overlay
 - OCR-verified paste with automatic recovery overlay on failure
 - Decoder-loop and silence-hallucination deduplication
+- Bounded Whisper ontology-vocabulary repair for recurring Epistaxis terms
 - Single-instance app behavior
 - Menubar-only UI with no Dock icon
 
@@ -110,6 +111,21 @@ When `SPOKE_COMMAND_URL` is set, Shift+Space activates the command pathway inste
 ```sh
 SPOKE_COMMAND_URL=http://localhost:8001 uv run spoke
 ```
+
+### Whisper ontology vocabulary repair
+
+Spoke applies a bounded post-transcription repair pass for recurring
+Epistaxis ontology terms that have already shown up incorrectly in real launch
+logs. Current observed failure examples include:
+
+- `Epistaxes`, `Nepistaxis`, `Epistexis` -> `Epistaxis`
+- `Epistaxistopos` -> `Epistaxis topos`
+- `Topoie`, `topoit` -> `topoi`
+- `an Afro`, `Afra` -> `anaphora`
+
+Whenever one of these repairs fires, the launch logs keep both the raw and
+repaired text so the vocabulary list can expand from observed failures instead
+of invented cases.
 
 ## Permissions
 

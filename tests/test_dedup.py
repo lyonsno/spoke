@@ -1,6 +1,8 @@
-"""Tests for repetition loop detection and truncation."""
+"""Tests for transcription cleanup helpers."""
 
-from spoke.dedup import truncate_repetition, is_hallucination
+import logging
+
+from spoke.dedup import truncate_repetition, is_hallucination, repair_ontology_terms
 
 
 class TestTruncateRepetition:
@@ -84,3 +86,30 @@ class TestIsHallucination:
 
     def test_thank_you_in_longer_text(self):
         assert is_hallucination("Thank you for coming today.") is False
+
+
+class TestRepairOntologyTerms:
+    """Test log-backed ontology vocabulary repairs."""
+
+    def test_repairs_observed_epistaxis_variants(self):
+        text = "Leave a review ticket for it in Epistaxes and read Nepistaxis."
+        assert repair_ontology_terms(text) == "Leave a review ticket for it in Epistaxis and read Epistaxis."
+
+    def test_repairs_concatenated_epistaxis_topos(self):
+        text = "Are we including that in our Epistaxistopos?"
+        assert repair_ontology_terms(text) == "Are we including that in our Epistaxis topos?"
+
+    def test_repairs_observed_topoi_and_anaphora_variants(self):
+        text = "Epistexis Topoie and an Afro are both wrong."
+        assert repair_ontology_terms(text) == "Epistaxis topoi and anaphora are both wrong."
+
+    def test_logs_when_repair_fires(self, caplog):
+        with caplog.at_level(logging.INFO, logger="spoke.dedup"):
+            repaired = repair_ontology_terms("And then read Epistaxes.")
+
+        assert repaired == "And then read Epistaxis."
+        assert "Repaired ontology vocabulary" in caplog.text
+
+    def test_leaves_unrelated_text_unchanged(self):
+        text = "This is ordinary dictation with no Greek ontology vocabulary."
+        assert repair_ontology_terms(text) == text
