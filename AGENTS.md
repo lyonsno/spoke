@@ -59,5 +59,6 @@ When changing or resetting local smoke hotkeys:
 - keep the meaning legible: `Space` for pinned `main`, `K` for the current smoke target, and any optional extra smoke binding clearly named and logged
 - prefer retargeting `~/.config/spoke/*-target` files over editing launcher scripts when only the destination worktree changes
 - if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
+- treat missing target-worktree `.venv` bootstrap as launcher responsibility by default: checked-in launchers should repair it with `uv sync --extra tts --group dev` before first run rather than assuming a separate remembered manual step
 - if a launcher needs a known-good interpreter because a fresh worktree venv crashes, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path into the shared launcher
 - record any durable remap or reset rule in repo docs and `spoke` Epistaxis rather than leaving it only in thread history

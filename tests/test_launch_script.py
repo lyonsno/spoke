@@ -22,6 +22,13 @@ def _smoke_script_text() -> str:
     return script.read_text()
 
 
+def _main_inline_launcher_source() -> str:
+    text = _main_script_text()
+    start = text.index("<<'PY'\n") + len("<<'PY'\n")
+    end = text.rindex("\nPY")
+    return text[start:end]
+
+
 def _launch_target_script_text() -> str:
     script = Path(__file__).resolve().parent.parent / "scripts" / "launch-target.sh"
     return script.read_text()
@@ -60,6 +67,25 @@ def _run_inline_launcher(
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-c", _inline_launcher_source()],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_main_inline_launcher(
+    repo_root: Path,
+    log_file: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["REPO_ROOT"] = str(repo_root)
+    env["LOG_FILE"] = str(log_file)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [sys.executable, "-c", _main_inline_launcher_source()],
         env=env,
         capture_output=True,
         text=True,
@@ -160,6 +186,17 @@ def test_launch_scripts_support_interpreter_override():
     """Pinned main/dev surfaces should be able to choose a known-good Python runtime."""
     assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _script_text()
     assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _main_script_text()
+
+
+def test_launch_scripts_bootstrap_missing_repo_venv():
+    """Launchers should repair a fresh worktree runtime instead of assuming someone ran uv sync."""
+    assert '"sync",' in _script_text()
+    assert '"--extra",' in _script_text()
+    assert '"tts",' in _script_text()
+    assert '"--group",' in _script_text()
+    assert '"dev",' in _script_text()
+    assert '"sync",' in _main_script_text()
+    assert '"sync",' in _smoke_script_text()
 
 
 def test_launch_scripts_preserve_spaces_in_target_paths():
@@ -373,6 +410,94 @@ def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):
     assert "No repo .venv Python found and UV launcher is unavailable." in log_text
 
 
+def test_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_path):
+    """Dev launch should sync the repo env when a fresh worktree has no local Python yet."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  mkdir -p \"$3/.venv/bin\"\n"
+        "  cat > \"$3/.venv/bin/python\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "printf 'bootstrapped-python-started\\n'\n"
+        "EOF\n"
+        "  chmod +x \"$3/.venv/bin/python\"\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "bootstrapped-python-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected bootstrapped repo python output to reach launch log")
+
+    assert sync_log.read_text().strip() == f"sync --directory {repo_root} --extra tts --group dev"
+    assert "bootstrapped-python-started\n" in log_file.read_text()
+
+
+def test_main_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_path):
+    """Main launch should self-heal a missing worktree env before starting spoke."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  mkdir -p \"$3/.venv/bin\"\n"
+        "  cat > \"$3/.venv/bin/python\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "printf 'main-bootstrapped-python-started\\n'\n"
+        "EOF\n"
+        "  chmod +x \"$3/.venv/bin/python\"\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_main_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "main-bootstrapped-python-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected bootstrapped main repo python output to reach launch log")
+
+    assert sync_log.read_text().strip() == f"sync --directory {repo_root} --extra tts --group dev"
+    assert "main-bootstrapped-python-started\n" in log_file.read_text()
+
+
 def test_smoke_inline_launcher_prefers_uv_tts_runtime(tmp_path):
     """Smoke launch should use uv --extra tts when TTS is enabled, even if .venv Python exists."""
     repo_root = tmp_path / "repo"
@@ -495,6 +620,57 @@ def test_smoke_inline_launcher_falls_back_to_path_uv_for_tts_runtime(tmp_path):
     assert "venv-python-started\n" not in log_text
     assert "--extra" in log_text
     assert "tts" in log_text
+
+
+def test_smoke_inline_launcher_bootstraps_missing_repo_venv_before_uv_run(tmp_path):
+    """Smoke launch should repair the repo env first so the worktree is reusable after launch."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  mkdir -p \"$3/.venv/bin\"\n"
+        "  cat > \"$3/.venv/bin/python\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "printf 'smoke-bootstrapped-python\\n'\n"
+        "EOF\n"
+        "  chmod +x \"$3/.venv/bin/python\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = \"run\" ]; then\n"
+        "  printf 'smoke-uv-run-started\\n'\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+            "SPOKE_TTS_VOICE": "casual_female",
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "smoke-uv-run-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected smoke uv run output to reach launch log")
+
+    sync_lines = sync_log.read_text().splitlines()
+    assert sync_lines[0] == f"sync --directory {repo_root} --extra tts --group dev"
+    assert sync_lines[1] == f"run --directory {repo_root} --extra tts python -m spoke"
+    assert (repo_root / ".venv" / "bin" / "python").is_file()
 
 
 def test_launch_script_prefers_configured_dev_target(tmp_path):

@@ -93,9 +93,49 @@ def _resolve_uv_bin(repo_root: Path) -> Optional[Path]:
     return None
 
 
+def _bootstrap_repo_python(
+    repo_root: Path,
+    uv_bin: Optional[Path],
+    log,
+) -> Optional[Path]:
+    repo_python = repo_root / ".venv" / "bin" / "python"
+    if repo_python.is_file():
+        return repo_python
+    if uv_bin is None:
+        return None
+
+    sync_command = [
+        str(uv_bin),
+        "sync",
+        "--directory",
+        str(repo_root),
+        "--extra",
+        "tts",
+        "--group",
+        "dev",
+    ]
+    log.write(f"Launcher bootstrap command: {sync_command!r}\n")
+    log.flush()
+    sync = subprocess.run(
+        sync_command,
+        cwd=repo_root,
+        env=os.environ.copy(),
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    log.write(f"Launcher bootstrap exit code: {sync.returncode}\n")
+    log.flush()
+    if repo_python.is_file():
+        return repo_python
+    return None
+
+
 repo_root = Path(os.environ["REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
-python_exe = Path(os.environ.get("VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python")))
+python_override = Path(os.environ.get("VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python")))
 uv_bin = _resolve_uv_bin(repo_root)
 child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
@@ -105,6 +145,12 @@ tts_enabled = bool(child_env.get("SPOKE_TTS_VOICE"))
 
 with log_file.open("a", encoding="utf-8") as log:
     try:
+        python_exe = python_override
+        if not python_override.is_file():
+            bootstrapped_python = _bootstrap_repo_python(repo_root, uv_bin, log)
+            if bootstrapped_python is not None:
+                python_exe = bootstrapped_python
+
         if tts_enabled and uv_bin is not None:
             command = [
                 str(uv_bin),

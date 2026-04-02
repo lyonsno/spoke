@@ -46,6 +46,19 @@ uv sync --extra tts --group dev
 The same `uv sync --extra tts --group dev` shape is the baseline for `main`,
 `dev`, and smoke worktrees when they need full local ASR/TTS support.
 
+Checked-in launchers now treat a missing target-worktree `.venv` as a repairable
+bootstrap problem, not as operator memory. If `main`, `dev`, or `smoke`
+launches point at a fresh worktree with no local runtime yet, the launcher will
+attempt:
+
+```sh
+uv sync --directory <target-worktree> --extra tts --group dev
+```
+
+before starting `spoke`. Manual `uv sync --extra tts --group dev` is still the
+cleanest way to front-load dependency/download failures, but forgetting it
+should no longer make first launch dead on arrival.
+
 If you are doing this from a sandboxed shell that cannot write the default UV
 cache, use:
 
@@ -136,6 +149,7 @@ Use the logs to separate binding failures from runtime failures:
 Typical interpretations:
 
 - no new log entry after keypress: likely binding or reload problem
+- log shows `Launcher bootstrap command:` followed by `uv sync ...`: target worktree was missing `.venv`; launcher is repairing it in place
 - log entry with `No repo .venv Python found and UV launcher is unavailable.`: runtime not provisioned
 - log entry followed by MLX/`libmlx.dylib` crash: launcher worked, target runtime is sick
 - log shows the expected target path and child command but the app still feels wrong: the wrong surface may be healthy enough to start but not the one you meant to smoke; verify the target file and branch badge
@@ -153,8 +167,8 @@ That badge is the fastest truth surface when the same box can launch `main`,
 If you need the short version:
 
 1. Verify the target file points at the intended worktree.
-2. Run `uv sync --extra tts --group dev` in that worktree.
-3. Restore `.spoke-smoke-env` with the command-model dir and any TTS overrides.
+2. Restore `.spoke-smoke-env` with the command-model dir and any TTS overrides.
+3. Run `uv sync --extra tts --group dev` yourself if you want to front-load install errors; otherwise let the launcher bootstrap on first run.
 4. If the worktree venv crashes in MLX, set `SPOKE_VENV_PYTHON` to a known-good interpreter.
 5. Reload WezTerm.
 6. Press the hotkey once and read the corresponding launcher log.
