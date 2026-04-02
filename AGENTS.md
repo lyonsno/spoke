@@ -53,6 +53,33 @@ Do not present an older local `main-next` worktree as "the current tip" just
 because it is named like a trunk surface or was the last place a smoke run
 happened.
 
+## Integration Landings
+
+When the user says to merge or land something on the integration branch, that
+means remote `origin/main-next`.
+
+An intermediate branch may still be used as a temporary landing carrier for
+verification, but it is only a short-lived transport surface:
+
+- cut it fresh from the then-current `origin/main-next`
+- port the intended change there
+- run the relevant verification there
+- remote-merge it to `main-next`
+- delete the branch and worktree immediately after merge
+
+Do not present an intermediate landing branch as a second integration branch,
+as a durable trunk variant, or as a user-facing launch target unless the human
+explicitly asked for that separate surface.
+
+If a feature branch was not directly smoke-ready on its own base and had to be
+rebased, cherry-picked, or otherwise carried onto trunk-compatible support
+work, the smoke-ready surface must itself be re-sliced from the then-current
+`origin/main-next` before being called ready. Do not smoke or hand off an older
+pre-carry surface as though it were current trunk.
+
+`Main Next Trunk` is the only ordinary local witness label for trunk. Extra
+launcher-visible trunk-like labels or surfaces need an explicit human request.
+
 ## Smoke-test branch launches
 
 When the user asks to spin up a separate fun or smoke-test branch, treat that as a request to launch the dedicated worktree for that branch rather than the stable default launcher path.
