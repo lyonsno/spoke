@@ -67,6 +67,8 @@ _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
+_ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.75)
+_ASSISTANT_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
@@ -125,6 +127,10 @@ def _response_color_for_brightness(
 
 def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, float, float]:
     return _lerp_color(_THINKING_CUTOUT_DARK, _THINKING_CUTOUT_LIGHT, _clamp01(brightness))
+
+
+def _assistant_text_alpha_for_breath(breath: float) -> float:
+    return _lerp(_ASSISTANT_TEXT_ALPHA_MIN, _ASSISTANT_TEXT_ALPHA_MAX, _clamp01(breath))
 
 
 def _ease_in(progress: float) -> float:
@@ -346,6 +352,15 @@ class CommandOverlay(NSObject):
         self._tts_blend = 0.0
         self._tts_amplitude = 0.0
         self._text_view.setString_("")
+        if hasattr(self._text_view, "textStorage"):
+            try:
+                from AppKit import NSMutableAttributedString
+
+                self._text_view.textStorage().setAttributedString_(
+                    NSMutableAttributedString.alloc().initWithString_("")
+                )
+            except Exception:
+                pass
         self._window.setAlphaValue_(0.0)
         self._set_overlay_scale(1.0)
 
@@ -365,6 +380,8 @@ class CommandOverlay(NSObject):
         self._scroll_view.setFrame_(
             NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         )
+        self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
 
         self._window.orderFrontRegardless()
@@ -642,7 +659,7 @@ class CommandOverlay(NSObject):
     _TTS_RISE = 0.70      # fast but not instant — avoids harsh pop-in
     _TTS_DECAY = 0.82     # gentle falloff — no clipping between words
     _TTS_MULTIPLIER = 25.0
-    _TTS_ALPHA_MIN = 0.45  # clearly visible even in pauses
+    _TTS_ALPHA_MIN = _ASSISTANT_TEXT_ALPHA_MIN  # keep assistant text firmly readable during playback
     _TTS_ALPHA_MAX = 1.0   # full brightness on voice peaks
 
     def update_tts_amplitude(self, rms: float) -> None:
@@ -751,7 +768,7 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
-        pulse_alpha_a = 0.52 + 0.325 * breath  # 130% brighter floor and ceiling
+        pulse_alpha_a = _assistant_text_alpha_for_breath(breath)
 
         # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
         # _tts_blend ramps toward 1.0 when TTS is active, toward 0.0 when not.

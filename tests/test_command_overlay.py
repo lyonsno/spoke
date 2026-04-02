@@ -237,6 +237,26 @@ class TestShowFinishHide:
         assert overlay._response_text == ""
         assert overlay._utterance_text == ""
 
+    def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay.show()
+
+        overlay._text_view.textStorage().setAttributedString_.assert_called_once()
+
+    def test_show_rebuilds_default_fill_geometry_before_reuse(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._fill_image_brightness = 0.0
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay.show()
+
+        overlay._apply_ridge_masks.assert_called_once_with(
+            mod._OVERLAY_WIDTH,
+            mod._OVERLAY_HEIGHT,
+        )
+
     def test_show_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None
@@ -381,6 +401,17 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
             sys.modules.pop("spoke.overlay", None)
+
+    def test_assistant_text_alpha_floor_and_ceiling_are_punchier(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._assistant_text_alpha_for_breath(0.0) == pytest.approx(0.75)
+            assert mod._assistant_text_alpha_for_breath(1.0) == pytest.approx(1.0)
+            assert mod.CommandOverlay._TTS_ALPHA_MIN == pytest.approx(0.75)
+            assert mod.CommandOverlay._TTS_ALPHA_MAX == pytest.approx(1.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
 
     def test_response_color_darkens_for_bright_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
