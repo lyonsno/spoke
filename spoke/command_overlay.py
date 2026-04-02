@@ -49,6 +49,12 @@ _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
 _FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
 _FADE_STEPS = 15
+_DISMISS_DURATION_S = 0.2
+_DISMISS_GROW_S = 0.06
+_DISMISS_SHRINK_S = _DISMISS_DURATION_S - _DISMISS_GROW_S
+_DISMISS_ANIM_FPS = 60.0
+_DISMISS_GROW_SCALE = 1.018
+_DISMISS_END_SCALE = 0.94
 
 def _max_overlay_height(screen_height: float) -> float:
     return max(_OVERLAY_HEIGHT, screen_height - _OVERLAY_BOTTOM_MARGIN - _OVERLAY_TOP_MARGIN)
@@ -121,6 +127,26 @@ def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, flo
     return _lerp_color(_THINKING_CUTOUT_DARK, _THINKING_CUTOUT_LIGHT, _clamp01(brightness))
 
 
+def _ease_in(progress: float) -> float:
+    clamped = _clamp01(progress)
+    return clamped * clamped
+
+
+def _dismiss_animation_state(elapsed_s: float) -> tuple[str, float, float, bool]:
+    elapsed = max(elapsed_s, 0.0)
+    if elapsed < _DISMISS_GROW_S:
+        eased = _ease_in(elapsed / _DISMISS_GROW_S)
+        scale = _lerp(1.0, _DISMISS_GROW_SCALE, eased)
+        return "grow", scale, 1.0, False
+
+    shrink_elapsed = elapsed - _DISMISS_GROW_S
+    eased = _ease_in(shrink_elapsed / _DISMISS_SHRINK_S)
+    scale = _lerp(_DISMISS_GROW_SCALE, _DISMISS_END_SCALE, eased)
+    alpha = 1.0 - eased
+    done = elapsed >= (_DISMISS_DURATION_S - 1e-9)
+    return "shrink", scale, alpha, done
+
+
 class CommandOverlay(NSObject):
     """Overlay for displaying streamed command responses."""
 
@@ -131,6 +157,7 @@ class CommandOverlay(NSObject):
 
         self._screen = screen or NSScreen.mainScreen()
         self._window: NSWindow | None = None
+        self._wrapper_view: NSView | None = None
         self._text_view: NSTextView | None = None
         self._scroll_view: NSScrollView | None = None
         self._content_view: NSView | None = None
@@ -145,6 +172,9 @@ class CommandOverlay(NSObject):
         self._fade_step = 0
         self._fade_from = 0.0
         self._fade_direction = 0
+        self._cancel_timer_anim: NSTimer | None = None
+        self._cancel_elapsed = 0.0
+        self._cancel_phase = ""
 
         # Pulse state
         self._pulse_timer: NSTimer | None = None
@@ -204,6 +234,9 @@ class CommandOverlay(NSObject):
         wrapper_frame = NSMakeRect(0, 0, win_w, win_h)
         wrapper = NSView.alloc().initWithFrame_(wrapper_frame)
         wrapper.setWantsLayer_(True)
+        wrapper.layer().setAnchorPoint_((0.5, 0.5))
+        wrapper.layer().setPosition_((win_w / 2, win_h / 2))
+        self._wrapper_view = wrapper
 
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
@@ -336,6 +369,7 @@ class CommandOverlay(NSObject):
         self._window.setContentView_(wrapper)
         self._window.setAlphaValue_(0.0)
         self._apply_surface_theme()
+        self._set_overlay_scale(1.0)
 
         logger.info("Command overlay created")
 
@@ -356,6 +390,7 @@ class CommandOverlay(NSObject):
         self._tts_amplitude = 0.0
         self._text_view.setString_("")
         self._window.setAlphaValue_(0.0)
+        self._set_overlay_scale(1.0)
 
         # Reset geometry
         screen_frame = self._screen.frame()
@@ -407,49 +442,36 @@ class CommandOverlay(NSObject):
             self._apply_surface_theme()
 
     def cancel_dismiss(self) -> None:
-        """Pseudo-haptic dismiss: 250ms hold at bright → 500ms fade off.
-
-        Total: 750ms from spacebar hold to gone. The user taps space,
-        the overlay brightens briefly (confirmation), then snaps away.
-        """
+        """Dismiss with a fast pop-then-shrink animation."""
         if self._window is None:
             return
         self._cancel_all_timers()
         self._streaming = False
         self._visible = True  # keep visible for the animation
 
-        self._cancel_step = 0
-        self._cancel_phase = "hold"  # hold → fade
-        # Brighten window to full — don't touch text color (no flash)
+        self._cancel_elapsed = 0.0
+        self._cancel_phase = "grow"
         self._window.setAlphaValue_(1.0)
+        self._set_overlay_scale(1.0)
         self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / 30.0, self, "_cancelAnimStep:", None, True
+            1.0 / _DISMISS_ANIM_FPS, self, "_cancelAnimStep:", None, True
         )
 
     def _cancelAnimStep_(self, timer) -> None:
-        """Animate the dismiss sequence: hold → fade."""
-        self._cancel_step += 1
+        """Animate the dismiss sequence: grow for 60ms, then shrink and fade."""
+        self._cancel_elapsed += 1.0 / _DISMISS_ANIM_FPS
+        phase, scale, alpha, done = _dismiss_animation_state(self._cancel_elapsed)
+        self._cancel_phase = phase
+        self._set_overlay_scale(scale)
+        self._window.setAlphaValue_(alpha)
 
-        if self._cancel_phase == "hold":
-            # Hold at full brightness for 250ms (~8 steps at 30fps)
-            if self._cancel_step >= 8:
-                self._cancel_step = 0
-                self._cancel_phase = "fade"
-
-        elif self._cancel_phase == "fade":
-            # Fade to zero over 500ms (~15 steps at 30fps)
-            progress = min(self._cancel_step / 15.0, 1.0)
-            eased = progress * progress
-            alpha = 1.0 - eased
-            self._window.setAlphaValue_(alpha)
-            if self._cancel_step >= 8:
-                if self._cancel_timer_anim is not None:
-                    self._cancel_timer_anim.invalidate()
-                    self._cancel_timer_anim = None
-                self._window.setAlphaValue_(0.0)
-                self._window.orderOut_(None)
-                self._visible = False
-                self._cancel_pulse()
+        if done:
+            self._cancel_dismiss_animation()
+            self._window.setAlphaValue_(0.0)
+            self._set_overlay_scale(1.0)
+            self._window.orderOut_(None)
+            self._visible = False
+            self._cancel_pulse()
 
     def hide(self) -> None:
         """Fade out — pulse continues during fade for visual continuity."""
@@ -851,11 +873,28 @@ class CommandOverlay(NSObject):
             self._linger_timer.invalidate()
             self._linger_timer = None
 
+    def _cancel_dismiss_animation(self) -> None:
+        if self._cancel_timer_anim is not None:
+            self._cancel_timer_anim.invalidate()
+            self._cancel_timer_anim = None
+
     def _cancel_all_timers(self) -> None:
+        self._cancel_dismiss_animation()
         self._cancel_fade()
         self._cancel_pulse()
         self._cancel_linger()
         self._stop_thinking_timer()
+
+    def _set_overlay_scale(self, scale: float) -> None:
+        if self._wrapper_view is None:
+            return
+        layer = self._wrapper_view.layer() if hasattr(self._wrapper_view, "layer") else None
+        if layer is None:
+            return
+        try:
+            layer.setValue_forKeyPath_(scale, "transform.scale")
+        except Exception:
+            logger.exception("Failed to update command overlay scale")
 
     # ── thinking timer ──────────────────────────────────────
 
