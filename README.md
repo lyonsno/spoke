@@ -110,8 +110,10 @@ logs. Current observed failure examples include:
 - `an Afro`, `Afra` -> `anaphora`
 - `Metadose`, `Metadose II` -> `Metadosis`
 - `Uxis`, `of seizes` -> `Auxesis`
-- `Syllogy` -> `sylloge`
+- `Syllogy`, `silagee`, `sueji` -> `sylloge`
 - `appless kept says`, `upper skepticism` -> `Aposkepsis`
+- `kerigma`, `kergma`, `carrygma`, `carigma` -> `kerygma`
+- `epinorthosis` -> `epanorthosis`
 - `semi-hostess`, `semi-oce's` -> `semiosis`
 - `Catastasis` -> `katastasis`
 

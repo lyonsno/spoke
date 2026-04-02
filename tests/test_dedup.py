@@ -113,6 +113,12 @@ class TestRepairOntologyTerms:
             "document, and compile our topos into a sylloge."
         )
 
+    def test_repairs_recent_sylloge_and_new_ontology_variants(self):
+        text = "Check the sueji, the kerigma badge, and epinorthosis."
+        assert repair_ontology_terms(text) == (
+            "Check the sylloge, the kerygma badge, and epanorthosis."
+        )
+
     def test_repairs_aposkepsis_semiosis_and_katastasis_variants(self):
         text = "The appless kept says naming and semi-hostess concept are close to Catastasis."
         assert repair_ontology_terms(text) == (

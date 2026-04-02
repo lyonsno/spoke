@@ -28,13 +28,15 @@ _ONTOLOGY_REPAIRS = (
     ),
     (r"\b(?:metadose(?:\s+(?:ii|so))?)\b", "Metadosis"),
     (r"\b(?:uxis|of seizes)\b", "Auxesis"),
-    (r"\bsyllogy\b", "sylloge"),
+    (r"\b(?:syllogy|silagee|sueji)\b", "sylloge"),
     (r"\btipos\b", "topos"),
     (r"\b(?:topoie|topoit)\b", "topoi"),
     (r"\bcatastasis\b", "katastasis"),
     (r"\b(?:upper skepticism|appless kept says|appless kepts)\b", "Aposkepsis"),
+    (r"\b(?:kerigma|kergma|carrygma|carigma)\b", "kerygma"),
     (r"\ban (?:afro|afra)\b", "anaphora"),
     (r"\bafra\b", "anaphora"),
+    (r"\bepinorthosis\b", "epanorthosis"),
     (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's)\b", "semiosis"),
 )
 

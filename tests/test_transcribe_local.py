@@ -198,6 +198,20 @@ class TestLocalTranscriptionClient:
         )
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_additional_ontology_failures(self, mock_mlx_whisper):
+        """Additional ontology variants should normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Check the sueji, the kerigma badge, and epinorthosis."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Check the sylloge, the kerygma badge, and epanorthosis."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient
