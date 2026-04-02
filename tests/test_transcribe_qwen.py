@@ -1,5 +1,6 @@
 """Tests for local Qwen3 ASR transcription client."""
 
+import builtins
 from unittest.mock import MagicMock, patch
 import io
 import wave
@@ -46,6 +47,16 @@ class TestLocalQwenClient:
 
         client = LocalQwenClient(model="Qwen/Qwen3-ASR-1.7B")
         assert client._model == "Qwen/Qwen3-ASR-1.7B"
+
+    def test_imports_qwen_runtime_lazily(self):
+        from spoke import transcribe_qwen
+
+        transcribe_qwen.mlx_qwen3_asr = None
+
+        with patch.object(builtins, "__import__", wraps=builtins.__import__) as mock_import:
+            client = transcribe_qwen.LocalQwenClient(model="Qwen/Qwen3-ASR-0.6B")
+            assert client._model == "Qwen/Qwen3-ASR-0.6B"
+            mock_import.assert_not_called()
 
     @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_transcribe_calls_session(self, mock_module):
