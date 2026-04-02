@@ -139,7 +139,7 @@ class TestTranscriptionToken:
         d._transcription_token = 5
         d._transcribing = True
 
-        with patch.object(main_module, "inject_text") as mock_inject:
+        with patch.object(d, "_inject_result_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
 
         mock_inject.assert_called_once()
@@ -260,7 +260,7 @@ class TestPreviewFinalizationContract:
         d._transcribing = True
         d._last_preview_text = "usable preview text"
 
-        with patch.object(main_module, "inject_text") as mock_inject:
+        with patch.object(d, "_inject_result_text") as mock_inject:
             d.transcriptionFailed_({"token": 7})
 
         mock_inject.assert_called_once()
