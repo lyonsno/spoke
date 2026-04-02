@@ -456,6 +456,52 @@ def test_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_path):
     assert "bootstrapped-python-started\n" in log_file.read_text()
 
 
+def test_inline_launcher_falls_back_to_uv_run_when_bootstrap_does_not_create_python(
+    tmp_path,
+):
+    """A failed bootstrap should still let the dev launcher run via uv."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  exit 7\n"
+        "fi\n"
+        "if [ \"$1\" = \"run\" ]; then\n"
+        "  printf 'uv-run-fallback-started\\n'\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "uv-run-fallback-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected uv run fallback output to reach launch log")
+
+    sync_lines = sync_log.read_text().splitlines()
+    assert sync_lines[0] == f"sync --directory {repo_root} --extra tts --group dev"
+    assert sync_lines[1] == f"run --directory {repo_root} python -m spoke"
+    assert "Launcher bootstrap exit code: 7" in log_file.read_text()
+
+
 def test_main_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_path):
     """Main launch should self-heal a missing worktree env before starting spoke."""
     repo_root = tmp_path / "repo"
@@ -498,6 +544,52 @@ def test_main_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_pat
 
     assert sync_log.read_text().strip() == f"sync --directory {repo_root} --extra tts --group dev"
     assert "main-bootstrapped-python-started\n" in log_file.read_text()
+
+
+def test_main_inline_launcher_falls_back_to_uv_run_when_bootstrap_does_not_create_python(
+    tmp_path,
+):
+    """Main launch should still reach uv run if bootstrap fails to materialize repo Python."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  exit 9\n"
+        "fi\n"
+        "if [ \"$1\" = \"run\" ]; then\n"
+        "  printf 'main-uv-run-fallback-started\\n'\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_main_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "main-uv-run-fallback-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected main uv run fallback output to reach launch log")
+
+    sync_lines = sync_log.read_text().splitlines()
+    assert sync_lines[0] == f"sync --directory {repo_root} --extra tts --group dev"
+    assert sync_lines[1] == f"run --directory {repo_root} python -m spoke"
+    assert "Launcher bootstrap exit code: 9" in log_file.read_text()
 
 
 def test_smoke_inline_launcher_prefers_uv_tts_runtime(tmp_path):
@@ -673,6 +765,51 @@ def test_smoke_inline_launcher_bootstraps_missing_repo_venv_before_uv_run(tmp_pa
     assert sync_lines[0] == f"sync --directory {repo_root} --extra tts --group dev"
     assert sync_lines[1] == f"run --directory {repo_root} --extra tts python -m spoke"
     assert (repo_root / ".venv" / "bin" / "python").is_file()
+
+
+def test_smoke_inline_launcher_uses_uv_run_after_failed_bootstrap(tmp_path):
+    """Smoke launch should still use uv --extra tts if bootstrap fails to create repo Python."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  exit 11\n"
+        "fi\n"
+        "if [ \"$1\" = \"run\" ]; then\n"
+        "  printf 'smoke-uv-fallback-started\\n'\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+            "SPOKE_TTS_VOICE": "casual_female",
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "smoke-uv-fallback-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected smoke uv fallback output to reach launch log")
+
+    sync_lines = sync_log.read_text().splitlines()
+    assert sync_lines[0] == f"sync --directory {repo_root} --extra tts --group dev"
+    assert sync_lines[1] == f"run --directory {repo_root} --extra tts python -m spoke"
+    assert "Launcher bootstrap exit code: 11" in log_file.read_text()
 
 
 def test_launch_script_prefers_configured_dev_target(tmp_path):

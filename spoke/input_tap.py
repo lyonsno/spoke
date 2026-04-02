@@ -109,6 +109,7 @@ class SpacebarHoldDetector(NSObject):
         self._shift_latched = False  # True if shift was seen during WAITING/RECORDING
         self._enter_held = False  # True if enter is currently held for rocked Enter/space chords
         self._enter_latched = False  # True if enter was tapped during WAITING/RECORDING
+        self._suppress_enter_keyup = False
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
@@ -210,6 +211,7 @@ class SpacebarHoldDetector(NSObject):
         self._forwarding = False
         self._enter_held = False
         self._enter_latched = False
+        self._suppress_enter_keyup = False
         self._awaiting_space_release = False
         self._latched_space_down = False
         self._pending_release_active = False
@@ -559,19 +561,21 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if det._state == _State.LATCHED:
                 det._cancel_safety_timer()
                 det._state = _State.IDLE
+                det._suppress_enter_keyup = True
                 det._on_hold_end(shift_held=False, enter_held=True)
                 return None
-            if det._state in (_State.WAITING, _State.RECORDING):
-                det._enter_latched = True
-            # If tray is active, Enter = send to assistant.
-            # Only suppress Enter if the callback exists and is called.
-            # Always let Enter through if tray is not active.
             if getattr(det, 'tray_active', False):
                 on_enter = getattr(det, '_on_enter_pressed', None)
                 if on_enter is not None:
+                    det._suppress_enter_keyup = True
                     on_enter()
                     return None  # suppress enter during tray
-            # Enter passes through to the OS when tray is not active
+            if det._state in (_State.WAITING, _State.RECORDING):
+                det._enter_latched = True
+                det._suppress_enter_keyup = True
+                return None
+            # Bare Enter passes through to the OS when it is not part of a
+            # tray or space-rooted chord.
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
@@ -595,6 +599,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._start_release_decision_timer(
                     shift_held=False, mode="send_disarm"
                 )
+            if getattr(det, "_suppress_enter_keyup", False):
+                det._suppress_enter_keyup = False
+                return None
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:

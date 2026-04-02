@@ -883,12 +883,12 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay.cancel_dismiss()
             return
 
-        history = self._command_client.history
-        if not history:
-            logger.info("Assistant toggle — no history to recall")
+        snapshot = self._last_command_overlay_snapshot()
+        if snapshot is None:
+            logger.info("Assistant toggle — no overlay state to recall")
             return
 
-        last_utterance, last_response = history[-1]
+        last_utterance, last_response = snapshot
         logger.info("Assistant toggle — recalling last response")
         if self._command_overlay is not None:
             try:
@@ -898,6 +898,26 @@ class SpokeAppDelegate(NSObject):
                 self._command_overlay.finish()
             except Exception:
                 logger.exception("Recall overlay failed")
+
+    def _last_command_overlay_snapshot(self) -> tuple[str, str] | None:
+        """Return the best available command overlay snapshot to recall."""
+        if self._command_overlay is not None:
+            utterance = getattr(self._command_overlay, "_utterance_text", "")
+            response = getattr(self._command_overlay, "_response_text", "")
+            if not isinstance(utterance, str):
+                utterance = ""
+            if not isinstance(response, str):
+                response = ""
+            if utterance or response:
+                return utterance, response
+
+        if self._command_client is None:
+            return None
+
+        history = self._command_client.history
+        if history:
+            return history[-1]
+        return None
 
     def _on_hold_end(
         self,
@@ -1137,23 +1157,22 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.hide()
 
-        if self._command_client is not None:
-            history = self._command_client.history
-            if history:
-                last_utterance, last_response = history[-1]
-                logger.info("Recalling last response: %r", last_utterance[:50])
-                if self._command_overlay is not None:
-                    self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show()
-                    self._command_overlay.set_utterance(last_utterance)
-                    for ch in last_response:
-                        self._command_overlay.append_token(ch)
-                    self._command_overlay.finish()
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
-                return
+        snapshot = self._last_command_overlay_snapshot()
+        if snapshot is not None:
+            last_utterance, last_response = snapshot
+            logger.info("Recalling last response: %r", last_utterance[:50])
+            if self._command_overlay is not None:
+                self._sync_command_overlay_brightness(immediate=True)
+                self._command_overlay.show()
+                self._command_overlay.set_utterance(last_utterance)
+                for ch in last_response:
+                    self._command_overlay.append_token(ch)
+                self._command_overlay.finish()
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
 
-        logger.info("No history to recall")
+        logger.info("No command overlay state to recall")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
