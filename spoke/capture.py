@@ -54,6 +54,7 @@ class AudioCapture:
         self._lock = threading.Lock()
         self._amplitude_cb: Callable[[float], None] | None = None
         self._segment_cb: Callable[[bytes], None] | None = None
+        self._vad_cb: Callable[[bool], None] | None = None
         self._read_cursor: int = 0  # index into _frames for incremental reads
         
         # VAD state
@@ -67,6 +68,10 @@ class AudioCapture:
         # Async encoding state
         self._encode_queue: queue.Queue | None = None
         self._encode_thread: threading.Thread | None = None
+        self._callback_queue: queue.Queue | None = None
+        self._callback_thread: threading.Thread | None = None
+        self._callbacks_enabled = False
+        self._callback_generation = 0
 
     def warmup(self) -> None:
         """Pre-initialize PortAudio so first start() is fast."""
@@ -102,6 +107,69 @@ class AudioCapture:
         except Exception:
             logger.debug("PortAudio initialize failed", exc_info=True)
 
+    def _stop_callback_dispatch(self) -> None:
+        self._callbacks_enabled = False
+        queue_ref = self._callback_queue
+        thread_ref = self._callback_thread
+        if queue_ref is not None:
+            while True:
+                try:
+                    queue_ref.put_nowait(None)
+                    break
+                except queue.Full:
+                    try:
+                        queue_ref.get_nowait()
+                    except queue.Empty:
+                        break
+        if thread_ref is not None:
+            thread_ref.join(timeout=1.0)
+        self._callback_queue = None
+        self._callback_thread = None
+
+    def _queue_callback_event(self, kind: str, payload: object) -> None:
+        queue_ref = self._callback_queue
+        if queue_ref is None:
+            return
+        try:
+            queue_ref.put_nowait((self._callback_generation, kind, payload))
+        except queue.Full:
+            if kind == "amplitude":
+                return
+            try:
+                queue_ref.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                queue_ref.put_nowait((self._callback_generation, kind, payload))
+            except queue.Full:
+                pass
+
+    def _callback_worker(self) -> None:
+        """Dispatch UI-bound callbacks off the PortAudio thread."""
+        while True:
+            queue_ref = self._callback_queue
+            if queue_ref is None:
+                break
+            try:
+                item = queue_ref.get()
+            except Exception:
+                logger.error("Error in callback dispatch worker", exc_info=True)
+                continue
+
+            if item is None:
+                break
+
+            generation, kind, payload = item
+            try:
+                if not self._callbacks_enabled or generation != self._callback_generation:
+                    continue
+                if kind == "amplitude" and self._amplitude_cb is not None:
+                    self._amplitude_cb(float(payload))
+                elif kind == "vad" and self._vad_cb is not None:
+                    self._vad_cb(bool(payload))
+            except Exception:
+                logger.error("Error in callback dispatch worker", exc_info=True)
+
     def start(
         self, 
         amplitude_callback: Callable[[float], None] | None = None,
@@ -124,6 +192,8 @@ class AudioCapture:
             logger.warning("start() called while already recording — stopping previous stream")
             self._close_stream()
 
+        self._stop_callback_dispatch()
+        self._callback_generation += 1
         self._frames = []
         self._read_cursor = 0
         self._amplitude_cb = amplitude_callback
@@ -143,6 +213,15 @@ class AudioCapture:
             self._encode_queue = queue.Queue()
             self._encode_thread = threading.Thread(target=self._encode_worker, daemon=True)
             self._encode_thread.start()
+        if self._amplitude_cb is not None or self._vad_cb is not None:
+            self._callbacks_enabled = True
+            self._callback_queue = queue.Queue(maxsize=8)
+            self._callback_thread = threading.Thread(
+                target=self._callback_worker,
+                daemon=True,
+                name="audio-callback-dispatch",
+            )
+            self._callback_thread.start()
 
         last_exc: Exception | None = None
         for attempt in range(2):
@@ -181,10 +260,12 @@ class AudioCapture:
         
         self._amplitude_cb = None
         self._segment_cb = None
+        self._vad_cb = None
         if self._encode_queue is not None:
             self._encode_queue.put(None)
             self._encode_queue = None
             self._encode_thread = None
+        self._stop_callback_dispatch()
             
         assert last_exc is not None
         raise last_exc
@@ -214,11 +295,13 @@ class AudioCapture:
 
             self._encode_queue = None
             self._encode_thread = None
+            self._amplitude_cb = None
+            self._vad_cb = None
+            self._stop_callback_dispatch()
             self._current_segment_chunks = []
             self._ring_buffer.clear()
             self._noise_floor_history.clear()
 
-            self._amplitude_cb = None
             self._segment_cb = None
             
             # Use trimmed chunks if available
@@ -239,6 +322,8 @@ class AudioCapture:
         self._frames = []
         self._amplitude_cb = None
         self._segment_cb = None
+        self._vad_cb = None
+        self._stop_callback_dispatch()
         self._current_segment_chunks = []
         self._ring_buffer.clear()
         self._noise_floor_history.clear()
@@ -296,6 +381,8 @@ class AudioCapture:
         status: sd.CallbackFlags,
     ) -> None:
         """Called by PortAudio on its own thread. Must be fast."""
+        if self._stream is None:
+            return
         if status:
             logger.warning("sounddevice status: %s", status)
 
@@ -307,7 +394,7 @@ class AudioCapture:
         rms = float(np.sqrt(np.mean(chunk ** 2)))
 
         if self._amplitude_cb is not None:
-            self._amplitude_cb(rms)
+            self._queue_callback_event("amplitude", rms)
             
         if self._segment_cb is not None or hasattr(self, '_vad_cb'):
             # Ensure it runs if either callback is present!
@@ -316,8 +403,15 @@ class AudioCapture:
             threshold = max(noise_floor * THRESHOLD_MULTIPLIER, MIN_THRESHOLD)
             
             # Debug log every 50 chunks (~3 seconds)
-            if len(self._frames) % 50 == 0:
-                logger.info(f"VAD tick: rms={rms:.4f}, thr={threshold:.4f}, is_speech={self._is_speech}, trigger={self._speech_trigger_count}/{MIN_SPEECH_FRAMES}")
+            if logger.isEnabledFor(logging.DEBUG) and len(self._frames) % 50 == 0:
+                logger.debug(
+                    "VAD tick: rms=%.4f thr=%.4f is_speech=%s trigger=%d/%d",
+                    rms,
+                    threshold,
+                    self._is_speech,
+                    self._speech_trigger_count,
+                    MIN_SPEECH_FRAMES,
+                )
 
             if not self._is_speech:
                 self._ring_buffer.append(chunk)
@@ -326,8 +420,8 @@ class AudioCapture:
                     self._speech_trigger_count += 1
                     if self._speech_trigger_count >= MIN_SPEECH_FRAMES:
                         self._is_speech = True
-                        if hasattr(self, '_vad_cb') and self._vad_cb is not None:
-                            self._vad_cb(True)
+                        if self._vad_cb is not None:
+                            self._queue_callback_event("vad", True)
                         self._current_segment_chunks.extend(self._ring_buffer)
                         if getattr(self, '_speech_chunks', None) is None:
                             self._speech_chunks = []
@@ -351,8 +445,8 @@ class AudioCapture:
                         
                     if self._silence_trigger_count >= MIN_SILENCE_FRAMES:
                         self._is_speech = False
-                        if hasattr(self, '_vad_cb') and self._vad_cb is not None:
-                            self._vad_cb(False)
+                        if self._vad_cb is not None:
+                            self._queue_callback_event("vad", False)
                         self._speech_trigger_count = 0
                         self._silence_trigger_count = 0
                         

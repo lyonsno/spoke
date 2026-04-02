@@ -8,6 +8,7 @@ import logging
 import os
 import json
 import time
+import threading
 from unittest.mock import MagicMock, call, patch
 
 
@@ -1828,6 +1829,51 @@ class TestWarmupContract:
         d._overlay.hide.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         mock_phase.assert_called_with("app.ready")
+
+
+class TestRuntimePhaseLogging:
+    """Test runtime phase snapshot behavior under repeated writes."""
+
+    def test_record_runtime_phase_handles_concurrent_updates(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(
+            "SPOKE_RUNTIME_PHASE_PATH",
+            str(tmp_path / "spoke-last-phase.json"),
+        )
+
+        real_write_text = main_module.Path.write_text
+        barrier = threading.Barrier(2)
+        tmp_names = []
+
+        def synced_write_text(self, data, *args, **kwargs):
+            result = real_write_text(self, data, *args, **kwargs)
+            if self.name.startswith("spoke-last-phase.json") and self.name.endswith(".tmp"):
+                tmp_names.append(self.name)
+                barrier.wait(timeout=1.0)
+            return result
+
+        with patch.object(main_module.Path, "write_text", new=synced_write_text):
+            with patch.object(main_module.logger, "exception") as mock_exception:
+                threads = [
+                    threading.Thread(
+                        target=main_module._record_runtime_phase,
+                        args=(f"phase-{idx}",),
+                    )
+                    for idx in range(2)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=1.0)
+
+        assert not any(thread.is_alive() for thread in threads)
+        mock_exception.assert_not_called()
+        assert len(tmp_names) == 2
+        assert len(set(tmp_names)) == 2
+
+        payload = json.loads((tmp_path / "spoke-last-phase.json").read_text())
+        assert payload["phase"] in {"phase-0", "phase-1"}
 
     def test_warmup_failure_updates_startup_indicator(
         self, main_module, monkeypatch
