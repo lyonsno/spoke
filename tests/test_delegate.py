@@ -966,20 +966,13 @@ class TestDualModelConfiguration:
     def test_selecting_launch_target_persists_choice_and_invokes_helper(
         self, main_module, monkeypatch
     ):
-        """Choosing a new launch target should save it and hand off to the launcher helper."""
+        """Choosing a new launch target should flow through the launch-target selector."""
         d = _make_delegate(main_module, monkeypatch)
-        d._persist_launch_target_selection = MagicMock(return_value=True)
-        d._invoke_launch_target_helper = MagicMock(return_value=True)
-        monkeypatch.setattr(
-            main_module,
-            "current_launch_target_id",
-            lambda _checkout: "main",
-        )
+        d._apply_launch_target_selection = MagicMock()
 
         d._handle_model_menu_action(("launch_target", "smoke"))
 
-        d._persist_launch_target_selection.assert_called_once_with("smoke")
-        d._invoke_launch_target_helper.assert_called_once_with("smoke")
+        d._apply_launch_target_selection.assert_called_once_with("smoke")
 
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
