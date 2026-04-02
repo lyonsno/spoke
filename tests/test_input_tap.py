@@ -1104,8 +1104,10 @@ class TestCommandOverlayFlags:
         assert result is event  # passed through
         assert det._enter_held is True
 
-    def test_instant_dismiss_on_spacebar_keydown_when_overlay_active(self, input_tap_module):
-        """Spacebar keyDown while command_overlay_active=True should call dismiss callback."""
+    def test_spacebar_does_not_dismiss_overlay_on_keydown(self, input_tap_module):
+        """Spacebar keyDown while command_overlay_active=True must NOT instant-
+        dismiss.  Overlay dismiss is handled by the hold-and-release path
+        (_on_hold_end with no audio), not by bare spacebar press."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -1116,39 +1118,10 @@ class TestCommandOverlayFlags:
         Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         event = MagicMock()
-        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-
-        assert result is None  # suppressed by handle_key_down
-        on_dismiss.assert_called_once()
-        # Note: command_overlay_active and _just_dismissed are set by the
-        # delegate's dismissCommandOverlay_ (the callback target), not by
-        # the input tap directly. The input tap's contract is to call dismiss.
-
-    def test_just_dismissed_set_by_dismiss_callback(self, input_tap_module):
-        """Instant dismiss callback fires on spacebar keyDown; the callback is
-        responsible for setting _command_overlay_just_dismissed=True.  Simulate
-        the delegate's behavior in the callback to verify the full contract."""
-        mod = input_tap_module
-        Quartz = __import__("Quartz")
-
-        det, _, _, _ = self._make_detector(input_tap_module)
-        det.command_overlay_active = True
-
-        # Wire dismiss callback to set flags like the real delegate does
-        def dismiss_sets_flags():
-            det.command_overlay_active = False
-            det._command_overlay_just_dismissed = True
-
-        det._on_command_overlay_dismiss = dismiss_sets_flags
-        mod._active_detector = det
-
-        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
-        Quartz.CGEventGetFlags.return_value = 0
-        event = MagicMock()
         mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        assert det.command_overlay_active is False
-        assert det._command_overlay_just_dismissed is True
+        on_dismiss.assert_not_called()
+        assert det.command_overlay_active is True
 
     def test_enter_quick_tap_routes_to_hold_end_in_waiting_state(self, input_tap_module):
         """Enter+spacebar quick tap in WAITING state should route to _on_hold_end
