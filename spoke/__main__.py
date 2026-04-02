@@ -1627,9 +1627,11 @@ class SpokeAppDelegate(NSObject):
         # Stream the command in a background thread
         def _stream():
             full_response = ""
+            stale_break = False
             try:
                 for content_token in self._command_client.stream_command(text):
                     if token != self._transcription_token:
+                        stale_break = True
                         break  # stale
                     full_response += content_token
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1643,6 +1645,15 @@ class SpokeAppDelegate(NSObject):
                     "commandFailed:", {"token": token, "error": "Command failed"}, False
                 )
                 return
+            finally:
+                # Repair history only when a stale token break interrupts the
+                # streaming loop before the command client can finalize the turn.
+                if stale_break and full_response:
+                    self._command_client._history.append((text, full_response))
+                    max_h = self._command_client._max_history
+                    if len(self._command_client._history) > max_h:
+                        self._command_client._history.pop(0)
+                    logger.info("Command history saved: %d turns", len(self._command_client._history))
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandComplete:", {"token": token, "response": full_response}, False
@@ -1696,9 +1707,11 @@ class SpokeAppDelegate(NSObject):
 
         # Step 2: Stream the command response
         full_response = ""
+        stale_break = False
         try:
             for content_token in self._command_client.stream_command(utterance):
                 if token != self._transcription_token:
+                    stale_break = True
                     break  # stale
                 full_response += content_token
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1712,6 +1725,18 @@ class SpokeAppDelegate(NSObject):
                 "commandFailed:", {"token": token, "error": "Command failed"}, False
             )
             return
+        finally:
+            # Repair history only when a stale token break interrupts the
+            # streaming loop before the command client can finalize the turn.
+            if stale_break and full_response:
+                self._command_client._history.append((utterance, full_response))
+                max_h = self._command_client._max_history
+                if len(self._command_client._history) > max_h:
+                    self._command_client._history.pop(0)
+                logger.info(
+                    "Command history saved after stale token break: %d turns",
+                    len(self._command_client._history),
+                )
 
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "commandComplete:", {"token": token, "response": full_response}, False

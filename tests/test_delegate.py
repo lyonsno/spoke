@@ -2150,6 +2150,8 @@ class TestCommandTranscribeWorker:
     def _make_command_delegate(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
+        d._command_client._history = []
+        d._command_client._max_history = 5
         d._command_overlay = MagicMock()
         d._preview_thread = None
         d._preview_done = MagicMock()
@@ -2178,6 +2180,9 @@ class TestCommandTranscribeWorker:
         assert "commandUtteranceReady:" in selectors
         assert selectors.count("commandToken:") == 2
         assert "commandComplete:" in selectors
+        complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
+        assert complete_call[0][1]["response"] == "Hello world"
+        assert d._command_client._history == []
 
     def test_empty_utterance_recalls_last_response(self, main_module, monkeypatch):
         """Empty transcription with shift = recall last response."""
@@ -2243,6 +2248,12 @@ class TestCommandTranscribeWorker:
         # Only the first token should have been dispatched
         assert len(token_calls) == 1
         assert token_calls[0][0][1]["text"] == "first"
+        complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
+        assert complete_call[0][1]["response"] == "first"
+        assert d._command_client._history == [("do something", "first")]
+        complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
+        assert complete_call[0][1]["response"] == "first"
+        assert d._command_client._history == [("do something", "first")]
 
     def test_streaming_preview_finalize_path(self, main_module, monkeypatch):
         """When client is preview client with active stream, use finish_stream."""
