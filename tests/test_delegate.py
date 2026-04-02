@@ -1824,6 +1824,41 @@ class TestWarmupContract:
         )
         assert isinstance(d._warm_error, RuntimeError)
 
+    def test_prepare_clients_defers_local_whisper_startup_warmup(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._model_allowed = MagicMock(return_value=True)
+        d._transcription_model_id = "mlx-community/whisper-small.en-mlx"
+        d._preview_model_id = "mlx-community/whisper-tiny.en-mlx"
+        d._client = main_module.LocalTranscriptionClient(model=d._transcription_model_id)
+        d._preview_client = main_module.LocalTranscriptionClient(model=d._preview_model_id)
+
+        with patch.object(d._client, "prepare") as prep_client, patch.object(
+            d._preview_client, "prepare"
+        ) as prep_preview:
+            d._prepare_clients()
+
+        prep_client.assert_not_called()
+        prep_preview.assert_not_called()
+
+    def test_prepare_clients_defers_local_qwen_startup_warmup(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._model_allowed = MagicMock(return_value=True)
+        d._transcription_model_id = "Qwen/Qwen3-ASR-0.6B"
+        d._client = main_module.LocalQwenClient(model=d._transcription_model_id)
+        d._preview_model_id = None
+        d._preview_client = None
+
+        with patch.object(d._client, "prepare") as prep_client:
+            d._prepare_clients()
+
+        prep_client.assert_not_called()
+
     def test_warmup_success_hides_startup_indicator(
         self, main_module, monkeypatch
     ):
