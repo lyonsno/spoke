@@ -1234,7 +1234,7 @@ class TestDualModelConfiguration:
                 result = d.init()
 
         assert result is not None
-        MockCommand.assert_called_once_with(model="qwen3-14b")
+        MockCommand.assert_called_once_with(base_url="http://omlx:8001", model="qwen3-14b")
         assert d._command_model_id == "qwen3-14b"
         mock_seed.assert_called_once_with("qwen3-14b")
         assert d._command_model_options == [
@@ -1270,7 +1270,7 @@ class TestDualModelConfiguration:
                 result = d.init()
 
         assert result is not None
-        MockCommand.assert_called_once_with(model="qwen3-14b")
+        MockCommand.assert_called_once_with(base_url="http://omlx:8001", model="qwen3-14b")
         command_client.list_models.assert_not_called()
         mock_seed.assert_called_once_with("qwen3-14b")
         assert d._command_model_options == [

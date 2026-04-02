@@ -1,18 +1,22 @@
-"""Local text-to-speech via Voxtral on MLX.
+"""Text-to-speech via local MLX or a remote speech sidecar.
 
-Loads a Voxtral TTS model lazily and plays generated audio through
-sounddevice.  Designed to be driven from the command-completion pathway
-in __main__.py — speak_async() returns immediately, running generation
-and playback on a background thread.
+Loads a local TTS model lazily (any mlx_audio-supported architecture) or
+fetches synthesized audio from an OpenAI-compatible remote sidecar, then
+plays audio through sounddevice. Designed to be driven from the
+command-completion pathway in __main__.py — speak_async() returns
+immediately, running synthesis and playback on a background thread.
 """
 
 from __future__ import annotations
 
 import importlib
+import io
+import json as _json
 import logging
 import os
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -169,16 +173,21 @@ class TTSClient:
         self._audio_fade_started_at = time.monotonic()
 
     @classmethod
-    def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient"]:
-        """Create a TTSClient from environment variables, or None if disabled.
+    def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient | RemoteTTSClient"]:
+        """Create a TTS client from environment variables, or None if disabled.
 
         Set SPOKE_TTS_VOICE to enable TTS (e.g. "casual_female").
         Optionally set SPOKE_TTS_MODEL to override the default model.
+        Set SPOKE_TTS_URL to route synthesis to a remote OpenAI-compatible
+        /v1/audio/speech sidecar while keeping playback local.
         """
         voice = os.environ.get("SPOKE_TTS_VOICE")
         if not voice:
             return None
+        base_url = os.environ.get("SPOKE_TTS_URL", "").rstrip("/")
         model_id = os.environ.get("SPOKE_TTS_MODEL", _DEFAULT_MODEL_ID)
+        if base_url:
+            return RemoteTTSClient(base_url=base_url, model_id=model_id, voice=voice)
         temperature = float(os.environ.get("SPOKE_TTS_TEMPERATURE", str(_DEFAULT_TEMPERATURE)))
         top_k = int(os.environ.get("SPOKE_TTS_TOP_K", str(_DEFAULT_TOP_K)))
         top_p = float(os.environ.get("SPOKE_TTS_TOP_P", str(_DEFAULT_TOP_P)))
@@ -197,7 +206,10 @@ class TTSClient:
             from contextlib import nullcontext
             lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
             with lock_ctx:
-                self._ensure_model()
+                try:
+                    self._ensure_model()
+                except Exception:
+                    logger.warning("TTS model warm-up failed", exc_info=True)
         threading.Thread(target=_warm, daemon=True).start()
 
     def _current_audio_gain_locked(self, now: float) -> float:
@@ -350,7 +362,11 @@ class TTSClient:
                         return
 
                     with lock_ctx:
-                        self._ensure_model()
+                        try:
+                            self._ensure_model()
+                        except Exception:
+                            logger.warning("TTS model load failed — cannot speak", exc_info=True)
+                            return
                         if self._cancelled:
                             return
                         results = self._model.generate(
@@ -401,4 +417,169 @@ class TTSClient:
         and exits cleanly. Does not call stream.abort() — avoids racing with
         the fade-out write on the playback thread.
         """
+        self._cancelled = True
+
+
+class RemoteTTSClient:
+    """HTTP-backed TTS client for a remote OpenAI-compatible speech sidecar.
+
+    Fetches synthesized audio from a remote /v1/audio/speech endpoint and
+    plays it locally via sounddevice. Shares the cancel/speak_async interface
+    with TTSClient so callers can swap backends transparently.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        model_id: str = _DEFAULT_MODEL_ID,
+        voice: str = _DEFAULT_VOICE,
+        timeout: float = 120.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._url = f"{self._base_url}/v1/audio/speech"
+        self._model_id = model_id
+        self._voice = voice
+        self._timeout = timeout
+        self._cancelled = False
+        self._stream: sd.OutputStream | None = None
+        self._last_chunk: np.ndarray | None = None
+
+    def warm(self) -> None:
+        """Remote speech is ready once the HTTP client exists."""
+        return None
+
+    def _decode_wav(self, wav_bytes: bytes) -> tuple[np.ndarray, int]:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frames = wav_file.readframes(wav_file.getnframes())
+
+        if sample_width == 1:
+            audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sample_width == 2:
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sample_width == 4:
+            audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError(f"Unsupported WAV sample width: {sample_width}")
+
+        return audio.reshape(-1, channels), sample_rate
+
+    def _play_audio(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        amplitude_callback: Callable[[float], None] | None = None,
+    ) -> None:
+        """Play float32 audio locally, emitting optional RMS updates."""
+        if self._cancelled:
+            return
+        if audio.size == 0:
+            if amplitude_callback is not None:
+                amplitude_callback(0.0)
+            return
+        if audio.ndim == 1:
+            audio = audio.reshape(-1, 1)
+
+        chunk_size = int(sample_rate * 0.064)
+        done = threading.Event()
+        stream = sd.OutputStream(
+            samplerate=sample_rate,
+            channels=audio.shape[1],
+            dtype="float32",
+            finished_callback=lambda: done.set(),
+        )
+        self._stream = stream
+        self._last_chunk = None
+        stream.start()
+
+        try:
+            offset = 0
+            while offset < len(audio):
+                if self._cancelled:
+                    break
+                end = min(offset + chunk_size, len(audio))
+                chunk = audio[offset:end]
+                self._last_chunk = chunk
+                stream.write(chunk)
+                if amplitude_callback is not None:
+                    rms = float(np.sqrt(np.mean(chunk ** 2)))
+                    amplitude_callback(rms)
+                offset = end
+
+            while not done.is_set():
+                if self._cancelled:
+                    break
+                done.wait(timeout=0.05)
+
+            if self._cancelled and not done.is_set() and self._last_chunk is not None:
+                fade_samples = int(sample_rate * 0.05)
+                last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                try:
+                    stream.write(fade_ramp)
+                except Exception:
+                    pass
+        finally:
+            stream.stop()
+            stream.close()
+            self._stream = None
+            self._last_chunk = None
+
+        if amplitude_callback is not None:
+            amplitude_callback(0.0)
+
+    def speak(
+        self,
+        text: str,
+        amplitude_callback: Callable[[float], None] | None = None,
+    ) -> None:
+        if not text:
+            return
+        if self._cancelled:
+            return
+
+        import urllib.request
+        payload = {
+            "model": self._model_id,
+            "voice": self._voice,
+            "input": text,
+            "response_format": "wav",
+        }
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            wav_bytes = resp.read()
+
+        if self._cancelled:
+            return
+        audio, sample_rate = self._decode_wav(wav_bytes)
+        self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
+
+    def speak_async(
+        self,
+        text: str,
+        amplitude_callback: Callable[[float], None] | None = None,
+        done_callback: Callable[[], None] | None = None,
+    ) -> threading.Thread:
+        """Generate and play speech on a background daemon thread."""
+        self._cancelled = False
+
+        def _run():
+            self.speak(text, amplitude_callback=amplitude_callback)
+            if done_callback is not None:
+                done_callback()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return t
+
+    def cancel(self) -> None:
+        """Cancel any in-flight or future speak() call."""
         self._cancelled = True

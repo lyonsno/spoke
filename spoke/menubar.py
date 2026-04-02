@@ -219,6 +219,15 @@ class MenuBarIcon(NSObject):
                             assistant["models"],
                         )
                     )
+                command_backend = model_state.get("command_backend")
+                if command_backend:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            command_backend["title"],
+                            "command_backend",
+                            command_backend["items"],
+                        )
+                    )
                 if transcription:
                     menu.addItem_(
                         self._build_model_submenu_item(
@@ -235,6 +244,15 @@ class MenuBarIcon(NSObject):
                             "preview",
                             preview["selected"],
                             preview["models"],
+                        )
+                    )
+                tts_backend = model_state.get("tts_backend")
+                if tts_backend:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            tts_backend["title"],
+                            "tts_backend",
+                            tts_backend["items"],
                         )
                     )
                 local_whisper = model_state.get("local_whisper")

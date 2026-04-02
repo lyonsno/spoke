@@ -44,7 +44,7 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
-from .tts import TTSClient
+from .tts import TTSClient, RemoteTTSClient
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,15 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
+_DEFAULT_COMMAND_SIDECAR_URL = ""
+_DEFAULT_TTS_SIDECAR_URL = ""
+
+
+def _url_host(url: str) -> str:
+    """Extract host:port from a URL for display."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    return parsed.netloc or url
 _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
     "mlx-community/Qwen3-4B-Thinking-2507-8bit",
@@ -204,25 +213,35 @@ class SpokeAppDelegate(NSObject):
         self._mic_probe_in_flight = False
 
         # Command pathway — always enabled, defaults to localhost:8001
-        command_url = os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
+        # Backend can be "local" (env/default URL) or "sidecar" (persisted remote URL)
+        self._command_backend = self._load_preference("command_backend") or "local"
+        self._command_sidecar_url = (
+            self._load_preference("command_sidecar_url") or _DEFAULT_COMMAND_SIDECAR_URL
+        )
+        command_url = self._resolve_command_url()
         if command_url:
+            self._command_url = command_url
             self._command_model_id = (
                 os.environ.get("SPOKE_COMMAND_MODEL")
                 or self._load_command_model_preference()
                 or _DEFAULT_COMMAND_MODEL
             )
-            self._command_client = CommandClient(model=self._command_model_id)
+            self._command_client = CommandClient(
+                base_url=command_url, model=self._command_model_id,
+            )
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
             self._command_models_refresh_in_flight = False
             self._command_overlay: TranscriptionOverlay | None = None
             logger.info(
-                "Command pathway enabled: %s (%s)",
+                "Command pathway enabled: backend=%s url=%s model=%s",
+                self._command_backend,
                 command_url,
                 self._command_model_id,
             )
         else:
+            self._command_url = None
             self._command_client = None
             self._command_model_id = None
             self._command_model_options = []
@@ -230,9 +249,15 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
-        self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
+        # Backend can be "local" (env default) or "sidecar" (persisted remote URL)
+        self._tts_backend = self._load_preference("tts_backend") or "local"
+        self._tts_sidecar_url = (
+            self._load_preference("tts_sidecar_url") or _DEFAULT_TTS_SIDECAR_URL
+        )
+        self._tts_client = self._build_tts_client()
         if self._tts_client is not None:
-            logger.info("TTS enabled: voice=%s", self._tts_client._voice)
+            backend_label = "sidecar" if isinstance(self._tts_client, RemoteTTSClient) else "local"
+            logger.info("TTS enabled: backend=%s voice=%s", backend_label, self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
         self._tray_stack: list[str] = []
@@ -1829,6 +1854,44 @@ class SpokeAppDelegate(NSObject):
                     "selected": self._command_model_id,
                     "models": self._command_model_options,
                 }
+                cmd_url = getattr(self, "_command_url", "") or ""
+                cmd_sidecar_url = getattr(self, "_command_sidecar_url", "")
+                cmd_backend = getattr(self, "_command_backend", "local")
+                has_sidecar_url = bool(cmd_sidecar_url)
+                cmd_host = _url_host(cmd_url) if cmd_url else "localhost:8001"
+                state["command_backend"] = {
+                    "title": f"Assistant: {cmd_host}",
+                    "items": [
+                        ("local", f"Local ({_url_host(_DEFAULT_COMMAND_URL)})", cmd_backend == "local"),
+                        ("sidecar", (
+                            f"Sidecar ({_url_host(cmd_sidecar_url)})"
+                            if has_sidecar_url
+                            else "Sidecar (not configured)"
+                        ), cmd_backend == "sidecar", has_sidecar_url),
+                    ],
+                }
+            tts_client = getattr(self, "_tts_client", None)
+            if tts_client is not None or os.environ.get("SPOKE_TTS_VOICE"):
+                tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
+                tts_backend = getattr(self, "_tts_backend", "local")
+                has_tts_sidecar_url = bool(tts_sidecar_url)
+                tts_target = "not active"
+                if tts_client is not None:
+                    if isinstance(tts_client, RemoteTTSClient):
+                        tts_target = _url_host(getattr(tts_client, "_base_url", ""))
+                    else:
+                        tts_target = "local MLX"
+                state["tts_backend"] = {
+                    "title": f"TTS: {tts_target}",
+                    "items": [
+                        ("local", "Local (Voxtral MLX)", tts_backend == "local"),
+                        ("sidecar", (
+                            f"Sidecar ({_url_host(tts_sidecar_url)})"
+                            if has_tts_sidecar_url
+                            else "Sidecar (not configured)"
+                        ), tts_backend == "sidecar", has_tts_sidecar_url),
+                    ],
+                }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
                 state["local_whisper"] = {
@@ -1872,6 +1935,12 @@ class SpokeAppDelegate(NSObject):
         role, model_id = selection
         if role == "assistant":
             self._apply_command_model_selection(model_id)
+            return
+        if role == "command_backend":
+            self._apply_command_backend_selection(model_id)
+            return
+        if role == "tts_backend":
+            self._apply_tts_backend_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -2137,6 +2206,65 @@ class SpokeAppDelegate(NSObject):
         except Exception:
             logger.warning("Failed to save model preferences to %s", path, exc_info=True)
             return False
+
+    def _load_preference(self, key: str):
+        return self._load_preferences().get(key)
+
+    def _save_preference(self, key: str, value) -> bool:
+        payload = self._load_preferences()
+        payload[key] = value
+        return self._save_preferences(payload)
+
+    def _resolve_command_url(self) -> str:
+        """Return the effective command URL based on backend preference."""
+        env_url = os.environ.get("SPOKE_COMMAND_URL")
+        if env_url:
+            return env_url
+        if self._command_backend == "sidecar" and self._command_sidecar_url:
+            return self._command_sidecar_url
+        return _DEFAULT_COMMAND_URL
+
+    def _build_tts_client(self):
+        """Build a TTS client based on backend preference and env vars."""
+        voice = os.environ.get("SPOKE_TTS_VOICE")
+        if not voice:
+            return None
+        if self._tts_backend == "sidecar" and self._tts_sidecar_url:
+            model_id = os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            return RemoteTTSClient(
+                base_url=self._tts_sidecar_url,
+                model_id=model_id,
+                voice=voice,
+            )
+        return TTSClient.from_env(gpu_lock=self._local_inference_lock)
+
+    def _apply_command_backend_selection(self, backend: str) -> None:
+        """Switch command backend between 'local' and 'sidecar', then relaunch."""
+        if backend == self._command_backend:
+            return
+        if backend == "sidecar" and not self._command_sidecar_url:
+            logger.warning("Cannot switch to sidecar: no sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No sidecar URL configured")
+            return
+        logger.info("Switching command backend: %s -> %s", self._command_backend, backend)
+        self._save_preference("command_backend", backend)
+        self._command_backend = backend
+        self._relaunch()
+
+    def _apply_tts_backend_selection(self, backend: str) -> None:
+        """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
+        if backend == self._tts_backend:
+            return
+        if backend == "sidecar" and not self._tts_sidecar_url:
+            logger.warning("Cannot switch to sidecar: no TTS sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No TTS sidecar URL configured")
+            return
+        logger.info("Switching TTS backend: %s -> %s", self._tts_backend, backend)
+        self._save_preference("tts_backend", backend)
+        self._tts_backend = backend
+        self._relaunch()
 
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)
