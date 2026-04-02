@@ -158,7 +158,7 @@ class TestTranscriptionToken:
         d._transcription_token = 5
         d._transcribing = True
 
-        with patch.object(main_module, "inject_text") as mock_inject:
+        with patch.object(d, "_inject_result_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
             # Fire the deferred inject timer callback
             d.resultInjectDelayed_(None)
@@ -281,7 +281,7 @@ class TestPreviewFinalizationContract:
         d._transcribing = True
         d._last_preview_text = "usable preview text"
 
-        with patch.object(main_module, "inject_text") as mock_inject:
+        with patch.object(d, "_inject_result_text") as mock_inject:
             d.transcriptionFailed_({"token": 7})
             # Fire the deferred inject timer callback
             d.resultInjectDelayed_(None)
@@ -923,6 +923,46 @@ class TestDualModelConfiguration:
                 ("qwen3-14b", "qwen3-14b", True),
             ],
         }
+
+    def test_handle_model_menu_none_exposes_launch_targets_from_registry(
+        self, main_module, monkeypatch
+    ):
+        """A populated launch-target registry should surface a dedicated submenu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._launch_target_menu_state = MagicMock(
+            return_value={
+                "title": "Launch Target",
+                "selected": "main",
+                "items": [
+                    ("main", "Main", True),
+                    ("smoke", "Smoke", True),
+                ],
+            }
+        )
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["launch_target"] == {
+            "title": "Launch Target",
+            "selected": "main",
+            "items": [
+                ("main", "Main", True),
+                ("smoke", "Smoke", True),
+            ],
+        }
+
+    def test_selecting_launch_target_persists_choice_and_invokes_helper(
+        self, main_module, monkeypatch
+    ):
+        """Choosing a new launch target should save it and hand off to the launcher helper."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._persist_launch_target_selection = MagicMock(return_value=True)
+        d._invoke_launch_target_helper = MagicMock(return_value=True)
+
+        d._handle_model_menu_action(("launch_target", "smoke"))
+
+        d._persist_launch_target_selection.assert_called_once_with("smoke")
+        d._invoke_launch_target_helper.assert_called_once_with("smoke")
 
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
