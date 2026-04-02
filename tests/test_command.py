@@ -245,6 +245,7 @@ class TestStreamCommand:
             for event in events
         ] == [
             ("assistant_delta", "Let me check. ", None),
+            ("assistant_delta", "\n[calling capture_context…]\n", None),
             ("tool_call", "", "capture_context"),
             ("assistant_delta", "Done.", None),
             ("assistant_final", "Done.", None),

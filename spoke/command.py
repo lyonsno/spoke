@@ -265,11 +265,21 @@ class CommandClient:
                                 text=token,
                             )
 
-                        # Tool call deltas — accumulate
+                        # Tool call deltas — yield name indicators and accumulate
                         tool_calls_delta = delta.get("tool_calls")
-                        if tool_calls_delta and tool_call_acc is not None:
+                        if tool_calls_delta:
                             for tc_delta in tool_calls_delta:
-                                tool_call_acc.feed(tc_delta)
+                                fn = tc_delta.get("function", {})
+                                fn_name = fn.get("name")
+                                if fn_name:
+                                    indicator = f"\n[calling {fn_name}…]\n"
+                                    round_content += indicator
+                                    yield CommandStreamEvent(
+                                        kind="assistant_delta",
+                                        text=indicator,
+                                    )
+                                if tool_call_acc is not None:
+                                    tool_call_acc.feed(tc_delta)
 
             except urllib.error.URLError as exc:
                 logger.error("Command request failed: %s", exc)
