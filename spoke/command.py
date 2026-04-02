@@ -147,10 +147,6 @@ class CommandClient:
             if event.kind == "assistant_delta":
                 visible_response += event.text
                 yield event.text
-            elif event.kind == "tool_call" and event.tool_name:
-                tool_text = f"\n[calling {event.tool_name}...]\n".replace("...", "…")
-                visible_response += tool_text
-                yield tool_text
             elif event.kind == "assistant_final":
                 final_response = event.text
 
