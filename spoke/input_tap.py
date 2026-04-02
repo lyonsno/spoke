@@ -534,6 +534,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 return None
             if det._state in (_State.WAITING, _State.RECORDING):
                 det._enter_latched = True
+                return None  # suppress enter while space is held
             # If tray is active, Enter = send to assistant.
             # Only suppress Enter if the callback exists and is called.
             # Always let Enter through if tray is not active.
@@ -577,6 +578,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key release
         if keycode == ENTER_KEYCODE:
             det._enter_held = False
+            if det._state in (_State.WAITING, _State.RECORDING):
+                return None  # suppress enter release while space is held
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
