@@ -67,9 +67,12 @@ When changing or resetting local smoke hotkeys:
 When the launch-target menu feature is in play:
 
 - treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
+- when a surface is ready for human smoke, add it to `~/.config/spoke/launch_targets.json` in the same pass; do not wait for a separate request just to make it launcher-visible
 - agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
 - there is no dedicated `smoke_branch` slot; additional prepared surfaces should appear as their own explicit registry entries
 - prefer stable ids and short human labels; the entry should identify a purposeful surface, not a temporary hunk of local reasoning
+- launcher visibility and smoke-hotkey ownership are separate: add an explicit registry entry for smoke-ready surfaces by default, and only rewrite `~/.config/spoke/smoke-target` when that surface is meant to become the active `⌃⌥⌘K` smoke target
 - when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
+- when reporting a smoke-ready slice, include the registry id/label that was added or updated so the human knows where to find it in the launcher
 - do not silently assume the selected target also carries the launch-target affordance; if the target branch lacks the feature, say so when preparing the surface
 - record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently

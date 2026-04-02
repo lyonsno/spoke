@@ -32,6 +32,22 @@ The launcher target files are:
 Prefer changing those files when you only want a hotkey to point at a
 different worktree. Do not edit launcher scripts just to retarget a branch.
 
+## When a surface becomes smoke-ready
+
+Smoke-ready should mean launcher-visible, not "remembered only in thread
+history."
+
+When a branch is ready for human smoke:
+
+1. Add or update an explicit entry for it in `~/.config/spoke/launch_targets.json`.
+2. Use a stable id and a short human label that names the surface clearly.
+3. Leave `~/.config/spoke/smoke-target` alone unless this branch is meant to
+   become the active `Ctrl+Option+Cmd+K` smoke target.
+4. If it should own `Ctrl+Option+Cmd+K`, align the target file and the menu
+   entry in the same pass.
+5. Tell the human which launcher label/id was added so they can smoke it
+   without another setup request.
+
 ## Baseline worktree setup
 
 Create or refresh the worktree you want to smoke, then sync the runtime:

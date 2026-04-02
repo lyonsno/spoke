@@ -27,8 +27,17 @@ the dev launcher at it:
 echo '/path/to/worktree' > ~/.config/spoke/dev-target
 ```
 
-When a change is ready for human smoke testing, point the smoke launcher at
-the active worktree and tell the user it's ready:
+When a change is ready for human smoke testing, make it launcher-visible in the
+same pass. Add or update an explicit entry in `~/.config/spoke/launch_targets.json`
+for the active worktree, then tell the user which launcher label/id was added.
+
+Only rewrite `~/.config/spoke/smoke-target` when that branch is meant to become
+the active `Ctrl+Option+Cmd+K` smoke surface. If it is just another ready
+surface, leave the current smoke target alone and register it as an additional
+launcher target instead.
+
+When the branch should become the active smoke hotkey target, point the smoke
+launcher at the active worktree and tell the user it's ready:
 
 ```sh
 echo '/path/to/worktree' > ~/.config/spoke/smoke-target
