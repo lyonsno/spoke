@@ -1095,6 +1095,30 @@ class TestDualModelConfiguration:
             ),
         ]
 
+    def test_discover_command_models_prefers_server_inventory_for_sidecar(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Sidecar discovery should show the server's model list instead of local disk inventory."""
+        model_root = tmp_path / "models"
+        curated = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "sidecar"
+        d._command_client = MagicMock()
+        d._command_client.list_models.return_value = ["qwen3p5-35B-A3B", "qwen3-14b"]
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", False),
+        ]
+
     def test_discover_command_models_drops_stale_selected_model_when_server_is_unavailable(
         self, main_module, monkeypatch, tmp_path
     ):
@@ -1143,6 +1167,60 @@ class TestDualModelConfiguration:
                 "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
                 False,
             ),
+        ]
+
+    def test_seed_command_model_options_keeps_sidecar_seed_to_selected_model(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Sidecar startup should avoid seeding the Assistant menu from local disk."""
+        model_root = tmp_path / "models"
+        curated = model_root / "alexgusevski" / "LFM2.5-1.2B-Nova-Function-Calling-mlx"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "sidecar"
+
+        options = d._seed_command_model_options("alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx")
+
+        assert options == [
+            (
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                True,
+            ),
+        ]
+
+    def test_command_models_discovered_heals_stale_sidecar_selection_without_relaunch(
+        self, main_module, monkeypatch
+    ):
+        """A stale local-only assistant model should heal to the first sidecar model after refresh."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "sidecar"
+        d._command_model_id = "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx"
+        d._command_client = MagicMock()
+        d._menubar = MagicMock()
+        d._save_command_model_preference = MagicMock(return_value=True)
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", False),
+                    ("qwen3-14b", "qwen3-14b", False),
+                ]
+            }
+        )
+
+        assert d._command_model_id == "qwen3p5-35B-A3B"
+        assert d._command_client._model == "qwen3p5-35B-A3B"
+        d._save_command_model_preference.assert_called_once_with("qwen3p5-35B-A3B")
+        d._menubar.refresh_menu.assert_called_once_with()
+        assert d._command_model_options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", False),
         ]
 
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(

@@ -94,7 +94,6 @@ with log_file.open("a", encoding="utf-8") as log:
         child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))
         child_env["REPO_ROOT"] = str(repo_root)
         child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id
-        child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")
         child_env.pop("SPOKE_PREVIEW_MODEL", None)
         child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
         child_env.pop("SPOKE_WHISPER_MODEL", None)

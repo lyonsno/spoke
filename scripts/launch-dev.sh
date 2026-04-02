@@ -53,7 +53,6 @@ fi
 export REPO_ROOT LOG_FILE
 export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"
 export UV_BIN="${UV_BIN:-}"
-export SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"
 unset SPOKE_PREVIEW_MODEL
 unset SPOKE_TRANSCRIPTION_MODEL
 unset SPOKE_WHISPER_MODEL
@@ -150,7 +149,6 @@ log_file = Path(os.environ["LOG_FILE"])
 python_override = Path(os.environ.get("VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python")))
 uv_bin = _resolve_uv_bin(repo_root)
 child_env = os.environ.copy()
-child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
 child_env.pop("SPOKE_WHISPER_MODEL", None)

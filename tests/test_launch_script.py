@@ -156,11 +156,17 @@ def test_launch_script_does_not_override_persisted_model_preferences():
     assert 'SPOKE_WHISPER_MODEL="${SPOKE_WHISPER_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"' not in text
 
 
-def test_launch_script_seeds_default_command_url():
-    """The dev launcher should enable the local command path by default."""
+def test_launch_scripts_do_not_seed_default_command_url():
+    """Launchers should not inject localhost and override persisted backend routing."""
     text = _script_text()
+    main_text = _main_script_text()
+    launch_target_text = _launch_target_script_text()
 
-    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' in text
+    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' not in text
+    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' not in main_text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in main_text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in launch_target_text
 
 
 def test_launch_script_supports_configured_dev_target():
@@ -339,8 +345,8 @@ def test_inline_launcher_strips_model_override_env_vars(tmp_path, monkeypatch):
     assert "legacy=\n" in log_text
 
 
-def test_inline_launcher_preserves_default_command_url(tmp_path):
-    """Detached launch should keep the default local command URL in the child env."""
+def test_inline_launcher_does_not_seed_default_command_url(tmp_path):
+    """Detached dev launch should leave SPOKE_COMMAND_URL unset unless explicitly provided."""
     repo_root = tmp_path / "repo"
     python_exe = repo_root / ".venv" / "bin" / "python"
     python_exe.parent.mkdir(parents=True)
@@ -363,7 +369,48 @@ def test_inline_launcher_preserves_default_command_url(tmp_path):
     else:
         raise AssertionError("expected detached child output to reach launch log")
 
-    assert "command_url=http://localhost:8001\n" in log_file.read_text()
+    assert "command_url=\n" in log_file.read_text()
+
+
+def test_launch_target_inline_launcher_does_not_seed_default_command_url(tmp_path):
+    """Registry-target launch should preserve unset command routing for backend selection."""
+    helper_repo_root = tmp_path / "helper"
+    helper_repo_root.mkdir()
+
+    target_repo = tmp_path / "target repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text(
+        "#!/bin/sh\n"
+        "printf 'command_url=%s\\n' \"${SPOKE_COMMAND_URL:-}\"\n"
+    )
+    python_exe.chmod(0o755)
+
+    targets_file = tmp_path / "launch_targets.json"
+    targets_file.write_text(
+        '{"selected":"airstrike","targets":[{"id":"airstrike","label":"Airstrike","path":"%s"}]}'
+        % target_repo
+    )
+
+    log_file = tmp_path / "launch-target.log"
+    result = _run_launch_target_inline_launcher(
+        helper_repo_root=helper_repo_root,
+        targets_file=targets_file,
+        target_id="airstrike",
+        log_file=log_file,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "command_url=" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach launch log")
+
+    assert "command_url=\n" in log_file.read_text()
 
 
 def test_inline_launcher_logs_child_spawn_context(tmp_path):

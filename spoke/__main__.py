@@ -2459,28 +2459,32 @@ class SpokeAppDelegate(NSObject):
     def _discover_command_models(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
+        command_backend = getattr(self, "_command_backend", "local")
         server_model_ids: list[str] = []
         if self._command_client is not None:
             try:
                 server_model_ids = self._command_client.list_models()
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
-        local_model_dir = Path(
-            os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
-        ).expanduser()
-        local_model_ids = _iter_local_command_model_ids(local_model_dir)
-        if local_model_ids:
-            local_model_set = set(local_model_ids)
-            model_ids = [
-                model_id
-                for model_id in server_model_ids
-                if model_id in local_model_set
-            ]
-            model_ids.extend(
-                model_id for model_id in local_model_ids if model_id not in model_ids
-            )
+        if command_backend == "sidecar":
+            model_ids = server_model_ids or ([selected_model] if selected_model else [])
         else:
-            model_ids = server_model_ids
+            local_model_dir = Path(
+                os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+            ).expanduser()
+            local_model_ids = _iter_local_command_model_ids(local_model_dir)
+            if local_model_ids:
+                local_model_set = set(local_model_ids)
+                model_ids = [
+                    model_id
+                    for model_id in server_model_ids
+                    if model_id in local_model_set
+                ]
+                model_ids.extend(
+                    model_id for model_id in local_model_ids if model_id not in model_ids
+                )
+            else:
+                model_ids = server_model_ids
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
@@ -2494,6 +2498,8 @@ class SpokeAppDelegate(NSObject):
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
         """Seed the Assistant menu from local disk without hitting /v1/models."""
+        if getattr(self, "_command_backend", "local") == "sidecar":
+            return [(selected_model, selected_model, True)] if selected_model else []
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
@@ -2525,9 +2531,34 @@ class SpokeAppDelegate(NSObject):
         ).start()
 
     def commandModelsDiscovered_(self, payload: dict) -> None:
+        command_backend = getattr(self, "_command_backend", "local")
         self._command_models_refresh_in_flight = False
         options = payload.get("options") or []
         self._command_model_options = options
+        if (
+            command_backend == "sidecar"
+            and options
+            and self._command_model_id not in {model_id for model_id, _, _ in options}
+        ):
+            healed_model_id = options[0][0]
+            logger.info(
+                "Healing stale sidecar assistant model without relaunch: %s -> %s",
+                self._command_model_id,
+                healed_model_id,
+            )
+            self._command_model_id = healed_model_id
+            if self._command_client is not None:
+                self._command_client._model = healed_model_id
+            os.environ["SPOKE_COMMAND_MODEL"] = healed_model_id
+            if not self._save_command_model_preference(healed_model_id):
+                logger.warning(
+                    "Failed to persist healed sidecar assistant model: %s",
+                    healed_model_id,
+                )
+            self._command_model_options = [
+                (model_id, label, model_id == healed_model_id)
+                for model_id, label, _selected in options
+            ]
         if self._menubar is not None:
             self._menubar.refresh_menu()
 
