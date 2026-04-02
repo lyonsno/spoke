@@ -80,12 +80,28 @@ Point `spoke` at any OpenAI-compatible transcription server:
 SPOKE_WHISPER_URL=http://<host>:8000 uv run spoke
 ```
 
-Example sidecar options on Apple Silicon:
+Example sidecar on Apple Silicon (TTS + STT):
 
 ```sh
-uv tool install "mlx-audio[server]"
-mlx-audio-server --host 0.0.0.0 --port 8000
+./scripts/setup-mlx-audio-server.sh --start --port 9001
 ```
+
+This installs `mlx-audio` as a uv tool with all runtime deps patched (the
+published extras are missing several transitive dependencies — see the script
+for details). Once running, load models dynamically:
+
+```sh
+curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
+curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
+```
+
+Or start the server manually after install:
+
+```sh
+mlx_audio.server --host 0.0.0.0 --port 9001 --workers 1
+```
+
+> **Note:** The binary is `mlx_audio.server` (dots), not `mlx-audio-server` (dashes).
 
 ### Voice commands
 
