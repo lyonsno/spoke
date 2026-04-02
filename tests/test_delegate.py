@@ -27,13 +27,17 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_active = False
     delegate._preview_thread = None
     delegate._preview_client = MagicMock()
+    delegate._preview_model_id = "preview-model"
+    delegate._transcription_model_id = "transcription-model"
     delegate._local_mode = False
     delegate._record_start_time = 0.0
     delegate._cap_fired = False
     delegate._transcribe_start = time.monotonic()
     delegate._last_preview_text = ""
     delegate._command_client = None
+    delegate._command_model_id = None
     delegate._command_overlay = None
+    delegate._tts_client = None
     # Tray state
     delegate._tray_stack = []
     delegate._tray_index = 0
@@ -1786,11 +1790,14 @@ class TestWarmupContract:
         d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock()
 
-        d._prepare_clients_in_background()
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d._prepare_clients_in_background()
 
         d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
             "clientWarmupSucceeded:", None, False
         )
+        mock_phase.assert_any_call("client_warmup.start")
+        mock_phase.assert_any_call("client_warmup.succeeded")
 
     def test_background_warmup_dispatches_failure_to_main_thread(
         self, main_module, monkeypatch
@@ -1799,12 +1806,15 @@ class TestWarmupContract:
         d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
 
-        d._prepare_clients_in_background()
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d._prepare_clients_in_background()
 
         d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
             "clientWarmupFailed:", None, False
         )
         assert isinstance(d._warm_error, RuntimeError)
+        mock_phase.assert_any_call("client_warmup.start")
+        mock_phase.assert_any_call("client_warmup.failed", error="warm failed")
 
     def test_warmup_success_hides_startup_indicator(
         self, main_module, monkeypatch
@@ -1812,10 +1822,12 @@ class TestWarmupContract:
         """Successful warmup should remove the loading overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._tts_client = None
-        d.clientWarmupSucceeded_(None)
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d.clientWarmupSucceeded_(None)
 
         d._overlay.hide.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        mock_phase.assert_called_with("app.ready")
 
     def test_warmup_failure_updates_startup_indicator(
         self, main_module, monkeypatch
