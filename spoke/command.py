@@ -108,6 +108,7 @@ class CommandClient:
         self._api_key = (
             api_key
             or os.environ.get("SPOKE_COMMAND_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
             or os.environ.get("OMLX_SERVER_API_KEY", "")
         )
         self._max_history = (
