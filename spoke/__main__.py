@@ -120,7 +120,9 @@ def _record_runtime_phase(phase: str, **details) -> None:
     try:
         path = _runtime_phase_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path = path.with_name(
+            f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        )
         tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(tmp_path, path)
     except Exception:
@@ -1582,10 +1584,9 @@ class SpokeAppDelegate(NSObject):
             self._tray_navigate_up()
 
     def _on_tray_enter_pressed(self) -> None:
-        """Enter pressed during tray = send current entry to assistant."""
+        """Bare Enter during tray does nothing; assistant send is space-rooted only."""
         if self._tray_active:
-            logger.info("Enter during tray — sending to assistant")
-            self._tray_send_current()
+            logger.info("Enter during tray — ignored (assistant send requires space-rooted chord)")
 
     def _on_tray_delete_gesture(self) -> None:
         """Shift held + double-tap spacebar = delete current tray entry."""

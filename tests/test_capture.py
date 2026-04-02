@@ -5,7 +5,10 @@ sounddevice and numpy, and we mock sounddevice at the function level.
 """
 
 import io
+import queue
 import struct
+import threading
+import time
 import wave
 from unittest.mock import MagicMock, patch
 
@@ -72,9 +75,11 @@ class TestWavEncoding:
 class TestAudioCallback:
     """Test the audio callback's frame accumulation and amplitude reporting."""
 
-    def test_callback_accumulates_frames(self):
+    @patch("spoke.capture.sd")
+    def test_callback_accumulates_frames(self, mock_sd):
         """Audio callback should append chunks to the frame list."""
         cap = AudioCapture()
+        cap._stream = mock_sd.InputStream.return_value
         chunk = np.random.randn(1024, 1).astype(np.float32)
 
         cap._audio_callback(chunk, 1024, None, 0)
@@ -82,20 +87,40 @@ class TestAudioCallback:
 
         assert len(cap._frames) == 2
 
-    def test_callback_reports_amplitude(self):
+    @patch("spoke.capture.sd")
+    def test_callback_reports_amplitude(self, mock_sd):
         """Amplitude callback should receive RMS of each chunk."""
         amplitudes = []
         cap = AudioCapture()
+        cap.start(amplitude_callback=amplitudes.append)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
 
         # Known signal: constant 0.5
         chunk = np.full((1024, 1), 0.5, dtype=np.float32)
         cap._audio_callback(chunk, 1024, None, 0)  # no callback set yet
-
-        cap._amplitude_cb = amplitudes.append
         cap._audio_callback(chunk, 1024, None, 0)
 
-        assert len(amplitudes) == 1
-        assert abs(amplitudes[0] - 0.5) < 0.01  # RMS of constant 0.5 = 0.5
+        deadline = time.time() + 1.0
+        while len(amplitudes) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert len(amplitudes) >= 1
+        assert abs(amplitudes[-1] - 0.5) < 0.01  # RMS of constant 0.5 = 0.5
+
+        cap.stop()
+
+    def test_callback_ignores_stale_invocation_after_stream_teardown(self):
+        """Late callbacks after teardown should be ignored."""
+        cap = AudioCapture()
+        cap._frames = []
+        cap._amplitude_cb = MagicMock()
+
+        chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        cap._audio_callback(chunk, 1024, None, 0)
+
+        assert cap._frames == []
+        cap._amplitude_cb.assert_not_called()
 
     def test_get_all_frames_concatenates(self):
         """_get_all_frames should return one contiguous array."""
@@ -114,6 +139,90 @@ class TestAudioCallback:
         cap = AudioCapture()
         result = cap._get_all_frames()
         assert result.size == 0
+
+    @patch("spoke.capture.sd")
+    def test_callback_dispatches_amplitude_off_audio_thread(self, mock_sd):
+        """Amplitude callbacks should run off the PortAudio callback thread."""
+        cap = AudioCapture()
+        seen = []
+        caller_tid = None
+        delivered = threading.Event()
+
+        def amplitude_cb(rms):
+            seen.append((threading.get_ident(), rms))
+            delivered.set()
+
+        cap.start(amplitude_callback=amplitude_cb)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        caller_tid = threading.get_ident()
+        cap._audio_callback(chunk, 1024, None, 0)
+
+        assert delivered.wait(timeout=1.0)
+        callback_tid, rms = seen[-1]
+        assert callback_tid != caller_tid
+        assert abs(rms - 0.5) < 0.01
+
+        cap.stop()
+
+    @patch("spoke.capture.sd")
+    def test_callback_dispatches_vad_state_off_audio_thread(self, mock_sd):
+        """VAD state callbacks should not run on the PortAudio callback thread."""
+        cap = AudioCapture()
+        seen = []
+        delivered = threading.Event()
+
+        def vad_cb(is_speech):
+            seen.append((threading.get_ident(), is_speech))
+            delivered.set()
+
+        cap.start(vad_state_callback=vad_cb)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+
+        caller_tid = threading.get_ident()
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(3):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+
+        assert delivered.wait(timeout=1.0)
+        callback_tid, is_speech = seen[-1]
+        assert callback_tid != caller_tid
+        assert is_speech is True
+
+        cap.stop()
+
+    @patch("spoke.capture.sd")
+    def test_callback_does_not_block_on_slow_amplitude_handler(self, mock_sd):
+        """The PortAudio callback path should not wait on a slow UI callback."""
+        cap = AudioCapture()
+        release = threading.Event()
+        entered = threading.Event()
+
+        def amplitude_cb(rms):
+            entered.set()
+            release.wait(timeout=1.0)
+
+        cap.start(amplitude_callback=amplitude_cb)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        started = time.perf_counter()
+        cap._audio_callback(chunk, 1024, None, 0)
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 0.05
+        assert entered.wait(timeout=1.0)
+
+        release.set()
+        cap.stop()
 
 
 class TestStartStop:
@@ -172,6 +281,33 @@ class TestStartStop:
 
         first_stream.stop.assert_called_once()
         first_stream.close.assert_called_once()
+
+    @patch("spoke.capture.sd")
+    @patch("spoke.capture.threading.Thread")
+    def test_second_start_tears_down_callback_dispatch_before_rebinding(
+        self, MockThread, mock_sd
+    ):
+        """Stale callback work from recording N must not hit recording N+1 callbacks."""
+        cap = AudioCapture()
+        old_cb = MagicMock()
+        new_cb = MagicMock()
+
+        cap.start(amplitude_callback=old_cb)
+        old_generation = cap._callback_generation
+
+        def simulate_old_dispatch_teardown():
+            assert cap._amplitude_cb is old_cb
+            cap._amplitude_cb(0.5)
+            cap._callback_queue = None
+            cap._callback_thread = None
+
+        with patch.object(cap, "_stop_callback_dispatch", side_effect=simulate_old_dispatch_teardown) as mock_stop:
+            cap.start(amplitude_callback=new_cb)
+
+        mock_stop.assert_called_once()
+        old_cb.assert_called_once_with(0.5)
+        new_cb.assert_not_called()
+        assert cap._callback_generation == old_generation + 1
 
     @patch("spoke.capture.sd")
     def test_start_retries_once_after_portaudio_error(self, mock_sd):
@@ -250,6 +386,76 @@ class TestStartStop:
         wav = cap.stop()
         assert wav == b""
         assert len(cap._frames) == 0
+
+    @patch("spoke.capture.sd")
+    def test_stop_clears_callback_dispatch_state(self, mock_sd):
+        """stop() should tear down async callback dispatch before the next hold."""
+        cap = AudioCapture()
+        cap.start(
+            amplitude_callback=MagicMock(),
+            vad_state_callback=MagicMock(),
+        )
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        cap._frames = [np.zeros(1024, dtype=np.float32)]
+
+        cap.stop()
+
+        assert cap._callback_thread is None
+        assert cap._callback_queue is None
+        assert cap._amplitude_cb is None
+        assert cap._vad_cb is None
+
+    @patch("spoke.capture.sd")
+    def test_stop_disables_callbacks_before_dispatch_teardown(self, mock_sd):
+        """Queued callback work should be disabled before dispatch teardown runs."""
+        cap = AudioCapture()
+        cap.start(
+            amplitude_callback=MagicMock(),
+            vad_state_callback=MagicMock(),
+        )
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        cap._frames = [np.zeros(1024, dtype=np.float32)]
+
+        def assert_callbacks_already_disabled():
+            assert cap._amplitude_cb is None
+            assert cap._vad_cb is None
+
+        with patch.object(cap, "_stop_callback_dispatch", side_effect=assert_callbacks_already_disabled):
+            cap.stop()
+
+    def test_callback_worker_drops_stale_generation_events(self):
+        """Events from an older recording must not hit the new recording callbacks."""
+        cap = AudioCapture()
+        cap._callback_generation = 2
+        cap._callbacks_enabled = True
+        cap._amplitude_cb = MagicMock()
+        cap._callback_queue = queue.Queue()
+        cap._callback_queue.put((1, "amplitude", 0.5))
+        cap._callback_queue.put(None)
+
+        cap._callback_worker()
+
+        cap._amplitude_cb.assert_not_called()
+
+    @patch("spoke.capture.sd")
+    def test_stop_drops_pending_callback_events(self, mock_sd):
+        """stop() should drop queued callback work rather than delivering it."""
+        cap = AudioCapture()
+        callback = MagicMock()
+        cap.start(amplitude_callback=callback)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        cap._frames = [np.zeros(1024, dtype=np.float32)]
+
+        cap._callback_queue = queue.Queue()
+        cap._callback_queue.put((cap._callback_generation, "amplitude", 0.5))
+        cap._callback_thread = None
+
+        cap.stop()
+
+        callback.assert_not_called()
 
 class TestVADSlicing:
     """Test the VAD state machine and silence slicing logic."""
