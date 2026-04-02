@@ -104,7 +104,7 @@ class TestRecoveryFlowBranching:
         assert d._verify_paste_text == "hello world"
 
     def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
-        """verifyPasteResult_ should enter recovery when OCR doesn't find the text."""
+        """A normal-path OCR miss should fail open into a silent tray save."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "hello world"
         d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
@@ -112,25 +112,39 @@ class TestRecoveryFlowBranching:
         with patch("spoke.__main__.has_focused_text_input", return_value=False), \
              patch("spoke.__main__.set_pasteboard_only"), \
              patch("spoke.__main__.save_pasteboard", return_value=None):
-            d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
+            d.verifyPasteResult_(
+                {"found": False, "status": "missing", "text": "hello world", "attempt": 1}
+            )
 
-        d._overlay.show_tray.assert_called_once()
+        assert d._tray_active is False
+        d._overlay.show_tray.assert_not_called()
+        d._overlay.flash_tray_capture.assert_called_once_with("hello world", owner="user")
+        entry = d._tray_stack[0]
+        assert entry.text == "hello world"
+        assert entry.owner == "user"
 
-    def test_verify_result_enters_recovery_when_text_field_still_focused(
+    def test_verify_result_unavailable_capture_stashes_to_bottom_without_popping(
         self, main_module, monkeypatch
     ):
-        """A second OCR miss should still recover to tray even if focus remains."""
+        """Unavailable OCR evidence should also fail open without surfacing the tray."""
         d = _make_delegate(main_module, monkeypatch)
+        d._tray_stack = [main_module.TrayEntry("existing newer text")]
+        d._tray_index = 0
         d._verify_paste_text = "hello world"
         d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
 
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.set_pasteboard_only"), \
              patch("spoke.__main__.save_pasteboard", return_value=None):
-            d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
+            d.verifyPasteResult_(
+                {"found": False, "status": "unavailable", "text": "hello world", "attempt": 1}
+            )
 
         assert d._verify_paste_text is None
-        d._overlay.show_tray.assert_called_once()
+        assert d._tray_active is False
+        d._overlay.show_tray.assert_not_called()
+        d._overlay.flash_tray_capture.assert_called_once_with("hello world", owner="user")
+        assert [entry.text for entry in d._tray_stack] == ["hello world", "existing newer text"]
 
     def test_verify_result_clears_state_on_success(self, main_module, monkeypatch):
         """verifyPasteResult_ should clear verify state when text is found."""
@@ -423,6 +437,46 @@ class TestSentinelClipboardPreservation:
 
 class TestOCRVerifyRetry:
     """Test OCR verification retry path and stale-text guard."""
+
+    def test_verify_paste_confirms_via_focused_value_before_ocr(self, main_module, monkeypatch):
+        """Focused AXValue confirmation should short-circuit the OCR fallback."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "dictated text"
+        dispatched = []
+
+        def _dispatch(selector, payload, wait):
+            dispatched.append((selector, payload, wait))
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = _dispatch
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_screen_text") as mock_capture, \
+             patch("spoke.paste_verify.classify_paste_result") as mock_classify:
+            d.verifyPaste_(None)
+
+        mock_capture.assert_not_called()
+        mock_classify.assert_not_called()
+        assert dispatched == [
+            (
+                "verifyPasteResult:",
+                {
+                    "found": True,
+                    "status": "confirmed_ax",
+                    "text": "dictated text",
+                    "attempt": 0,
+                },
+                False,
+            )
+        ]
 
     def test_attempt_0_schedules_retry(self, main_module, monkeypatch):
         """First failed OCR check should schedule a retry, not enter recovery."""

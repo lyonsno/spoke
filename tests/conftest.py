@@ -202,6 +202,7 @@ def main_module(mock_pyobjc):
     # Pre-install a fake focus_check module to avoid loading real ctypes/AX APIs
     fake_focus_check = types.ModuleType("spoke.focus_check")
     fake_focus_check.has_focused_text_input = MagicMock(return_value=True)
+    fake_focus_check.focused_text_contains = MagicMock(return_value=None)
     fake_focus_check._get_focused_role = MagicMock(return_value="AXTextField")
     sys.modules["spoke.focus_check"] = fake_focus_check
 

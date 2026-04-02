@@ -271,7 +271,8 @@ class TestMenuBarIcon:
         assert any(call.args == ("qwen3p5-35B-A3B", "selectModel:", "") for call in calls)
         assert any(call.args == ("qwen3-14b", "selectModel:", "") for call in calls)
 
-    def test_build_menu_shows_backend_and_endpoint_info(self, menubar_module):
+    def test_build_menu_shows_assistant_backend_submenu(self, menubar_module):
+        """Command-mode callback state should build an Assistant Backend submenu."""
         AppKit = __import__("AppKit")
 
         status_item_menu_holder = MagicMock(name="status_item_holder")
@@ -284,17 +285,14 @@ class TestMenuBarIcon:
         icon._on_quit = MagicMock()
         icon._on_select_model = MagicMock(
             return_value={
-                "command_backend": {
-                    "title": "Assistant Backend (stored): Local",
+                "assistant_backend": {
+                    "title": "Assistant Backend",
                     "items": [
-                        ("local", "Local (localhost:8001)", True, False),
-                        ("sidecar", "Sidecar (not configured)", False, False),
+                        ("local", "Local OMLX", False, True),
+                        ("sidecar", "Sidecar OMLX", True, True),
+                        ("configure", "Set Sidecar URL…", False, True),
                     ],
-                },
-                "command_endpoint": {
-                    "title": "Assistant Endpoint: localhost:8001",
-                    "note": "Routing forced by env: SPOKE_COMMAND_URL",
-                },
+                }
             }
         )
         icon._status_item = None
@@ -304,9 +302,11 @@ class TestMenuBarIcon:
         icon.setup()
 
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
-        assert any(call.args == ("Assistant Backend (stored): Local", None, "") for call in calls)
-        assert any(call.args == ("Assistant Endpoint: localhost:8001", None, "") for call in calls)
-        assert any(call.args == ("Routing forced by env: SPOKE_COMMAND_URL", None, "") for call in calls)
+        assert any(call.args == ("Assistant Backend", None, "") for call in calls)
+        assert any(call.args == ("Local OMLX", "selectModel:", "") for call in calls)
+        assert any(call.args == ("Sidecar OMLX", "selectModel:", "") for call in calls)
+        assert any(call.args == ("Set Sidecar URL…", "selectModel:", "") for call in calls)
+
     def test_build_menu_shows_launch_target_submenu(self, menubar_module):
         """Registry-backed launch targets should appear as their own submenu."""
         AppKit = __import__("AppKit")

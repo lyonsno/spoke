@@ -120,6 +120,52 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_flash_tray_capture_schedules_ack_then_fade(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._window = MagicMock()
+            overlay._tray_capture_flash_timer = None
+            overlay.show_tray = MagicMock()
+            overlay._pulse_tray_capture_ack = MagicMock()
+            overlay._cancel_tray_capture_flash = MagicMock()
+
+            timer = object()
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = timer
+
+            overlay.flash_tray_capture("saved text")
+
+            overlay.show_tray.assert_called_once_with("saved text", owner="user")
+            overlay._pulse_tray_capture_ack.assert_called_once_with()
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once_with(
+                mod._TRAY_CAPTURE_FLASH_ONSET_S,
+                overlay,
+                "trayCaptureFlashDone:",
+                None,
+                False,
+            )
+            assert overlay._tray_capture_flash_timer is timer
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_flash_tray_capture_callback_fades_overlay_out(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._tray_capture_flash_timer = object()
+            overlay.hide = MagicMock()
+
+            overlay.trayCaptureFlashDone_(None)
+
+            assert overlay._tray_capture_flash_timer is None
+            overlay.hide.assert_called_once_with(
+                fade_duration=mod._TRAY_CAPTURE_FLASH_FADE_OUT_S
+            )
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
 
 class TestAdaptiveOverlayCompositing:
     """Overlay bg/text cross-fades between dark and light with brightness."""

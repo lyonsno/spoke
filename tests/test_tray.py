@@ -296,6 +296,23 @@ class TestTrayStack:
         assert entry.acknowledged is False
         assert result["tray_visible"] is True
 
+    def test_bottom_insert_stays_silent_and_preserves_active_entry(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_stack = [
+            main_module.TrayEntry("older"),
+            main_module.TrayEntry("current"),
+        ]
+        d._tray_index = 1
+        d._tray_active = True
+        d._detector.tray_active = True
+
+        entry = d._add_tray_entry("saved fallback", activate=False, position="bottom")
+
+        assert entry.text == "saved fallback"
+        assert [item.text for item in d._tray_stack] == ["saved fallback", "older", "current"]
+        assert d._tray_index == 2
+        d._overlay.show_tray.assert_not_called()
+
     def test_recalling_assistant_entry_acknowledges_it(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._tray_stack = [

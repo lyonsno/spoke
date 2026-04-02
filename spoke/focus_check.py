@@ -158,6 +158,30 @@ def has_focused_text_input() -> bool:
     return True
 
 
+def focused_text_contains(expected: str) -> bool | None:
+    """Return whether the focused element's AXValue contains the expected text.
+
+    Returns True on a positive AXValue match, False when a readable focused text
+    value is present but does not contain the expected text, and None when the
+    focused value is unavailable or cannot be trusted for verification.
+    """
+    expected_norm = " ".join((expected or "").split())
+    if not expected_norm:
+        return None
+
+    try:
+        value = _get_focused_value()
+    except Exception:
+        logger.debug("Focused value lookup failed — falling back to OCR", exc_info=True)
+        return None
+
+    if not value:
+        return None
+
+    value_norm = " ".join(value.split())
+    return expected_norm in value_norm
+
+
 # ── CFString helpers ────────────────────────────────────────────
 
 def _cfstr(s: bytes) -> ctypes.c_void_p | None:
@@ -183,3 +207,52 @@ def _cfstr_to_python(cf_string: ctypes.c_void_p) -> str | None:
     if _cf.CFStringGetCString(cf_string, buf, buf_size, _kCFStringEncodingUTF8):
         return buf.value.decode("utf-8")
     return None
+
+
+def _get_focused_value() -> str | None:
+    """Return the AXValue string for the focused element, when available."""
+    if _cf is None or _hi is None:
+        return None
+
+    role = _get_focused_role()
+    if role is None or role in _NON_TEXT_ROLES:
+        return None
+
+    system_wide = _hi.AXUIElementCreateSystemWide()
+    if not system_wide:
+        return None
+
+    try:
+        focus_attr = _cfstr(b"AXFocusedUIElement")
+        if not focus_attr:
+            return None
+        try:
+            value = ctypes.c_void_p()
+            err = _hi.AXUIElementCopyAttributeValue(
+                system_wide, focus_attr, ctypes.byref(value)
+            )
+            if err != _kAXErrorSuccess or not value.value:
+                return None
+            try:
+                value_attr = _cfstr(b"AXValue")
+                if not value_attr:
+                    return None
+                try:
+                    value_ref = ctypes.c_void_p()
+                    err2 = _hi.AXUIElementCopyAttributeValue(
+                        value, value_attr, ctypes.byref(value_ref)
+                    )
+                    if err2 != _kAXErrorSuccess or not value_ref.value:
+                        return None
+                    try:
+                        return _cfstr_to_python(value_ref)
+                    finally:
+                        _cf.CFRelease(value_ref)
+                finally:
+                    _cf.CFRelease(value_attr)
+            finally:
+                _cf.CFRelease(value)
+        finally:
+            _cf.CFRelease(focus_attr)
+    finally:
+        _cf.CFRelease(system_wide)

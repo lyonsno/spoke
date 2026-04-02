@@ -90,3 +90,25 @@ class TestHasFocusedTextInput:
         mod = _import_focus_check()
         with patch.object(mod, "_get_focused_role", side_effect=RuntimeError("ctypes crash")):
             assert mod.has_focused_text_input() is True
+
+
+class TestFocusedTextContains:
+    def test_returns_true_when_expected_is_present(self):
+        mod = _import_focus_check()
+        with patch.object(mod, "_get_focused_value", return_value="prefix dictated text suffix"):
+            assert mod.focused_text_contains("dictated text") is True
+
+    def test_returns_false_when_value_present_without_expected_text(self):
+        mod = _import_focus_check()
+        with patch.object(mod, "_get_focused_value", return_value="other text entirely"):
+            assert mod.focused_text_contains("dictated text") is False
+
+    def test_returns_none_when_value_unavailable(self):
+        mod = _import_focus_check()
+        with patch.object(mod, "_get_focused_value", return_value=None):
+            assert mod.focused_text_contains("dictated text") is None
+
+    def test_returns_none_on_lookup_error(self):
+        mod = _import_focus_check()
+        with patch.object(mod, "_get_focused_value", side_effect=RuntimeError("AXValue failed")):
+            assert mod.focused_text_contains("dictated text") is None

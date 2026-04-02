@@ -38,7 +38,11 @@ def _make_delegate(main_module, monkeypatch):
     delegate._transcribe_start = time.monotonic()
     delegate._last_preview_text = ""
     delegate._command_client = None
+    delegate._command_backend = "local"
+    delegate._command_url = "http://localhost:8001"
+    delegate._command_sidecar_url = None
     delegate._command_model_id = None
+    delegate._command_model_options = []
     delegate._command_overlay = None
     delegate._scene_cache = None
     delegate._tts_client = None
@@ -916,56 +920,24 @@ class TestDualModelConfiguration:
             ],
         }
 
-    def test_handle_model_menu_none_surfaces_command_backend_endpoint_and_env_override(
+    def test_handle_model_menu_none_exposes_assistant_backend_controls(
         self, main_module, monkeypatch
     ):
+        """Command mode should surface persisted local-vs-sidecar backend controls."""
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
-        d._command_model_id = "qwen3p5-35B-A3B"
-        d._command_model_options = [("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True)]
-        d._command_backend = "local"
-        d._command_sidecar_url = ""
-        d._command_url = "http://localhost:8001"
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
-
-        model_state = d._handle_model_menu_action(None)
-
-        assert model_state["command_backend"] == {
-            "title": "Assistant Backend (stored): Local",
-            "items": [
-                ("local", "Local (localhost:8001)", True, False),
-                ("sidecar", "Sidecar (not configured)", False, False),
-            ],
-        }
-        assert model_state["command_endpoint"] == {
-            "title": "Assistant Endpoint: localhost:8001",
-            "note": "Routing forced by env: SPOKE_COMMAND_URL",
-        }
-
-    def test_handle_model_menu_none_ignores_stale_localhost_env_for_sidecar(
-        self, main_module, monkeypatch
-    ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_client = MagicMock()
-        d._command_model_id = "qwen3p5-35B-A3B"
-        d._command_model_options = [("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True)]
         d._command_backend = "sidecar"
-        d._command_sidecar_url = "http://192.168.68.127:8001"
-        d._command_url = "http://192.168.68.127:8001"
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        d._command_sidecar_url = "http://other-box:8001"
 
         model_state = d._handle_model_menu_action(None)
 
-        assert model_state["command_backend"] == {
-            "title": "Assistant Backend: Sidecar",
+        assert model_state["assistant_backend"] == {
+            "title": "Assistant Backend",
             "items": [
-                ("local", "Local (localhost:8001)", False, True),
-                ("sidecar", "Sidecar (192.168.68.127:8001)", True, True),
+                ("local", "Local OMLX", False, True),
+                ("sidecar", "Sidecar OMLX", True, True),
+                ("configure", "Set Sidecar URL…", False, True),
             ],
-        }
-        assert model_state["command_endpoint"] == {
-            "title": "Assistant Endpoint: 192.168.68.127:8001",
-            "note": "Routing source: saved sidecar URL",
         }
 
     def test_handle_model_menu_none_surfaces_tts_backend_and_endpoint(
@@ -990,6 +962,7 @@ class TestDualModelConfiguration:
             "title": "TTS Endpoint: local MLX",
             "note": "Routing source: local MLX",
         }
+
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
     ):
@@ -1489,7 +1462,10 @@ class TestDualModelConfiguration:
                 result = d.init()
 
         assert result is not None
-        MockCommand.assert_called_once_with(base_url="http://omlx:8001", model="qwen3-14b")
+        MockCommand.assert_called_once_with(
+            base_url="http://omlx:8001",
+            model="qwen3-14b",
+        )
         assert d._command_model_id == "qwen3-14b"
         mock_seed.assert_called_once_with("qwen3-14b")
         assert d._command_model_options == [
@@ -1525,7 +1501,10 @@ class TestDualModelConfiguration:
                 result = d.init()
 
         assert result is not None
-        MockCommand.assert_called_once_with(base_url="http://omlx:8001", model="qwen3-14b")
+        MockCommand.assert_called_once_with(
+            base_url="http://omlx:8001",
+            model="qwen3-14b",
+        )
         command_client.list_models.assert_not_called()
         mock_seed.assert_called_once_with("qwen3-14b")
         assert d._command_model_options == [
@@ -1536,15 +1515,125 @@ class TestDualModelConfiguration:
             )
         ]
 
-    def test_resolve_command_url_prefers_saved_sidecar_url_over_stale_localhost_env(
+    def test_selecting_assistant_backend_sidecar_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_backend = "sidecar"
-        d._command_sidecar_url = "http://192.168.68.127:8001"
+        """Choosing the sidecar backend should persist it and relaunch against that URL."""
         monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_backend = "local"
+        d._command_url = "http://localhost:8001"
+        d._command_sidecar_url = "http://other-box:8001"
+        d._save_command_backend_preferences = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
 
-        assert d._resolve_command_url() == "http://192.168.68.127:8001"
+        d._handle_model_menu_action(("assistant_backend", "sidecar"))
+
+        d._save_command_backend_preferences.assert_called_once_with(
+            "sidecar", "http://other-box:8001"
+        )
+        assert os.environ["SPOKE_COMMAND_URL"] == "http://other-box:8001"
+        d._relaunch.assert_called_once_with()
+
+    def test_selecting_assistant_backend_sidecar_prompts_for_url_when_missing(
+        self, main_module, monkeypatch
+    ):
+        """Choosing sidecar with no saved URL should ask once, persist, and relaunch."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_backend = "local"
+        d._command_url = "http://localhost:8001"
+        d._command_sidecar_url = None
+        d._prompt_for_command_sidecar_url = MagicMock(
+            return_value="http://other-box:8001"
+        )
+        d._save_command_backend_preferences = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        d._handle_model_menu_action(("assistant_backend", "sidecar"))
+
+        d._prompt_for_command_sidecar_url.assert_called_once_with("")
+        d._save_command_backend_preferences.assert_called_once_with(
+            "sidecar", "http://other-box:8001"
+        )
+        assert os.environ["SPOKE_COMMAND_URL"] == "http://other-box:8001"
+        d._relaunch.assert_called_once_with()
+
+    def test_configuring_assistant_sidecar_url_persists_without_relaunch_when_local_backend_active(
+        self, main_module, monkeypatch
+    ):
+        """Saving a sidecar URL should not force a relaunch while local backend remains active."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_backend = "local"
+        d._command_url = "http://localhost:8001"
+        d._command_sidecar_url = None
+        d._prompt_for_command_sidecar_url = MagicMock(
+            return_value="http://other-box:8001"
+        )
+        d._save_command_backend_preferences = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        d._handle_model_menu_action(("assistant_backend", "configure"))
+
+        d._save_command_backend_preferences.assert_called_once_with(
+            "local", "http://other-box:8001"
+        )
+        d._menubar.set_status_text.assert_called_with("Assistant sidecar URL saved")
+        d._relaunch.assert_not_called()
+
+    def test_init_prefers_persisted_sidecar_backend_over_launcher_default_local_url(
+        self, main_module, monkeypatch
+    ):
+        """Saved sidecar selection should beat the launcher's default localhost seed."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "qwen3-14b",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "sidecar",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_sidecar_url_preference",
+            lambda self: "http://other-box:8001",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[
+                    (
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        False,
+                    )
+                ],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="http://other-box:8001",
+            model="qwen3-14b",
+        )
+        assert d._command_backend == "sidecar"
+        assert d._command_url == "http://other-box:8001"
+        assert d._command_sidecar_url == "http://other-box:8001"
+
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch

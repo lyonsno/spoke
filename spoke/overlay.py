@@ -113,6 +113,8 @@ _RECOVERY_LABEL_FONT_SIZE = 14.0
 _RECOVERY_PREVIEW_MAX_CHARS = 45  # truncate clipboard preview
 _RECOVERY_HINT_MARGIN = 8.0  # gap between overlay and hint
 _RECOVERY_HINT_HEIGHT = 20.0
+_TRAY_CAPTURE_FLASH_ONSET_S = 0.10
+_TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
 
 
 def _truncate_preview(text: str | None) -> str:
@@ -355,6 +357,7 @@ class TranscriptionOverlay(NSObject):
         self._recovery_dividers: list[NSView] = []
         self._recovery_hint_window: NSWindow | None = None
         self._recovery_reject_timer: NSTimer | None = None
+        self._tray_capture_flash_timer: NSTimer | None = None
         self._on_dismiss_callback = None
         self._on_insert_callback = None
         self._on_clipboard_toggle_callback = None
@@ -474,6 +477,7 @@ class TranscriptionOverlay(NSObject):
         """Fade the overlay in."""
         if self._window is None:
             return
+        self._cancel_tray_capture_flash()
         # If recovery mode is active, clean it up first
         if self._recovery_mode:
             self._recovery_mode = False
@@ -531,13 +535,14 @@ class TranscriptionOverlay(NSObject):
         if immediate:
             self._brightness = self._brightness_target
 
-    def hide(self) -> None:
+    def hide(self, *, fade_duration: float | None = None) -> None:
         """Fade the overlay out smoothly."""
         if self._window is None:
             return
+        self._cancel_tray_capture_flash()
         self._visible = False
         self._cancel_typewriter()
-        self._start_fade_out()
+        self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 
     def order_out(self) -> None:
@@ -549,20 +554,22 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._visible = False
+        self._cancel_tray_capture_flash()
         self._cancel_fade()
         self._cancel_typewriter()
         self._window.setAlphaValue_(0.0)
         self._window.orderOut_(None)
         logger.info("Overlay ordered out")
 
-    def _start_fade_out(self) -> None:
+    def _start_fade_out(self, *, duration: float | None = None) -> None:
         """Animate fade-out using a repeating timer for smooth steps."""
         self._cancel_fade()
         self._fade_step = 0
         self._fade_from = self._window.alphaValue()
         self._fade_target = 0.0
         self._fade_direction = -1  # fading out
-        interval = _FADE_OUT_S / _FADE_STEPS
+        fade_duration = duration if duration is not None else _FADE_OUT_S
+        interval = fade_duration / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -905,6 +912,7 @@ class TranscriptionOverlay(NSObject):
         """
         if self._window is None:
             return
+        self._cancel_tray_capture_flash()
 
         # Clean up any existing recovery state
         if self._recovery_mode:
@@ -974,6 +982,48 @@ class TranscriptionOverlay(NSObject):
             text[:50] if text else "",
         )
 
+    def flash_tray_capture(self, text: str, *, owner: str = "user") -> None:
+        """Briefly acknowledge a silent tray save, then vanish."""
+        if self._window is None:
+            return
+        self.show_tray(text, owner=owner)
+        self._pulse_tray_capture_ack()
+        self._cancel_tray_capture_flash()
+        self._tray_capture_flash_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _TRAY_CAPTURE_FLASH_ONSET_S,
+            self,
+            "trayCaptureFlashDone:",
+            None,
+            False,
+        )
+
+    def _pulse_tray_capture_ack(self) -> None:
+        """Quick ease-in/ease-out pulse for silent tray-save feedback."""
+        if self._window is None:
+            return
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+
+        content_layer = self._content_view.layer()
+        pulse = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        pulse.setFromValue_(1.0)
+        pulse.setToValue_(1.02)
+        pulse.setDuration_(_TRAY_CAPTURE_FLASH_ONSET_S)
+        pulse.setAutoreverses_(True)
+        pulse.setTimingFunction_(
+            CAMediaTimingFunction.functionWithName_("easeInEaseOut")
+        )
+        pulse.setRemovedOnCompletion_(True)
+        content_layer.addAnimation_forKey_(pulse, "tray_capture_ack")
+
+    def trayCaptureFlashDone_(self, timer) -> None:
+        self._tray_capture_flash_timer = None
+        self.hide(fade_duration=_TRAY_CAPTURE_FLASH_FADE_OUT_S)
+
+    def _cancel_tray_capture_flash(self) -> None:
+        if self._tray_capture_flash_timer is not None:
+            self._tray_capture_flash_timer.invalidate()
+            self._tray_capture_flash_timer = None
+
     # ── recovery mode ────────────────────────────────────────
 
     def show_recovery(self, text: str, on_dismiss=None, on_insert=None,
@@ -996,6 +1046,7 @@ class TranscriptionOverlay(NSObject):
         """
         if self._window is None:
             return
+        self._cancel_tray_capture_flash()
 
         # Clean up any existing recovery state
         self._teardown_recovery_views()

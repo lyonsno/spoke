@@ -218,6 +218,7 @@ class MenuBarIcon(NSObject):
                     )
                     added_menu_section = True
                 assistant = model_state.get("assistant")
+                assistant_backend = model_state.get("assistant_backend")
                 transcription = model_state.get("transcription")
                 preview = model_state.get("preview")
                 if assistant:
@@ -230,22 +231,15 @@ class MenuBarIcon(NSObject):
                         )
                     )
                     added_menu_section = True
-                command_backend = model_state.get("command_backend")
-                if command_backend:
+                if assistant_backend:
                     menu.addItem_(
                         self._build_toggle_submenu_item(
-                            command_backend["title"],
-                            "command_backend",
-                            command_backend["items"],
+                            assistant_backend["title"],
+                            "assistant_backend",
+                            assistant_backend["items"],
                         )
                     )
                     added_menu_section = True
-                command_endpoint = model_state.get("command_endpoint")
-                if command_endpoint:
-                    menu.addItem_(self._build_info_item(command_endpoint["title"]))
-                    note = command_endpoint.get("note")
-                    if note:
-                        menu.addItem_(self._build_info_item(note))
                 if transcription:
                     menu.addItem_(
                         self._build_choice_submenu_item(

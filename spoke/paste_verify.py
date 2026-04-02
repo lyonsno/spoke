@@ -11,6 +11,8 @@ the Neural Engine — ~50ms for a full-screen OCR pass after warmup.
 from __future__ import annotations
 
 import logging
+import math
+import re
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,8 @@ _missing_ocr_dependency_logged = False
 # text might only be partially visible (scrolled, clipped, etc.).
 _MATCH_THRESHOLD = 0.5
 _MIN_CONTIGUOUS_MATCH = 0.35
+_WINDOW_WORD_SLACK = 2
+_ORDERED_WORD_SPAN_SLACK = 5
 
 # Minimum length of pasted text to bother verifying — very short
 # strings (1-2 words) are too likely to appear in UI chrome.
@@ -34,6 +38,48 @@ def capture_screen_text() -> str:
     Returns a single string with all OCR results concatenated.
     Returns empty string on any failure.
     """
+    window_text = _capture_active_window_text()
+    if window_text:
+        return window_text
+    return _capture_full_screen_text()
+
+
+def _capture_active_window_text() -> str:
+    """Capture OCR text from the frontmost window when possible."""
+    try:
+        from .scene_capture import (
+            _capture_active_window,
+            _capture_screen,
+            _image_dimensions,
+            _run_ocr,
+        )
+
+        result = _capture_active_window()
+        scope = "active_window"
+        if result is None:
+            result = _capture_screen()
+            scope = "screen"
+        if result is None:
+            return ""
+
+        image, _, _, _ = result
+        width, height = _image_dimensions(image)
+        ocr_text, blocks = _run_ocr(image, width, height, f"paste-verify-{scope}")
+        if not " ".join(ocr_text.split()):
+            return ""
+        logger.info(
+            "Paste verify OCR captured %d blocks from %s",
+            len(blocks),
+            scope,
+        )
+        return ocr_text
+    except Exception:
+        logger.debug("Active-window OCR path failed", exc_info=True)
+        return ""
+
+
+def _capture_full_screen_text() -> str:
+    """Legacy full-screen OCR fallback."""
     global _missing_ocr_dependency_logged
     try:
         from Vision import VNRecognizeTextRequest, VNImageRequestHandler, VNRequestTextRecognitionLevelFast
@@ -110,38 +156,31 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
         logger.info("Paste verify: exact substring match found")
         return True
 
-    # Fuzzy match using SequenceMatcher ratio over the full texts.
-    # This accounts for OCR errors, line breaks splitting words,
-    # and partial visibility at screen edges.
-    matcher = SequenceMatcher(None, expected_norm, screen_norm)
-
-    # get_matching_blocks returns all matching subsequences, not just
-    # the longest one. Sum their lengths for total character coverage.
-    blocks = matcher.get_matching_blocks()
-    total_matched = sum(b.size for b in blocks)
-    longest_match = max((b.size for b in blocks), default=0)
-    coverage = total_matched / len(expected_norm) if expected_norm else 0
-    contiguous_coverage = longest_match / len(expected_norm) if expected_norm else 0
+    # Compare against the best local OCR window rather than the whole screen.
+    # Whole-scene comparison collapses in terminals because surrounding text
+    # dilutes the match even when the pasted line is actually visible.
+    total_matched, longest_match, coverage, contiguous_coverage, block_count = (
+        _best_match_stats(expected_norm, screen_norm)
+    )
 
     logger.info(
         "Paste verify: %d/%d chars matched (%.0f%% coverage, %.0f%% contiguous, %d blocks, thresholds %.0f%%/%.0f%%)",
-        total_matched, len(expected_norm), coverage * 100,
+        total_matched,
+        len(expected_norm),
+        coverage * 100,
         contiguous_coverage * 100,
-        len(blocks) - 1,  # last block is always (len_a, len_b, 0)
+        block_count,
         _MATCH_THRESHOLD * 100,
         _MIN_CONTIGUOUS_MATCH * 100,
     )
     if logger.isEnabledFor(logging.DEBUG):
         # Show the first 100 chars of expected and a sample of screen text
         logger.debug("  expected: %r", expected_norm[:100])
-        # Find the region of screen text near the best match
-        best = max(blocks[:-1], key=lambda b: b.size) if len(blocks) > 1 else None
-        if best:
-            start = max(0, best.b - 20)
-            end = min(len(screen_norm), best.b + best.size + 20)
-            logger.debug("  best match region: %r", screen_norm[start:end])
 
     if coverage >= _MATCH_THRESHOLD and contiguous_coverage >= _MIN_CONTIGUOUS_MATCH:
+        return True
+
+    if _has_compact_ordered_word_match(expected_norm, screen_norm):
         return True
 
     # Fallback: accept only a strong distinctive probe match. A few words from
@@ -149,6 +188,15 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
     # requires either both sides of an internal word or a boundary word with
     # its available side context.
     return _has_strong_distinctive_match(expected_norm, screen_norm)
+
+
+def classify_paste_result(expected: str, screen_text: str) -> str:
+    """Classify OCR verification as confirmed, missing, or unavailable."""
+    if not " ".join(screen_text.split()):
+        return "unavailable"
+    if text_appears_on_screen(expected, screen_text):
+        return "confirmed"
+    return "missing"
 
 
 # Words too common to be a reliable signal that paste succeeded.
@@ -166,6 +214,13 @@ _STOPWORDS = frozenset({
 
 # Minimum word length to consider distinctive (skips "I", "a", etc.)
 _MIN_WORD_LENGTH = 3
+_OCR_CONFUSABLES = str.maketrans({
+    "0": "o",
+    "1": "l",
+    "3": "e",
+    "5": "s",
+    "8": "b",
+})
 
 
 def _has_distinctive_word_match(expected: str, screen: str) -> bool:
@@ -251,6 +306,136 @@ def _has_strong_distinctive_match(expected: str, screen: str) -> bool:
             return True
 
     return False
+
+
+def _has_compact_ordered_word_match(expected: str, screen: str) -> bool:
+    """Accept a compact ordered run of distinctive words through noisy OCR text."""
+    expected_words = [
+        word for word in _tokenize_words(expected)
+        if len(word) >= _MIN_WORD_LENGTH and word not in _STOPWORDS
+    ]
+    screen_words = _tokenize_words(screen)
+    if len(expected_words) < 4 or not screen_words:
+        return False
+
+    required = _ordered_word_match_requirement(len(expected_words))
+    best_match_count = 0
+
+    for start in range(len(screen_words)):
+        match_count = 0
+        matched_chars = 0
+        screen_idx = start
+        first_idx = None
+        last_idx = None
+        anchored = False
+
+        for expected_idx, expected_word in enumerate(expected_words):
+            found_idx = _find_matching_word(expected_word, screen_words, screen_idx)
+            if found_idx is None:
+                continue
+            if first_idx is None:
+                first_idx = found_idx
+            last_idx = found_idx
+            if expected_idx == 0:
+                anchored = True
+            match_count += 1
+            matched_chars += len(expected_word)
+            screen_idx = found_idx + 1
+
+        best_match_count = max(best_match_count, match_count)
+        if first_idx is None or last_idx is None:
+            continue
+
+        span = last_idx - first_idx + 1
+        char_ratio = matched_chars / sum(len(word) for word in expected_words)
+        if (
+            anchored
+            and
+            match_count >= required
+            and span <= match_count + _ORDERED_WORD_SPAN_SLACK
+            and char_ratio >= 0.45
+        ):
+            logger.info(
+                "Paste verify: ordered distinctive-word match (%d/%d words, span=%d)",
+                match_count,
+                len(expected_words),
+                span,
+            )
+            return True
+
+    logger.debug(
+        "Paste verify: ordered distinctive-word fallback missed (%d/%d words)",
+        best_match_count,
+        len(expected_words),
+    )
+    return False
+
+
+def _best_match_stats(expected: str, screen: str) -> tuple[int, int, float, float, int]:
+    """Return the strongest local fuzzy-match stats for expected within screen."""
+    full_stats = _match_stats(expected, screen)
+    expected_words = expected.split()
+    screen_words = screen.split()
+    if len(screen_words) <= len(expected_words) + _WINDOW_WORD_SLACK:
+        return full_stats
+
+    best = full_stats
+    min_window_words = max(1, len(expected_words) - _WINDOW_WORD_SLACK)
+    max_window_words = min(len(screen_words), len(expected_words) + _WINDOW_WORD_SLACK)
+
+    for window_words in range(min_window_words, max_window_words + 1):
+        for start in range(0, len(screen_words) - window_words + 1):
+            candidate = " ".join(screen_words[start:start + window_words])
+            stats = _match_stats(expected, candidate)
+            if stats[2] > best[2] or (stats[2] == best[2] and stats[3] > best[3]):
+                best = stats
+
+    return best
+
+
+def _match_stats(expected: str, candidate: str) -> tuple[int, int, float, float, int]:
+    """Return character-coverage stats for expected against one candidate text."""
+    matcher = SequenceMatcher(None, expected, candidate)
+    blocks = matcher.get_matching_blocks()
+    total_matched = sum(b.size for b in blocks)
+    longest_match = max((b.size for b in blocks), default=0)
+    coverage = total_matched / len(expected) if expected else 0
+    contiguous_coverage = longest_match / len(expected) if expected else 0
+    block_count = max(0, len(blocks) - 1)
+    return total_matched, longest_match, coverage, contiguous_coverage, block_count
+
+
+def _ordered_word_match_requirement(expected_word_count: int) -> int:
+    """Return how many distinctive words must survive OCR to confirm a paste."""
+    if expected_word_count <= 5:
+        return 4
+    if expected_word_count <= 8:
+        return 5
+    return max(6, math.ceil(expected_word_count * 0.5))
+
+
+def _find_matching_word(expected_word: str, screen_words: list[str], start: int) -> int | None:
+    """Find the next screen word that plausibly matches the expected word."""
+    for idx in range(start, len(screen_words)):
+        candidate = screen_words[idx]
+        if _words_match(expected_word, candidate):
+            return idx
+    return None
+
+
+def _words_match(expected_word: str, candidate: str) -> bool:
+    """Return True when two OCR tokens are close enough to count as the same word."""
+    if expected_word == candidate:
+        return True
+    ratio = SequenceMatcher(None, expected_word, candidate).ratio()
+    threshold = 0.84 if len(expected_word) <= 4 else 0.74
+    return ratio >= threshold
+
+
+def _tokenize_words(text: str) -> list[str]:
+    """Tokenize text into OCR-tolerant lowercase words."""
+    normalized = text.lower().translate(_OCR_CONFUSABLES)
+    return re.findall(r"[a-z0-9]+", normalized)
 
 
 def _iter_distinctive_word_positions(text: str):

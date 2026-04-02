@@ -273,8 +273,55 @@ class TestTextAppearsOnScreen:
             ),
         ) is True
 
+    def test_long_paste_in_noisy_terminal_scene_matches_local_window(self):
+        """A long pasted line in a terminal should survive surrounding OCR noise."""
+        mod = _import_module()
+        expected = (
+            "yeah well i just saw some smoke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did not help us it still caught it anyway"
+        )
+        screen = _dense_background(
+            "shell prompt build output status panel sidebar notifications",
+            "yeah well i just saw some sm0ke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did n0t help us it still caught it anyway",
+            "git status branch ahead prompt terminal session tab bar",
+        )
+        assert mod.text_appears_on_screen(expected, screen) is True
+
+    def test_ordered_distinctive_words_confirm_terminal_ocr_with_interleaved_noise(self):
+        """An ordered run of distinctive words should confirm even with noisy OCR gaps."""
+        mod = _import_module()
+        expected = "alright cool so are we ready to bring this year to katastasis then"
+        screen = (
+            "terminal prompt alright menu cool status ready sidebar bring output "
+            "year logs katastroasis pane then shell history tabs"
+        )
+        assert mod.text_appears_on_screen(expected, screen) is True
+
+    def test_scattered_ordered_words_with_wide_gaps_do_not_confirm(self):
+        """Ordered words spread too far across the scene should still fail."""
+        mod = _import_module()
+        expected = "alright cool so are we ready to bring this year to katastasis then"
+        screen = (
+            "alright menu account security cool browser project notes ready window "
+            "help center bring git branch status year notifications recent activity "
+            "katastasis sidebar connection info then"
+        )
+        assert mod.text_appears_on_screen(expected, screen) is False
+
 
 class TestCaptureScreenText:
+    def test_prefers_active_window_ocr_text(self):
+        mod = _import_module()
+
+        with patch.object(mod, "_capture_active_window_text", return_value="window text"), \
+             patch.object(mod, "_capture_full_screen_text") as mock_full:
+            assert mod.capture_screen_text() == "window text"
+
+        mock_full.assert_not_called()
+
     def test_missing_vision_logs_warning(self, monkeypatch, caplog):
         mod = _import_module()
         real_import = builtins.__import__
@@ -286,7 +333,8 @@ class TestCaptureScreenText:
 
         monkeypatch.setattr(builtins, "__import__", _import)
 
-        with caplog.at_level(logging.WARNING):
+        with patch.object(mod, "_capture_active_window_text", return_value=""), \
+             caplog.at_level(logging.WARNING):
             assert mod.capture_screen_text() == ""
 
         assert "Paste verify OCR unavailable" in caplog.text
@@ -295,7 +343,8 @@ class TestCaptureScreenText:
         mod = _import_module()
         _install_fake_ocr_modules(monkeypatch, image=None)
 
-        with caplog.at_level(logging.WARNING):
+        with patch.object(mod, "_capture_active_window_text", return_value=""), \
+             caplog.at_level(logging.WARNING):
             assert mod.capture_screen_text() == ""
 
         assert "screen capture returned no image" in caplog.text
@@ -304,4 +353,34 @@ class TestCaptureScreenText:
         mod = _import_module()
         _install_fake_ocr_modules(monkeypatch, lines=("first line", "second line"))
 
-        assert mod.capture_screen_text() == "first line second line"
+        with patch.object(mod, "_capture_active_window_text", return_value=""):
+            assert mod.capture_screen_text() == "first line second line"
+
+
+class TestClassifyPasteResult:
+    def test_empty_capture_is_unavailable(self):
+        mod = _import_module()
+
+        assert mod.classify_paste_result("expected dictated text", "") == "unavailable"
+
+    def test_match_is_confirmed(self):
+        mod = _import_module()
+
+        assert (
+            mod.classify_paste_result(
+                "Hello world this is a test sentence",
+                "Some UI chrome Hello world this is a test sentence more stuff",
+            )
+            == "confirmed"
+        )
+
+    def test_non_match_with_capture_is_missing(self):
+        mod = _import_module()
+
+        assert (
+            mod.classify_paste_result(
+                "Please navigate to the authentication dashboard and check credentials",
+                "totally unrelated browser chrome account avatar preferences",
+            )
+            == "missing"
+        )
