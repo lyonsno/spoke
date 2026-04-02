@@ -2563,7 +2563,6 @@ class SpokeAppDelegate(NSObject):
             self._command_model_id = healed_model_id
             if self._command_client is not None:
                 self._command_client._model = healed_model_id
-            os.environ["SPOKE_COMMAND_MODEL"] = healed_model_id
             if not self._save_command_model_preference(healed_model_id):
                 logger.warning(
                     "Failed to persist healed sidecar assistant model: %s",
@@ -2599,7 +2598,6 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Couldn't save model selection")
             return
         self._command_model_id = model_id
-        os.environ["SPOKE_COMMAND_MODEL"] = model_id
         self._relaunch()
 
     def _prepare_clients(self) -> None:
@@ -2713,10 +2711,6 @@ class SpokeAppDelegate(NSObject):
         self._local_whisper_decode_timeout = decode_timeout
         self._local_whisper_eager_eval = eager_eval
         self._save_local_whisper_preferences(decode_timeout, eager_eval)
-        os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] = self._format_decode_timeout_env(
-            decode_timeout
-        )
-        os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] = "1" if eager_eval else "0"
         self._relaunch()
 
     @staticmethod
