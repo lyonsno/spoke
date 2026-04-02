@@ -2635,9 +2635,33 @@ class SpokeAppDelegate(NSObject):
         ).start()
 
     def commandModelsDiscovered_(self, payload: dict) -> None:
+        command_backend = getattr(self, "_command_backend", "local")
         self._command_models_refresh_in_flight = False
         options = payload.get("options") or []
         self._command_model_options = options
+        if (
+            command_backend == "sidecar"
+            and options
+            and self._command_model_id not in {model_id for model_id, _, _ in options}
+        ):
+            healed_model_id = options[0][0]
+            logger.info(
+                "Healing stale sidecar assistant model without relaunch: %s -> %s",
+                self._command_model_id,
+                healed_model_id,
+            )
+            self._command_model_id = healed_model_id
+            if self._command_client is not None:
+                self._command_client._model = healed_model_id
+            if not self._save_command_model_preference(healed_model_id):
+                logger.warning(
+                    "Failed to persist healed sidecar assistant model: %s",
+                    healed_model_id,
+                )
+            self._command_model_options = [
+                (model_id, label, model_id == healed_model_id)
+                for model_id, label, _selected in options
+            ]
         if self._menubar is not None:
             self._menubar.refresh_menu()
 
@@ -2664,7 +2688,6 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Couldn't save model selection")
             return
         self._command_model_id = model_id
-        os.environ["SPOKE_COMMAND_MODEL"] = model_id
         self._relaunch()
 
     def _apply_tts_model_selection(self, model_id: str) -> None:
@@ -2799,10 +2822,6 @@ class SpokeAppDelegate(NSObject):
         self._local_whisper_decode_timeout = decode_timeout
         self._local_whisper_eager_eval = eager_eval
         self._save_local_whisper_preferences(decode_timeout, eager_eval)
-        os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] = self._format_decode_timeout_env(
-            decode_timeout
-        )
-        os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] = "1" if eager_eval else "0"
         self._relaunch()
 
     @staticmethod

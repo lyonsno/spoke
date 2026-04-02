@@ -954,20 +954,22 @@ class TestDualModelConfiguration:
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
-        """Toggling eager-eval should persist, update env, and relaunch."""
+        """Toggling eager-eval should persist and relaunch without shadowing prefs via env."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._local_whisper_decode_timeout = 30.0
         d._local_whisper_eager_eval = False
         d._save_local_whisper_preferences = MagicMock()
         monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("local_whisper", "eager_eval"))
 
         d._save_local_whisper_preferences.assert_called_once_with(30.0, True)
-        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "1"
-        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "30"
+        assert "SPOKE_LOCAL_WHISPER_EAGER_EVAL" not in os.environ
+        assert "SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT" not in os.environ
         mock_execv.assert_called_once()
 
     def test_toggle_local_whisper_eager_eval_is_ignored_when_backend_lacks_support(
@@ -996,13 +998,15 @@ class TestDualModelConfiguration:
         d._local_whisper_decode_timeout = 30.0
         d._local_whisper_eager_eval = False
         d._save_local_whisper_preferences = MagicMock()
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("local_whisper", "decode_timeout"))
 
         d._save_local_whisper_preferences.assert_called_once_with(None, False)
-        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "off"
-        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "0"
+        assert "SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT" not in os.environ
+        assert "SPOKE_LOCAL_WHISPER_EAGER_EVAL" not in os.environ
         mock_execv.assert_called_once()
 
     def test_selecting_assistant_model_persists_and_relaunches(
@@ -1017,13 +1021,62 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", True),
         ]
         d._save_command_model_preference = MagicMock(return_value=True)
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("assistant", "qwen3-14b"))
 
         d._save_command_model_preference.assert_called_once_with("qwen3-14b")
-        assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
+        assert "SPOKE_COMMAND_MODEL" not in os.environ
         mock_execv.assert_called_once()
+
+    def test_selecting_assistant_model_survives_relaunch_via_saved_preferences(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Assistant model changes should survive relaunch from prefs without env shadowing."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "command_model": "qwen3p5-35B-A3B"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+
+        first = _make_delegate(main_module, monkeypatch)
+        first._command_client = MagicMock()
+        first._command_model_id = "qwen3p5-35B-A3B"
+        first._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        first._save_command_model_preference = (
+            main_module.SpokeAppDelegate._save_command_model_preference.__get__(
+                first, main_module.SpokeAppDelegate
+            )
+        )
+        first._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+        first._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+        first._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+
+        with patch.object(main_module.os, "execv"):
+            first._handle_model_menu_action(("assistant", "qwen3-14b"))
+
+        reloaded = json.loads(prefs_file.read_text())
+        assert reloaded["command_model"] == "qwen3-14b"
+
+        second = _make_delegate(main_module, monkeypatch)
+        second._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            second, main_module.SpokeAppDelegate
+        )
+
+        assert second._load_command_model_preference() == "qwen3-14b"
 
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
