@@ -58,6 +58,11 @@ and that the next manual launch will land there.
 Do not present a surface as smoke-ready if invoking the intended launcher would
 still reopen an older worktree.
 
+Do not present a surface as smoke-worthy unless that branch already carries the
+menubar launch-target affordance needed to select and identify it from the
+visible launcher UI. If the branch still lacks the relevant launcher/menu
+commits, it is not smoke-ready yet even if the underlying feature work is.
+
 Before launching that branch:
 - pull or otherwise update the target branch/worktree
 - kill the currently running Spoke process
@@ -86,4 +91,5 @@ When the launch-target menu feature is in play:
 - prefer stable ids and short human labels; the entry should identify a purposeful surface, not a temporary hunk of local reasoning
 - when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
 - do not silently assume the selected target also carries the launch-target affordance; if the target branch lacks the feature, say so when preparing the surface
+- smoke-worthy surfaces must carry the launcher/menu commits that make the target selectable and legible in the menubar; registry prep alone is not enough
 - record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently
