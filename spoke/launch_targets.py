@@ -70,18 +70,30 @@ def resolve_launch_target(target_id: str, path: Path | None = None) -> dict | No
     return None
 
 
-def current_launch_target_id(
+def current_launch_target(
     current_checkout: Path,
     path: Path | None = None,
-) -> str | None:
+) -> dict | None:
     current_checkout = current_checkout.resolve()
     for target in iter_launch_targets(path):
         try:
             if target["path"].resolve() == current_checkout:
-                return target["id"]
+                return target
         except FileNotFoundError:
             continue
     return None
+
+
+def current_launch_target_id(
+    current_checkout: Path,
+    path: Path | None = None,
+) -> str | None:
+    payload = load_launch_target_registry(path)
+    target = current_launch_target(current_checkout, path)
+    if target is not None:
+        return target["id"]
+    selected = payload.get("selected")
+    return str(selected) if selected else None
 
 
 def save_selected_launch_target(target_id: str, path: Path | None = None) -> bool:
