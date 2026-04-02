@@ -13,10 +13,7 @@ import logging
 from pathlib import Path
 import wave
 
-import mlx.core as mx
 import numpy as np
-import mlx_whisper
-from mlx_whisper.load_models import load_model
 
 from .dedup import truncate_repetition, is_hallucination
 
@@ -26,15 +23,41 @@ _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 _DEFAULT_DECODE_TIMEOUT = 30.0
 _DEFAULT_EAGER_EVAL = False
 
+mx = None
+mlx_whisper = None
+load_model = None
+
+
+def _get_mx():
+    global mx
+    if mx is None:
+        mx = importlib.import_module("mlx.core")
+    return mx
+
+
+def _get_mlx_whisper():
+    global mlx_whisper
+    if mlx_whisper is None:
+        mlx_whisper = importlib.import_module("mlx_whisper")
+    return mlx_whisper
+
+
+def _get_load_model():
+    global load_model
+    if load_model is None:
+        load_model = importlib.import_module("mlx_whisper.load_models").load_model
+    return load_model
+
 
 def _supports_decode_option(option_name: str) -> bool:
-    decoding_module = getattr(mlx_whisper, "decoding", None)
+    whisper_module = _get_mlx_whisper()
+    decoding_module = getattr(whisper_module, "decoding", None)
     options_cls = getattr(decoding_module, "DecodingOptions", None)
     fields = getattr(options_cls, "__dataclass_fields__", None)
     if isinstance(fields, dict):
         return option_name in fields
 
-    module_file = getattr(mlx_whisper, "__file__", None)
+    module_file = getattr(whisper_module, "__file__", None)
     if module_file is None:
         # Test doubles often replace mlx_whisper with a MagicMock. Default to
         # "supported" there so unit tests can assert the intended call shape.
@@ -89,7 +112,7 @@ class LocalTranscriptionClient:
 
     def _load_dtype(self):
         """Choose the MLX dtype used to warm the selected Whisper repo."""
-        return mx.float16
+        return _get_mx().float16
 
     def prepare(self) -> None:
         """Warm the Whisper model cache without running a transcription."""
@@ -97,7 +120,7 @@ class LocalTranscriptionClient:
             self._install_model_holder()
             return
         logger.info("Preloading Whisper model %s", self._model)
-        self._model_instance = load_model(self._model, dtype=self._load_dtype())
+        self._model_instance = _get_load_model()(self._model, dtype=self._load_dtype())
         self._loaded = True
         self._install_model_holder()
 
@@ -137,7 +160,7 @@ class LocalTranscriptionClient:
         else:
             kwargs["decode_timeout"] = self._decode_timeout
 
-        result = mlx_whisper.transcribe(audio, **kwargs)
+        result = _get_mlx_whisper().transcribe(audio, **kwargs)
 
         text = result.get("text", "").strip()
         text = truncate_repetition(text)

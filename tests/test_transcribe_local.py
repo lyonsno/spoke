@@ -258,30 +258,49 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_uses_float16_for_unquantized_whisper_repos(self, mock_load_model):
         """Unquantized MLX Whisper repos should warm with float16."""
-        from spoke.transcribe_local import LocalTranscriptionClient, mx
+        from spoke import transcribe_local
 
         mock_load_model.return_value = MagicMock()
-        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx")
+        transcribe_local.mx = MagicMock(float16="float16")
+        client = transcribe_local.LocalTranscriptionClient(
+            model="mlx-community/whisper-small.en-mlx"
+        )
         client.prepare()
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx",
-            dtype=mx.float16,
+            dtype="float16",
         )
 
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_keeps_float16_for_quantized_whisper_repos(self, mock_load_model):
         """Quantized Whisper repos should keep the float16 warmup path."""
-        from spoke.transcribe_local import LocalTranscriptionClient, mx
+        from spoke import transcribe_local
 
         mock_load_model.return_value = MagicMock()
-        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx-8bit")
+        transcribe_local.mx = MagicMock(float16="float16")
+        client = transcribe_local.LocalTranscriptionClient(
+            model="mlx-community/whisper-small.en-mlx-8bit"
+        )
         client.prepare()
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx-8bit",
-            dtype=mx.float16,
+            dtype="float16",
         )
+
+    def test_imports_mlx_whisper_lazily(self):
+        """Importing the module should not require mlx-whisper until first use."""
+        from spoke import transcribe_local
+
+        transcribe_local.mx = None
+        transcribe_local.mlx_whisper = None
+        transcribe_local.load_model = None
+
+        with patch.object(transcribe_local.importlib, "import_module") as mock_import:
+            client = transcribe_local.LocalTranscriptionClient(model="test/model")
+            assert client._model == "test/model"
+            mock_import.assert_not_called()
 
 
 def _make_wav_bytes(n_samples=1000):

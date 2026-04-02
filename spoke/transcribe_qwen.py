@@ -12,15 +12,23 @@ import logging
 import wave
 
 import numpy as np
-import mlx_qwen3_asr
-
-import spoke.patch_qwen3_streaming  # noqa: F401 — fix upstream merge bug
 
 from .dedup import truncate_repetition, is_hallucination
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "Qwen/Qwen3-ASR-0.6B"
+
+mlx_qwen3_asr = None
+
+
+def _get_mlx_qwen3_asr():
+    global mlx_qwen3_asr
+    if mlx_qwen3_asr is None:
+        import spoke.patch_qwen3_streaming  # noqa: F401
+
+        mlx_qwen3_asr = __import__("mlx_qwen3_asr")
+    return mlx_qwen3_asr
 
 
 class LocalQwenClient:
@@ -48,7 +56,7 @@ class LocalQwenClient:
         if self._session is not None:
             return
         logger.info("Loading Qwen3 ASR model %s (first use may download ~1.2GB)", self._model)
-        self._session = mlx_qwen3_asr.Session(model=self._model)
+        self._session = _get_mlx_qwen3_asr().Session(model=self._model)
 
     def prepare(self) -> None:
         """Warm the Qwen session without starting a transcription."""

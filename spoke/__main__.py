@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime
+import faulthandler
 import json
 import logging
 import os
@@ -23,6 +25,8 @@ from pathlib import Path
 import sys
 import threading
 import time
+import traceback
+import uuid
 
 import objc
 from AppKit import (
@@ -78,6 +82,96 @@ _TTS_MODELS = [
 ]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
+_PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+os.environ["SPOKE_LAUNCH_ID"] = _PROCESS_LAUNCH_ID
+
+
+def _runtime_phase_path() -> Path:
+    return Path(
+        os.environ.get(
+            "SPOKE_RUNTIME_PHASE_PATH",
+            str(Path.home() / "Library" / "Logs" / "spoke-last-phase.json"),
+        )
+    ).expanduser()
+
+
+def _flush_logging_handlers() -> None:
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+
+def _record_runtime_phase(phase: str, **details) -> None:
+    payload = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "phase": phase,
+        "launch_id": _PROCESS_LAUNCH_ID,
+        "parent_launch_id": os.environ.get("SPOKE_PARENT_LAUNCH_ID"),
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "cwd": os.getcwd(),
+        "python": sys.executable,
+        "thread": threading.current_thread().name,
+    }
+    payload.update({key: value for key, value in details.items() if value is not None})
+
+    try:
+        path = _runtime_phase_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp_path, path)
+    except Exception:
+        logger.exception("Failed to write runtime phase snapshot")
+
+    detail_text = ", ".join(
+        f"{key}={value!r}" for key, value in details.items() if value is not None
+    )
+    if detail_text:
+        logger.info("Runtime phase: %s (%s)", phase, detail_text)
+    else:
+        logger.info("Runtime phase: %s", phase)
+    _flush_logging_handlers()
+
+
+def _install_crash_diagnostics() -> None:
+    try:
+        faulthandler.enable(all_threads=True)
+    except Exception:
+        logger.warning("Failed to enable faulthandler", exc_info=True)
+
+    previous_sys_excepthook = sys.excepthook
+
+    def _sys_excepthook(exc_type, exc, tb):
+        _record_runtime_phase(
+            "exception.uncaught",
+            exception_type=getattr(exc_type, "__name__", str(exc_type)),
+            exception=str(exc),
+            traceback="".join(traceback.format_exception(exc_type, exc, tb)),
+        )
+        previous_sys_excepthook(exc_type, exc, tb)
+
+    sys.excepthook = _sys_excepthook
+
+    previous_threading_excepthook = getattr(threading, "excepthook", None)
+
+    def _threading_excepthook(args):
+        _record_runtime_phase(
+            "exception.thread",
+            exception_type=getattr(args.exc_type, "__name__", str(args.exc_type)),
+            exception=str(args.exc_value),
+            thread_name=getattr(args.thread, "name", None),
+            traceback="".join(
+                traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+            ),
+        )
+        if previous_threading_excepthook is not None:
+            previous_threading_excepthook(args)
+
+    if previous_threading_excepthook is not None:
+        threading.excepthook = _threading_excepthook
 
 
 def _get_ram_gb() -> float:
@@ -319,6 +413,14 @@ class SpokeAppDelegate(NSObject):
     # ── NSApplication delegate ──────────────────────────────
 
     def applicationDidFinishLaunching_(self, notification) -> None:
+        _record_runtime_phase(
+            "app.did_finish_launching",
+            local_mode=self._local_mode,
+            preview_model=self._preview_model_id,
+            transcription_model=self._transcription_model_id,
+            command_model=self._command_model_id,
+            tts_enabled=self._tts_client is not None,
+        )
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
             self._quit, self._handle_model_menu_action
         )
@@ -353,6 +455,7 @@ class SpokeAppDelegate(NSObject):
         if self._mic_probe_in_flight:
             return
         self._mic_probe_in_flight = True
+        _record_runtime_phase("mic_probe.start")
         threading.Thread(
             target=self._probe_mic_permission, daemon=True, name="mic-probe"
         ).start()
@@ -363,12 +466,14 @@ class SpokeAppDelegate(NSObject):
         try:
             self._run_mic_permission_probe(sd)
             logger.info("Microphone access granted")
+            _record_runtime_phase("mic_probe.granted")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "micPermissionGranted:", None, False
             )
         except Exception as exc:
             if self._is_permission_probe_denial(exc):
                 logger.warning("Mic permission not yet granted: %s", exc)
+                _record_runtime_phase("mic_probe.denied", error=str(exc))
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micPermissionDenied:", None, False
                 )
@@ -383,12 +488,14 @@ class SpokeAppDelegate(NSObject):
             try:
                 self._run_mic_permission_probe(sd)
                 logger.info("Microphone access granted after PortAudio reset")
+                _record_runtime_phase("mic_probe.granted_after_reset")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micPermissionGranted:", None, False
                 )
             except Exception as retry_exc:
                 if self._is_permission_probe_denial(retry_exc):
                     logger.warning("Mic permission not yet granted: %s", retry_exc)
+                    _record_runtime_phase("mic_probe.denied_after_reset", error=str(retry_exc))
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "micPermissionDenied:", None, False
                     )
@@ -397,6 +504,7 @@ class SpokeAppDelegate(NSObject):
                     "Mic probe failed after PortAudio reset",
                     exc_info=True,
                 )
+                _record_runtime_phase("mic_probe.failed", error=str(retry_exc))
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micProbeFailed:", None, False
                 )
@@ -495,16 +603,19 @@ class SpokeAppDelegate(NSObject):
         ).start()
 
     def _prepare_clients_in_background(self) -> None:
+        _record_runtime_phase("client_warmup.start")
         try:
             self._prepare_clients()
         except Exception as exc:
             self._warm_error = exc
             logger.exception("Model preparation failed")
+            _record_runtime_phase("client_warmup.failed", error=str(exc))
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "clientWarmupFailed:", None, False
             )
             return
 
+        _record_runtime_phase("client_warmup.succeeded")
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "clientWarmupSucceeded:", None, False
         )
@@ -514,6 +625,7 @@ class SpokeAppDelegate(NSObject):
         self._models_ready = True
         self._warm_error = None
         logger.info("spoke ready — hold spacebar to record")
+        _record_runtime_phase("app.ready")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
 
@@ -538,8 +650,11 @@ class SpokeAppDelegate(NSObject):
         if tts is None:
             return
         try:
+            _record_runtime_phase("tts_warmup.start")
             tts.warm()
+            _record_runtime_phase("tts_warmup.started")
         except Exception:
+            _record_runtime_phase("tts_warmup.failed")
             logger.exception("TTS warmup failed")
 
     def _show_startup_status(self, text: str) -> None:
@@ -2621,7 +2736,12 @@ class SpokeAppDelegate(NSObject):
         self._command_models_refresh_in_flight = True
 
         def _load():
+            _record_runtime_phase("command_models.refresh.start")
             options = self._discover_command_models(self._command_model_id)
+            _record_runtime_phase(
+                "command_models.refresh.succeeded",
+                option_count=len(options),
+            )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandModelsDiscovered:",
                 {"options": options},
@@ -2727,8 +2847,20 @@ class SpokeAppDelegate(NSObject):
                 )
             prepare = getattr(client, "prepare", None)
             if callable(prepare):
+                _record_runtime_phase(
+                    "client.prepare.start",
+                    role=role,
+                    model=model_id,
+                    client_type=type(client).__name__,
+                )
                 with self._local_inference_context(client):
                     prepare()
+                _record_runtime_phase(
+                    "client.prepare.succeeded",
+                    role=role,
+                    model=model_id,
+                    client_type=type(client).__name__,
+                )
 
     def _close_clients(self) -> None:
         seen_clients = []
@@ -2864,6 +2996,9 @@ class SpokeAppDelegate(NSObject):
         return str(value)
 
     def _relaunch(self) -> None:
+        _record_runtime_phase("app.relaunch")
+        os.environ["SPOKE_PARENT_LAUNCH_ID"] = _PROCESS_LAUNCH_ID
+        os.environ["SPOKE_LAUNCH_ID"] = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self._detector.uninstall()
         self._preview_active = False
         self._close_clients()
@@ -3138,6 +3273,7 @@ def _acquire_instance_lock() -> None:
     lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
     current_pid = os.getpid()
     parent_pid = os.getppid()
+    _record_runtime_phase("instance_lock.start", lock_path=lock_path)
     logger.info(
         "Single-instance guard starting (pid=%d ppid=%d lock=%s)",
         current_pid,
@@ -3180,6 +3316,7 @@ def _acquire_instance_lock() -> None:
                 continue
         else:
             logger.warning("Another instance is running — exiting")
+            _record_runtime_phase("instance_lock.exit_existing_instance", lock_path=lock_path)
             sys.exit(0)
 
     lock_file.seek(0)
@@ -3191,6 +3328,7 @@ def _acquire_instance_lock() -> None:
         current_pid,
         lock_path,
     )
+    _record_runtime_phase("instance_lock.acquired", lock_path=lock_path)
     # Keep lock_file alive for process lifetime
     _acquire_instance_lock._lock_file = lock_file
 
@@ -3203,6 +3341,8 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    _install_crash_diagnostics()
+    _record_runtime_phase("process.start")
 
     _acquire_instance_lock()
 
@@ -3228,6 +3368,7 @@ def main() -> None:
             os.getcwd(),
             lock_pid,
         )
+        _record_runtime_phase("signal.sigterm", lock_pid=lock_pid)
         delegate._detector.uninstall()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
