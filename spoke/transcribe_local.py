@@ -11,6 +11,7 @@ import importlib
 import io
 import logging
 from pathlib import Path
+import gc
 import wave
 
 import mlx.core as mx
@@ -161,5 +162,14 @@ class LocalTranscriptionClient:
             return pcm.astype(np.float32) / 32768.0
 
     def close(self) -> None:
-        """No-op — no persistent resources to clean up."""
-        pass
+        """Release the loaded Whisper model and trim MLX cache."""
+        self._model_instance = None
+        self._loaded = False
+        try:
+            mx.synchronize()
+            mx.clear_cache()
+            if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            logger.debug("Whisper client cleanup failed", exc_info=True)
+        gc.collect()

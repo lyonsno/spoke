@@ -178,6 +178,33 @@ class TestTTSClient:
         assert not thread.is_alive()
         mock_sd.OutputStream.assert_called_once()
 
+    @patch("spoke.tts.gc.collect")
+    @patch("spoke.tts.sd")
+    def test_shutdown_clears_model_and_trims_mlx_cache(self, mock_sd, mock_gc):
+        """shutdown() should cancel playback, drop the model, and trim MLX cache."""
+        client = self._make_client()
+        client._model = object()
+        client._stream = MagicMock()
+        warm_thread = MagicMock()
+        warm_thread.is_alive.return_value = False
+        active_thread = MagicMock()
+        active_thread.is_alive.return_value = False
+        client._warm_thread = warm_thread
+        client._active_thread = active_thread
+
+        fake_mx = MagicMock()
+        fake_mx.metal = MagicMock()
+
+        with patch.dict("sys.modules", {"mlx.core": fake_mx}):
+            client.shutdown()
+
+        assert client._cancelled is True
+        assert client._model is None
+        fake_mx.synchronize.assert_called()
+        fake_mx.clear_cache.assert_called()
+        fake_mx.metal.clear_cache.assert_called()
+        mock_gc.assert_called_once()
+
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
     def test_speak_async_serializes_same_client_jobs(self, mock_load, mock_sd):

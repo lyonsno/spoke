@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import io
 import logging
+import gc
 import wave
 
 import numpy as np
+import mlx.core as mx
 import mlx_qwen3_asr
 
 import spoke.patch_qwen3_streaming  # noqa: F401 — fix upstream merge bug
@@ -179,3 +181,11 @@ class LocalQwenClient:
         """Release the model session and any streaming state."""
         self._stream_state = None
         self._session = None
+        try:
+            mx.synchronize()
+            mx.clear_cache()
+            if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            logger.debug("Qwen3 client cleanup failed", exc_info=True)
+        gc.collect()

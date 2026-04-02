@@ -2688,6 +2688,12 @@ class SpokeAppDelegate(NSObject):
 
     def _close_clients(self) -> None:
         seen_clients = []
+        tts_client = getattr(self, "_tts_client", None)
+        if tts_client is not None:
+            shutdown = getattr(tts_client, "shutdown", None)
+            if callable(shutdown):
+                seen_clients.append(tts_client)
+                shutdown()
         for client in list(getattr(self, "_client_cache", {}).values()) + [
             getattr(self, "_client", None),
             getattr(self, "_preview_client", None),
@@ -2698,6 +2704,44 @@ class SpokeAppDelegate(NSObject):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    def _stage_runtime_shutdown(self, reason: str) -> None:
+        """Drain capture, streaming, and MLX work before exit or relaunch."""
+        logger.info("Runtime shutdown staging: reason=%s", reason)
+        capture = getattr(self, "_capture", None)
+        if capture is not None and getattr(capture, "is_recording", False):
+            try:
+                capture.stop()
+            except Exception:
+                logger.debug("Runtime shutdown capture.stop() failed", exc_info=True)
+
+        preview_client = getattr(self, "_preview_client", None)
+        cancel_stream = getattr(preview_client, "cancel_stream", None)
+        if callable(cancel_stream):
+            try:
+                cancel_stream()
+            except Exception:
+                logger.debug("Runtime shutdown preview cancel failed", exc_info=True)
+
+        detector = getattr(self, "_detector", None)
+        if detector is not None:
+            try:
+                detector.uninstall()
+            except Exception:
+                logger.debug("Runtime shutdown detector uninstall failed", exc_info=True)
+
+        self._preview_active = False
+        self._close_clients()
+        try:
+            import mlx.core as mx
+            mx.synchronize()
+            mx.clear_cache()
+            if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            logger.debug("Runtime shutdown MLX cleanup failed", exc_info=True)
+        time.sleep(0.05)
+        logger.info("Runtime shutdown staged: reason=%s", reason)
 
     def _local_whisper_controls_available(self) -> bool:
         if not getattr(self, "_local_mode", False):
@@ -2824,9 +2868,7 @@ class SpokeAppDelegate(NSObject):
         return str(value)
 
     def _relaunch(self) -> None:
-        self._detector.uninstall()
-        self._preview_active = False
-        self._close_clients()
+        self._stage_runtime_shutdown("relaunch")
         os.execv(sys.executable, [sys.executable, "-m", "spoke"])
 
     def _local_inference_context(self, client):
@@ -3056,9 +3098,7 @@ class SpokeAppDelegate(NSObject):
         return True
 
     def _quit(self) -> None:
-        self._detector.uninstall()
-        self._preview_active = False
-        self._close_clients()
+        self._stage_runtime_shutdown("quit")
         NSApp.terminate_(None)
 
     def _show_accessibility_alert(self) -> None:
@@ -3188,7 +3228,7 @@ def main() -> None:
             os.getcwd(),
             lock_pid,
         )
-        delegate._detector.uninstall()
+        delegate._stage_runtime_shutdown("sigterm")
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
         NSApp.terminate_(None)

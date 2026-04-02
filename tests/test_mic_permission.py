@@ -272,6 +272,7 @@ class TestSigtermMenuBarCleanup:
 
         captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
 
+        delegate._stage_runtime_shutdown.assert_called_once_with("sigterm")
         delegate._menubar.cleanup.assert_called_once()
 
     def test_sigterm_handler_logs_pid_context(self, main_module, monkeypatch):

@@ -14,6 +14,7 @@ import logging
 import os
 import threading
 import time
+import gc
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -205,6 +206,8 @@ class TTSClient:
         self._audio_fade_start_gain = 1.0
         self._audio_fade_target_gain = 1.0
         self._audio_fade_started_at = time.monotonic()
+        self._warm_thread: threading.Thread | None = None
+        self._active_thread: threading.Thread | None = None
 
     @classmethod
     def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient"]:
@@ -236,7 +239,9 @@ class TTSClient:
             lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
             with lock_ctx:
                 self._ensure_model()
-        threading.Thread(target=_warm, daemon=True).start()
+        thread = threading.Thread(target=_warm, daemon=True)
+        self._warm_thread = thread
+        thread.start()
 
     def _current_audio_gain_locked(self, now: float) -> float:
         progress = min(max((now - self._audio_fade_started_at) / _AUDIO_TOGGLE_FADE_S, 0.0), 1.0)
@@ -444,6 +449,7 @@ class TTSClient:
             if done_callback is not None:
                 done_callback()
         t = threading.Thread(target=_run, daemon=True)
+        self._active_thread = t
         t.start()
         return t
 
@@ -457,3 +463,54 @@ class TTSClient:
         import traceback
         logger.info("TTS cancel() called from:\n%s", "".join(traceback.format_stack()[-8:-1]))
         self._cancelled = True
+
+    def shutdown(self, timeout: float = 2.0) -> None:
+        """Drain playback and MLX model state before process exit."""
+        logger.info(
+            "TTS shutdown starting: model=%s warm_thread=%s active_thread=%s stream_active=%s",
+            self._model_id,
+            self._warm_thread is not None and self._warm_thread.is_alive(),
+            self._active_thread is not None and self._active_thread.is_alive(),
+            self._stream is not None,
+        )
+        self.cancel()
+        current = threading.current_thread()
+        for label, thread in (
+            ("warmup", self._warm_thread),
+            ("playback", self._active_thread),
+        ):
+            if thread is None or thread is current:
+                continue
+            if thread.is_alive():
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logger.warning("TTS shutdown timed out waiting for %s thread", label)
+
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                logger.debug("TTS shutdown stream.stop() failed", exc_info=True)
+            try:
+                stream.close()
+            except Exception:
+                logger.debug("TTS shutdown stream.close() failed", exc_info=True)
+
+        self._last_chunk = None
+        self._warm_thread = None
+        self._active_thread = None
+        self._model = None
+
+        try:
+            import mlx.core as mx
+            mx.synchronize()
+            mx.clear_cache()
+            metal = getattr(mx, "metal", None)
+            if metal is not None and hasattr(metal, "clear_cache"):
+                metal.clear_cache()
+        except Exception:
+            logger.debug("TTS shutdown MLX cleanup failed", exc_info=True)
+        gc.collect()
+        logger.info("TTS shutdown finished: model=%s", self._model_id)
