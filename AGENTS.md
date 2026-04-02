@@ -44,6 +44,20 @@ Unless the user explicitly says otherwise, push commits after creating them.
 
 When the user asks to spin up a separate fun or smoke-test branch, treat that as a request to launch the dedicated worktree for that branch rather than the stable default launcher path.
 
+When a new smoke-ready `spoke` surface is ready to hand to the human, repoint the
+relevant launcher state to that worktree before calling it ready. Update both
+the stable launcher pin and any menu/registry state that governs the same
+surface, such as `~/.config/spoke/main-target`, `dev-target`, `smoke-target`,
+or `launch_targets.json`, whichever the requested launcher path actually uses.
+
+This repointing step is autonomous and is distinct from relaunching. It does
+not authorize killing or relaunching the currently running app. If the old
+surface is still live, report that the launcher now points at the new surface
+and that the next manual launch will land there.
+
+Do not present a surface as smoke-ready if invoking the intended launcher would
+still reopen an older worktree.
+
 Before launching that branch:
 - pull or otherwise update the target branch/worktree
 - kill the currently running Spoke process

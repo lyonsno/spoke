@@ -34,8 +34,20 @@ the active worktree and tell the user it's ready:
 echo '/path/to/worktree' > ~/.config/spoke/smoke-target
 ```
 
-The user triggers the smoke Automator hotkey themselves. Do not kill the
-running process or relaunch — `launch-smoke.sh` handles that.
+When a surface is smoke-ready, repoint the launcher state that the human will
+actually use before presenting it. Keep the stable pin and any menu/registry
+state aligned for that launcher path, such as `~/.config/spoke/main-target`,
+`dev-target`, `smoke-target`, or `launch_targets.json`.
+
+This repointing step is autonomous. It does not authorize killing or
+relaunching the currently running app. If an older surface is still live,
+report that the next manual launch will land on the new worktree.
+
+Do not call a surface smoke-ready if invoking the intended launcher would still
+reopen an older worktree.
+
+The user triggers the launcher themselves unless they explicitly ask for a live
+relaunch. Do not kill the running process or relaunch on your own.
 
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
