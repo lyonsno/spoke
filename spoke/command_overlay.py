@@ -133,6 +133,12 @@ def _assistant_text_alpha_for_breath(breath: float) -> float:
     return _lerp(_ASSISTANT_TEXT_ALPHA_MIN, _ASSISTANT_TEXT_ALPHA_MAX, _clamp01(breath))
 
 
+def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
+    from .overlay import _fill_compositing_filter_for_brightness as _preview_fill_compositing_filter_for_brightness
+
+    return _preview_fill_compositing_filter_for_brightness(brightness)
+
+
 def _ease_in(progress: float) -> float:
     clamped = _clamp01(progress)
     return clamped * clamped
@@ -1013,6 +1019,10 @@ class CommandOverlay(NSObject):
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setCompositingFilter_"):
+                self._fill_layer.setCompositingFilter_(
+                    _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+                )
 
     # ── layout ──────────────────────────────────────────────
 
@@ -1058,6 +1068,12 @@ class CommandOverlay(NSObject):
         # Keep the content view transparent so the same SDF fill/material carries
         # the assistant window chrome as the preview overlay.
         self._content_view.layer().setBackgroundColor_(None)
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None and hasattr(
+            self._fill_layer, "setCompositingFilter_"
+        ):
+            self._fill_layer.setCompositingFilter_(
+                _fill_compositing_filter_for_brightness(self._brightness)
+            )
         last_t = getattr(self, "_fill_image_brightness", -1.0)
         if abs(self._brightness - last_t) > 0.03:
             self._fill_image_brightness = self._brightness

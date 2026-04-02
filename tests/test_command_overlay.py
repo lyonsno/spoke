@@ -402,6 +402,29 @@ class TestAdaptiveCompositing:
             sys.modules.pop("spoke.command_overlay", None)
             sys.modules.pop("spoke.overlay", None)
 
+    def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._fill_compositing_filter_for_brightness(0.0) == "plusL"
+            assert mod._fill_compositing_filter_for_brightness(1.0) is None
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_apply_surface_theme_updates_fill_compositing_filter(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 600.0, 80.0)
+
+        overlay._brightness = 0.0
+        overlay._apply_surface_theme()
+        overlay._fill_layer.setCompositingFilter_.assert_called_with("plusL")
+
+        overlay._fill_layer.setCompositingFilter_.reset_mock()
+        overlay._brightness = 1.0
+        overlay._fill_image_brightness = -1.0
+        overlay._apply_surface_theme()
+        overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
+
     def test_assistant_text_alpha_floor_and_ceiling_are_punchier(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")

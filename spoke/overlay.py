@@ -81,6 +81,8 @@ _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
 _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
+_DARK_FILL_ADDITIVE_THRESHOLD = 0.15
+_DARK_FILL_ADDITIVE_FILTER = "plusL"
 
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -143,6 +145,13 @@ def _lerp_color(
     t: float,
 ) -> tuple[float, float, float]:
     return tuple(_lerp(s, e, t) for s, e in zip(start, end))
+
+
+def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
+    clamped = min(max(brightness, 0.0), 1.0)
+    if clamped < _DARK_FILL_ADDITIVE_THRESHOLD:
+        return _DARK_FILL_ADDITIVE_FILTER
+    return None
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
@@ -948,6 +957,13 @@ class TranscriptionOverlay(NSObject):
             )
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setCompositingFilter_"):
+                filter_name = (
+                    None
+                    if fill_override_rgb is not None
+                    else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+                )
+                self._fill_layer.setCompositingFilter_(filter_name)
         except (ImportError, Exception):
             pass
 
