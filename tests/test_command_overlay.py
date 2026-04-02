@@ -237,6 +237,26 @@ class TestShowFinishHide:
         assert overlay._response_text == ""
         assert overlay._utterance_text == ""
 
+    def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay.show()
+
+        overlay._text_view.textStorage().setAttributedString_.assert_called_once()
+
+    def test_show_rebuilds_default_fill_geometry_before_reuse(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._fill_image_brightness = 0.0
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay.show()
+
+        overlay._apply_ridge_masks.assert_called_once_with(
+            mod._OVERLAY_WIDTH,
+            mod._OVERLAY_HEIGHT,
+        )
+
     def test_show_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None
@@ -357,20 +377,64 @@ class TestAdaptiveCompositing:
         assert overlay._brightness == pytest.approx(0.8)
         assert overlay._brightness_target == pytest.approx(0.8)
 
-    def test_show_uses_light_background_after_brightness_snap(self, mock_pyobjc):
+    def test_show_keeps_content_background_clear_after_brightness_snap(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay.set_brightness(1.0, immediate=True)
 
-        mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+        overlay._content_view.layer.return_value.setBackgroundColor_.reset_mock()
         overlay.show()
 
-        bg_call = None
-        for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list:
-            r, g, b, a = call[0]
-            if a == pytest.approx(mod._BG_ALPHA) and min(r, g, b) > 0.85:
-                bg_call = call[0]
-                break
-        assert bg_call is not None
+        overlay._content_view.layer.return_value.setBackgroundColor_.assert_called_with(None)
+
+    def test_background_fill_tracks_preview_overlay_chrome(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        sys.modules.pop("spoke.overlay", None)
+        command_mod = importlib.import_module("spoke.command_overlay")
+        overlay_mod = importlib.import_module("spoke.overlay")
+        try:
+            assert command_mod._background_color_for_brightness(0.0) == pytest.approx(
+                overlay_mod._BG_COLOR_DARK
+            )
+            assert command_mod._background_color_for_brightness(1.0) == pytest.approx(
+                overlay_mod._BG_COLOR_LIGHT
+            )
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._fill_compositing_filter_for_brightness(0.0) == "plusL"
+            assert mod._fill_compositing_filter_for_brightness(1.0) is None
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_apply_surface_theme_updates_fill_compositing_filter(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 600.0, 80.0)
+
+        overlay._brightness = 0.0
+        overlay._apply_surface_theme()
+        overlay._fill_layer.setCompositingFilter_.assert_called_with("plusL")
+
+        overlay._fill_layer.setCompositingFilter_.reset_mock()
+        overlay._brightness = 1.0
+        overlay._fill_image_brightness = -1.0
+        overlay._apply_surface_theme()
+        overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
+
+    def test_assistant_text_alpha_floor_and_ceiling_are_punchier(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._assistant_text_alpha_for_breath(0.0) == pytest.approx(0.75)
+            assert mod._assistant_text_alpha_for_breath(1.0) == pytest.approx(1.0)
+            assert mod.CommandOverlay._TTS_ALPHA_MIN == pytest.approx(0.75)
+            assert mod.CommandOverlay._TTS_ALPHA_MAX == pytest.approx(1.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
 
     def test_response_color_darkens_for_bright_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
@@ -414,6 +478,26 @@ class TestGeometryCaps:
         expected_height = 640.0
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
+
+    def test_update_layout_rebuilds_fill_geometry_when_assistant_overlay_grows(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay._update_layout()
+
+        overlay._apply_ridge_masks.assert_called_once_with(
+            mod._OVERLAY_WIDTH,
+            pytest.approx(304.0),
+        )
 
 
 class TestToolState:

@@ -81,6 +81,8 @@ _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
 _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
+_DARK_FILL_ADDITIVE_THRESHOLD = 0.15
+_DARK_FILL_ADDITIVE_FILTER = "plusL"
 
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -143,6 +145,13 @@ def _lerp_color(
     t: float,
 ) -> tuple[float, float, float]:
     return tuple(_lerp(s, e, t) for s, e in zip(start, end))
+
+
+def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
+    clamped = min(max(brightness, 0.0), 1.0)
+    if clamped < _DARK_FILL_ADDITIVE_THRESHOLD:
+        return _DARK_FILL_ADDITIVE_FILTER
+    return None
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
@@ -361,6 +370,8 @@ class TranscriptionOverlay(NSObject):
         # Adaptive compositing defaults dark until we get a brightness sample.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._fill_override_rgb: tuple[float, float, float] | None = None
+        self._fill_override_opacity: float | None = None
 
         # Recovery mode state
         self._recovery_mode = False
@@ -513,6 +524,8 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_displayed = ""
         self._typewriter_hwm = 0  # furthest position typewriter has reached
         self._set_text_view_content("")
+        self._content_view.layer().setBackgroundColor_(None)
+        self._clear_fill_override(opacity=_BG_ALPHA_MIN)
         self._window.setAlphaValue_(0.0)
 
         # Reset to default size (window includes feather margin)
@@ -931,8 +944,12 @@ class TranscriptionOverlay(NSObject):
             floor = _lerp(0.55, 0.775, t)
             fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
 
-            t = getattr(self, '_brightness', 0.0)
-            bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+            fill_override_rgb = getattr(self, "_fill_override_rgb", None)
+            if fill_override_rgb is None:
+                t = getattr(self, '_brightness', 0.0)
+                bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+            else:
+                bg_r, bg_g, bg_b = fill_override_rgb
             # Scale color to 0-255
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,
@@ -940,6 +957,13 @@ class TranscriptionOverlay(NSObject):
             )
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setCompositingFilter_"):
+                filter_name = (
+                    None
+                    if fill_override_rgb is not None
+                    else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+                )
+                self._fill_layer.setCompositingFilter_(filter_name)
         except (ImportError, Exception):
             pass
 
@@ -947,6 +971,28 @@ class TranscriptionOverlay(NSObject):
         """Keep height-dependent overlay layers in sync with the current overlay size."""
         w = _OVERLAY_WIDTH
         self._apply_ridge_masks(w, visible_height)
+
+    def _set_fill_override(
+        self,
+        rgb: tuple[float, float, float],
+        opacity: float,
+    ) -> None:
+        self._fill_override_rgb = rgb
+        self._fill_override_opacity = opacity
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
+            self._fill_layer.setOpacity_(opacity)
+        if getattr(self, "_content_view", None) is not None:
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+
+    def _clear_fill_override(self, *, opacity: float | None = None) -> None:
+        self._fill_override_rgb = None
+        self._fill_override_opacity = None
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None and opacity is not None:
+            self._fill_layer.setOpacity_(opacity)
+        if getattr(self, "_content_view", None) is not None:
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
 
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
@@ -1010,20 +1056,16 @@ class TranscriptionOverlay(NSObject):
 
         # Reset background to the owner's color language.
         if owner == "assistant":
-            bg_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                0.10, 0.13, 0.19, _RECOVERY_BG_ALPHA
-            )
+            fill_rgb = (0.10, 0.13, 0.19)
             text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
                 0.88, 0.93, 1.0, _RECOVERY_TEXT_ALPHA
             )
         else:
-            bg_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
-            )
+            fill_rgb = (0.1, 0.1, 0.12)
             text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
                 1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
             )
-        self._content_view.layer().setBackgroundColor_(bg_color.CGColor())
+        self._content_view.layer().setBackgroundColor_(None)
 
         # Reset to default height
         screen_frame = self._screen.frame()
@@ -1039,6 +1081,7 @@ class TranscriptionOverlay(NSObject):
             NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+        self._set_fill_override(fill_rgb, _RECOVERY_BG_ALPHA)
 
         # Set text immediately (no typewriter)
         self._typewriter_target = text
@@ -1173,12 +1216,9 @@ class TranscriptionOverlay(NSObject):
         )
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
 
-        # Darken background for recovery mode
-        self._content_view.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
-            ).CGColor()
-        )
+        # Keep the content view transparent and tint the existing SDF fill instead.
+        self._content_view.layer().setBackgroundColor_(None)
+        self._set_fill_override((0.1, 0.1, 0.12), _RECOVERY_BG_ALPHA)
 
         # Create three column buttons
         col_w = _OVERLAY_WIDTH / 3.0
@@ -1303,12 +1343,9 @@ class TranscriptionOverlay(NSObject):
             self._scroll_view.setHidden_(False)
         self._window.setIgnoresMouseEvents_(True)
 
-        # Restore normal background alpha
-        self._content_view.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                0.1, 0.1, 0.12, _BG_ALPHA_MIN
-            ).CGColor()
-        )
+        # Restore the standard preview fill and clear any recovery-specific tint.
+        self._content_view.layer().setBackgroundColor_(None)
+        self._clear_fill_override(opacity=_BG_ALPHA_MIN)
 
         self.order_out()
 

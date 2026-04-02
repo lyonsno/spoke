@@ -44,12 +44,17 @@ class _FakeWindow:
 class _FakeView:
     def __init__(self, frame):
         self._frame = frame
+        self._layer = _FakeLayer(frame)
 
     def setFrame_(self, frame):
         self._frame = frame
+        self._layer.setFrame_(frame)
 
     def frame(self):
         return self._frame
+
+    def layer(self):
+        return self._layer
 
 
 class _FakeClipView:
@@ -84,12 +89,16 @@ class _FakeTextView:
         self._text_container = _FakeTextContainer()
         self._layout_manager = None
         self.scrolled_range = None
+        self.text_color = None
 
     def setString_(self, text):
         self._text = text
 
     def string(self):
         return self._text
+
+    def setTextColor_(self, color):
+        self.text_color = color
 
     def setFrame_(self, frame):
         self._frame = frame
@@ -126,6 +135,9 @@ class _FakeLayer:
         self._frame = frame
         self._mask = None
         self._path = None
+        self._background_color = None
+        self._opacity = None
+        self.animations = []
 
     def setFrame_(self, frame):
         if isinstance(frame, tuple):
@@ -146,6 +158,21 @@ class _FakeLayer:
     def setPath_(self, path):
         self._path = path
 
+    def setBackgroundColor_(self, color):
+        self._background_color = color
+
+    def backgroundColor(self):
+        return self._background_color
+
+    def setOpacity_(self, opacity):
+        self._opacity = opacity
+
+    def opacity(self):
+        return self._opacity
+
+    def addAnimation_forKey_(self, animation, key):
+        self.animations.append((key, animation))
+
 
 class _FakeScrollView:
     def __init__(self, frame, text_view, y_offset):
@@ -153,6 +180,7 @@ class _FakeScrollView:
         self._document_view = text_view
         self._clip_view = _FakeClipView(y_offset)
         self.reflected_clip_view = None
+        self.hidden = False
 
     def setFrame_(self, frame):
         self._frame = frame
@@ -168,6 +196,9 @@ class _FakeScrollView:
 
     def reflectScrolledClipView_(self, clip_view):
         self.reflected_clip_view = clip_view
+
+    def setHidden_(self, hidden):
+        self.hidden = hidden
 
 
 def _import_overlay(mock_pyobjc):
@@ -257,6 +288,76 @@ def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkey
     assert overlay._window.frame().origin.y == pytest.approx(
         overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER
     )
+
+
+def test_show_clears_stale_tray_background_and_fill_override(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "stale",
+    )
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._fill_layer = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+        )
+    )
+    overlay._content_view.layer().setBackgroundColor_("stale-square")
+    overlay._fill_override_rgb = (0.1, 0.1, 0.12)
+
+    overlay.show()
+
+    assert overlay._content_view.layer().backgroundColor() is None
+    assert overlay._fill_override_rgb is None
+    assert overlay._fill_layer.opacity() == pytest.approx(overlay_module._BG_ALPHA_MIN)
+
+
+def test_show_tray_keeps_content_background_clear(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "",
+    )
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._fill_layer = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+        )
+    )
+
+    overlay.show_tray("saved text", owner="user")
+
+    assert overlay._content_view.layer().backgroundColor() is None
+    assert overlay._fill_override_rgb == pytest.approx((0.1, 0.1, 0.12))
+    assert overlay._fill_layer.opacity() == pytest.approx(overlay_module._RECOVERY_BG_ALPHA)
 
 
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
