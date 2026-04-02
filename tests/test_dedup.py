@@ -154,6 +154,12 @@ class TestRepairOntologyTerms:
             "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
         )
 
+    def test_repairs_latest_smoke_nonword_regressions(self):
+        text = "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxisis."
+        assert repair_ontology_terms(text) == (
+            "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
+        )
+
     def test_logs_when_repair_fires(self, caplog):
         with caplog.at_level(logging.INFO, logger="spoke.dedup"):
             repaired = repair_ontology_terms("And then read Epistaxes.")

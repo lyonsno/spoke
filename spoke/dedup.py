@@ -39,19 +39,27 @@ _ONTOLOGY_REPAIRS = (
         True,
     ),
     (
-        r"\b(?:kerygma|kerigma|kergma|carrygma|carigma|curigma|karigma|charygma|chorigma)\b",
+        r"\b(?:kerygma|kerigma|kergma|carrygma|carigma|curigma|karigma|charygma|chorigma|chirigma)\b",
         "kérygma",
         True,
     ),
     (r"\ban (?:afro|afra)\b", "anaphorá", True),
     (r"\b(?:anaphora|afra|aphro)\b", "anaphorá", True),
-    (r"\b(?:epin\s+orthosis|epinorthosis|epanorthosis|evanorthosis)\b", "epanórthosis", True),
-    (r"\b(?:epispokisis|epispokosis|epispokisis|epispocasis)\b", "epispókisis", True),
+    (
+        r"\b(?:epin\s+orthosis|epinorthosis|epanorthosis|evanorthosis|epinoethosis|epineuthosis)\b",
+        "epanórthosis",
+        True,
+    ),
+    (
+        r"\b(?:epispokisis|epispokosis|epispokesis|epispocasis|epispoiesis|episcopoiesis)\b",
+        "epispókisis",
+        True,
+    ),
     (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's|semiosis|semeiosis|sēmeiōsis)\b", "sēmeiōsis", True),
     (r"\b(?:semion|semian|semeion|sēmeion)\b", "sēmeion", True),
     (r"\b(?:probolia|proboli|probly|probaly|probally|probole)\b", "probolé", True),
     (r"\b(?:autopoiesis|autopoises|autopuise|otopoiesis)\b", "autopoíesis", True),
-    (r"\b(?:ooxisis)\b", "aúxesis", True),
+    (r"\b(?:ooxisis|oxisis)\b", "aúxesis", True),
     (r"\blysis\b", "lýsis", True),
 )
 

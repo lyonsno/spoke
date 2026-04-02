@@ -328,7 +328,7 @@ def _window_origin_y(visible_height: float) -> float:
 def _ontology_text_rgb(text_lum: float) -> tuple[float, float, float]:
     """Return a glow-blue text tint that stays legible against both fill modes."""
     if text_lum >= 0.5:
-        return (0.93, 0.96, 1.0)
+        return (0.91, 0.95, 1.0)
     return (0.07, 0.10, 0.19)
 
 
