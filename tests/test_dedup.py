@@ -155,7 +155,7 @@ class TestRepairOntologyTerms:
         )
 
     def test_repairs_latest_smoke_nonword_regressions(self):
-        text = "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxisis."
+        text = "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxysis."
         assert repair_ontology_terms(text) == (
             "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
         )

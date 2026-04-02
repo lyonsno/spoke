@@ -262,7 +262,7 @@ class TestTranscriptionFiltering:
         client = TranscriptionClient(base_url="http://x")
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
-            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxisis."
+            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxysis."
         }
         mock_client = MagicMock()
         mock_client.post.return_value = mock_resp

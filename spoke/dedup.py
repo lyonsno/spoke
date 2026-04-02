@@ -28,7 +28,7 @@ _ONTOLOGY_REPAIRS = (
         False,
     ),
     (r"\b(?:metadose(?:\s+(?:ii|so))?|metadosis)\b", "metádosis", True),
-    (r"\b(?:uxis|of seizes|auxesis|oxygesis|oxesis|buxies|auxesus)\b", "aúxesis", True),
+    (r"\b(?:uxis|of seizes|auxesis|oxygesis|oxesis|oxysis|buxies|auxesus)\b", "aúxesis", True),
     (r"\b(?:sylloge|syllogy|silagee|sueji|silegy|sylergy)\b", "syllogé", True),
     (r"\b(?:tipos|topos)\b", "tópos", True),
     (r"\b(?:topoie|topoit|topoi)\b", "tópoi", True),

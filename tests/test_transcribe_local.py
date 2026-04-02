@@ -249,7 +249,7 @@ class TestLocalTranscriptionClient:
         from spoke.transcribe_local import LocalTranscriptionClient
 
         mock_mlx_whisper.transcribe.return_value = {
-            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxisis."
+            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxysis."
         }
         client = LocalTranscriptionClient()
 
