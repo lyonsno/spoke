@@ -584,11 +584,6 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        # Cancel any in-flight TTS playback
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            tts.cancel()
-
         # Tray intercept: shift+space from tray = navigation, plain space = record.
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):

@@ -377,6 +377,7 @@ class TTSClient:
                             top_p=self._top_p,
                         )
 
+                    chunk_count = 0
                     while True:
                         if self._cancelled:
                             return
@@ -391,6 +392,7 @@ class TTSClient:
                                 audio=np.asarray(result.audio, dtype=np.float32),
                                 sample_rate=int(result.sample_rate),
                             )
+                            chunk_count += 1
                         self._play_result(materialized, amplitude_callback=amplitude_callback)
             finally:
                 with self._audio_fade_lock:
