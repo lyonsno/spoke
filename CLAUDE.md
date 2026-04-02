@@ -40,6 +40,18 @@ running process or relaunch — `launch-smoke.sh` handles that.
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
 
+Do not tell the user a surface is "smoke-ready" unless the launcher path is
+ready too. For `spoke`, that means:
+
+- the branch/worktree itself contains any launcher or launch-target code the smoke flow depends on
+- the launcher target file or launch-target registry entry has been updated to the intended worktree
+- required `.spoke-smoke-env` values are present and do not secretly force some other branch, endpoint, or interpreter than the one being claimed
+- the corresponding `~/Library/Logs/spoke-*-launch.log` shows the launcher choosing the intended worktree/path rather than a fallback
+- if the app has been relaunched, the menubar `Source:` and `Branch:` lines match the claimed surface
+
+If only the code is ready but the launcher contract has not been checked,
+describe it as branch-ready or code-ready, not smoke-ready.
+
 After pointing the smoke target, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality
 from logs or process state.

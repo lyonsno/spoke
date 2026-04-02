@@ -51,6 +51,16 @@ Before launching that branch:
 
 Do not silently fall back to the stable Automator or `main` launcher when the user explicitly asked for the branch variant.
 
+Do not call a surface "smoke-ready" unless the intended user-facing launcher path is actually ready, not just the code in the worktree. "Smoke-ready" for `spoke` means all of the following are true:
+
+- the branch carries any launcher or launch-target code it depends on; do not rely on unrelated neighboring branches for launcher behavior
+- the relevant launcher target file or launch-target registry entry points at the intended existing worktree
+- any required per-worktree `.spoke-smoke-env` is present and does not silently force a different surface or endpoint than the one being claimed
+- the relevant launcher log shows it is launching from the intended worktree/path, not a fallback surface
+- if the launcher was exercised live, the running app's `Source:` and `Branch:` lines agree with the claimed surface
+
+If those conditions are not met, say the branch is code-ready or branch-ready, not smoke-ready.
+
 ## Local hotkey policy
 
 When changing or resetting local smoke hotkeys:
