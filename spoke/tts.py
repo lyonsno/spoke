@@ -611,6 +611,7 @@ class RemoteTTSClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                content_type = resp.headers.get("Content-Type", "")
                 wav_bytes = resp.read()
         except urllib.error.HTTPError as exc:
             body = ""
@@ -619,16 +620,44 @@ class RemoteTTSClient:
             except Exception:
                 pass
             raise RuntimeError(
-                f"TTS sidecar HTTP {exc.code}: {body or exc.reason}"
+                f"TTS sidecar HTTP {exc.code} from {self._url}: {body or exc.reason} "
+                f"(model={self._model_id}, voice={self._voice})"
             ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(
-                f"TTS sidecar unreachable ({self._base_url}): {exc.reason}"
+                f"TTS sidecar unreachable at {self._base_url}: {exc.reason}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"TTS sidecar request failed ({self._url}, model={self._model_id}, "
+                f"voice={self._voice}): {type(exc).__name__}: {exc}"
             ) from exc
 
         if self._cancelled:
             return
-        audio, sample_rate = self._decode_wav(wav_bytes)
+
+        logger.info(
+            "TTS sidecar response: %d bytes, content-type=%s",
+            len(wav_bytes), content_type,
+        )
+
+        if not wav_bytes:
+            raise RuntimeError(
+                f"TTS sidecar returned empty response (model={self._model_id}, "
+                f"voice={self._voice}, url={self._url})"
+            )
+
+        try:
+            audio, sample_rate = self._decode_wav(wav_bytes)
+        except Exception as exc:
+            # Show first bytes to help diagnose format issues
+            preview = wav_bytes[:64]
+            raise RuntimeError(
+                f"TTS sidecar returned invalid audio (model={self._model_id}, "
+                f"voice={self._voice}, content-type={content_type}, "
+                f"size={len(wav_bytes)}, starts_with={preview!r}): {exc}"
+            ) from exc
+
         self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
 
     def speak_async(

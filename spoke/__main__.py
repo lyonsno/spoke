@@ -2915,7 +2915,7 @@ class SpokeAppDelegate(NSObject):
         try:
             req = urllib.request.Request(models_url, method="GET")
             with urllib.request.urlopen(req, timeout=5) as resp:
-                data = _json.loads(resp.read().decode())
+                data = json.loads(resp.read().decode())
         except Exception:
             logger.warning("Failed to fetch TTS sidecar models from %s", models_url, exc_info=True)
             return []
