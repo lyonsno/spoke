@@ -1,5 +1,6 @@
 """Tests for local MLX Whisper transcription client."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import os
 import tempfile
@@ -8,9 +9,31 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _mock_whisper_model_load():
-    with patch("spoke.transcribe_local.load_model", return_value=MagicMock()):
-        yield
+def _mock_whisper_runtime(monkeypatch):
+    from spoke import transcribe_local
+
+    fake_holder = SimpleNamespace(model=None, model_path=None)
+    fake_transcribe_module = SimpleNamespace(ModelHolder=fake_holder)
+    fake_mx = MagicMock(float16="float16")
+    fake_load_model = MagicMock(return_value=MagicMock())
+    original_import_module = transcribe_local.importlib.import_module
+
+    def fake_import_module(name, package=None):
+        if name == "mlx.core":
+            return transcribe_local.mx
+        if name == "mlx_whisper":
+            return transcribe_local.mlx_whisper
+        if name == "mlx_whisper.load_models":
+            return SimpleNamespace(load_model=transcribe_local.load_model)
+        if name == "mlx_whisper.transcribe":
+            return fake_transcribe_module
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(transcribe_local, "mx", fake_mx)
+    monkeypatch.setattr(transcribe_local, "mlx_whisper", MagicMock())
+    monkeypatch.setattr(transcribe_local, "load_model", fake_load_model)
+    monkeypatch.setattr(transcribe_local.importlib, "import_module", fake_import_module)
+    yield
 
 
 class TestLocalTranscriptionClient:
