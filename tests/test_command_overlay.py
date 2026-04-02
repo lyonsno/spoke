@@ -25,6 +25,8 @@ def _make_overlay(mock_pyobjc):
     overlay = mod.CommandOverlay.__new__(mod.CommandOverlay)
     overlay._window = MagicMock()
     overlay._window.alphaValue.return_value = 1.0
+    overlay._wrapper_view = MagicMock()
+    overlay._wrapper_view.layer.return_value = MagicMock()
     overlay._content_view = MagicMock()
     overlay._content_view.layer.return_value = MagicMock()
     overlay._scroll_view = MagicMock()
@@ -125,51 +127,69 @@ class TestThinkingTimer:
 
 
 class TestDismissAnimation:
-    """Test the cancel_dismiss two-phase animation state machine."""
+    """Test the pop-then-shrink dismiss animation state machine."""
 
-    def test_cancel_dismiss_initializes_hold_phase(self, mock_pyobjc):
+    def test_cancel_dismiss_initializes_grow_phase(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
 
         overlay.cancel_dismiss()
 
-        assert overlay._cancel_step == 0
-        assert overlay._cancel_phase == "hold"
+        assert overlay._cancel_elapsed == pytest.approx(0.0)
+        assert overlay._cancel_phase == "grow"
         assert overlay._streaming is False
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
-    def test_hold_phase_transitions_to_fade_after_8_steps(self, mock_pyobjc):
+    def test_grow_phase_expands_overlay_for_first_60ms(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay.cancel_dismiss()
+
+        phase, scale, alpha, done = mod._dismiss_animation_state(0.05)
+
+        assert phase == "grow"
+        assert scale > 1.0
+        assert alpha == pytest.approx(1.0)
+        assert done is False
+
+    def test_shrink_phase_starts_after_60ms(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay.cancel_dismiss()
+
+        phase, scale, alpha, done = mod._dismiss_animation_state(0.12)
+
+        assert phase == "shrink"
+        assert scale < mod._DISMISS_GROW_SCALE
+        assert alpha < 1.0
+        assert done is False
+
+    def test_animation_completes_after_200ms(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        # Simulate 8 animation steps (hold phase)
-        for _ in range(8):
-            overlay._cancelAnimStep_(None)
-
-        assert overlay._cancel_phase == "fade"
-        assert overlay._cancel_step == 0  # reset for fade
-
-    def test_fade_phase_completes_and_hides_window(self, mock_pyobjc):
-        overlay, _ = _make_overlay(mock_pyobjc)
-        overlay._visible = True
-        overlay.cancel_dismiss()
-
-        # Advance through hold phase
-        for _ in range(8):
-            overlay._cancelAnimStep_(None)
-
-        # Advance through fade phase until completion
-        for _ in range(8):
+        for _ in range(12):
             overlay._cancelAnimStep_(None)
 
         assert overlay._visible is False
         overlay._window.orderOut_.assert_called()
+        overlay._wrapper_view.layer.return_value.setValue_forKeyPath_.assert_called_with(
+            1.0, "transform.scale"
+        )
 
     def test_cancel_dismiss_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None
         overlay.cancel_dismiss()  # should not raise
+
+    def test_cancel_all_timers_clears_dismiss_timer(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.cancel_dismiss()
+
+        overlay._cancel_all_timers()
+
+        assert overlay._cancel_timer_anim is None
 
 
 class TestShowFinishHide:
