@@ -1617,16 +1617,16 @@ class SpokeAppDelegate(NSObject):
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
                             "commandToken:", {"token": token, "text": event.text}, False
                         )
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolEnd:", {"token": token}, False
+                        )
                     elif event.kind == "tool_call":
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
                             "commandToken:", {"token": token, "text": "", "tool_call": event.tool_call}, False
                         )
-                                "commandToolStart:", {"token": token}, False
-                            )
-                        else:
-                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                                "commandToolEnd:", {"token": token}, False
-                            )
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolStart:", {"token": token}, False
+                        )
                     elif event.kind == "assistant_final":
                         if not full_response:
                             full_response = event.text
