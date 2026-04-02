@@ -244,6 +244,20 @@ class TestLocalTranscriptionClient:
         )
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_latest_smoke_nonword_regressions(self, mock_mlx_whisper):
+        """Latest smoke non-words should normalize without touching real-word neighbors."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxisis."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient

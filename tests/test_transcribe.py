@@ -257,6 +257,21 @@ class TestTranscriptionFiltering:
             "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
         )
 
+    def test_latest_smoke_nonword_regressions_are_repaired(self):
+        """Latest smoke non-words should normalize without touching real-word neighbors."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxisis."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
+        )
+
     def test_whitespace_only_is_hallucination(self):
         """Whitespace-only result should be treated as hallucination."""
         client = TranscriptionClient(base_url="http://x")
