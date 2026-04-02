@@ -747,6 +747,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Role-specific env vars should create distinct clients when models differ."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -1190,6 +1191,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Persisted selections should be used when role-specific env vars are unset."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
