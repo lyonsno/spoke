@@ -30,8 +30,9 @@ from AppKit import (
     NSApp,
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSTextField,
 )
-from Foundation import NSObject
+from Foundation import NSMakeRect, NSObject
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
@@ -60,6 +61,7 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
@@ -246,15 +248,25 @@ class SpokeAppDelegate(NSObject):
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
 
-        # Command pathway — always enabled, defaults to localhost:8001
-        command_url = os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
+        # Command pathway — always enabled, but can persist a sidecar URL.
+        self._command_backend = None
+        self._command_sidecar_url = self._load_command_sidecar_url_preference()
+        self._command_url = None
+        command_backend, command_url = self._resolve_command_backend()
         if command_url:
+            self._command_backend = command_backend
+            self._command_url = command_url
+            if command_backend == "sidecar":
+                self._command_sidecar_url = command_url
             self._command_model_id = (
                 os.environ.get("SPOKE_COMMAND_MODEL")
                 or self._load_command_model_preference()
                 or _DEFAULT_COMMAND_MODEL
             )
-            self._command_client = CommandClient(model=self._command_model_id)
+            self._command_client = CommandClient(
+                base_url=command_url,
+                model=self._command_model_id,
+            )
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
@@ -263,12 +275,15 @@ class SpokeAppDelegate(NSObject):
             self._scene_cache = SceneCaptureCache(max_captures=10)
             self._tool_schemas = get_tool_schemas()
             logger.info(
-                "Command pathway enabled: %s (%s)",
+                "Command pathway enabled: backend=%s url=%s model=%s",
+                command_backend,
                 command_url,
                 self._command_model_id,
             )
         else:
             self._command_client = None
+            self._command_backend = None
+            self._command_url = None
             self._command_model_id = None
             self._command_model_options = []
             self._command_models_refresh_in_flight = False
@@ -2206,6 +2221,26 @@ class SpokeAppDelegate(NSObject):
                     "selected": self._command_model_id,
                     "models": self._command_model_options,
                 }
+                state["assistant_backend"] = {
+                    "title": "Assistant Backend",
+                    "items": [
+                        (
+                            "local",
+                            "Local OMLX",
+                            getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+                            == "local",
+                            True,
+                        ),
+                        (
+                            "sidecar",
+                            "Sidecar OMLX",
+                            getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+                            == "sidecar",
+                            True,
+                        ),
+                        ("configure", "Set Sidecar URL…", False, True),
+                    ],
+                }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
                 state["local_whisper"] = {
@@ -2260,6 +2295,9 @@ class SpokeAppDelegate(NSObject):
         role, model_id = selection
         if role == "assistant":
             self._apply_command_model_selection(model_id)
+            return
+        if role == "assistant_backend":
+            self._apply_command_backend_selection(model_id)
             return
         if role == "launch_target":
             self._apply_launch_target_selection(model_id)
@@ -2556,6 +2594,16 @@ class SpokeAppDelegate(NSObject):
     def _load_command_model_preference(self) -> str | None:
         return self._load_preferences().get("command_model")
 
+    def _load_command_backend_preference(self) -> str | None:
+        return self._coerce_command_backend(
+            self._load_preferences().get("command_backend")
+        )
+
+    def _load_command_sidecar_url_preference(self) -> str | None:
+        return self._normalize_command_url(
+            self._load_preferences().get("command_sidecar_url")
+        )
+
     def _save_model_preferences(
         self, preview_model: str, transcription_model: str
     ) -> bool:
@@ -2567,6 +2615,18 @@ class SpokeAppDelegate(NSObject):
     def _save_command_model_preference(self, model_id: str) -> bool:
         payload = self._load_preferences()
         payload["command_model"] = model_id
+        return self._save_preferences(payload)
+
+    def _save_command_backend_preferences(
+        self, backend: str, sidecar_url: str | None
+    ) -> bool:
+        payload = self._load_preferences()
+        payload["command_backend"] = self._coerce_command_backend(backend)
+        normalized_sidecar_url = self._normalize_command_url(sidecar_url)
+        if normalized_sidecar_url:
+            payload["command_sidecar_url"] = normalized_sidecar_url
+        else:
+            payload.pop("command_sidecar_url", None)
         return self._save_preferences(payload)
 
     def _save_local_whisper_preferences(
@@ -2588,6 +2648,48 @@ class SpokeAppDelegate(NSObject):
         except Exception:
             logger.warning("Failed to save model preferences to %s", path, exc_info=True)
             return False
+
+    @staticmethod
+    def _coerce_command_backend(value: str | None) -> str | None:
+        if value is None:
+            return None
+        backend = str(value).strip().lower()
+        if backend in {"local", "sidecar"}:
+            return backend
+        return None
+
+    @staticmethod
+    def _normalize_command_url(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().rstrip("/")
+        return normalized or None
+
+    def _resolve_command_backend(self) -> tuple[str | None, str | None]:
+        env_raw = os.environ.get("SPOKE_COMMAND_URL")
+        env_url = (
+            self._normalize_command_url(env_raw) if env_raw is not None else None
+        )
+        pref_backend = self._load_command_backend_preference()
+        pref_sidecar_url = self._load_command_sidecar_url_preference()
+        explicit_env_url = env_raw is not None and env_url not in {
+            None,
+            _DEFAULT_COMMAND_URL,
+        }
+
+        if explicit_env_url:
+            return "sidecar", env_url
+        if pref_backend == "sidecar" and pref_sidecar_url:
+            return "sidecar", pref_sidecar_url
+        if pref_backend == "sidecar" and not pref_sidecar_url:
+            logger.warning(
+                "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
+            )
+        if env_raw is not None:
+            if env_url is None:
+                return None, None
+            return "local", env_url
+        return "local", _DEFAULT_COMMAND_URL
 
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)
@@ -2746,6 +2848,111 @@ class SpokeAppDelegate(NSObject):
         self._command_model_id = model_id
         os.environ["SPOKE_COMMAND_MODEL"] = model_id
         self._relaunch()
+
+    def _apply_command_backend_selection(self, selection: str) -> None:
+        if selection == "configure":
+            self._configure_command_sidecar_url()
+            return
+        if selection not in {"local", "sidecar"}:
+            return
+
+        current_backend = getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+        current_url = self._normalize_command_url(getattr(self, "_command_url", None))
+        current_sidecar_url = self._normalize_command_url(
+            getattr(self, "_command_sidecar_url", None)
+        )
+
+        target_sidecar_url = current_sidecar_url
+        if selection == "sidecar" and target_sidecar_url is None:
+            target_sidecar_url = self._prompt_for_command_sidecar_url("")
+            if target_sidecar_url is None:
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Assistant sidecar URL required")
+                return
+
+        target_url = (
+            target_sidecar_url if selection == "sidecar" else _DEFAULT_COMMAND_URL
+        )
+        persisted_sidecar_url = (
+            target_sidecar_url if selection == "sidecar" else current_sidecar_url
+        )
+
+        if selection == current_backend and target_url == current_url:
+            if (
+                self._load_command_backend_preference() != selection
+                or self._load_command_sidecar_url_preference() != persisted_sidecar_url
+            ):
+                self._save_command_backend_preferences(
+                    selection, persisted_sidecar_url
+                )
+            return
+
+        logger.info(
+            "Switching assistant backend (relaunching): %s -> %s (%s)",
+            current_backend,
+            selection,
+            target_url,
+        )
+        if not self._save_command_backend_preferences(
+            selection, persisted_sidecar_url
+        ):
+            logger.warning(
+                "Skipping relaunch because the assistant backend selection could not be persisted"
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save assistant backend")
+            return
+
+        self._command_backend = selection
+        self._command_url = target_url
+        self._command_sidecar_url = persisted_sidecar_url
+        if target_url is None:
+            os.environ.pop("SPOKE_COMMAND_URL", None)
+        else:
+            os.environ["SPOKE_COMMAND_URL"] = target_url
+        self._relaunch()
+
+    def _configure_command_sidecar_url(self) -> None:
+        current_backend = getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+        current_sidecar_url = self._normalize_command_url(
+            getattr(self, "_command_sidecar_url", None)
+        )
+        sidecar_url = self._prompt_for_command_sidecar_url(current_sidecar_url or "")
+        if sidecar_url is None:
+            return
+        if not self._save_command_backend_preferences(current_backend, sidecar_url):
+            logger.warning("Couldn't persist assistant sidecar URL")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save assistant backend")
+            return
+
+        self._command_sidecar_url = sidecar_url
+        if current_backend == "sidecar":
+            self._command_url = sidecar_url
+            os.environ["SPOKE_COMMAND_URL"] = sidecar_url
+            self._relaunch()
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text("Assistant sidecar URL saved")
+
+    def _prompt_for_command_sidecar_url(self, current_url: str) -> str | None:
+        alert = NSAlert.new()
+        alert.setMessageText_("Assistant Sidecar URL")
+        alert.setInformativeText_(
+            "Enter the OpenAI-compatible base URL for the assistant sidecar."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_url)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return None
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return None
+        return self._normalize_command_url(value)
 
     def _apply_tts_model_selection(self, model_id: str) -> None:
         tts = getattr(self, "_tts_client", None)
