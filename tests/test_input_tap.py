@@ -857,12 +857,36 @@ class TestTrayAwareness:
 
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
-        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-        mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None, "Enter keyDown must be suppressed during recording"
+        assert result_up is None, "Enter keyUp must be suppressed during recording"
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
 
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_enter_suppressed_during_waiting(self, input_tap_module):
+        """Enter pressed during WAITING (before timer fires) must be suppressed."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None, "Enter keyDown must be suppressed during waiting"
+        assert result_up is None, "Enter keyUp must be suppressed during waiting"
+        assert det._enter_latched is True
 
     def test_shift_release_then_enter_within_grace_routes_as_command(
         self, input_tap_module
