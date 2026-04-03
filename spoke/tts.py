@@ -200,6 +200,18 @@ class TTSClient:
                 self._ensure_model()
         threading.Thread(target=_warm, daemon=True).start()
 
+    def unload(self) -> None:
+        """Release the TTS model to free memory."""
+        if self._model is None:
+            return
+        logger.info("Unloading TTS model %s", self._model_id)
+        self._model = None
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is currently resident in memory."""
+        return self._model is not None
+
     def _current_audio_gain_locked(self, now: float) -> float:
         progress = min(max((now - self._audio_fade_started_at) / _AUDIO_TOGGLE_FADE_S, 0.0), 1.0)
         eased = progress * progress * (3.0 - 2.0 * progress)
