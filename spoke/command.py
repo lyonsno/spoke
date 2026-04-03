@@ -320,6 +320,14 @@ class CommandClient:
                                 if tool_call_acc is not None:
                                     tool_call_acc.feed(tc_delta)
 
+            except urllib.error.HTTPError as exc:
+                err_body = ""
+                try:
+                    err_body = exc.read().decode("utf-8", errors="replace")[:500]
+                except Exception:
+                    pass
+                logger.error("Command request failed: HTTP %s — %s", exc.code, err_body or exc.reason)
+                raise
             except urllib.error.URLError as exc:
                 logger.error("Command request failed: %s", exc)
                 raise

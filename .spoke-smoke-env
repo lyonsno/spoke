@@ -1,8 +1,5 @@
-# Smoke-test env for voxtral-autoplay branch.
+# Smoke-test env for Gemini cloud backend (Operation Cloud Milk).
 # Sourced by launch-smoke.sh when this worktree is the smoke target.
-export SPOKE_COMMAND_URL="http://localhost:8001"
-export SPOKE_COMMAND_API_KEY="1234"
-export SPOKE_COMMAND_THINKING="0"
-export SPOKE_TTS_VOICE="casual_female"
-export SPOKE_TTS_MODEL="mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
-export PYTHONPATH="/Users/noahlyons/dev/mlx-audio-pr-607-voxtral-tts${PYTHONPATH:+:$PYTHONPATH}"
+export SPOKE_COMMAND_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+export SPOKE_COMMAND_MODEL="gemini-2.5-flash"
+export SPOKE_COMMAND_API_KEY="${GEMINI_API_KEY:-$(grep -m1 'GEMINI_API_KEY=' "$HOME/.zshenv" 2>/dev/null | sed 's/.*GEMINI_API_KEY=//' | tr -d '"'"'"'')}"
