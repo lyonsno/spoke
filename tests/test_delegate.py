@@ -2872,20 +2872,37 @@ class TestShortShiftHold:
 class TestCommandOverlayDismissRecallCycle:
     """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
 
-    def test_enter_empty_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
-        """Bare Enter+empty recording should not recall when the overlay is hidden."""
+    def test_enter_empty_tap_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
+        """An earlier Enter tap should not recall when the overlay is hidden."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=False)
         d._detector.command_overlay_active = False
+        d._detector._enter_held = False
 
         d._on_hold_end(shift_held=False, enter_held=True)
 
         d._command_overlay.show.assert_not_called()
         d._command_overlay.finish.assert_not_called()
         assert d._detector.command_overlay_active is False
+
+    def test_enter_empty_held_recalls_when_overlay_not_active(self, main_module, monkeypatch):
+        """If Enter is still down when Space releases, the assistant overlay should recall."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+        d._detector._enter_held = True
+
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
 
     def test_enter_empty_dismisses_when_overlay_active(self, main_module, monkeypatch):
         """Enter+empty recording should dismiss when command_overlay_active is True."""
@@ -2895,32 +2912,45 @@ class TestCommandOverlayDismissRecallCycle:
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=True)
         d._detector.command_overlay_active = True
+        d._detector._enter_held = True
 
         d._on_hold_end(shift_held=False, enter_held=True)
 
         d._command_overlay.cancel_dismiss.assert_called_once()
         assert d._detector.command_overlay_active is False
 
-    def test_enter_empty_after_dismiss_cycle_stays_hidden(self, main_module, monkeypatch):
-        """After bare Enter dismisses, a second bare Enter empty tap should stay hidden."""
+    def test_enter_empty_after_dismiss_cycle_recall_requires_enter_still_held(
+        self, main_module, monkeypatch
+    ):
+        """After dismiss, only a still-held Enter should recall the assistant overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=True)
         d._detector.command_overlay_active = True
+        d._detector._enter_held = True
 
         # Step 1: dismiss
         d._on_hold_end(shift_held=False, enter_held=True)
         assert d._detector.command_overlay_active is False
         d._command_overlay.cancel_dismiss.assert_called_once()
 
-        # Step 2: no recall (flag is False now, _visible may still be True from animation)
+        # Step 2: earlier Enter tap should not recall
         d._command_overlay.reset_mock()
+        d._detector._enter_held = False
         d._on_hold_end(shift_held=False, enter_held=True)
         d._command_overlay.show.assert_not_called()
         d._command_overlay.finish.assert_not_called()
         assert d._detector.command_overlay_active is False
+
+        # Step 3: still-held Enter should recall
+        d._command_overlay.reset_mock()
+        d._detector._enter_held = True
+        d._on_hold_end(shift_held=False, enter_held=True)
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
 
     def test_empty_tap_recall_blocked_after_instant_dismiss(self, main_module, monkeypatch):
         """Plain empty tap should NOT recall if instant dismiss just fired on the same tap."""
@@ -3005,22 +3035,26 @@ class TestCommandOverlayDismissRecallCycle:
 
         assert d._detector.command_overlay_active is True
 
-    def test_repeated_enter_empty_after_dismiss_stays_hidden(self, main_module, monkeypatch):
-        """Repeated bare Enter empty taps should not re-open assistant history."""
+    def test_repeated_enter_empty_taps_stay_hidden_after_dismiss(
+        self, main_module, monkeypatch
+    ):
+        """Repeated earlier Enter taps should not re-open assistant history."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=True)
         d._detector.command_overlay_active = True
+        d._detector._enter_held = True
 
         # Step 1: dismiss (active=True → False)
         d._on_hold_end(shift_held=False, enter_held=True)
         assert d._detector.command_overlay_active is False
         d._command_overlay.cancel_dismiss.assert_called_once()
 
-        # Step 2: stays hidden
+        # Step 2: earlier Enter tap stays hidden
         d._command_overlay.reset_mock()
+        d._detector._enter_held = False
         d._on_hold_end(shift_held=False, enter_held=True)
         assert d._detector.command_overlay_active is False
         d._command_overlay.show.assert_not_called()
@@ -3079,7 +3113,8 @@ class TestCommandOverlayDismissRecallCycle:
         assert d._detector.command_overlay_active is False
         assert d._detector._command_overlay_just_dismissed is False
 
-        # Now empty recording with enter_held: should remain hidden
+        # Now empty recording with enter tapped earlier: should remain hidden
+        d._detector._enter_held = False
         d._on_hold_end(shift_held=False, enter_held=True)
         d._command_overlay.show.assert_not_called()
         d._command_overlay.finish.assert_not_called()
@@ -3093,6 +3128,7 @@ class TestCommandOverlayDismissRecallCycle:
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=True)
         d._detector.command_overlay_active = True
+        d._detector._enter_held = True
 
         # Enter held + empty recording while overlay active → dismiss
         d._on_hold_end(shift_held=False, enter_held=True)

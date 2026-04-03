@@ -1012,6 +1012,7 @@ class SpokeAppDelegate(NSObject):
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
+            enter_still_held = bool(getattr(self._detector, "_enter_held", False))
 
             if shift_held:
                 # Shift owns the empty-audio review path. Combined Shift+Enter
@@ -1026,9 +1027,9 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             elif enter_held and self._command_client is not None:
-                # Bare Enter + empty recording only dismisses an already-visible
-                # assistant overlay. Do not recall history here; assistant
-                # surfaces should come back only after a real command send.
+                # Enter on an empty space-rooted chord only toggles assistant
+                # overlay visibility when Enter is still physically down at the
+                # moment Space releases. An earlier Enter tap should not recall.
                 # Use command_overlay_active (our flag) not _visible (animation
                 # state) to avoid re-dismissing during the dismiss animation.
                 self._detector._command_overlay_just_dismissed = False
@@ -1039,8 +1040,26 @@ class SpokeAppDelegate(NSObject):
                         self._command_overlay.cancel_dismiss()
                     self._detector.command_overlay_active = False
                     logger.info("command_overlay_active -> False (enter+empty dismiss)")
+                elif enter_still_held:
+                    history = self._command_client.history
+                    if history:
+                        last_utterance, last_response = history[-1]
+                        logger.info("Enter+empty — recalling last response")
+                        if self._command_overlay is not None:
+                            try:
+                                self._sync_command_overlay_brightness(immediate=True)
+                                self._command_overlay.show()
+                                self._command_overlay.set_utterance(last_utterance)
+                                self._command_overlay.append_token(last_response)
+                                self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
+                                logger.info("command_overlay_active -> True (enter+empty recall)")
+                            except Exception:
+                                logger.exception("Recall overlay failed")
+                    else:
+                        logger.info("Enter+empty — no history to recall")
                 else:
-                    logger.info("Enter+empty — overlay hidden; leaving it hidden")
+                    logger.info("Enter+empty tap — overlay hidden; leaving it hidden")
             else:
                 # Only dismiss if the overlay wasn't already dismissed by the
                 # instant-press handler (which clears command_overlay_active).
