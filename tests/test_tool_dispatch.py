@@ -343,7 +343,10 @@ class TestExecuteTool:
             )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
-        m.assert_called_once_with("/tmp/test.txt", "w", encoding="utf-8")
+        assert m.call_count == 1
+        assert str(m.call_args.args[0]).endswith("/tmp/test.txt")
+        assert m.call_args.args[1] == "w"
+        assert m.call_args.kwargs["encoding"] == "utf-8"
         m().write.assert_called_once_with("new content")
 
     def test_execute_search_file(self):
@@ -539,6 +542,46 @@ class TestExecuteToolIntegration:
         res4 = json.loads(mod.execute_tool("write_file", {"file_path": "/etc/passwd", "content": "bad"}))
         assert "error" in res4
         assert "Write access denied outside" in res4["error"]
+
+    def test_execute_write_file_rejects_sibling_prefix_escape(self):
+        mod = _import_tools()
+        target = "/private/tmp-escape/poc.txt"
+        with patch("pathlib.Path.mkdir") as mkdir_mock:
+            with patch("builtins.open", unittest.mock.mock_open()) as open_mock:
+                result = json.loads(
+                    mod.execute_tool(
+                        "write_file",
+                        {"file_path": target, "content": "escape"},
+                    )
+                )
+
+        assert "error" in result
+        assert "Write access denied outside" in result["error"]
+        mkdir_mock.assert_not_called()
+        open_mock.assert_not_called()
+
+    def test_execute_write_file_rejects_sensitive_symlink_escape(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        symlink_dir = home / "safe-link"
+        symlink_dir.symlink_to(ssh_dir, target_is_directory=True)
+
+        import os
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(home) if path == "~" else path)
+
+        target = symlink_dir / "id_rsa"
+        result = json.loads(
+            mod.execute_tool(
+                "write_file",
+                {"file_path": str(target), "content": "escape"},
+            )
+        )
+
+        assert "error" in result
+        assert "Write access denied" in result["error"]
+        assert not target.exists()
 
     def test_execute_search_file_edge_cases(self):
         mod = _import_tools()

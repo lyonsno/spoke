@@ -392,6 +392,15 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
 
 def _execute_write_file(arguments: dict) -> dict[str, Any]:
     import os
+    from pathlib import Path
+
+    def _is_within(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
     file_path = arguments.get("file_path")
     content = arguments.get("content")
     if not file_path:
@@ -400,18 +409,26 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
         content = ""
         
     try:
-        abs_path = os.path.abspath(file_path)
-        home_dir = os.path.expanduser("~")
+        resolved_path = Path(file_path).resolve(strict=False)
+        home_dir = Path(os.path.expanduser("~")).resolve(strict=False)
         for sensitive in [".ssh", ".gnupg", ".aws", "Library/Keychains"]:
-            if abs_path.startswith(os.path.join(home_dir, sensitive)):
+            sensitive_root = (home_dir / sensitive).resolve(strict=False)
+            if _is_within(resolved_path, sensitive_root):
                 return {"error": f"Write access denied to sensitive directory: {sensitive}"}
         
-        # Guard against system roots
-        if not abs_path.startswith(home_dir) and not abs_path.startswith("/private/tmp") and not abs_path.startswith("/tmp") and not abs_path.startswith("/var/folders") and not abs_path.startswith("/private/var/folders"):
+        allowed_roots = [
+            home_dir,
+            Path("/private/tmp").resolve(strict=False),
+            Path("/tmp").resolve(strict=False),
+            Path("/var/folders").resolve(strict=False),
+            Path("/private/var/folders").resolve(strict=False),
+        ]
+
+        if not any(_is_within(resolved_path, root) for root in allowed_roots):
             return {"error": "Write access denied outside of user home or tmp directories."}
 
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(resolved_path, "w", encoding="utf-8") as f:
             f.write(content)
         return {"status": "success", "file_path": file_path}
     except Exception as e:
