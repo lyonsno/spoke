@@ -18,7 +18,6 @@ from contextlib import nullcontext
 import json
 import logging
 import os
-import queue
 from pathlib import Path
 import sys
 import threading
@@ -203,11 +202,6 @@ class SpokeAppDelegate(NSObject):
         self._warmup_in_flight = False
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
-
-        # Segmented Previews state
-        self._transcribed_segments: list[str] = []
-        self._segment_queue: queue.Queue = queue.Queue()
-        self._segment_worker_thread: threading.Thread | None = None
 
         # Command pathway — always enabled, defaults to localhost:8001
         command_url = os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
@@ -603,21 +597,12 @@ class SpokeAppDelegate(NSObject):
                 )
             self._overlay.show()
         try:
-            if self._menubar is not None:
-                self._menubar.set_vad_state(True, True)
-            
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
-                    from Foundation import NSNumber
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "updateVadState:", NSNumber.numberWithBool_(is_speech), False
+                        "updateVadState:", is_speech, False
                     )
-            
-            self._capture.start(
-                amplitude_callback=self._on_amplitude, 
-                vad_state_callback=on_vad_state,
-                segment_callback=self._on_audio_segment
-            )
+            self._capture.start(amplitude_callback=self._on_amplitude, vad_state_callback=on_vad_state)
         except Exception:
             logger.exception("Audio capture failed to start")
             if self._glow is not None:
@@ -633,10 +618,8 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
-        self._is_speech = True # Start true for grace period
+        self._is_speech = False
         self._force_preview_update = False
-        self._transcribed_segments = []
-        self._current_preview_frames = []
         if getattr(self, "_preview_done", None) is not None:
             self._preview_done.clear()
 
@@ -648,34 +631,6 @@ class SpokeAppDelegate(NSObject):
         )
         self._preview_thread.start()
 
-    def _on_audio_segment(self, wav_bytes: bytes) -> None:
-        """Called when a silence boundary is reached. Dispatch for opportunistic transcription."""
-        logger.info("VAD segment received (%d bytes) - dispatching opportunistic transcription", len(wav_bytes))
-        self._segment_queue.put(wav_bytes)
-
-    def _segment_transcribe_worker(self):
-        """Background worker to transcribe audio segments as they arrive."""
-        while True:
-            wav_bytes = self._segment_queue.get()
-            if wav_bytes is None:
-                break
-            try:
-                # Use the fast preview client for opportunistic segments
-                with self._local_inference_context(self._preview_client):
-                    text = self._preview_client.transcribe(wav_bytes)
-                if text:
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "addTranscribedSegment:", text, False
-                    )
-            except Exception:
-                logger.error("Segment transcription failed", exc_info=True)
-
-    def addTranscribedSegment_(self, text: str):
-        """Main thread: add a finished segment to our list."""
-        self._transcribed_segments.append(text)
-        # Force a preview update now that we have a new fixed segment
-        self._force_preview_update = True
-
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread."""
         from Foundation import NSNumber
@@ -684,18 +639,14 @@ class SpokeAppDelegate(NSObject):
         )
 
     def updateVadState_(self, is_speech_number) -> None:
-        # Robust conversion: handle NSNumber or raw bool
-        if hasattr(is_speech_number, "boolValue"):
-            is_speech = bool(is_speech_number.boolValue())
-        else:
-            is_speech = bool(is_speech_number)
-        
+        is_speech = bool(is_speech_number)
+
         # If transitioning from speech to silence, force one last preview update
         if getattr(self, "_is_speech", False) and not is_speech:
             self._force_preview_update = True
-            
+
         self._is_speech = is_speech
-        
+
         if self._menubar is not None:
             self._menubar.set_vad_state(is_speech, self._transcribing or self._capture.is_recording)
 
@@ -846,6 +797,11 @@ class SpokeAppDelegate(NSObject):
             while self._preview_active:
                 loop_start = time.monotonic()
 
+                wav_bytes = self._capture.get_buffer()
+                if not wav_bytes:
+                    time.sleep(0.1 if self._local_mode else 0.2)
+                    continue
+
                 is_speech = getattr(self, "_is_speech", True)
                 force_update = getattr(self, "_force_preview_update", False)
                 if not is_speech and not force_update:
@@ -857,28 +813,8 @@ class SpokeAppDelegate(NSObject):
                 self._force_preview_update = False
 
                 try:
-                    # OPTIMIZATION: only transcribe the NEW audio in the current active segment
-                    if not hasattr(self, "_current_preview_frames"):
-                        self._current_preview_frames = []
-                    
-                    new_frames = self._capture.get_new_frames()
-                    if new_frames.size > 0:
-                        self._current_preview_frames.append(new_frames)
-                    
-                    if not self._current_preview_frames:
-                        continue
-                        
-                    current_wav = self._capture._encode_wav(np.concatenate(self._current_preview_frames))
-                    
                     with self._local_inference_context(self._preview_client):
-                        partial_text = self._preview_client.transcribe(current_wav)
-                    
-                    # If we just finished a segment, clear our local partial buffer
-                    if force_update:
-                        self._current_preview_frames = []
-                    
-                    # Combine fixed segments with the current live partial
-                    text = " ".join(self._transcribed_segments + [partial_text])
+                        text = self._preview_client.transcribe(wav_bytes)
                 except Exception:
                     logger.debug("Preview transcription failed", exc_info=True)
                     time.sleep(0.5)
@@ -901,7 +837,7 @@ class SpokeAppDelegate(NSObject):
 
     def previewTextUpdate_(self, payload) -> None:
         """Main thread: update the overlay with preview transcription text."""
-        if hasattr(payload, "get"):
+        if isinstance(payload, dict):
             token = payload.get("token")
             text = payload.get("text", "")
         else:
@@ -961,7 +897,6 @@ class SpokeAppDelegate(NSObject):
         logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
         self._preview_active = False
         self._preview_cancelled_on_release = True
-        self._segment_queue.put(None)
         wav_bytes = self._capture.stop()
 
         # Short shift-hold (under 800ms of recording) = recall into tray
