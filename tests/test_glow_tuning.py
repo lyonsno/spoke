@@ -103,17 +103,22 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_edge_mix_gives_light_backgrounds_extra_subtractive_presence(self, mock_pyobjc):
-        """Bright scenes should get a modest subtractive boost so the edge treatment stays visible."""
+    def test_edge_mix_keeps_dark_scenes_purely_additive_until_light_backgrounds(self, mock_pyobjc):
+        """Dark scenes should not carry any subtractive vignette until the background is genuinely bright."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
             dark_add, dark_sub = mod._edge_mix_for_brightness(0.1)
             mid_add, mid_sub = mod._edge_mix_for_brightness(0.5)
+            bright_add, bright_sub = mod._edge_mix_for_brightness(0.8)
             light_add, light_sub = mod._edge_mix_for_brightness(1.0)
 
-            assert dark_add > dark_sub
-            assert mid_sub > 0.5
+            assert dark_add == pytest.approx(1.0)
+            assert dark_sub == pytest.approx(0.0)
+            assert mid_add == pytest.approx(1.0)
+            assert mid_sub == pytest.approx(0.0)
+            assert bright_add < 1.0
+            assert bright_sub > 0.0
             assert light_add == pytest.approx(0.0)
             assert light_sub == pytest.approx(1.664)
         finally:

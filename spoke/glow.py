@@ -105,6 +105,7 @@ _BRIGHTNESS_PATCH_SIZE = 50  # pixels per patch side
 _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
+_LIGHT_BACKGROUND_EDGE_START = 0.55
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 4.575  # back to original
 
@@ -203,10 +204,14 @@ def _glow_style_for_brightness(brightness: float) -> tuple[tuple[float, float, f
 
 
 def _edge_mix_for_brightness(brightness: float) -> tuple[float, float]:
-    """Cross-fade additive glow into subtractive edge treatment with a slight bright-scene boost."""
+    """Keep dark scenes purely additive, then fade in the vignette only on light backgrounds."""
     t = min(max(brightness, 0.0), 1.0)
-    additive_mix = 1.0 - t
-    subtractive_mix = t * (1.0 + _LIGHT_BACKGROUND_EDGE_BOOST * t)
+    if t <= _LIGHT_BACKGROUND_EDGE_START:
+        return 1.0, 0.0
+
+    edge_t = (t - _LIGHT_BACKGROUND_EDGE_START) / (1.0 - _LIGHT_BACKGROUND_EDGE_START)
+    additive_mix = 1.0 - edge_t
+    subtractive_mix = edge_t * (1.0 + _LIGHT_BACKGROUND_EDGE_BOOST * edge_t)
     return additive_mix, subtractive_mix
 
 
