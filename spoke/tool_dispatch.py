@@ -333,6 +333,8 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
     try:
         if not os.path.isfile(file_path):
             return {"error": f"File not found: {file_path}"}
+
+        file_size = os.path.getsize(file_path)
             
         # Get total lines without reading full file into memory
         with open(file_path, "rb") as f_bin:
@@ -342,24 +344,57 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
             if start_line > end_line:
                 return {"error": "start_line cannot be greater than end_line"}
                 
+        max_lines_threshold = int(os.environ.get("SPOKE_MAX_FILE_LINES", "2000"))
+        max_bytes_threshold = max(1, int(os.environ.get("SPOKE_MAX_FILE_BYTES", "500000")))
+        max_outline_items = max(1, int(os.environ.get("SPOKE_MAX_FILE_OUTLINE_ITEMS", "200")))
+        max_preview_bytes = max(1, int(os.environ.get("SPOKE_MAX_FILE_PREVIEW_BYTES", "4000")))
+
         if start_line is not None or end_line is not None:
             start = max(0, (start_line or 1) - 1)
             end = min(total_lines, (end_line or total_lines))
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 slice_lines = list(islice(f, start, end))
+            content = "".join(slice_lines)
+            content_bytes = content.encode("utf-8", errors="replace")
+            if len(content_bytes) > max_bytes_threshold:
+                preview_bytes = content_bytes[:max_preview_bytes]
+                return {
+                    "file_path": file_path,
+                    "lines_returned": f"{start + 1}-{end} of {total_lines}",
+                    "error": (
+                        f"Requested slice is too large ({len(content_bytes)} bytes across "
+                        f"{end - start} line{'' if end - start == 1 else 's'}). "
+                        "Returning a truncated preview."
+                    ),
+                    "content": preview_bytes.decode("utf-8", errors="replace"),
+                    "content_truncated": True,
+                    "content_bytes_returned": len(preview_bytes),
+                    "content_bytes_total": len(content_bytes),
+                }
             return {
                 "file_path": file_path, 
                 "lines_returned": f"{start + 1}-{end} of {total_lines}",
-                "content": "".join(slice_lines)
+                "content": content
             }
-            
-        max_lines_threshold = int(os.environ.get("SPOKE_MAX_FILE_LINES", "2000"))
-        max_outline_items = max(1, int(os.environ.get("SPOKE_MAX_FILE_OUTLINE_ITEMS", "200")))
+
+        if file_size > max_bytes_threshold and total_lines <= max_lines_threshold:
+            with open(file_path, "rb") as f_bin:
+                preview_bytes = f_bin.read(max_preview_bytes)
+            return {
+                "file_path": file_path,
+                "error": (
+                    f"File is too large ({file_size} bytes across {total_lines} line"
+                    f"{'' if total_lines == 1 else 's'}). Returning a truncated preview."
+                ),
+                "content": preview_bytes.decode("utf-8", errors="replace"),
+                "content_truncated": True,
+                "content_bytes_returned": len(preview_bytes),
+                "content_bytes_total": file_size,
+            }
         
         if total_lines > max_lines_threshold:
             # Safe AST parsing limit (prevent DoS)
             MAX_AST_BYTES = 500_000 
-            file_size = os.path.getsize(file_path)
             
             outline = []
             outline_total_items = 0

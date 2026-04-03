@@ -326,10 +326,11 @@ class TestExecuteTool:
         fake_content = "file content here"
         with patch("builtins.open", unittest.mock.mock_open(read_data=fake_content)):
             with patch("os.path.isfile", return_value=True):
-                result = mod.execute_tool(
-                    name="read_file",
-                    arguments={"file_path": "/tmp/test.txt"}
-                )
+                with patch("os.path.getsize", return_value=len(fake_content)):
+                    result = mod.execute_tool(
+                        name="read_file",
+                        arguments={"file_path": "/tmp/test.txt"}
+                    )
         parsed = json.loads(result)
         assert parsed.get("content") == fake_content
 
@@ -551,6 +552,44 @@ class TestExecuteToolIntegration:
         assert len(parsed["outline"]) == 5
         assert parsed["outline_truncated"] is True
         assert parsed["outline_total_items"] == 20
+
+    def test_execute_read_file_large_single_line_returns_truncated_preview(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        target = tmp_path / "huge.txt"
+        target.write_text("x" * 200, encoding="utf-8")
+        monkeypatch.setenv("SPOKE_MAX_FILE_LINES", "500")
+        monkeypatch.setenv("SPOKE_MAX_FILE_BYTES", "100")
+        monkeypatch.setenv("SPOKE_MAX_FILE_PREVIEW_BYTES", "32")
+
+        result = mod.execute_tool("read_file", {"file_path": str(target)})
+        parsed = json.loads(result)
+
+        assert "too large" in parsed["error"]
+        assert parsed["content"] == "x" * 32
+        assert parsed["content_truncated"] is True
+        assert parsed["content_bytes_returned"] == 32
+        assert parsed["content_bytes_total"] == 200
+
+    def test_execute_read_file_large_single_line_slice_returns_truncated_preview(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        target = tmp_path / "huge.txt"
+        target.write_text("x" * 200, encoding="utf-8")
+        monkeypatch.setenv("SPOKE_MAX_FILE_LINES", "500")
+        monkeypatch.setenv("SPOKE_MAX_FILE_BYTES", "100")
+        monkeypatch.setenv("SPOKE_MAX_FILE_PREVIEW_BYTES", "32")
+
+        result = mod.execute_tool(
+            "read_file",
+            {"file_path": str(target), "start_line": 1, "end_line": 1},
+        )
+        parsed = json.loads(result)
+
+        assert parsed["lines_returned"] == "1-1 of 1"
+        assert "too large" in parsed["error"]
+        assert parsed["content"] == "x" * 32
+        assert parsed["content_truncated"] is True
+        assert parsed["content_bytes_returned"] == 32
+        assert parsed["content_bytes_total"] == 200
 
 
     def test_execute_read_file_edge_cases(self, tmp_path):
