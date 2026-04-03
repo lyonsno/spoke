@@ -54,6 +54,7 @@ from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient
+from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,14 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay = None
             self._scene_cache = None
             self._tool_schemas = None
+
+        # Heartbeat — zombie sweep runs before us, this starts the writer.
+        self._heartbeat = HeartbeatManager()
+        self._heartbeat.set_context(
+            worktree=os.getcwd(),
+        )
+        self._heartbeat.set_evict_callback(self._evict_model)
+        self._heartbeat_timer = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
         # Preference-based model override takes priority over env var.
@@ -533,6 +542,10 @@ class SpokeAppDelegate(NSObject):
         logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
+
+        # Register loaded models with the heartbeat manager.
+        self._register_loaded_models()
+        self._start_heartbeat_timer()
 
         # Warm TTS after Whisper is loaded, but keep it off the main thread.
         tts = getattr(self, "_tts_client", None)
@@ -1991,6 +2004,7 @@ class SpokeAppDelegate(NSObject):
                     overlay.tts_start()
                 except Exception:
                     logger.exception("Command overlay TTS start failed")
+            self._touch_model(tts)
             try:
                 logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
                 tts.speak_async(
@@ -3046,6 +3060,89 @@ class SpokeAppDelegate(NSObject):
             if callable(close):
                 close()
 
+    # ── Heartbeat & model TTL ─────────────────────────────────
+
+    def _register_loaded_models(self) -> None:
+        """Tell the heartbeat manager which models are currently resident."""
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        for client in self._iter_unique_clients():
+            loaded = getattr(client, "is_loaded", False)
+            if loaded:
+                model_id = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+                if model_id:
+                    hb.register_model(model_id)
+
+    def _start_heartbeat_timer(self) -> None:
+        """Schedule the heartbeat timer on the main-thread run loop."""
+        from Foundation import NSTimer
+
+        if getattr(self, "_heartbeat_timer", None) is not None:
+            return
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        self._heartbeat_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            HEARTBEAT_INTERVAL_S,
+            self,
+            "heartbeatTick:",
+            None,
+            True,
+        )
+        # Write the first heartbeat immediately.
+        self._heartbeat.tick()
+        logger.info(
+            "Heartbeat started (interval=%.0fs, model_ttl=%.0fs)",
+            HEARTBEAT_INTERVAL_S,
+            self._heartbeat._ttl,
+        )
+
+    def heartbeatTick_(self, _timer) -> None:
+        """NSTimer callback — write heartbeat, evict expired models."""
+        # Ensure newly loaded models (e.g. TTS after async warmup) get registered.
+        self._register_loaded_models()
+        expired = self._heartbeat.tick()
+        if expired:
+            logger.info("Heartbeat TTL eviction: %s", expired)
+
+    def _evict_model(self, model_id: str) -> None:
+        """Eviction callback from HeartbeatManager — unload a model by ID."""
+        for client in self._iter_unique_clients():
+            client_model = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+            if client_model == model_id:
+                unload = getattr(client, "unload", None)
+                if callable(unload):
+                    with self._local_inference_context(client):
+                        unload()
+                    self._heartbeat.unregister_model(model_id)
+                    self._heartbeat.clear_metal_cache()
+                    logger.info("Evicted model %s", model_id)
+                    return
+
+    def _touch_model(self, client) -> None:
+        """Update last-use timestamp for a client's model."""
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        model_id = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+        if model_id:
+            hb.touch(model_id)
+
+    def _iter_unique_clients(self):
+        """Yield each unique client object (deduplicated)."""
+        seen = []
+        candidates = list(getattr(self, "_client_cache", {}).values()) + [
+            getattr(self, "_client", None),
+            getattr(self, "_preview_client", None),
+            getattr(self, "_tts_client", None),
+        ]
+        for client in candidates:
+            if client is None or any(c is client for c in seen):
+                continue
+            seen.append(client)
+            yield client
+
     def _local_whisper_controls_available(self) -> bool:
         if not getattr(self, "_local_mode", False):
             return False
@@ -3180,6 +3277,9 @@ class SpokeAppDelegate(NSObject):
         lock = getattr(self, "_local_inference_lock", None)
         if lock is None or isinstance(client, TranscriptionClient):
             return nullcontext()
+        # Touch the model on each local inference so TTL doesn't expire
+        # while the model is actively in use.
+        self._touch_model(client)
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
@@ -3511,6 +3611,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
+    zombie_sweep()
     _acquire_instance_lock()
 
     app = NSApplication.sharedApplication()
@@ -3538,6 +3639,9 @@ def main() -> None:
         delegate._detector.uninstall()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
+        # Remove heartbeat so next launch doesn't see us as a zombie.
+        if hasattr(delegate, "_heartbeat"):
+            delegate._heartbeat.remove()
         NSApp.terminate_(None)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)

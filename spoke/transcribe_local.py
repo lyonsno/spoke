@@ -181,6 +181,27 @@ class LocalTranscriptionClient:
             pcm = np.frombuffer(frames, dtype=np.int16)
             return pcm.astype(np.float32) / 32768.0
 
+    def unload(self) -> None:
+        """Release the loaded Whisper model to free memory."""
+        if not self._loaded:
+            return
+        logger.info("Unloading Whisper model %s", self._model)
+        self._model_instance = None
+        self._loaded = False
+        # Clear mlx-whisper's singleton cache so it doesn't hold a ref.
+        try:
+            transcribe_module = importlib.import_module("mlx_whisper.transcribe")
+            if getattr(transcribe_module.ModelHolder, "model_path", None) == self._model:
+                transcribe_module.ModelHolder.model = None
+                transcribe_module.ModelHolder.model_path = ""
+        except Exception:
+            pass
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is currently resident in memory."""
+        return self._loaded
+
     def close(self) -> None:
-        """No-op — no persistent resources to clean up."""
-        pass
+        """Release resources."""
+        self.unload()

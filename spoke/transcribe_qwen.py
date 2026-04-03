@@ -185,7 +185,19 @@ class LocalQwenClient:
             pcm = np.frombuffer(frames, dtype=np.int16)
             return pcm.astype(np.float32) / 32768.0
 
-    def close(self) -> None:
-        """Release the model session and any streaming state."""
+    def unload(self) -> None:
+        """Release the model session to free memory."""
+        if self._session is None:
+            return
+        logger.info("Unloading Qwen ASR model %s", self._model)
         self._stream_state = None
         self._session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is currently resident in memory."""
+        return self._session is not None
+
+    def close(self) -> None:
+        """Release the model session and any streaming state."""
+        self.unload()
