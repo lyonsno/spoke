@@ -45,6 +45,11 @@ Unless the user explicitly says otherwise, push commits after creating them.
 For `spoke`, the canonical integration tip is remote `origin/main-next`, not
 whichever older local `main-next` carry or smoke worktree happens to exist.
 
+All new implementation worktrees, feature branches, fix branches, and
+integration-carrier branches for `spoke` should be cut from the then-current
+`origin/main-next` unless the human explicitly asks for some other historical
+or non-trunk surface.
+
 When a dedicated local trunk surface is in use, refer to it by its visible
 launcher label, `Main Next Trunk`, but only treat it as the current integration
 tip after it has been refreshed or recreated from current `origin/main-next`.
