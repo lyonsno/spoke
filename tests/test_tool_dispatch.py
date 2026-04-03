@@ -352,7 +352,7 @@ class TestExecuteTool:
     def test_execute_search_file(self):
         mod = _import_tools()
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="match1\nmatch2", returncode=0)
+            mock_run.return_value = MagicMock(stdout="match1\nmatch2", stderr="", returncode=0)
             result = mod.execute_tool(
                 name="search_file",
                 arguments={"pattern": "match", "dir_path": "/tmp"}
@@ -503,6 +503,54 @@ class TestExecuteToolIntegration:
         result = mod.execute_tool("search_file", {"pattern": "find_me", "dir_path": str(d)})
         parsed = json.loads(result)
         assert "find_me" in parsed.get("matches", "")
+
+    def test_execute_search_file_rejects_missing_directory(self, tmp_path):
+        mod = _import_tools()
+        missing = tmp_path / "missing"
+
+        result = mod.execute_tool("search_file", {"pattern": "find_me", "dir_path": str(missing)})
+        parsed = json.loads(result)
+
+        assert "error" in parsed
+        assert "Directory not found" in parsed["error"]
+
+    def test_execute_read_file_large_python_returns_truncated_outline(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        target = tmp_path / "huge.py"
+        target.write_text(
+            "".join(f"def f{i}():\n    return {i}\n" for i in range(1, 21)),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SPOKE_MAX_FILE_LINES", "5")
+        monkeypatch.setenv("SPOKE_MAX_FILE_OUTLINE_ITEMS", "5")
+
+        result = mod.execute_tool("read_file", {"file_path": str(target)})
+        parsed = json.loads(result)
+
+        assert "too large" in parsed["error"]
+        assert isinstance(parsed["outline"], list)
+        assert len(parsed["outline"]) == 5
+        assert parsed["outline_truncated"] is True
+        assert parsed["outline_total_items"] == 20
+
+    def test_execute_read_file_large_fallback_returns_truncated_outline(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        target = tmp_path / "huge.js"
+        target.write_text(
+            "".join(f"const item{i} = {i};\n" for i in range(1, 21)),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SPOKE_MAX_FILE_LINES", "5")
+        monkeypatch.setenv("SPOKE_MAX_FILE_OUTLINE_ITEMS", "5")
+
+        result = mod.execute_tool("read_file", {"file_path": str(target)})
+        parsed = json.loads(result)
+
+        assert "too large" in parsed["error"]
+        assert isinstance(parsed["outline"], list)
+        assert len(parsed["outline"]) == 5
+        assert parsed["outline_truncated"] is True
+        assert parsed["outline_total_items"] == 20
 
 
     def test_execute_read_file_edge_cases(self, tmp_path):

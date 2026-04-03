@@ -354,6 +354,7 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
             }
             
         max_lines_threshold = int(os.environ.get("SPOKE_MAX_FILE_LINES", "2000"))
+        max_outline_items = max(1, int(os.environ.get("SPOKE_MAX_FILE_OUTLINE_ITEMS", "200")))
         
         if total_lines > max_lines_threshold:
             # Safe AST parsing limit (prevent DoS)
@@ -361,28 +362,39 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
             file_size = os.path.getsize(file_path)
             
             outline = []
+            outline_total_items = 0
             if file_path.endswith(".py") and file_size < MAX_AST_BYTES:
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                         tree = ast.parse(f.read())
                     for node in tree.body:
                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                            outline.append(f"Line {node.lineno}: {node.__class__.__name__.replace('Def', '')} {node.name}")
+                            outline_total_items += 1
+                            if len(outline) < max_outline_items:
+                                outline.append(
+                                    f"Line {node.lineno}: {node.__class__.__name__.replace('Def', '')} {node.name}"
+                                )
                 except Exception:
                     pass
             
-            if not outline:
+            if outline_total_items == 0:
                 # Basic regex fallback
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     for i, line in enumerate(f):
                         if re.match(r'^(export )?(default )?(class|function|const|let|var) [a-zA-Z0-9_]+', line.lstrip()):
-                            outline.append(f"Line {i+1}: {line.strip()[:100]}")
-            
-            return {
+                            outline_total_items += 1
+                            if len(outline) < max_outline_items:
+                                outline.append(f"Line {i+1}: {line.strip()[:100]}")
+
+            result = {
                 "file_path": file_path,
                 "error": f"File is too large ({total_lines} lines). Please use start_line and end_line.",
                 "outline": outline if outline else "No clear outline extracted."
             }
+            if outline_total_items:
+                result["outline_total_items"] = outline_total_items
+                result["outline_truncated"] = outline_total_items > len(outline)
+            return result
             
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
@@ -435,6 +447,7 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
+    import os
     import subprocess
     pattern = arguments.get("pattern")
     dir_path = arguments.get("dir_path")
@@ -443,13 +456,21 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
     if dir_path is None:
         dir_path = "."
     try:
+        if not os.path.isdir(dir_path):
+            return {"error": f"Directory not found: {dir_path}"}
+
         result = subprocess.run(
             ["grep", "-rnm", "100", "--", pattern, dir_path], 
             capture_output=True, 
             text=True, 
             timeout=10
         )
-        return {"matches": result.stdout, "dir_path": dir_path, "pattern": pattern}
+        stderr = result.stderr.strip()
+        if result.returncode in (0, 1) and not stderr:
+            return {"matches": result.stdout, "dir_path": dir_path, "pattern": pattern}
+        if stderr:
+            return {"error": f"Search failed for {dir_path}: {stderr}"}
+        return {"error": f"Search failed for {dir_path} with exit status {result.returncode}"}
     except subprocess.TimeoutExpired:
         return {"error": "Search timed out after 10 seconds"}
     except Exception as e:
