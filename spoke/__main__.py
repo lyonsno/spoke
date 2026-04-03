@@ -225,7 +225,9 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
-        self._detector._on_enter_pressed = self._on_tray_enter_pressed
+        # Bare Enter should belong to the foreground app; tray actions stay
+        # on explicit space-rooted gestures instead of ambient key capture.
+        self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._menubar: MenuBarIcon | None = None
@@ -1511,10 +1513,9 @@ class SpokeAppDelegate(NSObject):
             self._tray_navigate_up()
 
     def _on_tray_enter_pressed(self) -> None:
-        """Enter pressed during tray = send current entry to assistant."""
+        """Legacy tray Enter hook retained as a no-op safety shim."""
         if self._tray_active:
-            logger.info("Enter during tray — sending to assistant")
-            self._tray_send_current()
+            logger.info("Enter during tray — ignored (space-rooted contract)")
 
     def _on_tray_delete_gesture(self) -> None:
         """Shift held + double-tap spacebar = delete current tray entry."""

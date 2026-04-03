@@ -798,8 +798,8 @@ class TestTrayAwareness:
 
         assert det._enter_held is False
 
-    def test_enter_during_tray_fires_callback(self, input_tap_module):
-        """Enter pressed while tray is active should fire on_enter_pressed."""
+    def test_enter_during_tray_does_not_fire_callback(self, input_tap_module):
+        """Tray visibility alone should not arm bare Enter as a Spoke command."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -810,9 +810,11 @@ class TestTrayAwareness:
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         event = MagicMock()
-        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        on_enter.assert_called_once()
+        on_enter.assert_not_called()
+        assert result is event
+        assert det._enter_held is True
 
     def test_enter_outside_tray_no_callback(self, input_tap_module):
         """Enter pressed outside tray should not fire on_enter_pressed."""
