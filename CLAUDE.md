@@ -12,9 +12,14 @@ Treat the repo as renamed for documentation purposes and keep naming consistent 
 
 **`main-next` is the active integration branch.** All new feature branches,
 fix branches, and worktrees must be sliced from `origin/main-next`, not from
-`main`. `main` is reference-only and receives promotions from `main-next`
+`main` or `dev`. `main` is reference-only and receives promotions from `main-next`
 after smoke validation. Do not branch from `main` for new work. Do not land
 new work onto `main` directly.
+
+Treat remote `origin/main-next` as the source of truth rather than any older
+local trunk witness or smoke worktree. If a local surface named `Main Next
+Trunk` exists, refresh or recreate it from current `origin/main-next` before
+calling it the current tip.
 
 Before creating a worktree: `git fetch origin main-next` and branch from
 `origin/main-next`. Failing to do this means your branch will be missing

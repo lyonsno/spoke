@@ -526,27 +526,15 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
-            if det._state == _State.LATCHED:
-                det._cancel_safety_timer()
-                det._state = _State.IDLE
-                det._on_hold_end(shift_held=False, enter_held=True)
-                return None
             if det._state in (_State.WAITING, _State.RECORDING):
                 det._enter_latched = True
                 return None  # suppress enter while space is held
-            # If tray is active, Enter = send to assistant.
-            # Only suppress Enter if the callback exists and is called.
-            # Always let Enter through if tray is not active.
-            if getattr(det, 'tray_active', False):
-                on_enter = getattr(det, '_on_enter_pressed', None)
-                if on_enter is not None:
-                    on_enter()
-                    return None  # suppress enter during tray
             # Suppress Enter while the command overlay is visible so it
             # doesn't leak through to the underlying app.
             if getattr(det, 'command_overlay_active', False):
                 return None
-            # Enter passes through to the OS when tray is not active
+            # Bare Enter otherwise belongs to the foreground app, even if the
+            # tray is visible. Assistant send remains a space-rooted chord.
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:

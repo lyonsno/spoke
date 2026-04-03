@@ -79,10 +79,7 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
     ):
-        self._base_url = (
-            base_url
-            or os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
-        ).rstrip("/")
+        self._base_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         self._model = (
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", _DEFAULT_COMMAND_MODEL)

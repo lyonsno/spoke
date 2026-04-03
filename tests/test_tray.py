@@ -402,18 +402,19 @@ class TestTrayGestures:
         d._capture.start.assert_not_called()
         assert d._recovery_hold_active is True
 
-    def test_enter_from_tray_sends_to_assistant(self, main_module, monkeypatch):
-        """Enter key from tray should send current text to assistant."""
+    def test_enter_from_tray_does_not_send_to_assistant(self, main_module, monkeypatch):
+        """Bare Enter with the tray visible should not route to the assistant."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._tray_active = True
         d._tray_stack = ["send this"]
         d._tray_index = 0
         d._send_text_as_command = MagicMock()
 
-        d._tray_send_current()
+        d._on_tray_enter_pressed()
 
-        d._send_text_as_command.assert_called_once_with("send this")
-        assert "send this" not in d._tray_stack
+        d._send_text_as_command.assert_not_called()
+        assert d._tray_stack == ["send this"]
+        assert d._tray_active is True
 
     def test_short_shift_hold_recalls_into_tray(self, main_module, monkeypatch):
         """Short shift-hold should enter tray with last tray entry."""

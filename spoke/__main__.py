@@ -225,7 +225,9 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
-        self._detector._on_enter_pressed = self._on_tray_enter_pressed
+        # Bare Enter should belong to the foreground app; tray actions stay
+        # on explicit space-rooted gestures instead of ambient key capture.
+        self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._menubar: MenuBarIcon | None = None
@@ -1511,10 +1513,9 @@ class SpokeAppDelegate(NSObject):
             self._tray_navigate_up()
 
     def _on_tray_enter_pressed(self) -> None:
-        """Enter pressed during tray = send current entry to assistant."""
+        """Legacy tray Enter hook retained as a no-op safety shim."""
         if self._tray_active:
-            logger.info("Enter during tray — sending to assistant")
-            self._tray_send_current()
+            logger.info("Enter during tray — ignored (space-rooted contract)")
 
     def _on_tray_delete_gesture(self) -> None:
         """Shift held + double-tap spacebar = delete current tray entry."""
@@ -2686,29 +2687,15 @@ class SpokeAppDelegate(NSObject):
         return normalized or None
 
     def _resolve_command_backend(self) -> tuple[str | None, str | None]:
-        env_raw = os.environ.get("SPOKE_COMMAND_URL")
-        env_url = (
-            self._normalize_command_url(env_raw) if env_raw is not None else None
-        )
         pref_backend = self._load_command_backend_preference()
         pref_sidecar_url = self._load_command_sidecar_url_preference()
-        explicit_env_url = env_raw is not None and env_url not in {
-            None,
-            _DEFAULT_COMMAND_URL,
-        }
 
-        if explicit_env_url:
-            return "sidecar", env_url
         if pref_backend == "sidecar" and pref_sidecar_url:
             return "sidecar", pref_sidecar_url
         if pref_backend == "sidecar" and not pref_sidecar_url:
             logger.warning(
                 "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
             )
-        if env_raw is not None:
-            if env_url is None:
-                return None, None
-            return "local", env_url
         return "local", _DEFAULT_COMMAND_URL
 
     def _get_client(self, whisper_url: str, model_id: str):
@@ -2956,10 +2943,6 @@ class SpokeAppDelegate(NSObject):
         self._command_backend = selection
         self._command_url = target_url
         self._command_sidecar_url = persisted_sidecar_url
-        if target_url is None:
-            os.environ.pop("SPOKE_COMMAND_URL", None)
-        else:
-            os.environ["SPOKE_COMMAND_URL"] = target_url
         self._relaunch()
 
     def _configure_command_sidecar_url(self) -> None:
@@ -2979,7 +2962,6 @@ class SpokeAppDelegate(NSObject):
         self._command_sidecar_url = sidecar_url
         if current_backend == "sidecar":
             self._command_url = sidecar_url
-            os.environ["SPOKE_COMMAND_URL"] = sidecar_url
             self._relaunch()
             return
         if self._menubar is not None:
