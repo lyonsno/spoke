@@ -108,6 +108,9 @@ _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 4.575  # back to original
 _SDF_PRECISION_SPLIT = os.environ.get("SPOKE_SDF_PRECISION_SPLIT", "0") == "1"
+_SDF_PRECISION_SPLIT_DIFF_GAIN = float(
+    os.environ.get("SPOKE_SDF_PRECISION_SPLIT_DIFF_GAIN", "24.0")
+)
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -464,10 +467,34 @@ def _split_precision_compare_encoded(
     legacy_encoded: "np.ndarray",
     current_encoded: "np.ndarray",
 ) -> "np.ndarray":
-    """Show legacy on the left half and current precision path on the right half."""
+    """Show legacy on the left half and highlighted current precision path on the right."""
+    import numpy as np
+
     encoded = current_encoded.copy()
     midpoint = encoded.shape[1] // 2
     encoded[:, :midpoint, :] = legacy_encoded[:, :midpoint, :]
+    if midpoint < encoded.shape[1]:
+        diff = np.abs(
+            current_encoded[:, midpoint:, :3].astype(np.int16)
+            - legacy_encoded[:, midpoint:, :3].astype(np.int16)
+        )
+        diff_strength = np.clip(
+            np.max(diff, axis=2, keepdims=True) * _SDF_PRECISION_SPLIT_DIFF_GAIN,
+            0,
+            255,
+        ).astype(np.uint8)
+        right_rgb = encoded[:, midpoint:, :3].astype(np.uint16)
+        right_rgb[..., 0] = np.clip(right_rgb[..., 0] + diff_strength[..., 0] // 4, 0, 255)
+        right_rgb[..., 1] = np.clip(right_rgb[..., 1] + diff_strength[..., 0], 0, 255)
+        right_rgb[..., 2] = np.clip(right_rgb[..., 2] + diff_strength[..., 0] // 2, 0, 255)
+        encoded[:, midpoint:, :3] = right_rgb.astype(np.uint8)
+
+    divider_start = max(midpoint - 1, 0)
+    divider_end = min(midpoint + 1, encoded.shape[1])
+    encoded[:, divider_start:divider_end, 0] = 255
+    encoded[:, divider_start:divider_end, 1] = 255
+    encoded[:, divider_start:divider_end, 2] = 255
+    encoded[:, divider_start:divider_end, 3] = 255
     return encoded
 
 
