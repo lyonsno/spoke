@@ -34,6 +34,13 @@ the active worktree and tell the user it's ready:
 echo '/path/to/worktree' > ~/.config/spoke/smoke-target
 ```
 
+**Every smoke-ready surface must be added to the launcher registry**
+(`~/.config/spoke/launch_targets.json`) with a descriptive label and selected
+as the active target. The registry is the primary launch surface — file-based
+targets (`dev-target`, `smoke-target`) are secondary. If a surface isn't in
+the registry, the user can't reach it from the menubar, and it's effectively
+not smoke-ready regardless of what the file-based targets say.
+
 The user triggers the smoke Automator hotkey themselves. Do not kill the
 running process or relaunch — `launch-smoke.sh` handles that.
 
