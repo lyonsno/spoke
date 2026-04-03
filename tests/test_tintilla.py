@@ -40,3 +40,19 @@ class TestLayerVisibilityState:
 
         assert state.is_visible(SCREEN_GLOW_CORE_LAYER_ID) is True
         assert state.is_visible(SCREEN_VIGNETTE_TAIL_LAYER_ID) is True
+
+
+class TestTintillaPanelController:
+    def test_show_activates_app_and_brings_panel_forward(self, mock_pyobjc):
+        import spoke.tintilla as tintilla_module
+        from spoke.tintilla import LayerVisibilityState, TintillaPanelController
+
+        controller = TintillaPanelController.alloc().initWithState_(LayerVisibilityState())
+        panel = MagicMock()
+        controller._panel = panel
+        controller._refresh_controls = MagicMock()
+
+        controller.show()
+
+        tintilla_module.NSApp.activateIgnoringOtherApps_.assert_called_once_with(True)
+        panel.makeKeyAndOrderFront_.assert_called_once_with(None)

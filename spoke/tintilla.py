@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 import objc
 from AppKit import (
+    NSApp,
     NSButton,
     NSControlStateValueOff,
     NSControlStateValueOn,
@@ -119,6 +120,12 @@ class TintillaPanelController(NSObject):
         self._panel.setTitle_("Tintilla Panel")
         self._panel.setFloatingPanel_(True)
         self._panel.setLevel_(NSFloatingWindowLevel)
+        if hasattr(self._panel, "setReleasedWhenClosed_"):
+            self._panel.setReleasedWhenClosed_(False)
+        if hasattr(self._panel, "setHidesOnDeactivate_"):
+            self._panel.setHidesOnDeactivate_(False)
+        if hasattr(self._panel, "setBecomesKeyOnlyIfNeeded_"):
+            self._panel.setBecomesKeyOnlyIfNeeded_(False)
         self._panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
@@ -155,7 +162,12 @@ class TintillaPanelController(NSObject):
     def show(self) -> None:
         self.setup()
         self._refresh_controls()
-        self._panel.orderFrontRegardless()
+        if NSApp is not None and hasattr(NSApp, "activateIgnoringOtherApps_"):
+            NSApp.activateIgnoringOtherApps_(True)
+        if hasattr(self._panel, "makeKeyAndOrderFront_"):
+            self._panel.makeKeyAndOrderFront_(None)
+        else:
+            self._panel.orderFrontRegardless()
 
     def _refresh_controls(self) -> None:
         for index, (layer_id, _label) in enumerate(LAYER_SPECS):
