@@ -1,3 +1,4 @@
+import numpy as np
 """Tests for SpokeAppDelegate orchestration and error paths.
 
 Tests the wiring between layers: hold callbacks, transcription lifecycle,
@@ -29,6 +30,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_active = False
     delegate._preview_thread = None
     delegate._preview_client = MagicMock()
+    delegate._on_audio_segment = MagicMock()
     delegate._local_mode = False
     delegate._record_start_time = 0.0
     delegate._cap_fired = False
@@ -3252,23 +3254,32 @@ class TestVADPreviewGating:
         d._preview_active = True
         d._capture = MagicMock()
         d._capture.get_buffer.return_value = b"wav"
+        d._capture.get_new_frames.return_value = np.zeros(1024, dtype=np.float32)
+        d._current_preview_frames = []
         d._preview_client = MagicMock()
         
-        # Simulate silence
-        d._is_speech = False
-        d._force_preview_update = False
+        # 1. Start in speech (e.g. grace period)
+        d._is_speech = True
+        
+        # 2. Transition to silence via real callback
+        mock_bool_num = MagicMock()
+        mock_bool_num.boolValue.return_value = False
+        d.updateVadState_(mock_bool_num)
+        
+        assert d._is_speech is False
+        assert d._force_preview_update is True # Forced update on transition
         
         sleep_count = [0]
         def _sleep(*args):
             sleep_count[0] += 1
-            if sleep_count[0] > 1:
+            if sleep_count[0] > 2:
                 d._preview_active = False
 
         with patch.object(main_module.time, "sleep", side_effect=_sleep):
             d._preview_loop_batch()
 
-        # Should not have called transcribe because of silence
-        d._preview_client.transcribe.assert_not_called()
+        # Should have called transcribe exactly once (the forced update on transition)
+        d._preview_client.transcribe.assert_called_once()
 
     def test_preview_loop_batch_forces_update_on_silence_transition(
         self, main_module, monkeypatch
@@ -3279,6 +3290,8 @@ class TestVADPreviewGating:
         d._preview_active = True
         d._capture = MagicMock()
         d._capture.get_buffer.return_value = b"wav"
+        d._capture.get_new_frames.return_value = np.zeros(1024, dtype=np.float32)
+        d._current_preview_frames = []
         d._preview_client = MagicMock()
         
         # Simulate transition to silence (force update)
@@ -3288,7 +3301,7 @@ class TestVADPreviewGating:
         sleep_count = [0]
         def _sleep(*args):
             sleep_count[0] += 1
-            if sleep_count[0] > 1:
+            if sleep_count[0] > 2:
                 d._preview_active = False
 
         with patch.object(main_module.time, "sleep", side_effect=_sleep):
@@ -3306,7 +3319,8 @@ class TestVADPreviewGating:
         d._preview_session_token = 1
         d._preview_active = True
         d._capture = MagicMock()
-        d._capture.get_new_frames.return_value = MagicMock(size=1024)
+        d._capture.get_new_frames.return_value = np.zeros(1024, dtype=np.float32)
+        d._current_preview_frames = []
         d._preview_client = MagicMock()
         
         d._is_speech = False
@@ -3315,10 +3329,32 @@ class TestVADPreviewGating:
         sleep_count = [0]
         def _sleep(*args):
             sleep_count[0] += 1
-            if sleep_count[0] > 1:
+            if sleep_count[0] > 2:
                 d._preview_active = False
 
         with patch.object(main_module.time, "sleep", side_effect=_sleep):
             d._preview_loop_streaming()
 
         d._preview_client.feed.assert_not_called()
+
+    def test_hold_start_wires_segment_callback(self, main_module, monkeypatch):
+        """AudioCapture should be started with the segment_callback for Phase 5."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._on_hold_start()
+        
+        args, kwargs = d._capture.start.call_args
+        assert "segment_callback" in kwargs
+        assert kwargs["segment_callback"] == d._on_audio_segment
+
+    def test_update_vad_state_updates_menubar(self, main_module, monkeypatch):
+        """updateVadState_ should convert NSNumber and update the menubar."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._menubar = MagicMock()
+        d._capture.is_recording = True
+        
+        mock_bool = MagicMock()
+        mock_bool.boolValue.return_value = True
+        
+        d.updateVadState_(mock_bool)
+        
+        d._menubar.set_vad_state.assert_called_with(True, True)

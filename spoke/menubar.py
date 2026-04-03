@@ -142,7 +142,8 @@ class MenuBarIcon(NSObject):
             button.setImage_(self._idle_image)
             return
 
-        from AppKit import NSColor, NSImage, NSSize, NSRect, NSCompositeSourceAtop, NSImageNameStatusAvailable, NSImageNameStatusPartiallyAvailable
+        from AppKit import NSColor, NSImage, NSCompositeSourceAtop
+        from Foundation import NSSize, NSRect
         
         # If contentTintColor makes it disappear (maybe macOS version issue), 
         # let's just use different built-in SF symbols or images that have those colors.
@@ -152,12 +153,12 @@ class MenuBarIcon(NSObject):
         if base_img is None:
             return
             
-        # Cornflower blue matching distance field ridge: RGB(0.392, 0.584, 0.929)
-        # Silence: 50% brightness of that color: RGB(0.196, 0.292, 0.4645)
+        # Cornflower blue (muted): RGB(0.45, 0.55, 0.7) 
+        # Silence (dimmed): RGB(0.22, 0.27, 0.35)
         if is_speech:
-            color = NSColor.colorWithRed_green_blue_alpha_(0.392, 0.584, 0.929, 1.0)
+            color = NSColor.colorWithRed_green_blue_alpha_(0.45, 0.55, 0.7, 1.0)
         else:
-            color = NSColor.colorWithRed_green_blue_alpha_(0.196, 0.292, 0.4645, 1.0)
+            color = NSColor.colorWithRed_green_blue_alpha_(0.22, 0.27, 0.35, 1.0)
         
         # Create a new tinted image
         tinted = base_img.copy()

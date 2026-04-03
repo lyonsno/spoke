@@ -607,6 +607,7 @@ class TranscriptionOverlay(NSObject):
 
     def set_text(self, text: str) -> None:
         """Update the target text — typewriter effect types toward it."""
+        # logger.info(f"Overlay set_text: len={len(text)} visible={self._visible}")
         if self._text_view is None or not self._visible:
             return
 

@@ -339,22 +339,66 @@ class TestVADSlicing:
         cap._stream = mock_sd.InputStream.return_value
         cap._stream.active = True
         
+        # 1. Leading silence (dropped)
         silence_chunk = np.zeros((1024, 1), dtype=np.float32)
         for _ in range(50):
             cap._audio_callback(silence_chunk, 1024, None, 0)
             
+        # 2. Speech (captured)
         speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
-        for _ in range(10):
+        num_speech = 10
+        for _ in range(num_speech):
             cap._audio_callback(speech_chunk, 1024, None, 0)
             
-        for _ in range(20):  # Long silence to force slice
+        # 3. Trailing silence (some captured as pad, rest dropped)
+        for _ in range(20):
             cap._audio_callback(silence_chunk, 1024, None, 0)
             
         wav_bytes = cap.stop()
         
-        # Check the length of the WAV to ensure silence was stripped
-        # 10 speech chunks + PRE_SPEECH_MARGIN (6) = 16 chunks total
-        # 16 * 1024 floats = 16384 samples. Each sample is 2 bytes (int16).
-        # 16384 * 2 = 32768 bytes of audio data + 44 bytes header = 32812 bytes
-        # The test verifies we didn't include the 70 frames of pure silence.
-        assert len(wav_bytes) == 51244
+        # Calculation:
+        # Chunks = num_speech + PRE_SPEECH_MARGIN (6) + MIN_SILENCE_FRAMES (12)
+        # Total = 10 + 6 + 12 = 28
+        from spoke.capture import MIN_SPEECH_FRAMES, MIN_SILENCE_FRAMES
+        # Chunks = chunks that triggered speech (MIN_SPEECH_FRAMES) + num_speech + trailing (MIN_SILENCE_FRAMES)
+        expected_chunks = MIN_SPEECH_FRAMES + num_speech + MIN_SILENCE_FRAMES
+        expected_len = (expected_chunks * 1024 * 2) + 44
+        
+        assert len(wav_bytes) == expected_len
+
+    @patch("spoke.capture.sd")
+    def test_vad_grace_period_enforcement(self, mock_sd):
+        """VAD should remain in speech state for the full grace period even if silent."""
+        from spoke.capture import VAD_GRACE_PERIOD_SECS, SAMPLE_RATE, BLOCKSIZE
+        cap = AudioCapture()
+        cap.start()
+        
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        # Feed silence for half the grace period
+        half_grace = int((VAD_GRACE_PERIOD_SECS / 2) * SAMPLE_RATE / BLOCKSIZE)
+        for _ in range(half_grace):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+            
+        assert cap._is_speech, "Should remain in speech state during grace period"
+        assert cap._grace_chunks_remaining > 0
+
+    @patch("spoke.capture.sd")
+    def test_capture_buffer_concurrency_non_starvation(self, mock_sd):
+        """get_new_frames() should not prevent get_buffer() from returning the full history."""
+        cap = AudioCapture()
+        cap.start()
+        
+        chunk = np.ones((1024, 1), dtype=np.float32)
+        cap._audio_callback(chunk, 1024, None, 0)
+        
+        # 1. Partial read
+        new = cap.get_new_frames()
+        assert len(new) == 1024
+        
+        # 2. Add more data
+        cap._audio_callback(chunk * 2, 1024, None, 0)
+        
+        # 3. Full buffer read - should return BOTH chunks (2048 samples)
+        # If this returns only the second chunk, it's a starvation bug.
+        full_wav = cap.get_buffer()
+        assert len(full_wav) == (2048 * 2) + 44
