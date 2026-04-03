@@ -168,3 +168,18 @@ def test_pass_composition_matches_source_over_alpha_math(mock_pyobjc):
         assert rgba[0, 0, 2] == pytest.approx(0.5)
     finally:
         sys.modules.pop("spoke.glow", None)
+
+
+def test_split_precision_compare_uses_legacy_left_and_current_right(mock_pyobjc):
+    """Split-compare payload should show the old path on the left half and the new path on the right."""
+    sys.modules.pop("spoke.glow", None)
+    mod = importlib.import_module("spoke.glow")
+    try:
+        legacy = np.array([[[1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3], [4, 4, 4, 4]]], dtype=np.uint8)
+        current = np.array([[[11, 11, 11, 11], [12, 12, 12, 12], [13, 13, 13, 13], [14, 14, 14, 14]]], dtype=np.uint8)
+
+        split = mod._split_precision_compare_encoded(legacy, current)
+
+        assert split.tolist() == [[[1, 1, 1, 1], [2, 2, 2, 2], [13, 13, 13, 13], [14, 14, 14, 14]]]
+    finally:
+        sys.modules.pop("spoke.glow", None)

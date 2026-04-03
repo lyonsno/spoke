@@ -107,6 +107,7 @@ _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 4.575  # back to original
+_SDF_PRECISION_SPLIT = os.environ.get("SPOKE_SDF_PRECISION_SPLIT", "0") == "1"
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -452,7 +453,53 @@ def _encode_premultiplied_rgba_u8(rgba: "np.ndarray") -> "np.ndarray":
     return np.clip(np.rint(rgba * 255.0), 0.0, 255.0).astype(np.uint8)
 
 
-def _premultiplied_rgba_to_image(rgba):
+def _legacy_encode_premultiplied_rgba_u8(rgba: "np.ndarray") -> "np.ndarray":
+    """Legacy output boundary: floor during uint8 conversion."""
+    import numpy as np
+
+    return np.clip(rgba * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+def _split_precision_compare_encoded(
+    legacy_encoded: "np.ndarray",
+    current_encoded: "np.ndarray",
+) -> "np.ndarray":
+    """Show legacy on the left half and current precision path on the right half."""
+    encoded = current_encoded.copy()
+    midpoint = encoded.shape[1] // 2
+    encoded[:, :midpoint, :] = legacy_encoded[:, :midpoint, :]
+    return encoded
+
+
+def _compose_legacy_quantized_rgba_fields(fields: list[dict]) -> "np.ndarray":
+    """Recreate the old path: quantize each pass before source-over stacking."""
+    import numpy as np
+
+    if not fields:
+        return np.zeros((0, 0, 4), dtype=np.float32)
+
+    shape = fields[0]["alpha"].shape
+    rgba = np.zeros(shape + (4,), dtype=np.float32)
+    for field in fields:
+        alpha = np.clip(field["alpha"] * field.get("opacity", 1.0), 0.0, 1.0).astype(
+            np.float32, copy=False
+        )
+        src = np.empty(shape + (4,), dtype=np.float32)
+        rgb = field["rgb"]
+        src[..., 0] = rgb[0] * alpha
+        src[..., 1] = rgb[1] * alpha
+        src[..., 2] = rgb[2] * alpha
+        src[..., 3] = alpha
+        src = _legacy_encode_premultiplied_rgba_u8(src).astype(np.float32) / 255.0
+
+        one_minus_src_alpha = 1.0 - src[..., 3:4]
+        rgba[..., :3] = src[..., :3] + rgba[..., :3] * one_minus_src_alpha
+        rgba[..., 3] = src[..., 3] + rgba[..., 3] * (1.0 - src[..., 3])
+
+    return rgba
+
+
+def _premultiplied_rgba_to_image(rgba, legacy_rgba=None):
     """Convert a float premultiplied RGBA field into a CGImage."""
     from Quartz import (
         CGColorSpaceCreateDeviceRGB,
@@ -463,6 +510,9 @@ def _premultiplied_rgba_to_image(rgba):
     )
 
     encoded = _encode_premultiplied_rgba_u8(rgba)
+    if _SDF_PRECISION_SPLIT and legacy_rgba is not None:
+        legacy_encoded = _legacy_encode_premultiplied_rgba_u8(legacy_rgba)
+        encoded = _split_precision_compare_encoded(legacy_encoded, encoded)
     payload = NSData.dataWithBytes_length_(encoded.tobytes(), int(encoded.nbytes))
     provider = CGDataProviderCreateWithCFData(payload)
     image = CGImageCreate(
@@ -613,7 +663,10 @@ def _composited_distance_field_image(
         rgb, opacity = pass_builder(spec)
         rgba_fields.append({"alpha": alpha, "rgb": rgb, "opacity": opacity})
     rgba = _compose_premultiplied_rgba_fields(rgba_fields)
-    return _premultiplied_rgba_to_image(rgba)
+    legacy_rgba = None
+    if _SDF_PRECISION_SPLIT:
+        legacy_rgba = _compose_legacy_quantized_rgba_fields(rgba_fields)
+    return _premultiplied_rgba_to_image(rgba, legacy_rgba=legacy_rgba)
 
 
 class GlowOverlay(NSObject):

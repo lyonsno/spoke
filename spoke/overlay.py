@@ -287,7 +287,10 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     rgba[..., 1] = (g / 255.0) * alpha
     rgba[..., 2] = (b / 255.0) * alpha
     rgba[..., 3] = alpha
-    return _premultiplied_rgba_to_image(rgba)
+    return _premultiplied_rgba_to_image(
+        rgba,
+        legacy_rgba=rgba,
+    )
 
 
 def _build_ridge_image(field_width: float, field_height: float,
