@@ -1,14 +1,27 @@
 """Shared fixtures for spoke tests.
 
 Stubs out PyObjC/Quartz/AppKit so tests run without macOS GUI runtime.
+
+SAFETY: Tests must never touch the production lock file or heartbeat file.
+The env vars below redirect spoke to temp paths so that running pytest
+cannot kill a live spoke instance via the single-instance guard.
 """
 
 import importlib
+import os
 import sys
+import tempfile
 import types
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+# ── Test isolation: redirect runtime state files to temp paths ──
+# These must be set before any spoke module is imported, because the
+# paths are evaluated at import time as module-level constants.
+_test_runtime_dir = tempfile.mkdtemp(prefix="spoke-test-")
+os.environ["SPOKE_LOCK_PATH"] = os.path.join(_test_runtime_dir, ".spoke.lock")
+os.environ["SPOKE_HEARTBEAT_PATH"] = os.path.join(_test_runtime_dir, ".spoke-heartbeat.json")
 
 
 def _make_fake_quartz():

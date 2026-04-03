@@ -21,7 +21,10 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
-HEARTBEAT_PATH = os.path.expanduser("~/Library/Logs/.spoke-heartbeat.json")
+HEARTBEAT_PATH = os.environ.get(
+    "SPOKE_HEARTBEAT_PATH",
+    os.path.expanduser("~/Library/Logs/.spoke-heartbeat.json"),
+)
 HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_MODEL_TTL_S = 600.0  # 10 minutes
 STALE_THRESHOLD_S = 120.0  # 2 minutes without heartbeat = stale

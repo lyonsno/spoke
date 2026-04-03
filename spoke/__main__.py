@@ -58,6 +58,11 @@ from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S
 
 logger = logging.getLogger(__name__)
 
+_LOCK_PATH = os.environ.get(
+    "SPOKE_LOCK_PATH",
+    os.path.expanduser("~/Library/Logs/.spoke.lock"),
+)
+
 _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
@@ -3542,7 +3547,7 @@ def _acquire_instance_lock() -> None:
     import signal as sig
     import time
 
-    lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
+    lock_path = _LOCK_PATH
     current_pid = os.getpid()
     parent_pid = os.getppid()
     logger.info(
@@ -3625,7 +3630,7 @@ def main() -> None:
     def _handle_sigterm(signum, frame):
         lock_pid = "unavailable"
         try:
-            with open(os.path.expanduser("~/Library/Logs/.spoke.lock"), encoding="utf-8") as lock_file:
+            with open(_LOCK_PATH, encoding="utf-8") as lock_file:
                 lock_pid = lock_file.read().strip() or "empty"
         except OSError:
             pass
