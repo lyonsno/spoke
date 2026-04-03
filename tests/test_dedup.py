@@ -86,8 +86,17 @@ class TestIsHallucination:
     def test_whitespace_only(self):
         assert is_hallucination("   ") is True
 
+    def test_ascii_ellipsis_only_is_hallucination(self):
+        assert is_hallucination("...") is True
+
+    def test_unicode_ellipsis_only_is_hallucination(self):
+        assert is_hallucination("…") is True
+
     def test_real_text_is_not_hallucination(self):
         assert is_hallucination("I want to thank you for your help.") is False
+
+    def test_ellipsis_inside_real_text_is_not_hallucination(self):
+        assert is_hallucination("Wait... I have more to say.") is False
 
     def test_thank_you_in_longer_text(self):
         assert is_hallucination("Thank you for coming today.") is False

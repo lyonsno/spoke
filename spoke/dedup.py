@@ -109,6 +109,7 @@ _ONTOLOGY_DISPLAY_PATTERNS = tuple(
     re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", flags=re.IGNORECASE)
     for term in _ONTOLOGY_DISPLAY_FORMS
 )
+_ELLIPSIS_ONLY_RE = re.compile(r"[.\u2026\s]+")
 
 
 def _match_initial_case(replacement: str, observed: str) -> str:
@@ -217,7 +218,10 @@ _SILENCE_HALLUCINATIONS = {
 
 def is_hallucination(text: str) -> bool:
     """Return True if the text is a known Whisper silence hallucination."""
-    return text.strip().lower() in _SILENCE_HALLUCINATIONS
+    stripped = text.strip()
+    if stripped.lower() in _SILENCE_HALLUCINATIONS:
+        return True
+    return bool(stripped) and bool(_ELLIPSIS_ONLY_RE.fullmatch(stripped))
 
 
 def repair_ontology_terms(text: str) -> str:

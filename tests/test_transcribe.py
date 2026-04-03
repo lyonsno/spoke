@@ -297,3 +297,14 @@ class TestTranscriptionFiltering:
         client._client = mock_client
 
         assert client.transcribe(b"wav") == ""
+
+    def test_ellipsis_only_is_hallucination(self):
+        """Lone ellipsis output should be dropped as dictation spam."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "…"}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == ""

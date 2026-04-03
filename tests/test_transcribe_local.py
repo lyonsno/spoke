@@ -451,3 +451,13 @@ class TestLocalTranscriptionFiltering:
         client = LocalTranscriptionClient()
 
         assert client.transcribe(_make_wav_bytes()) == ""
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_ellipsis_only_is_hallucination(self, mock_mlx_whisper):
+        """Lone ellipsis output should be treated as hallucination."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "..."}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == ""
