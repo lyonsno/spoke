@@ -423,69 +423,6 @@ def _alpha_field_to_image(alpha):
     return image, payload
 
 
-def _compose_premultiplied_rgba_fields(fields: list[dict]) -> "np.ndarray":
-    """Compose premultiplied RGBA passes in float, source-over, before encoding."""
-    import numpy as np
-
-    if not fields:
-        return np.zeros((0, 0, 4), dtype=np.float32)
-
-    shape = fields[0]["alpha"].shape
-    rgba = np.zeros(shape + (4,), dtype=np.float32)
-    for field in fields:
-        alpha = np.clip(field["alpha"] * field.get("opacity", 1.0), 0.0, 1.0).astype(
-            np.float32, copy=False
-        )
-        src = np.empty(shape + (4,), dtype=np.float32)
-        rgb = field["rgb"]
-        src[..., 0] = rgb[0] * alpha
-        src[..., 1] = rgb[1] * alpha
-        src[..., 2] = rgb[2] * alpha
-        src[..., 3] = alpha
-
-        one_minus_src_alpha = 1.0 - src[..., 3:4]
-        rgba[..., :3] = src[..., :3] + rgba[..., :3] * one_minus_src_alpha
-        rgba[..., 3] = src[..., 3] + rgba[..., 3] * (1.0 - src[..., 3])
-
-    return rgba
-
-
-def _encode_premultiplied_rgba_u8(rgba: "np.ndarray") -> "np.ndarray":
-    """Final output boundary: quantize a float premultiplied RGBA field once."""
-    import numpy as np
-
-    return np.clip(np.rint(rgba * 255.0), 0.0, 255.0).astype(np.uint8)
-
-
-def _premultiplied_rgba_to_image(rgba):
-    """Convert a float premultiplied RGBA field into a CGImage."""
-    from Quartz import (
-        CGColorSpaceCreateDeviceRGB,
-        CGDataProviderCreateWithCFData,
-        CGImageCreate,
-        kCGImageAlphaPremultipliedLast,
-        kCGRenderingIntentDefault,
-    )
-
-    encoded = _encode_premultiplied_rgba_u8(rgba)
-    payload = NSData.dataWithBytes_length_(encoded.tobytes(), int(encoded.nbytes))
-    provider = CGDataProviderCreateWithCFData(payload)
-    image = CGImageCreate(
-        rgba.shape[1],
-        rgba.shape[0],
-        8,
-        32,
-        rgba.shape[1] * 4,
-        CGColorSpaceCreateDeviceRGB(),
-        kCGImageAlphaPremultipliedLast,
-        provider,
-        None,
-        False,
-        kCGRenderingIntentDefault,
-    )
-    return image, payload
-
-
 def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
     signed_distance = _display_signed_distance_field(geometry)
     masks = []
@@ -575,15 +512,6 @@ def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSCol
     }
 
 
-def _glow_role_rgbs(base_color: tuple[float, float, float]) -> dict[str, tuple[float, float, float]]:
-    inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
-    return {
-        "inner": inner_rgb,
-        "middle": middle_rgb,
-        "outer": outer_rgb,
-    }
-
-
 def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> NSColor:
     """Build a tinted subtractive vignette color for a single pass."""
     r, g, b = base_color
@@ -594,31 +522,6 @@ def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> 
         b * scale,
         spec["alpha"],
     )
-
-
-def _vignette_pass_rgb(base_color: tuple[float, float, float], spec: dict) -> tuple[float, float, float]:
-    r, g, b = base_color
-    scale = spec["color_scale"]
-    return (r * scale, g * scale, b * scale)
-
-
-def _composited_distance_field_image(
-    geometry: dict,
-    specs: list[dict],
-    pass_builder,
-):
-    signed_distance = _display_signed_distance_field(geometry)
-    rgba_fields = []
-    for spec in specs:
-        alpha = _distance_field_alpha(
-            signed_distance,
-            spec["falloff"] * geometry["scale"],
-            spec["power"],
-        )
-        rgb, opacity = pass_builder(spec)
-        rgba_fields.append({"alpha": alpha, "rgb": rgb, "opacity": opacity})
-    rgba = _compose_premultiplied_rgba_fields(rgba_fields)
-    return _premultiplied_rgba_to_image(rgba)
 
 
 class GlowOverlay(NSObject):
@@ -680,6 +583,8 @@ class GlowOverlay(NSObject):
         geometry = _display_shape_geometry(self._screen, w, h, mask_scale)
         geometry["scale"] = mask_scale
 
+        glow_colors = _glow_role_colors(_GLOW_COLOR)
+
         # ── Optional screen dim: subtle dark backdrop for glow contrast ──
         self._dim_layer = None
         if _DIM_SCREEN:
@@ -696,22 +601,47 @@ class GlowOverlay(NSObject):
         self._glow_layer = CALayer.alloc().init()
         self._glow_layer.setFrame_(((0, 0), (w, h)))
         self._glow_layer.setOpacity_(0.0)
-        self._glow_content_layer = CALayer.alloc().init()
-        self._glow_content_layer.setFrame_(((0, 0), (w, h)))
-        self._glow_layer.addSublayer_(self._glow_content_layer)
 
-        # Procedural additive passes: resolve the stack in float, then encode once.
+        # Procedural additive passes: one continuous field, different falloff curves.
+        glow_pass_layers = []
         self._mask_payloads = []
-        self._glow_geometry = geometry
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
+            spec = entry["spec"]
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((0, 0), (w, h)))
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(entry["image"])
+            mask_layer.setContentsScale_(mask_scale)
+            layer.setMask_(mask_layer)
+            self._glow_layer.addSublayer_(layer)
+            self._mask_payloads.append(entry["payload"])
+            glow_pass_layers.append({"layer": layer, "spec": spec})
+
+        self._glow_pass_layers = glow_pass_layers
+        self._shadow_shape = glow_pass_layers[-1]["layer"] if glow_pass_layers else None
 
         # ── Subtractive vignette: darkened colored edges for light backgrounds ──
         # Same distance-field geometry as the additive glow, with tinted falloff.
         self._vignette_layer = CALayer.alloc().init()
         self._vignette_layer.setFrame_(((0, 0), (w, h)))
         self._vignette_layer.setOpacity_(0.0)
-        self._vignette_content_layer = CALayer.alloc().init()
-        self._vignette_content_layer.setFrame_(((0, 0), (w, h)))
-        self._vignette_layer.addSublayer_(self._vignette_content_layer)
+
+        vignette_pass_layers = []
+        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs()):
+            spec = entry["spec"]
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((0, 0), (w, h)))
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(entry["image"])
+            mask_layer.setContentsScale_(mask_scale)
+            layer.setMask_(mask_layer)
+            self._vignette_layer.addSublayer_(layer)
+            self._mask_payloads.append(entry["payload"])
+            vignette_pass_layers.append({"layer": layer, "spec": spec})
+
+        self._vignette_pass_layers = vignette_pass_layers
         self._apply_glow_color(_GLOW_COLOR)
         content.layer().addSublayer_(self._glow_layer)
         content.layer().addSublayer_(self._vignette_layer)
@@ -719,25 +649,22 @@ class GlowOverlay(NSObject):
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
     def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
-        """Push the current glow color through the composited glow/vignette images."""
-        if hasattr(self, "_glow_content_layer") and getattr(self, "_glow_geometry", None):
-            glow_rgbs = _glow_role_rgbs(base_color)
-            glow_image, glow_payload = _composited_distance_field_image(
-                self._glow_geometry,
-                _continuous_glow_pass_specs(),
-                lambda spec: (glow_rgbs[spec["fill_role"]], spec["fill_alpha"]),
-            )
-            self._glow_payload = glow_payload
-            self._glow_content_layer.setContents_(glow_image)
+        """Push the current glow color through the procedural glow/vignette passes."""
+        glow_colors = _glow_role_colors(base_color)
+        if hasattr(self, "_glow_pass_layers"):
+            for entry in self._glow_pass_layers:
+                layer = entry["layer"]
+                spec = entry["spec"]
+                fill_color = glow_colors[spec["fill_role"]]
+                layer.setBackgroundColor_(
+                    fill_color.colorWithAlphaComponent_(spec["fill_alpha"]).CGColor()
+                )
 
-        if hasattr(self, "_vignette_content_layer") and getattr(self, "_glow_geometry", None):
-            vignette_image, vignette_payload = _composited_distance_field_image(
-                self._glow_geometry,
-                _continuous_vignette_pass_specs(),
-                lambda spec: (_vignette_pass_rgb(base_color, spec), spec["alpha"]),
-            )
-            self._vignette_payload = vignette_payload
-            self._vignette_content_layer.setContents_(vignette_image)
+        if hasattr(self, "_vignette_pass_layers"):
+            for entry in self._vignette_pass_layers:
+                layer = entry["layer"]
+                spec = entry["spec"]
+                layer.setBackgroundColor_(_vignette_pass_color(base_color, spec).CGColor())
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""

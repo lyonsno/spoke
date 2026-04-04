@@ -4,7 +4,6 @@ import importlib
 import sys
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 
@@ -124,47 +123,5 @@ def test_display_shape_geometry_falls_back_for_unknown_display(mock_pyobjc):
         assert geometry["top_radius"] == pytest.approx(mod._CORNER_RADIUS_TOP_DEFAULT * 2.0)
         assert geometry["bottom_radius"] == pytest.approx(mod._CORNER_RADIUS_BOTTOM_DEFAULT * 2.0)
         assert geometry["notch"] is None
-    finally:
-        sys.modules.pop("spoke.glow", None)
-
-
-def test_float_pass_composition_preserves_subquantum_alpha_until_final_encode(
-    mock_pyobjc,
-):
-    """Two faint passes should survive if we compose in float before the final 8-bit encode."""
-    sys.modules.pop("spoke.glow", None)
-    mod = importlib.import_module("spoke.glow")
-    try:
-        alpha = np.full((1, 1), 0.49 / 255.0, dtype=np.float32)
-        rgba = mod._compose_premultiplied_rgba_fields(
-            [
-                {"alpha": alpha, "rgb": (1.0, 1.0, 1.0), "opacity": 1.0},
-                {"alpha": alpha, "rgb": (1.0, 1.0, 1.0), "opacity": 1.0},
-            ]
-        )
-        encoded = mod._encode_premultiplied_rgba_u8(rgba)
-
-        assert encoded[0, 0, 3] == 1
-        assert encoded[0, 0, 0] == 1
-    finally:
-        sys.modules.pop("spoke.glow", None)
-
-
-def test_pass_composition_matches_source_over_alpha_math(mock_pyobjc):
-    """Layer stacking should be resolved in float with standard premultiplied source-over."""
-    sys.modules.pop("spoke.glow", None)
-    mod = importlib.import_module("spoke.glow")
-    try:
-        rgba = mod._compose_premultiplied_rgba_fields(
-            [
-                {"alpha": np.full((1, 1), 0.25, dtype=np.float32), "rgb": (1.0, 0.0, 0.0), "opacity": 1.0},
-                {"alpha": np.full((1, 1), 0.5, dtype=np.float32), "rgb": (0.0, 0.0, 1.0), "opacity": 1.0},
-            ]
-        )
-
-        assert rgba[0, 0, 3] == pytest.approx(0.625)
-        assert rgba[0, 0, 0] == pytest.approx(0.125)
-        assert rgba[0, 0, 1] == pytest.approx(0.0)
-        assert rgba[0, 0, 2] == pytest.approx(0.5)
     finally:
         sys.modules.pop("spoke.glow", None)
