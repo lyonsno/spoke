@@ -75,6 +75,8 @@ _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
+_DEFAULT_CLOUD_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+_DEFAULT_CLOUD_MODEL = "gemini-2.5-flash"
 _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 
 
@@ -385,8 +387,7 @@ class SpokeAppDelegate(NSObject):
                 self._command_model_id = (
                     os.environ.get("SPOKE_COMMAND_MODEL")
                     or self._load_cloud_model_preference()
-                    or self._load_command_model_preference()
-                    or _DEFAULT_COMMAND_MODEL
+                    or _DEFAULT_CLOUD_MODEL
                 )
                 cloud_api_key = (
                     os.environ.get("SPOKE_COMMAND_API_KEY")
@@ -3124,12 +3125,8 @@ class SpokeAppDelegate(NSObject):
                 "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
             )
         if pref_backend == "cloud":
-            cloud_url = self._load_cloud_url_preference()
-            if cloud_url:
-                return "cloud", cloud_url
-            logger.warning(
-                "Saved assistant backend is cloud but no cloud URL is configured; falling back to local OMLX"
-            )
+            cloud_url = self._load_cloud_url_preference() or _DEFAULT_CLOUD_URL
+            return "cloud", cloud_url
         return "local", _DEFAULT_COMMAND_URL
 
     def _build_tts_client(self):
@@ -3589,9 +3586,9 @@ class SpokeAppDelegate(NSObject):
         return self._normalize_command_url(value)
 
     def _configure_cloud_endpoint(self) -> None:
-        current_url = self._load_cloud_url_preference() or ""
+        current_url = self._load_cloud_url_preference() or _DEFAULT_CLOUD_URL
         current_key = self._load_cloud_api_key_preference() or ""
-        current_model = self._load_cloud_model_preference() or ""
+        current_model = self._load_cloud_model_preference() or _DEFAULT_CLOUD_MODEL
 
         alert = NSAlert.new()
         alert.setMessageText_("Cloud Assistant Endpoint")
