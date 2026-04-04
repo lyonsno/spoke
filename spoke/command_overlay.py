@@ -476,6 +476,7 @@ class CommandOverlay(NSObject):
         calling this once starts the wind-up or snap-back.
         """
         self._cancel_spring_target = max(0.0, min(1.0, target))
+        logger.info("set_cancel_spring(%.2f) — current spring=%.3f", target, self._cancel_spring)
 
     def set_utterance(self, text: str) -> None:
         """Show the user's utterance in the text view at reduced opacity."""
