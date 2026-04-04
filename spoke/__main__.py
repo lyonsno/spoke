@@ -3471,6 +3471,36 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Assistant sidecar URL saved")
 
+    def _run_alert_modal(self, alert) -> int:
+        """Run an NSAlert while the event tap is suspended and paste works."""
+        from AppKit import NSMenu, NSMenuItem, NSApp
+        from Quartz import CGEventTapEnable
+
+        # Suspend the event tap so shift/space/enter don't interfere
+        tap = getattr(self._detector, "_tap", None)
+        if tap is not None:
+            CGEventTapEnable(tap, False)
+
+        # Install a temporary Edit menu so Cmd+V/A/C/X work in text fields
+        saved_menu = NSApp.mainMenu()
+        edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+        edit_menu.addItemWithTitle_action_keyEquivalent_("Cut", "cut:", "x")
+        edit_menu.addItemWithTitle_action_keyEquivalent_("Copy", "copy:", "c")
+        edit_menu.addItemWithTitle_action_keyEquivalent_("Paste", "paste:", "v")
+        edit_menu.addItemWithTitle_action_keyEquivalent_("Select All", "selectAll:", "a")
+        menu_bar = NSMenu.alloc().initWithTitle_("")
+        edit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Edit", None, "")
+        edit_item.setSubmenu_(edit_menu)
+        menu_bar.addItem_(edit_item)
+        NSApp.setMainMenu_(menu_bar)
+
+        try:
+            return alert.runModal()
+        finally:
+            NSApp.setMainMenu_(saved_menu)
+            if tap is not None:
+                CGEventTapEnable(tap, True)
+
     def _prompt_for_command_sidecar_url(self, current_url: str) -> str | None:
         alert = NSAlert.new()
         alert.setMessageText_("Assistant Sidecar URL")
@@ -3482,7 +3512,7 @@ class SpokeAppDelegate(NSObject):
         alert.setAccessoryView_(field)
         alert.addButtonWithTitle_("Save")
         alert.addButtonWithTitle_("Cancel")
-        response = alert.runModal()
+        response = self._run_alert_modal(alert)
         if response != 1000:
             return None
         value = field.stringValue()
@@ -3523,7 +3553,7 @@ class SpokeAppDelegate(NSObject):
         alert.setAccessoryView_(container)
         alert.addButtonWithTitle_("Save")
         alert.addButtonWithTitle_("Cancel")
-        response = alert.runModal()
+        response = self._run_alert_modal(alert)
         if response != 1000:
             return
 
