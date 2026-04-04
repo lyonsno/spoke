@@ -1206,6 +1206,21 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             elif toggle_command_overlay and self._command_client is not None:
+                # ── Panic switch: cancel active generation ──
+                # If the assistant is actively streaming (transcribing),
+                # the space+enter chord cancels generation instead of
+                # toggling overlay visibility.
+                if self._transcribing:
+                    logger.info(
+                        "Space+enter cancel chord — cancelling active generation "
+                        "(token %d)", self._transcription_token,
+                    )
+                    self._transcription_token += 1
+                    self._transcribing = False
+                    if self._menubar is not None:
+                        self._menubar.set_status_text("Cancelled")
+                    return
+
                 # Use command_overlay_active (our flag) not _visible (animation
                 # state) to avoid re-dismissing during the dismiss animation.
                 self._detector._command_overlay_just_dismissed = False
@@ -1896,6 +1911,7 @@ class SpokeAppDelegate(NSObject):
                     text,
                     tools=self._tool_schemas,
                     tool_executor=self._make_tool_executor(),
+                    cancel_check=lambda: token != self._transcription_token,
                 ):
                     if token != self._transcription_token:
                         stale_break = True
@@ -2040,6 +2056,7 @@ class SpokeAppDelegate(NSObject):
                 utterance,
                 tools=self._tool_schemas,
                 tool_executor=self._make_tool_executor(),
+                cancel_check=lambda: token != self._transcription_token,
             ):
                 if token != self._transcription_token:
                     stale_break = True

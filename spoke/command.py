@@ -173,11 +173,19 @@ class CommandClient:
         *,
         tools: list[dict] | None = None,
         tool_executor: Callable[..., str] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Generator[CommandStreamEvent, None, str]:
         """Send a command utterance and yield semantic stream events.
 
         Returns the full assembled response text when the stream ends.
         The response is automatically added to the ring buffer.
+
+        Parameters
+        ----------
+        cancel_check:
+            Optional callable returning True when the caller wants to
+            abort.  Checked at tool-call boundaries and between SSE
+            chunks.
 
         Events
         ------
@@ -191,8 +199,11 @@ class CommandClient:
         messages = self._build_messages(utterance)
         full_response = ""
 
-        # Allow up to 5 tool call round-trips to prevent infinite loops
-        max_tool_rounds = 5
+        # Safety cap on tool call round-trips.  With cancel_check wired
+        # up the user can bail out at any time, so this is just a backstop
+        # against genuinely infinite loops (e.g. model keeps retrying the
+        # same failing tool).
+        max_tool_rounds = 20
 
         for _round in range(max_tool_rounds + 1):
             if _round > 0:
@@ -241,6 +252,11 @@ class CommandClient:
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     for raw_line in resp:
+                        # Cancel check between SSE chunks
+                        if cancel_check is not None and cancel_check():
+                            logger.info("Cancel requested during SSE stream — breaking")
+                            resp.close()
+                            break
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line:
                             continue
@@ -311,12 +327,33 @@ class CommandClient:
                 logger.exception("Command stream error")
                 raise
 
-            # If the model called tools, execute them and loop
-            if (
-                finish_reason == "tool_calls"
-                and tool_call_acc.has_calls
+            # If the model called tools, execute them and loop.
+            # Use has_calls as the primary signal — some model servers
+            # (MLX, vLLM) return finish_reason="stop" even when the
+            # model emitted tool call deltas.
+            has_tool_calls = (
+                tool_call_acc.has_calls
                 and tool_executor is not None
-            ):
+            )
+            if has_tool_calls and finish_reason != "tool_calls":
+                logger.warning(
+                    "Model emitted tool call deltas but finish_reason=%r "
+                    "(expected 'tool_calls') — executing anyway",
+                    finish_reason,
+                )
+
+            # Cancel check at tool-call boundary — before executing tools
+            if has_tool_calls and cancel_check is not None and cancel_check():
+                logger.info(
+                    "Cancel requested at tool-call boundary (round %d) "
+                    "— returning accumulated content as final response",
+                    _round,
+                )
+                full_response = round_content
+                yield CommandStreamEvent(kind="assistant_final", text=full_response)
+                break
+
+            if has_tool_calls:
                 completed_calls = tool_call_acc.finish()
                 logger.info(
                     "Executing %d tool call(s): %s",
