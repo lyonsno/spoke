@@ -137,8 +137,22 @@ def _extract_ocr_blocks(
     return blocks
 
 
-def _run_ocr(cg_image, image_width: int, image_height: int, scene_ref: str):
+def _run_ocr(
+    cg_image,
+    image_width: int,
+    image_height: int,
+    scene_ref: str,
+    *,
+    accurate: bool = False,
+):
     """Run Vision OCR on a CGImage and return (ocr_text, ocr_blocks).
+
+    When *accurate* is True, uses VNRequestTextRecognitionLevelAccurate
+    with language correction enabled.  This is ~5× slower than Fast on
+    a full-res retina screen but dramatically more reliable — Fast mode
+    misreads common characters (r→p, n→fi, etc.) on terminal / dark-bg
+    content.  At half-resolution the Accurate path runs in ~450–500 ms
+    which is acceptable for post-paste verification.
 
     Returns ("", []) on any failure.
     """
@@ -146,6 +160,7 @@ def _run_ocr(cg_image, image_width: int, image_height: int, scene_ref: str):
         from Vision import (
             VNImageRequestHandler,
             VNRecognizeTextRequest,
+            VNRequestTextRecognitionLevelAccurate,
             VNRequestTextRecognitionLevelFast,
         )
 
@@ -153,11 +168,12 @@ def _run_ocr(cg_image, image_width: int, image_height: int, scene_ref: str):
             cg_image, None
         )
         request = VNRecognizeTextRequest.alloc().init()
-        # Fast level is critical for conversational latency (~50ms vs 60s+
-        # for Accurate on a full retina screen). Block-level bboxes and
-        # confidence are still available at Fast level.
-        request.setRecognitionLevel_(VNRequestTextRecognitionLevelFast)
-        request.setUsesLanguageCorrection_(False)
+        if accurate:
+            request.setRecognitionLevel_(VNRequestTextRecognitionLevelAccurate)
+            request.setUsesLanguageCorrection_(True)
+        else:
+            request.setRecognitionLevel_(VNRequestTextRecognitionLevelFast)
+            request.setUsesLanguageCorrection_(False)
 
         success, error = handler.performRequests_error_([request], None)
         if not success:
@@ -313,6 +329,43 @@ def _downsample_size(
         return (width, height)
 
     return (int(width * scale), int(height * scale))
+
+
+def _downsample_image(cg_image, scale: float = _DEFAULT_SCALE):
+    """Return a downsampled copy of *cg_image* using CoreGraphics.
+
+    If the image is already small (both dims below _MIN_DOWNSAMPLE_DIM),
+    returns the original unchanged.
+    """
+    from Quartz import (
+        CGBitmapContextCreate,
+        CGBitmapContextCreateImage,
+        CGContextDrawImage,
+        CGImageGetWidth,
+        CGImageGetHeight,
+        CGImageGetAlphaInfo,
+        CGImageGetColorSpace,
+        CGRectMake,
+        kCGImageAlphaPremultipliedLast,
+    )
+
+    src_w = CGImageGetWidth(cg_image)
+    src_h = CGImageGetHeight(cg_image)
+    dst_w, dst_h = _downsample_size(src_w, src_h, scale)
+    if (dst_w, dst_h) == (src_w, src_h):
+        return cg_image
+
+    color_space = CGImageGetColorSpace(cg_image)
+    ctx = CGBitmapContextCreate(
+        None, dst_w, dst_h, 8, dst_w * 4,
+        color_space, kCGImageAlphaPremultipliedLast,
+    )
+    if ctx is None:
+        logger.warning("Failed to create bitmap context for downsampling")
+        return cg_image
+
+    CGContextDrawImage(ctx, CGRectMake(0, 0, dst_w, dst_h), cg_image)
+    return CGBitmapContextCreateImage(ctx)
 
 
 # ── Image capture ────────────────────────────────────────────────
