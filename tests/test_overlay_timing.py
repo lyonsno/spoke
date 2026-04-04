@@ -279,6 +279,35 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_light_background_fill_is_violently_dark_now(self, mock_pyobjc):
+        """Bright backgrounds should drive the preview fill substantially darker than before."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            r, g, b = mod._BG_COLOR_LIGHT
+            assert r < 0.05
+            assert g < 0.05
+            assert b < 0.06
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_silence_floor_is_heavier_for_regression_triage(self, mock_pyobjc):
+        """Even at silence, bright backgrounds should keep a much heavier dark fill."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(0.0)
+
+            fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+            assert fill_opacity > 0.9
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_light_background_preview_text_reaches_true_white(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -318,6 +347,43 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_light_background_fill_responds_more_aggressively_to_mid_rms(self, mock_pyobjc):
+        """The bright-screen fill should visibly move at mid-level RMS instead of feeling stuck."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(0.0)
+            alpha_silent = overlay._fill_layer.setOpacity_.call_args[0][0]
+
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(mod._TEXT_AMP_SATURATION * 0.5)
+            alpha_mid = overlay._fill_layer.setOpacity_.call_args[0][0]
+
+            assert alpha_mid > alpha_silent + 0.025
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_glow_fill_alpha_doubles_outer_tail_for_vision_quest(self, mock_pyobjc):
+        """The overlay fill should ride the same louder SDF treatment as the screen glow."""
+        import numpy as np
+
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            alpha = mod._glow_fill_alpha(
+                np.array([[4.0]], dtype=np.float32),
+                width=4.0,
+            )
+
+            assert float(alpha[0, 0]) == pytest.approx(min(math.exp(-1.0) * 2.0, 1.0))
+        finally:
+            sys.modules.pop("spoke.overlay", None)
     def test_default_brightness_is_dark(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")

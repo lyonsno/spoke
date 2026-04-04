@@ -93,7 +93,7 @@ _DARK_FILL_ADDITIVE_FILTER = "plusL"
 # Match the edge glow color on dark backgrounds — desaturated blue-white
 _BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.40)
 _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
-_BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
+_BG_COLOR_LIGHT = (0.02, 0.02, 0.03)   # deliberately crushed for light-background regression triage
 _TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
 
 # Inner glow — matches screen border glow, scaled to overlay size
@@ -846,13 +846,15 @@ class TranscriptionOverlay(NSObject):
         # the glow — visible before the glow builds up, and at low RMS the
         # fill is already present against the undimmed background.
         # On dark backgrounds use linear response so soft sounds register.
-        # On light backgrounds use squared so the fill leads the glow.
-        fill_drive = _lerp(scaled, scaled * scaled, t)
-        fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
-        fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
+        # On light backgrounds we deliberately overcorrect for triage:
+        # use a much steeper low-end response so mid RMS visibly moves
+        # the fill instead of looking stuck at its floor.
+        fill_drive = _lerp(scaled, min(math.sqrt(max(scaled, 0.0)) * 1.4, 1.0), t)
+        fill_min = _lerp(0.06, 0.92, t)   # was 0.84 on bright screens
+        fill_max = _lerp(0.92, 1.0, t)    # was 0.99 on bright screens
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
+            self._fill_layer.setOpacity_(min(fill_opacity, 0.99))
             # Rebuild the fill image when brightness changes enough to
             # affect the baked color.
             last_t = getattr(self, '_fill_image_brightness', -1.0)
@@ -964,7 +966,7 @@ class TranscriptionOverlay(NSObject):
             # (more contrast between peak and interior), high on light
             # backgrounds (more uniform/material).
             t = getattr(self, '_brightness', 0.0)
-            floor = _lerp(0.55, 0.775, t)
+            floor = _lerp(0.55, 0.92, t)
             fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
 
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
