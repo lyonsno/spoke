@@ -45,11 +45,17 @@ def capture_screen_text() -> str:
 
 
 def _capture_active_window_text() -> str:
-    """Capture OCR text from the frontmost window when possible."""
+    """Capture OCR text from the frontmost window when possible.
+
+    Uses Accurate recognition at half resolution for reliable paste
+    verification (~450-500 ms).  Fast mode is unreliable on terminal /
+    dark-background content — it misreads common characters (r→p, etc.).
+    """
     try:
         from .scene_capture import (
             _capture_active_window,
             _capture_screen,
+            _downsample_image,
             _image_dimensions,
             _run_ocr,
         )
@@ -63,14 +69,21 @@ def _capture_active_window_text() -> str:
             return ""
 
         image, _, _, _ = result
+        # Downsample to half-res before Accurate OCR to keep latency
+        # under ~500 ms (full-res Accurate can take 800-900 ms).
+        image = _downsample_image(image)
         width, height = _image_dimensions(image)
-        ocr_text, blocks = _run_ocr(image, width, height, f"paste-verify-{scope}")
+        ocr_text, blocks = _run_ocr(
+            image, width, height, f"paste-verify-{scope}", accurate=True,
+        )
         if not " ".join(ocr_text.split()):
             return ""
         logger.info(
-            "Paste verify OCR captured %d blocks from %s",
+            "Paste verify OCR captured %d blocks from %s (%dx%d, accurate)",
             len(blocks),
             scope,
+            width,
+            height,
         )
         return ocr_text
     except Exception:
