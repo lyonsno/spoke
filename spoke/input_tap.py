@@ -104,6 +104,9 @@ class SpacebarHoldDetector(NSObject):
         self._shift_latched = False  # True if shift was seen during WAITING/RECORDING
         self._enter_held = False  # True if enter is currently held (for command fast path)
         self._enter_latched = False  # True if enter joined a latched-exit chord
+        self._on_cancel_spring_start: Callable[[], None] | None = None
+        self._on_cancel_spring_release: Callable[[], None] | None = None
+        self.cancel_spring_active = False  # set by app when spring is winding
         self._suppress_enter_keyup = False  # swallow trailing Enter keyUp after a consumed chord
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
@@ -295,6 +298,17 @@ class SpacebarHoldDetector(NSObject):
 
         if getattr(self, "_awaiting_space_release", False):
             self._awaiting_space_release = False
+            return True
+
+        # Cancel spring capture: space released while spring is winding
+        if getattr(self, 'cancel_spring_active', False):
+            self._cancel_hold_timer()
+            self._cancel_safety_timer()
+            self._suppress_enter_keyup = getattr(self, '_enter_held', False)
+            self._state = _State.IDLE
+            cb = getattr(self, '_on_cancel_spring_release', None)
+            if cb is not None:
+                cb()
             return True
 
         if self._state == _State.WAITING:
@@ -580,6 +594,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._finish_pending_release(enter_held=True)
                 return None
             if det._state in (_State.WAITING, _State.RECORDING):
+                # Fire cancel spring callback if the command overlay is active
+                # (generation in progress and user is adding enter to the hold)
+                if getattr(det, 'command_overlay_active', False):
+                    cb = getattr(det, '_on_cancel_spring_start', None)
+                    if cb is not None:
+                        cb()
                 return None  # suppress enter while space is held
             if det._state == _State.LATCHED and getattr(det, '_latched_space_down', False):
                 det._enter_latched = True
@@ -606,6 +626,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         flags = CGEventGetFlags(event)
         # Track enter key release
         if keycode == ENTER_KEYCODE:
+            # Cancel spring capture: either key releasing evaluates the spring
+            if getattr(det, 'cancel_spring_active', False):
+                det._enter_held = False
+                cb = getattr(det, '_on_cancel_spring_release', None)
+                if cb is not None:
+                    cb()
+                return None
             if getattr(det, '_suppress_enter_keyup', False):
                 det._suppress_enter_keyup = False
                 det._enter_held = False

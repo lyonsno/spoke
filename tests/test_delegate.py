@@ -1192,10 +1192,10 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", False),
         ]
 
-    def test_discover_command_models_drops_stale_selected_model_when_server_is_unavailable(
+    def test_discover_command_models_returns_empty_when_server_is_unavailable(
         self, main_module, monkeypatch, tmp_path
     ):
-        """A stale selected assistant model should disappear when it is not actually available."""
+        """Local-disk models must not appear when the server is unreachable."""
         model_root = tmp_path / "models"
         curated = model_root / "lmstudio-community" / "Qwen2.5-Coder-3B-Instruct-MLX-8bit"
         curated.mkdir(parents=True)
@@ -1210,18 +1210,13 @@ class TestDualModelConfiguration:
 
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
-        assert options == [
-            (
-                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
-                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
-                False,
-            ),
-        ]
+        assert options == []
 
-    def test_seed_command_model_options_prefers_curated_local_inventory(
+    def test_seed_command_model_options_empty_when_server_unreachable(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Initial Assistant menu should seed from the local curated shortlist without /v1/models."""
+        """Initial Assistant menu should be empty when the local server is unreachable,
+        even if curated models exist on disk."""
         model_root = tmp_path / "models"
         curated = model_root / "alexgusevski" / "LFM2.5-1.2B-Nova-Function-Calling-mlx"
         curated.mkdir(parents=True)
@@ -1231,16 +1226,11 @@ class TestDualModelConfiguration:
         monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
 
         d = _make_delegate(main_module, monkeypatch)
+        # No _command_client set → server unreachable
 
         options = d._seed_command_model_options("qwen3p5-35B-A3B")
 
-        assert options == [
-            (
-                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
-                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
-                False,
-            ),
-        ]
+        assert options == []
 
     def test_seed_command_model_options_keeps_sidecar_seed_to_selected_model(
         self, main_module, monkeypatch, tmp_path
@@ -2956,8 +2946,9 @@ class TestResultInjection:
 class TestHoldStartDuringTranscription:
     """Test interrupt-and-restart when hold starts during active transcription."""
 
-    def test_hold_during_transcription_increments_token(self, main_module, monkeypatch):
-        """Starting a new hold while transcribing should invalidate the old generation."""
+    def test_hold_during_transcription_does_not_cancel_generation(self, main_module, monkeypatch):
+        """Starting a new hold while generation is active should NOT kill the stream.
+        Generation continues while the user records a new utterance."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribing = True
         d._transcription_token = 5
@@ -2965,13 +2956,13 @@ class TestHoldStartDuringTranscription:
 
         d._on_hold_start()
 
-        assert d._transcription_token == 6
-        assert d._transcribing is False
+        assert d._transcription_token == 5  # unchanged
+        assert d._transcribing is True  # still generating
         # Should have fallen through to start recording
         d._capture.start.assert_called_once()
 
     def test_hold_during_transcription_starts_new_recording(self, main_module, monkeypatch):
-        """After cancelling the old transcription, recording should proceed normally."""
+        """Recording starts normally even while generation is in progress."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribing = True
         d._transcription_token = 0

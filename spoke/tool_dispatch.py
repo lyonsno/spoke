@@ -282,8 +282,11 @@ def _execute_read_aloud(
 
     # Speak via TTS if available
     if tts_client is not None:
-        logger.info("read_aloud: tts_client present, model=%s, text=%d chars",
-                     getattr(tts_client, "_model_id", "?"), len(text))
+        model_id = getattr(tts_client, "_model_id", "unknown")
+        cancelled = getattr(tts_client, "_cancelled", "unknown")
+        model_loaded = getattr(tts_client, "_model", None) is not None
+        logger.info("read_aloud: tts_client present, model=%s, model_loaded=%s, cancelled=%s, text=%d chars",
+                     model_id, model_loaded, cancelled, len(text))
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
@@ -299,11 +302,19 @@ def _execute_read_aloud(
             elif hasattr(exc, "reason"):
                 detail = f"{exc.reason} ({detail})"
             logger.warning("TTS playback failed: %s", detail, exc_info=True)
-            return f"Error speaking text: {detail}"
+            return (
+                f"Error speaking text: TTS playback failed. "
+                f"model={model_id}, model_loaded={model_loaded}, "
+                f"cancelled={cancelled}, error={type(exc).__name__}: {detail}"
+            )
     else:
         logger.warning("read_aloud: no tts_client available")
-
-    return f"Spoke: {text}"
+        return (
+            "Error: TTS client is not available. "
+            "This means SPOKE_TTS_VOICE is not set in the environment, "
+            "or the TTS client failed to initialize at startup. "
+            "Tell the user: TTS is not configured."
+        )
 
 
 def _execute_add_to_tray(
@@ -484,16 +495,17 @@ def _execute_epistaxis_ops(arguments: dict) -> str:
 
 def _execute_query_gmail(arguments: dict) -> str:
     """Execute the bounded Gmail query surface and return JSON."""
-    mode = arguments.get("mode", "")
+    query = arguments.get("query", "")
     max_results = arguments.get("max_results", 5)
     try:
         normalized_max_results = int(max_results)
         operator = GmailOperator()
         return json.dumps(
-            operator.execute_query(mode, max_results=normalized_max_results)
+            operator.execute_query(query, max_results=normalized_max_results)
         )
     except (TypeError, ValueError, GmailOperatorError) as exc:
         return json.dumps({"error": str(exc)})
+
 
 
 def execute_tool(
