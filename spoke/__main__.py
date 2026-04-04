@@ -347,6 +347,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
+        self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -770,12 +771,40 @@ class SpokeAppDelegate(NSObject):
         logger.info("Cancel spring activated (enter added to hold during active generation)")
         self._cancel_spring_active = True
         self._cancel_spring_start = time.monotonic()
+        self._detector.cancel_spring_active = True  # capture gesture in input tap
         overlay = self._command_overlay
         if overlay is not None:
-            logger.info("Setting cancel spring on overlay %r", overlay)
             overlay.set_cancel_spring(1.0)
         else:
             logger.warning("Cancel spring: no command overlay available")
+
+    def _on_cancel_spring_release(self) -> None:
+        """Called from the event tap when either key is released while
+        the cancel spring is active.  Evaluates hold duration and either
+        cancels generation or snaps back."""
+        _CANCEL_SPRING_THRESHOLD_S = 0.5
+        if not getattr(self, '_cancel_spring_active', False):
+            return
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        elapsed = time.monotonic() - self._cancel_spring_start
+        # Snap the spring back visually
+        if self._command_overlay is not None:
+            self._command_overlay.set_cancel_spring(0.0)
+        if elapsed >= _CANCEL_SPRING_THRESHOLD_S:
+            logger.info(
+                "Cancel spring released at %.0fms — cancelling generation "
+                "(token %d)", elapsed * 1000, self._transcription_token,
+            )
+            self._transcription_token += 1
+            self._transcribing = False
+            if self._menubar is not None:
+                self._menubar.set_status_text("Cancelled")
+        else:
+            logger.info(
+                "Cancel spring released at %.0fms — below threshold, snapping back",
+                elapsed * 1000,
+            )
 
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):
@@ -805,6 +834,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Space+enter hold during active generation — starting cancel spring")
             self._cancel_spring_active = True
             self._cancel_spring_start = time.monotonic()
+            self._detector.cancel_spring_active = True
             if self._command_overlay is not None:
                 self._command_overlay.set_cancel_spring(1.0)
             return  # don't start recording
@@ -1245,32 +1275,6 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             elif toggle_command_overlay and self._command_client is not None:
-                # ── Panic switch: cancel spring release ──
-                # If the spring was winding up, check how long it was held.
-                # Past threshold → cancel generation. Under → snap back.
-                _CANCEL_SPRING_THRESHOLD_S = 0.5
-                if getattr(self, '_cancel_spring_active', False):
-                    self._cancel_spring_active = False
-                    elapsed = time.monotonic() - self._cancel_spring_start
-                    # Snap the spring back visually
-                    if self._command_overlay is not None:
-                        self._command_overlay.set_cancel_spring(0.0)
-                    if elapsed >= _CANCEL_SPRING_THRESHOLD_S:
-                        logger.info(
-                            "Cancel spring released at %.0fms — cancelling generation "
-                            "(token %d)", elapsed * 1000, self._transcription_token,
-                        )
-                        self._transcription_token += 1
-                        self._transcribing = False
-                        if self._menubar is not None:
-                            self._menubar.set_status_text("Cancelled")
-                    else:
-                        logger.info(
-                            "Cancel spring released at %.0fms — below threshold, snapping back",
-                            elapsed * 1000,
-                        )
-                    return
-
                 # Use command_overlay_active (our flag) not _visible (animation
                 # state) to avoid re-dismissing during the dismiss animation.
                 self._detector._command_overlay_just_dismissed = False
@@ -2214,6 +2218,7 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         # Reset cancel spring if generation finishes while spring is winding
         self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
         if self._command_overlay is not None:
             self._command_overlay.set_cancel_spring(0.0)
         overlay = self._command_overlay

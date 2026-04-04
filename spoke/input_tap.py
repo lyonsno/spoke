@@ -105,6 +105,8 @@ class SpacebarHoldDetector(NSObject):
         self._enter_held = False  # True if enter is currently held (for command fast path)
         self._enter_latched = False  # True if enter joined a latched-exit chord
         self._on_cancel_spring_start: Callable[[], None] | None = None
+        self._on_cancel_spring_release: Callable[[], None] | None = None
+        self.cancel_spring_active = False  # set by app when spring is winding
         self._suppress_enter_keyup = False  # swallow trailing Enter keyUp after a consumed chord
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
@@ -296,6 +298,17 @@ class SpacebarHoldDetector(NSObject):
 
         if getattr(self, "_awaiting_space_release", False):
             self._awaiting_space_release = False
+            return True
+
+        # Cancel spring capture: space released while spring is winding
+        if getattr(self, 'cancel_spring_active', False):
+            self._cancel_hold_timer()
+            self._cancel_safety_timer()
+            self._suppress_enter_keyup = getattr(self, '_enter_held', False)
+            self._state = _State.IDLE
+            cb = getattr(self, '_on_cancel_spring_release', None)
+            if cb is not None:
+                cb()
             return True
 
         if self._state == _State.WAITING:
@@ -613,6 +626,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         flags = CGEventGetFlags(event)
         # Track enter key release
         if keycode == ENTER_KEYCODE:
+            # Cancel spring capture: either key releasing evaluates the spring
+            if getattr(det, 'cancel_spring_active', False):
+                det._enter_held = False
+                cb = getattr(det, '_on_cancel_spring_release', None)
+                if cb is not None:
+                    cb()
+                return None
             if getattr(det, '_suppress_enter_keyup', False):
                 det._suppress_enter_keyup = False
                 det._enter_held = False
