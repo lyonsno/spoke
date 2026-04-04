@@ -494,6 +494,7 @@ class SpokeAppDelegate(NSObject):
             from .command_overlay import CommandOverlay
             self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
             self._command_overlay.setup()
+            self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
         # Step 1: Request mic permission with a test recording.
@@ -778,33 +779,39 @@ class SpokeAppDelegate(NSObject):
         else:
             logger.warning("Cancel spring: no command overlay available")
 
-    def _on_cancel_spring_release(self) -> None:
-        """Called from the event tap when either key is released while
-        the cancel spring is active.  Evaluates hold duration and either
-        cancels generation or snaps back."""
-        _CANCEL_SPRING_THRESHOLD_S = 0.5
+    def _on_cancel_spring_threshold(self) -> None:
+        """Called from the overlay pulse tick when the spring crosses the
+        cancel threshold.  Fires immediately — no waiting for key release."""
         if not getattr(self, '_cancel_spring_active', False):
             return
+        logger.info(
+            "Cancel spring threshold crossed — cancelling generation (token %d)",
+            self._transcription_token,
+        )
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        self._transcription_token += 1
+        self._transcribing = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Cancelled")
+
+    def _on_cancel_spring_release(self) -> None:
+        """Called from the event tap when either key is released while
+        the cancel spring is active.  If the threshold already fired,
+        this is a no-op (just clean up).  If released early, snap back."""
+        if not getattr(self, '_cancel_spring_active', False):
+            return
+        # Threshold already fired — just clean up state
         self._cancel_spring_active = False
         self._detector.cancel_spring_active = False
         elapsed = time.monotonic() - self._cancel_spring_start
-        # Snap the spring back visually
+        logger.info(
+            "Cancel spring released at %.0fms — below threshold, snapping back",
+            elapsed * 1000,
+        )
+        # Snap back visually (the overlay ease-out handles the animation)
         if self._command_overlay is not None:
             self._command_overlay.set_cancel_spring(0.0)
-        if elapsed >= _CANCEL_SPRING_THRESHOLD_S:
-            logger.info(
-                "Cancel spring released at %.0fms — cancelling generation "
-                "(token %d)", elapsed * 1000, self._transcription_token,
-            )
-            self._transcription_token += 1
-            self._transcribing = False
-            if self._menubar is not None:
-                self._menubar.set_status_text("Cancelled")
-        else:
-            logger.info(
-                "Cancel spring released at %.0fms — below threshold, snapping back",
-                elapsed * 1000,
-            )
 
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):

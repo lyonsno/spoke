@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from collections.abc import Callable
 
 import objc
 from AppKit import (
@@ -211,6 +212,8 @@ class CommandOverlay(NSObject):
         # Cancel spring state — 0.0 = idle, 1.0 = fully wound
         self._cancel_spring = 0.0
         self._cancel_spring_target = 0.0  # 1.0 while winding, 0.0 while unwinding
+        self._cancel_spring_fired = False  # True once threshold crossed
+        self._on_cancel_spring_threshold: Callable[[], None] | None = None
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
@@ -482,7 +485,8 @@ class CommandOverlay(NSObject):
         calling this once starts the wind-up or snap-back.
         """
         self._cancel_spring_target = max(0.0, min(1.0, target))
-        logger.info("set_cancel_spring(%.2f) — current spring=%.3f", target, self._cancel_spring)
+        if target > 0.0:
+            self._cancel_spring_fired = False  # reset for new wind-up
 
     def set_utterance(self, text: str) -> None:
         """Show the user's utterance in the text view at reduced opacity."""
@@ -831,17 +835,26 @@ class CommandOverlay(NSObject):
 
         # ── Cancel spring animation ──
         # The spring chases _cancel_spring_target with asymmetric speed:
-        # winding up is deliberate (~600ms to full), snapping back is fast
-        # (~150ms).  While wound, hue shifts toward red and saturation
-        # climbs — like a coil heating up.
+        # winding up is deliberate (~600ms to full), easing out is smooth
+        # (~300ms with deceleration).
+        _SPRING_THRESHOLD = 0.83  # ~500ms into the 600ms wind-up
         spring = self._cancel_spring
         target = self._cancel_spring_target
         if spring < target:
             # Wind up — deliberate
             spring = min(target, spring + dt / 0.6)
-        elif spring > target:
-            # Snap back — fast
-            spring = max(target, spring - dt / 0.15)
+            # Fire cancel at threshold crossing — don't wait for release
+            if spring >= _SPRING_THRESHOLD and not self._cancel_spring_fired:
+                self._cancel_spring_fired = True
+                self._cancel_spring_target = 0.0  # start ease-out
+                target = 0.0
+                cb = self._on_cancel_spring_threshold
+                if cb is not None:
+                    cb()
+        if spring > target:
+            # Ease out — smooth deceleration (quadratic decay)
+            rate = dt / 0.3 * (1.0 + spring)  # faster when higher
+            spring = max(target, spring - rate)
         self._cancel_spring = spring
 
         if spring > 0.001:
@@ -936,8 +949,8 @@ class CommandOverlay(NSObject):
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
                 from Quartz import CGColorCreateSRGB
-                # Warm amber tint — visible but not alarming
-                cg_color = CGColorCreateSRGB(0.55, 0.25, 0.05, 1.0)
+                # Warm golden-amber tint — visible, thermal, not alarming
+                cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
                 self._spring_tint_layer.setBackgroundColor_(cg_color)
                 self._spring_tint_layer.setOpacity_(0.5 * spring)
             else:
