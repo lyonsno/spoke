@@ -49,13 +49,15 @@ ends, not when recording starts. You hold spacebar, speak, and at the moment
 capture ends you decide what the utterance becomes:
 
 - **Clean release** → text insertion (dictation)
-- **Shift held at release** → tray (review before committing)
-- **Enter held at release** → assistant (confident send)
+- **Shift held at first release** → tray (review before committing)
+- **Enter released first while space is still down** → assistant path
+- **Space released first while enter is still down** → toggle assistant overlay visibility
 
 Shift and enter can be pressed at any point during the hold — shift is latched
 via `kCGEventFlagsChanged`, so pressing shift after you start speaking still
-routes to the tray. For the ordinary path, what matters is what's held when
-spacebar comes up.
+routes to the tray. For ordinary enter chords, first release wins: enter-up
+before space-up takes the assistant path, while space-up before enter-up is the
+overlay-toggle gesture.
 
 ## Modifier blocking
 
@@ -298,7 +300,7 @@ unrelated transitions that rhyme.
 
 | Flow | Before tray | After tray |
 |---|---|---|
-| Fast command | shift+release → assistant | enter+release → assistant |
+| Fast command | shift+release → assistant | enter-up before space-up → assistant |
 | Deliberate command | *(same as fast)* | shift+release → tray → Enter → assistant |
 | Cancel recording | *(no clean path)* | shift+release → tray → navigate up past top → dismissed |
 | Preview before paste | *(no path)* | shift+release → tray → spacebar tap → paste |
@@ -309,9 +311,9 @@ The fast command path moves from shift to enter. The accidental-send problem
 (shift held by mistake) goes away entirely — shift now means "review," never
 "send."
 
-For assistant recall, Enter also wins if both modifiers are involved during a
-short empty hold. That lets a slightly sloppy Shift+Enter overlap still
-toggle the assistant overlay instead of falling back to tray recall.
+For assistant recall, first-release semantics still apply inside the chord:
+enter-up before space-up takes the assistant path, while space-up before
+enter-up toggles the assistant overlay instead of falling back to tray recall.
 
 ### Relationship to recovery mode
 

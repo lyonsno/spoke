@@ -121,8 +121,6 @@ with log_file.open("a", encoding="utf-8") as log:
             check=False,
         )
         time.sleep(0.5)
-        lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
-        lock_file.unlink(missing_ok=True)
         log.write("Launch target handoff: terminated prior local python-based spoke processes.\n")
         log.flush()
 

@@ -119,9 +119,6 @@ with log_file.open("a", encoding="utf-8") as log:
             check=False,
         )
         time.sleep(0.5)
-        lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
-        lock_file.unlink(missing_ok=True)
-
         log.write(f"Launcher PID context: pid={os.getpid()} ppid={os.getppid()}\n")
         log.write(f"Launcher child command: {command!r}\n")
         log.flush()
