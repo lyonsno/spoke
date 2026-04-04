@@ -83,6 +83,23 @@ class TestTTSClient:
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
+    def test_speak_omnivoice_maps_voice_to_instruct_and_plays_tensor_output(self, mock_load, mock_sd):
+        """OmniVoice should treat the voice string as an instruct prompt and accept tensor-like outputs."""
+        fake_model = MagicMock()
+        fake_model.sample_rate = 24000
+        fake_model.generate.return_value = [[[0.1, 0.2, 0.3]]]
+        mock_load.return_value = fake_model
+        fake_stream = _setup_stream_mock(mock_sd)
+
+        client = self._make_client(model_id="k2-fsa/OmniVoice", voice="female, british accent")
+        client.speak("Hello world")
+
+        fake_model.generate.assert_called_once_with(text="Hello world", instruct="female, british accent")
+        mock_sd.OutputStream.assert_called_once()
+        fake_stream.write.assert_called_once()
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
     def test_cancel_sets_flag_without_aborting(self, mock_load, mock_sd):
         """cancel() sets the cancelled flag — playback loop handles fade-out."""
         fake_model = MagicMock()
@@ -487,6 +504,35 @@ class TestTTSConfig:
             model, text="hi", voice="en", temperature=0.5, top_k=50, top_p=0.95,
         )
         assert kwargs == {"text": "hi", "voice": "en"}
+
+    def test_generate_kwargs_maps_voice_to_instruct(self):
+        """OmniVoice-style signatures should receive the voice prompt as `instruct`."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(self, text: str, instruct: str | None = None, speed: float = 1.0): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model,
+            text="hi",
+            voice="female, low pitch",
+            temperature=0.5,
+            top_k=50,
+            top_p=0.95,
+            model_id="k2-fsa/OmniVoice",
+        )
+        assert kwargs == {"text": "hi", "instruct": "female, low pitch"}
+
+    def test_tts_extra_includes_omnivoice_runtime(self):
+        """The TTS extra should include OmniVoice and its torch audio runtime."""
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        pyproject = tomllib.loads(pyproject_path.read_text())
+
+        tts_extra = pyproject["project"]["optional-dependencies"]["tts"]
+        assert "omnivoice" in tts_extra
+        assert "torch" in tts_extra
+        assert "torchaudio" in tts_extra
 
 
 class TestGPULockDiscipline:
