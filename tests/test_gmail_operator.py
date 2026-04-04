@@ -14,16 +14,18 @@ def _json_response(payload):
 
 
 class TestGmailOperator:
-    def test_tool_schema_exposes_bounded_query_mode(self):
+    def test_tool_schema_exposes_query_parameter(self):
         from spoke.gmail_operator import tool_schema
 
         schema = tool_schema()
         params = schema["function"]["parameters"]["properties"]
         assert schema["function"]["name"] == "query_gmail"
-        assert params["mode"]["enum"] == ["starred_recruiter_mail"]
+        assert "query" in params
+        assert params["query"]["type"] == "string"
         assert params["max_results"]["maximum"] == 10
+        assert "query" in schema["function"]["parameters"]["required"]
 
-    def test_query_starred_recruiter_mail_filters_and_scores_candidates(self, tmp_path, monkeypatch):
+    def test_query_returns_matching_messages(self, tmp_path, monkeypatch):
         from spoke.gmail_operator import GmailOperator
 
         creds_path = tmp_path / "gmail_credentials.json"
@@ -42,14 +44,10 @@ class TestGmailOperator:
         def fake_urlopen(req, timeout=None):
             url = req.full_url
             if url == "https://oauth2.googleapis.com/token":
-                assert req.data.decode("utf-8") == (
-                    "client_id=client-id&client_secret=client-secret"
-                    "&refresh_token=refresh-token&grant_type=refresh_token"
-                )
                 return _json_response({"access_token": "access-token"})
             if url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"):
-                assert "labelIds=STARRED" in url
-                assert "maxResults=15" in url
+                assert "q=is%3Astarred" in url
+                assert "maxResults=3" in url
                 return _json_response(
                     {
                         "messages": [
@@ -66,10 +64,11 @@ class TestGmailOperator:
                         "threadId": "t-1",
                         "snippet": "Would love to talk about a senior staff role.",
                         "internalDate": "300",
+                        "labelIds": ["STARRED", "INBOX"],
                         "payload": {
                             "headers": [
-                                {"name": "From", "value": "Ava Recruiter <ava@talent.example>"},
-                                {"name": "Subject", "value": "Recruiting for a staff engineer role"},
+                                {"name": "From", "value": "Ava <ava@example.com>"},
+                                {"name": "Subject", "value": "Staff engineer role"},
                                 {"name": "Date", "value": "Sat, 29 Mar 2026 10:00:00 -0400"},
                             ]
                         },
@@ -80,12 +79,13 @@ class TestGmailOperator:
                     {
                         "id": "m-2",
                         "threadId": "t-2",
-                        "snippet": "Wanted to reach out personally about the platform direction.",
+                        "snippet": "Platform direction chat.",
                         "internalDate": "200",
+                        "labelIds": ["STARRED"],
                         "payload": {
                             "headers": [
-                                {"name": "From", "value": "Mina CTO <mina@startup.example>"},
-                                {"name": "Subject", "value": "Quick note from a fellow builder"},
+                                {"name": "From", "value": "Mina <mina@startup.example>"},
+                                {"name": "Subject", "value": "Quick note"},
                                 {"name": "Date", "value": "Sat, 29 Mar 2026 09:00:00 -0400"},
                             ]
                         },
@@ -96,8 +96,9 @@ class TestGmailOperator:
                     {
                         "id": "m-3",
                         "threadId": "t-3",
-                        "snippet": "Here are the notes from lunch.",
+                        "snippet": "Lunch notes.",
                         "internalDate": "100",
+                        "labelIds": ["STARRED"],
                         "payload": {
                             "headers": [
                                 {"name": "From", "value": "Friend <friend@example.com>"},
@@ -110,25 +111,24 @@ class TestGmailOperator:
             raise AssertionError(f"unexpected url {url!r}")
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            result = GmailOperator().execute_query("starred_recruiter_mail", max_results=2)
+            result = GmailOperator().execute_query("is:starred", max_results=3)
 
-        assert result["mode"] == "starred_recruiter_mail"
-        assert result["matched_count"] == 2
-        assert [msg["id"] for msg in result["messages"]] == ["m-1", "m-2"]
-        assert result["messages"][0]["matched_signals"] == [
-            "from:recruiter",
-            "subject:recruiting",
-            "snippet:role",
-        ]
-        assert result["messages"][1]["matched_signals"] == ["from:cto"]
+        assert result["query"] == "is:starred"
+        assert result["matched_count"] == 3
+        assert [msg["id"] for msg in result["messages"]] == ["m-1", "m-2", "m-3"]
+        assert result["messages"][0]["labels"] == ["STARRED", "INBOX"]
+        assert "snippet" in result["messages"][0]
 
-    def test_query_rejects_unsupported_mode(self):
+    def test_query_rejects_empty_query(self):
         from spoke.gmail_operator import GmailOperator, GmailOperatorError
 
-        with pytest.raises(GmailOperatorError, match="unsupported mode"):
-            GmailOperator().execute_query("all_mail")
+        with pytest.raises(GmailOperatorError, match="query string must not be empty"):
+            GmailOperator().execute_query("")
 
-    def test_query_requires_credentials(self, monkeypatch):
+        with pytest.raises(GmailOperatorError, match="query string must not be empty"):
+            GmailOperator().execute_query("   ")
+
+    def test_query_requires_credentials(self, tmp_path, monkeypatch):
         from spoke.gmail_operator import GmailOperator, GmailOperatorError
 
         monkeypatch.delenv("SPOKE_GMAIL_CREDENTIALS_PATH", raising=False)
@@ -136,8 +136,10 @@ class TestGmailOperator:
         monkeypatch.delenv("SPOKE_GMAIL_CLIENT_SECRET", raising=False)
         monkeypatch.delenv("SPOKE_GMAIL_REFRESH_TOKEN", raising=False)
 
+        # Point at a nonexistent file so the default path can't find real creds
+        op = GmailOperator(credentials_path=tmp_path / "nonexistent.json")
         with pytest.raises(GmailOperatorError, match="Gmail credentials are not configured"):
-            GmailOperator().execute_query("starred_recruiter_mail")
+            op.execute_query("is:starred")
 
     def test_env_credentials_override_malformed_credentials_file(self, tmp_path, monkeypatch):
         from spoke.gmail_operator import GmailOperator
@@ -151,8 +153,8 @@ class TestGmailOperator:
         fake_operator = GmailOperator()
 
         with patch.object(fake_operator, "_refresh_access_token", return_value="access-token") as refresh_mock:
-            with patch.object(fake_operator, "_query_starred_recruiter_mail", return_value=[]):
-                result = fake_operator.execute_query("starred_recruiter_mail")
+            with patch.object(fake_operator, "_query_messages", return_value=[]):
+                result = fake_operator.execute_query("is:unread")
 
         refresh_mock.assert_called_once_with(
             {

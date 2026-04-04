@@ -95,7 +95,7 @@ class TestToolSchemas:
 
         gmail_schema = next(s for s in schemas if s["function"]["name"] == "query_gmail")
         params = gmail_schema["function"]["parameters"]
-        assert "mode" in params.get("properties", {})
+        assert "query" in params.get("properties", {})
         assert "max_results" in params.get("properties", {})
 
     def test_epistaxis_ops_schema(self):

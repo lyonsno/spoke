@@ -484,13 +484,13 @@ def _execute_epistaxis_ops(arguments: dict) -> str:
 
 def _execute_query_gmail(arguments: dict) -> str:
     """Execute the bounded Gmail query surface and return JSON."""
-    mode = arguments.get("mode", "")
+    query = arguments.get("query", "")
     max_results = arguments.get("max_results", 5)
     try:
         normalized_max_results = int(max_results)
         operator = GmailOperator()
         return json.dumps(
-            operator.execute_query(mode, max_results=normalized_max_results)
+            operator.execute_query(query, max_results=normalized_max_results)
         )
     except (TypeError, ValueError, GmailOperatorError) as exc:
         return json.dumps({"error": str(exc)})
