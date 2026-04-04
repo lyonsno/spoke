@@ -15,7 +15,35 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from spoke.capture import AudioCapture, SAMPLE_RATE, CHANNELS
+from spoke.capture import AudioCapture, SAMPLE_RATE, CHANNELS, SILERO_CHUNK
+
+
+class _FakeSileroVAD:
+    """Mock Silero VAD that classifies based on RMS amplitude."""
+
+    def __call__(self, tensor, sr):
+        import torch
+        rms = float(tensor.abs().mean())
+        prob = 0.9 if rms > 0.01 else 0.05
+        return torch.tensor(prob)
+
+    def reset_states(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _mock_silero_vad(monkeypatch):
+    """Patch AudioCapture to use a fake Silero model for all tests."""
+    import torch
+    original_init = AudioCapture.__init__
+
+    def patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._silero_model = _FakeSileroVAD()
+        self._silero_sr = torch.tensor(SAMPLE_RATE)
+        self._torch = torch
+
+    monkeypatch.setattr(AudioCapture, "__init__", patched_init)
 
 
 class TestWavEncoding:
@@ -460,6 +488,7 @@ class TestStartStop:
 class TestVADSlicing:
     """Test the VAD state machine and silence slicing logic."""
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_no_slice_on_continuous_speech(self, mock_sd):
         """Continuous speech without sufficient silence should not trigger slicing."""
@@ -479,6 +508,7 @@ class TestVADSlicing:
         cap._segment_cb.assert_not_called()
         assert cap._is_speech
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_slices_after_silence(self, mock_sd):
         """Speech followed by silence should emit a bounded segment."""
@@ -511,6 +541,7 @@ class TestVADSlicing:
         assert isinstance(wav_bytes, bytes)
         assert len(wav_bytes) > 44
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_stop_emits_final_segment(self, mock_sd):
         """Stopping capture while in speech should emit the final segment."""
@@ -533,6 +564,7 @@ class TestVADSlicing:
         cap.stop()
         mock_segment_cb.assert_called_once()
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_strips_silence_from_final_wav(self, mock_sd):
         """stop() should return only the concatenated speech chunks, stripping leading and trailing silence."""
