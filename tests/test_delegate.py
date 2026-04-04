@@ -1826,7 +1826,7 @@ class TestWarmupContract:
         )
         assert isinstance(d._warm_error, RuntimeError)
 
-    def test_prepare_clients_defers_local_whisper_startup_warmup(
+    def test_prepare_clients_warms_local_whisper_at_startup(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -1842,10 +1842,10 @@ class TestWarmupContract:
         ) as prep_preview:
             d._prepare_clients()
 
-        prep_client.assert_not_called()
-        prep_preview.assert_not_called()
+        prep_client.assert_called_once()
+        prep_preview.assert_called_once()
 
-    def test_prepare_clients_defers_local_qwen_startup_warmup(
+    def test_prepare_clients_warms_local_qwen_at_startup(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -1859,7 +1859,7 @@ class TestWarmupContract:
         with patch.object(d._client, "prepare") as prep_client:
             d._prepare_clients()
 
-        prep_client.assert_not_called()
+        prep_client.assert_called_once()
 
     def test_warmup_success_hides_startup_indicator(
         self, main_module, monkeypatch
