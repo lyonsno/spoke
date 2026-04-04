@@ -73,6 +73,15 @@ class TestCommandClient:
         user_msgs = [m["content"] for m in msgs if m["role"] == "user"]
         assert user_msgs == ["q1", "q2", "q3", "q4"]
 
+    def test_system_prompt_does_not_carry_voice_or_terse_question_avoidance_framing(self):
+        """The command prompt should not force voice-assistant, terse, or no-questions framing."""
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "voice assistant" not in _SYSTEM_PROMPT.lower()
+        assert "be concise" not in _SYSTEM_PROMPT.lower()
+        assert "without questioning" not in _SYSTEM_PROMPT.lower()
+        assert "spoke this aloud" not in _SYSTEM_PROMPT.lower()
+
     def test_ring_buffer_bounded_via_stream(self):
         """stream_command should evict the oldest entry when history exceeds max_history."""
         client = self._make_client(max_history=3)
