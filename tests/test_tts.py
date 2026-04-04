@@ -502,12 +502,16 @@ class TestGPULockDiscipline:
         locked_during_write = []
 
         fake_model = MagicMock()
+        locked_during_next = []
         def fake_generate(**kwargs):
             locked_during_generate.append(lock.locked())
-            r = MagicMock()
-            r.audio = [0.1] * 2400  # 100ms at 24kHz
-            r.sample_rate = 24000
-            yield r
+            def _iter():
+                locked_during_next.append(lock.locked())
+                r = MagicMock()
+                r.audio = [0.1] * 2400  # 100ms at 24kHz
+                r.sample_rate = 24000
+                yield r
+            return _iter()
         fake_model.generate = fake_generate
         mock_load.return_value = fake_model
 
@@ -526,6 +530,7 @@ class TestGPULockDiscipline:
         client.speak("test")
 
         assert locked_during_generate == [True], "Lock must be held during generate()"
+        assert locked_during_next == [False], "Lock must NOT be held during chunk iteration"
         assert any(not locked for locked in locked_during_write), "Lock must be released during audio write"
 
     @patch("spoke.tts.sd")

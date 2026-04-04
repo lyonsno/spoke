@@ -433,21 +433,21 @@ class TTSClient:
                         if self._cancelled:
                             logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
                             return
-                        logger.info("TTS speak: acquiring GPU lock for chunk %d", chunk_count + 1)
-                        with lock_ctx:
-                            logger.info("TTS speak: GPU lock acquired, calling next(results)")
-                            try:
-                                result = next(results)
-                            except StopIteration:
-                                break
-                            materialized = _PlaybackResult(
-                                audio=np.asarray(result.audio, dtype=np.float32),
-                                sample_rate=int(result.sample_rate),
-                            )
-                            chunk_count += 1
-                            if chunk_count == 1:
-                                logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
-                                           len(materialized.audio), materialized.sample_rate)
+                        # Don't hold GPU lock for next() — the generate iterator
+                        # does Metal work internally but holding the lock here
+                        # deadlocks with Whisper transcription on another thread.
+                        try:
+                            result = next(results)
+                        except StopIteration:
+                            break
+                        materialized = _PlaybackResult(
+                            audio=np.asarray(result.audio, dtype=np.float32),
+                            sample_rate=int(result.sample_rate),
+                        )
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
+                                       len(materialized.audio), materialized.sample_rate)
                         self._play_result(materialized, amplitude_callback=amplitude_callback)
                     logger.info("TTS speak: finished sentence (%d chunks played)", chunk_count)
             finally:
