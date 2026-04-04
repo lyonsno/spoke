@@ -839,15 +839,13 @@ class CommandOverlay(NSObject):
         self._cancel_spring = spring
 
         if spring > 0.001:
-            # Blend hue toward red (0.0).  Use shortest arc — if hue is
-            # in the violet/red neighborhood already (>0.8), go forward
-            # past 1.0 toward 1.0≡0.0.  Otherwise pull back toward 0.0.
-            red_hue = 0.0
-            if hue > 0.5:
-                # Go forward through red end
-                target_hue = 1.0  # wraps to 0.0
+            # Blend hue toward warm amber (~0.08, orange-gold).
+            # Use shortest arc around the hue wheel.
+            amber_hue = 0.08
+            if hue > 0.5 + amber_hue:
+                target_hue = 1.0 + amber_hue  # wrap forward
             else:
-                target_hue = red_hue
+                target_hue = amber_hue
             hue = hue + (target_hue - hue) * spring
             if hue >= 1.0:
                 hue -= 1.0
@@ -928,6 +926,21 @@ class CommandOverlay(NSObject):
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+            # Cancel spring: warm the fill layer background.
+            # The overlay goes from cool neutral to warm amber as the
+            # spring winds — thermal, not angry.
+            if spring > 0.01:
+                from Quartz import CGColorCreateSRGB
+                # Warm amber wash: (0.35, 0.18, 0.05) at full wind
+                warm_a = 0.45 * spring
+                cg_color = CGColorCreateSRGB(
+                    0.35 * spring, 0.18 * spring, 0.05 * spring, warm_a,
+                )
+                self._fill_layer.setBackgroundColor_(cg_color)
+                self._cancel_spring_bg_active = True
+            elif getattr(self, '_cancel_spring_bg_active', False):
+                self._fill_layer.setBackgroundColor_(None)
+                self._cancel_spring_bg_active = False
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
