@@ -765,11 +765,17 @@ class SpokeAppDelegate(NSObject):
         spring if generation is in progress."""
         if not self._transcribing:
             return
+        if getattr(self, '_cancel_spring_active', False):
+            return  # already winding — ignore key repeat
         logger.info("Cancel spring activated (enter added to hold during active generation)")
         self._cancel_spring_active = True
         self._cancel_spring_start = time.monotonic()
-        if self._command_overlay is not None:
-            self._command_overlay.set_cancel_spring(1.0)
+        overlay = self._command_overlay
+        if overlay is not None:
+            logger.info("Setting cancel spring on overlay %r", overlay)
+            overlay.set_cancel_spring(1.0)
+        else:
+            logger.warning("Cancel spring: no command overlay available")
 
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):
