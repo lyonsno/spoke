@@ -1,9 +1,10 @@
 """Bounded read-only Gmail operator for the spoken command path.
 
-This module intentionally keeps the first Gmail affordance narrow:
-query recent starred messages and filter them down to recruiter- or CTO-like
-mail so the command overlay can surface a compact answer without arbitrary
-mailbox access or repo-embedded secrets.
+Provides the assistant model a query-driven Gmail affordance: the model
+supplies a Gmail search query string and gets back compact metadata
+summaries.  Results are capped, metadata-only (no full bodies), and
+read-only — these are the influx limiters that keep the tool safe for a
+small local model.
 """
 
 from __future__ import annotations
@@ -37,20 +38,23 @@ def tool_schema() -> dict[str, Any]:
             "name": "query_gmail",
             "description": (
                 "Query Gmail in read-only mode for compact message summaries. "
-                "Current scope is limited to recent starred recruiter- or CTO-"
-                "style mail."
+                "Pass a Gmail search query string (same syntax as the Gmail "
+                "search bar — e.g. 'is:starred from:alice', 'newer_than:7d "
+                "subject:invoice', 'label:updates is:unread'). Returns sender, "
+                "subject, date, and snippet for each match — no full bodies."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "mode": {
+                    "query": {
                         "type": "string",
-                        "enum": ["starred_recruiter_mail"],
                         "description": (
-                            "Bounded Gmail query mode. "
-                            "'starred_recruiter_mail' looks for recent starred "
-                            "messages that appear recruiter- or CTO-adjacent."
+                            "Gmail search query string. Uses standard Gmail "
+                            "search syntax (from:, to:, subject:, is:starred, "
+                            "is:unread, newer_than:, older_than:, label:, has:, "
+                            "etc.). Examples: 'is:starred newer_than:3d', "
+                            "'from:bank subject:statement'."
                         ),
                     },
                     "max_results": {
@@ -60,14 +64,14 @@ def tool_schema() -> dict[str, Any]:
                         "description": "Maximum number of matching message summaries to return.",
                     },
                 },
-                "required": ["mode"],
+                "required": ["query"],
             },
         },
     }
 
 
 class GmailOperator:
-    """Execute the narrow Gmail query surface with local OAuth material."""
+    """Execute bounded Gmail queries with local OAuth material."""
 
     def __init__(self, credentials_path: str | Path | None = None):
         if credentials_path is None:
@@ -77,19 +81,19 @@ class GmailOperator:
             )
         self._credentials_path = Path(credentials_path).expanduser()
 
-    def execute_query(self, mode: str, *, max_results: int = 5) -> dict[str, Any]:
-        if mode != "starred_recruiter_mail":
-            raise GmailOperatorError(f"unsupported mode: {mode!r}")
+    def execute_query(self, query: str, *, max_results: int = 5) -> dict[str, Any]:
+        if not query or not query.strip():
+            raise GmailOperatorError("query string must not be empty")
         if not 1 <= max_results <= 10:
             raise GmailOperatorError("max_results must be between 1 and 10")
 
         credentials = self._load_credentials()
         access_token = self._refresh_access_token(credentials)
-        matched = self._query_starred_recruiter_mail(access_token, max_results=max_results)
+        messages = self._query_messages(access_token, query.strip(), max_results=max_results)
         return {
-            "mode": mode,
-            "matched_count": len(matched),
-            "messages": matched,
+            "query": query.strip(),
+            "matched_count": len(messages),
+            "messages": messages,
             "scope": _DEFAULT_GMAIL_SCOPE,
         }
 
@@ -170,34 +174,32 @@ class GmailOperator:
             raise GmailOperatorError("refresh token exchange returned no access_token")
         return str(access_token)
 
-    def _query_starred_recruiter_mail(
-        self, access_token: str, *, max_results: int
+    def _query_messages(
+        self, access_token: str, query: str, *, max_results: int
     ) -> list[dict[str, Any]]:
-        # Fetch a bounded candidate set, then apply repo-side heuristics so the
-        # first slice stays predictable and privacy-preserving.
         list_payload = self._api_get(
             _LIST_ENDPOINT,
             access_token,
             query=[
-                ("labelIds", "STARRED"),
-                ("maxResults", str(max(max_results * 5, 15))),
+                ("q", query),
+                ("maxResults", str(max_results)),
             ],
         )
-        messages = list_payload.get("messages", [])
-        if not isinstance(messages, list):
+        message_stubs = list_payload.get("messages", [])
+        if not isinstance(message_stubs, list):
             return []
 
-        matched: list[dict[str, Any]] = []
-        for item in messages:
+        results: list[dict[str, Any]] = []
+        for item in message_stubs[:max_results]:
             if not isinstance(item, dict) or "id" not in item:
                 continue
             message = self._fetch_message_metadata(access_token, str(item["id"]))
-            candidate = self._shape_candidate(message)
-            if candidate is not None:
-                matched.append(candidate)
+            shaped = self._shape_message(message)
+            if shaped is not None:
+                results.append(shaped)
 
-        matched.sort(key=lambda item: item["internal_date"], reverse=True)
-        return [self._public_message_shape(item) for item in matched[:max_results]]
+        results.sort(key=lambda m: m.get("internal_date", 0), reverse=True)
+        return [self._public_message_shape(m) for m in results]
 
     def _fetch_message_metadata(self, access_token: str, message_id: str) -> dict[str, Any]:
         return self._api_get(
@@ -231,15 +233,13 @@ class GmailOperator:
         except Exception as exc:
             raise GmailOperatorError("failed to query Gmail API") from exc
 
-    def _shape_candidate(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    def _shape_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         headers = self._header_map(message)
         sender = headers.get("from", "")
         subject = headers.get("subject", "")
         date = headers.get("date", "")
         snippet = str(message.get("snippet", "")).strip()
-        signals = self._matched_signals(sender, subject, snippet)
-        if not signals:
-            return None
+        labels = message.get("labelIds", [])
         return {
             "id": str(message.get("id", "")),
             "thread_id": str(message.get("threadId", "")),
@@ -247,28 +247,9 @@ class GmailOperator:
             "subject": subject,
             "date": date,
             "snippet": snippet,
-            "matched_signals": signals,
+            "labels": labels if isinstance(labels, list) else [],
             "internal_date": int(str(message.get("internalDate", "0")) or "0"),
         }
-
-    def _matched_signals(
-        self, sender: str, subject: str, snippet: str
-    ) -> list[str]:
-        sender_lower = sender.lower()
-        subject_lower = subject.lower()
-        snippet_lower = snippet.lower()
-        signals: list[str] = []
-
-        if any(term in sender_lower for term in ("recruiter", "recruiting", "talent", "sourcer", "headhunter")):
-            signals.append("from:recruiter")
-        if "cto" in sender_lower or "chief technology officer" in sender_lower:
-            signals.append("from:cto")
-        if "recruit" in subject_lower:
-            signals.append("subject:recruiting")
-        if any(term in snippet_lower for term in (" role", "role ", "opportunity", "staff role")):
-            signals.append("snippet:role")
-
-        return signals
 
     def _public_message_shape(self, message: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -278,7 +259,7 @@ class GmailOperator:
             "subject": message["subject"],
             "date": message["date"],
             "snippet": message["snippet"],
-            "matched_signals": message["matched_signals"],
+            "labels": message["labels"],
         }
 
     def _header_map(self, message: dict[str, Any]) -> dict[str, str]:
