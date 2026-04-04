@@ -839,15 +839,10 @@ class SpokeAppDelegate(NSObject):
                 self._command_overlay.set_cancel_spring(1.0)
             return  # don't start recording
 
-        if self._transcribing:
-            if tts_playing:
-                logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
-                tts.cancel()
-            else:
-                logger.info("Hold during active stream — cancelling")
-                self._transcription_token += 1
-                self._transcribing = False
-            # Fall through to start recording
+        if self._transcribing and tts_playing:
+            logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
+            tts.cancel()
+            # Fall through to start recording (generation continues)
         # Keep the detector flag aligned with the overlay's real visible state.
         overlay_visible = (
             self._command_overlay is not None

@@ -2945,8 +2945,9 @@ class TestResultInjection:
 class TestHoldStartDuringTranscription:
     """Test interrupt-and-restart when hold starts during active transcription."""
 
-    def test_hold_during_transcription_increments_token(self, main_module, monkeypatch):
-        """Starting a new hold while transcribing should invalidate the old generation."""
+    def test_hold_during_transcription_does_not_cancel_generation(self, main_module, monkeypatch):
+        """Starting a new hold while generation is active should NOT kill the stream.
+        Generation continues while the user records a new utterance."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribing = True
         d._transcription_token = 5
@@ -2954,13 +2955,13 @@ class TestHoldStartDuringTranscription:
 
         d._on_hold_start()
 
-        assert d._transcription_token == 6
-        assert d._transcribing is False
+        assert d._transcription_token == 5  # unchanged
+        assert d._transcribing is True  # still generating
         # Should have fallen through to start recording
         d._capture.start.assert_called_once()
 
     def test_hold_during_transcription_starts_new_recording(self, main_module, monkeypatch):
-        """After cancelling the old transcription, recording should proceed normally."""
+        """Recording starts normally even while generation is in progress."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribing = True
         d._transcription_token = 0
