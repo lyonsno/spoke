@@ -278,6 +278,12 @@ class CommandOverlay(NSObject):
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
+        # Cancel spring tint layer — sits above fill, masked to the same SDF shape
+        self._spring_tint_layer = CALayer.alloc().init()
+        self._spring_tint_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._spring_tint_layer.setOpacity_(0.0)
+        wrapper.layer().insertSublayer_above_(self._spring_tint_layer, self._fill_layer)
+
         wrapper.addSubview_(content)
         self._content_view = content
 
@@ -926,21 +932,16 @@ class CommandOverlay(NSObject):
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
-            # Cancel spring: warm the fill layer background.
-            # The overlay goes from cool neutral to warm amber as the
-            # spring winds — thermal, not angry.
+        # Cancel spring: warm amber tint over the overlay shape.
+        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
                 from Quartz import CGColorCreateSRGB
-                # Warm amber wash: (0.35, 0.18, 0.05) at full wind
-                warm_a = 0.45 * spring
-                cg_color = CGColorCreateSRGB(
-                    0.35 * spring, 0.18 * spring, 0.05 * spring, warm_a,
-                )
-                self._fill_layer.setBackgroundColor_(cg_color)
-                self._cancel_spring_bg_active = True
-            elif getattr(self, '_cancel_spring_bg_active', False):
-                self._fill_layer.setBackgroundColor_(None)
-                self._cancel_spring_bg_active = False
+                # Warm amber tint — visible but not alarming
+                cg_color = CGColorCreateSRGB(0.55, 0.25, 0.05, 1.0)
+                self._spring_tint_layer.setBackgroundColor_(cg_color)
+                self._spring_tint_layer.setOpacity_(0.5 * spring)
+            else:
+                self._spring_tint_layer.setOpacity_(0.0)
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -1083,6 +1084,15 @@ class CommandOverlay(NSObject):
                 self._fill_layer.setCompositingFilter_(
                     _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
                 )
+        # Keep the spring tint layer's mask in sync with the fill shape
+        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
+            self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
+            # Use the fill image as a mask so the tint only shows within the overlay
+            mask = CALayer.alloc().init()
+            mask.setFrame_(((0, 0), (total_w, total_h)))
+            mask.setContents_(fill_image)
+            mask.setContentsGravity_("resize")
+            self._spring_tint_layer.setMask_(mask)
 
     # ── layout ──────────────────────────────────────────────
 
