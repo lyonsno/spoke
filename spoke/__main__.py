@@ -3189,30 +3189,38 @@ class SpokeAppDelegate(NSObject):
     ) -> list[tuple[str, str, bool]]:
         command_backend = getattr(self, "_command_backend", "local")
         server_model_ids: list[str] = []
+        server_reachable = False
         if self._command_client is not None:
             try:
                 server_model_ids = self._command_client.list_models()
+                server_reachable = True
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
         if command_backend == "sidecar":
             model_ids = server_model_ids or ([selected_model] if selected_model else [])
         else:
-            local_model_dir = Path(
-                os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
-            ).expanduser()
-            local_model_ids = _iter_local_command_model_ids(local_model_dir)
-            if local_model_ids:
-                local_model_set = set(local_model_ids)
-                model_ids = [
-                    model_id
-                    for model_id in server_model_ids
-                    if model_id in local_model_set
-                ]
-                model_ids.extend(
-                    model_id for model_id in local_model_ids if model_id not in model_ids
-                )
+            if not server_reachable:
+                # Don't list local-disk models when the server is down —
+                # they'll appear selectable but fail on every request.
+                logger.info("Local model server unreachable — suppressing disk-only model list")
+                model_ids = []
             else:
-                model_ids = server_model_ids
+                local_model_dir = Path(
+                    os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+                ).expanduser()
+                local_model_ids = _iter_local_command_model_ids(local_model_dir)
+                if local_model_ids:
+                    local_model_set = set(local_model_ids)
+                    model_ids = [
+                        model_id
+                        for model_id in server_model_ids
+                        if model_id in local_model_set
+                    ]
+                    model_ids.extend(
+                        model_id for model_id in local_model_ids if model_id not in model_ids
+                    )
+                else:
+                    model_ids = server_model_ids
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
@@ -3225,7 +3233,12 @@ class SpokeAppDelegate(NSObject):
     def _seed_command_model_options(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk."""
+        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk.
+
+        For the local backend, only list models when the server is
+        reachable.  Listing disk-only models causes the menu to look
+        populated while every request fails with connection refused.
+        """
         if getattr(self, "_command_backend", "local") == "sidecar":
             if self._command_client is not None:
                 try:
@@ -3241,6 +3254,16 @@ class SpokeAppDelegate(NSObject):
                         exc_info=True,
                     )
             return [(selected_model, selected_model, True)] if selected_model else []
+        # Local backend: check server reachability before listing disk models
+        server_reachable = False
+        if self._command_client is not None:
+            try:
+                self._command_client.list_models()
+                server_reachable = True
+            except Exception:
+                logger.info("Local model server unreachable at seed — suppressing model list")
+        if not server_reachable:
+            return []
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
