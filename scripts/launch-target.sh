@@ -122,7 +122,7 @@ with log_file.open("a", encoding="utf-8") as log:
         lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
         lock_file.unlink(missing_ok=True)
 
-        log.write(f"Launching Spoke target {target_id} from {repo_root}\n")
+        log.write("Launch target handoff: terminated prior local python-based spoke processes.\n")
         log.write(f"Launcher child command: {command!r}\n")
         log.flush()
 

@@ -779,13 +779,23 @@ class SpokeAppDelegate(NSObject):
                 self._transcription_token += 1
                 self._transcribing = False
             # Fall through to start recording
-        # Clear Enter suppression — new hold replaces/dismisses the overlay.
-        self._detector.command_overlay_active = False
+        # Keep the detector flag aligned with the overlay's real visible state.
+        overlay_visible = (
+            self._command_overlay is not None
+            and getattr(self._command_overlay, "_visible", False)
+        )
+        self._detector.command_overlay_active = (
+            overlay_visible and not self._detector._command_overlay_just_dismissed
+        )
         # Do NOT clear _just_dismissed here — it must survive until
         # _on_hold_end so the empty-recording path can see it.
         # Otherwise a slow dismiss tap (>400ms) would recall immediately.
-        logger.info("command_overlay_active -> False (hold start), _just_dismissed=%s (preserved)",
-                     self._detector._command_overlay_just_dismissed)
+        logger.info(
+            "command_overlay_active -> %s (hold start, overlay_visible=%s), _just_dismissed=%s (preserved)",
+            self._detector.command_overlay_active,
+            overlay_visible,
+            self._detector._command_overlay_just_dismissed,
+        )
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -825,15 +835,6 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
-        if self._glow is not None:
-            self._glow.show()
-        if self._overlay is not None:
-            if self._glow is not None:
-                self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
-                    immediate=True,
-                )
-            self._overlay.show()
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -851,6 +852,15 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_recording(False)
                 self._menubar.set_status_text("Audio input error — try again")
             return
+        if self._glow is not None:
+            self._glow.show()
+        if self._overlay is not None:
+            if self._glow is not None:
+                self._overlay.set_brightness(
+                    getattr(self._glow, "_brightness", 0.0),
+                    immediate=True,
+                )
+            self._overlay.show()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
@@ -1101,7 +1111,12 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.set_text(text)
 
-    def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
+    def _on_hold_end(
+        self,
+        shift_held: bool = False,
+        enter_held: bool = False,
+        toggle_command_overlay: bool = False,
+    ) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
             self._hold_rejected_during_warmup = False
             logger.info(
@@ -1115,12 +1130,17 @@ class SpokeAppDelegate(NSObject):
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
-        if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
+        if toggle_command_overlay:
+            pass
+        elif tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
                 # Shift held + release spacebar from tray = navigate down (older)
                 logger.info("Shift+space during tray — navigate down")
                 self._tray_navigate_down()
+            elif enter_held and tray_active:
+                logger.info("Enter-first release during tray — sending current tray entry")
+                self._tray_send_current()
             elif tray_active:
                 # Spacebar from tray (tap or hold release) = insert
                 logger.info("Spacebar during tray — inserting text")
@@ -1132,7 +1152,12 @@ class SpokeAppDelegate(NSObject):
             return
 
         # ── Normal recording end ──
-        logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
+        logger.info(
+            "Hold ended — shift=%s enter=%s toggle_overlay=%s",
+            shift_held,
+            enter_held,
+            toggle_command_overlay,
+        )
         self._preview_active = False
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
@@ -1142,54 +1167,35 @@ class SpokeAppDelegate(NSObject):
         if shift_held and elapsed < 0.8:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
+        elif toggle_command_overlay:
+            logger.info(
+                "Space-first enter chord — discarding %d bytes and toggling assistant overlay",
+                len(wav_bytes),
+            )
+            wav_bytes = b""
 
         # Glow/dimmer: hide immediately for text insertion
-        if not shift_held and not enter_held and self._glow is not None:
+        if not shift_held and not enter_held and not toggle_command_overlay and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
 
         if not wav_bytes:
-            logger.info("No audio — instant path (shift=%s, enter=%s, overlay_active=%s)",
-                        shift_held, enter_held, self._detector.command_overlay_active)
+            logger.info(
+                "No audio — instant path (shift=%s, enter=%s, toggle_overlay=%s, overlay_active=%s)",
+                shift_held,
+                enter_held,
+                toggle_command_overlay,
+                self._detector.command_overlay_active,
+            )
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
-
-            if enter_held and self._command_client is not None:
-                # Enter + empty recording = toggle last assistant response.
-                # Use command_overlay_active (our flag) not _visible (animation state)
-                # to avoid re-dismissing during the dismiss animation.
-                self._detector._command_overlay_just_dismissed = False
-                if self._detector.command_overlay_active:
-                    # Already showing — dismiss it
-                    logger.info("Enter+empty — dismissing command overlay")
-                    if self._command_overlay is not None:
-                        self._command_overlay.cancel_dismiss()
-                    self._detector.command_overlay_active = False
-                    logger.info("command_overlay_active -> False (enter+empty dismiss)")
-                else:
-                    # Not showing — recall last response
-                    history = self._command_client.history
-                    if history:
-                        last_utterance, last_response = history[-1]
-                        logger.info("Enter+empty — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                                self._detector.command_overlay_active = True
-                                logger.info("command_overlay_active -> True (enter+empty recall)")
-                            except Exception:
-                                logger.exception("Recall overlay failed")
-                    else:
-                        logger.info("Enter+empty — no history to recall")
-            elif shift_held:
-                # Shift + empty recording = recall tray
+            if shift_held:
+                # Shift owns the empty-audio review path. Combined Shift+Enter
+                # should not toggle assistant overlay visibility.
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
                     self._tray_active = True
@@ -1199,6 +1205,37 @@ class SpokeAppDelegate(NSObject):
                     return
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
+            elif toggle_command_overlay and self._command_client is not None:
+                # Use command_overlay_active (our flag) not _visible (animation
+                # state) to avoid re-dismissing during the dismiss animation.
+                self._detector._command_overlay_just_dismissed = False
+                if self._detector.command_overlay_active:
+                    # Already showing — dismiss it
+                    logger.info("Space-first enter chord — dismissing command overlay")
+                    if self._command_overlay is not None:
+                        self._command_overlay.cancel_dismiss()
+                    self._detector.command_overlay_active = False
+                    logger.info("command_overlay_active -> False (space-first toggle dismiss)")
+                else:
+                    snapshot = self._last_command_overlay_snapshot()
+                    if snapshot is not None:
+                        last_utterance, last_response = snapshot
+                        logger.info("Space-first enter chord — recalling last response")
+                        if self._command_overlay is not None:
+                            try:
+                                self._sync_command_overlay_brightness(immediate=True)
+                                self._command_overlay.show()
+                                self._command_overlay.set_utterance(last_utterance)
+                                self._command_overlay.append_token(last_response)
+                                self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
+                                logger.info("command_overlay_active -> True (space-first toggle recall)")
+                            except Exception:
+                                logger.exception("Recall overlay failed")
+                    else:
+                        logger.info("Space-first enter chord — no assistant overlay snapshot to recall")
+            elif enter_held and self._command_client is not None:
+                logger.info("Enter-first empty chord — assistant path with no utterance")
             else:
                 # Only dismiss if the overlay wasn't already dismissed by the
                 # instant-press handler (which clears command_overlay_active).
@@ -1212,24 +1249,8 @@ class SpokeAppDelegate(NSObject):
                         self._command_overlay.cancel_dismiss()
                         self._detector.command_overlay_active = False
                         logger.info("command_overlay_active -> False (empty dismiss)")
-                elif self._command_client is not None and not self._detector._command_overlay_just_dismissed:
-                    # Overlay not visible — recall last response on empty tap.
-                    # Skip if this tap already dismissed the overlay (avoid dismiss→recall stutter).
-                    history = self._command_client.history
-                    if history:
-                        last_utterance, last_response = history[-1]
-                        logger.info("Empty tap — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._sync_command_overlay_brightness(immediate=True)
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                                self._detector.command_overlay_active = True
-                                logger.info("command_overlay_active -> True (empty tap recall)")
-                            except Exception:
-                                logger.exception("Recall overlay failed")
+                else:
+                    logger.info("Empty tap — overlay hidden; leaving it hidden")
 
             # Clear _just_dismissed now that the decision has been made.
             # This flag only needs to survive from instant-dismiss through
@@ -1364,6 +1385,18 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.hide()
 
+    def _last_command_overlay_snapshot(self) -> tuple[str, str] | None:
+        """Return the most recent assistant overlay content, including failures."""
+        if self._command_client is not None:
+            history = self._command_client.history
+            if history:
+                return history[-1]
+        utterance = getattr(self, "_last_command_utterance", "")
+        response = getattr(self, "_last_command_response", "")
+        if utterance and response:
+            return utterance, response
+        return None
+
     def _recallLastResponse_(self, payload) -> None:
         """Main thread: recall the last command/response from history."""
         if payload["token"] != self._transcription_token:
@@ -1374,23 +1407,22 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.hide()
 
-        if self._command_client is not None:
-            history = self._command_client.history
-            if history:
-                last_utterance, last_response = history[-1]
-                logger.info("Recalling last response: %r", last_utterance[:50])
-                if self._command_overlay is not None:
-                    self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show()
-                    self._command_overlay.set_utterance(last_utterance)
-                    for ch in last_response:
-                        self._command_overlay.append_token(ch)
-                    self._command_overlay.finish()
-                    self._detector.command_overlay_active = True
-                    logger.info("command_overlay_active -> True (shift recall)")
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
-                return
+        snapshot = self._last_command_overlay_snapshot()
+        if snapshot is not None:
+            last_utterance, last_response = snapshot
+            logger.info("Recalling last response: %r", last_utterance[:50])
+            if self._command_overlay is not None:
+                self._sync_command_overlay_brightness(immediate=True)
+                self._command_overlay.show()
+                self._command_overlay.set_utterance(last_utterance)
+                for ch in last_response:
+                    self._command_overlay.append_token(ch)
+                self._command_overlay.finish()
+                self._detector.command_overlay_active = True
+                logger.info("command_overlay_active -> True (shift recall)")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
 
         logger.info("No history to recall")
         if self._menubar is not None:
@@ -2057,6 +2089,8 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         utterance = payload["utterance"]
+        self._last_command_utterance = utterance
+        self._last_command_response = ""
         # Hide the input overlay
         if self._overlay is not None:
             self._overlay.hide()
@@ -2115,6 +2149,8 @@ class SpokeAppDelegate(NSObject):
         if overlay is not None:
             overlay.set_tool_active(False)
         response = payload.get("response", "")
+        if response:
+            self._last_command_response = response
         if overlay is not None and response:
             try:
                 overlay.set_response_text(response)
@@ -2217,11 +2253,14 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         error = payload.get("error", "Unknown error")
+        error_text = "couldn't reach the model — try again in a moment"
         logger.error("Command pathway error: %s", error)
         if self._glow is not None:
             self._glow.hide()
         if self._overlay is not None:
             self._overlay.hide()
+        if getattr(self, "_last_command_utterance", ""):
+            self._last_command_response = error_text
         # Show the error in the command overlay like a response
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
@@ -2231,7 +2270,7 @@ class SpokeAppDelegate(NSObject):
                 except Exception:
                     logger.exception("Command overlay show failed during error presentation")
             try:
-                self._command_overlay.append_token("couldn't reach the model — try again in a moment")
+                self._command_overlay.append_token(error_text)
             except Exception:
                 logger.exception("Command overlay append failed during error presentation")
             try:
@@ -3467,12 +3506,6 @@ class SpokeAppDelegate(NSObject):
                         model_id,
                     )
                     continue
-                _record_runtime_phase(
-                    "client.prepare.start",
-                    role=role,
-                    model=model_id,
-                    client_type=type(client).__name__,
-                )
                 with self._local_inference_context(client):
                     prepare()
                 _record_runtime_phase(
