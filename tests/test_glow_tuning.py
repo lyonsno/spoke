@@ -103,6 +103,65 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_rational_additive_curve_holds_more_energy_than_exponential(self, mock_pyobjc):
+        """The rational Vision Quest mode should keep the outer shell fatter at the same distance."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            distance = 12.0
+            falloff = 12.0
+            power = 2.0
+
+            exponential = mod._distance_field_opacity_with_mode(
+                distance,
+                falloff,
+                power,
+                mod.ADDITIVE_CURVE_MODE_EXPONENTIAL,
+            )
+            rational = mod._distance_field_opacity_with_mode(
+                distance,
+                falloff,
+                power,
+                mod.ADDITIVE_CURVE_MODE_RATIONAL,
+            )
+
+            assert rational > exponential
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_additive_mask_intensity_control_scales_midfield_alpha(self, mock_pyobjc):
+        """Vision Quest should expose additive mask overdrive as a separate global lever."""
+        import math
+        import numpy as np
+
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            alpha = mod._distance_field_alpha(
+                np.array([[-18.0]], dtype=np.float32),
+                18.0,
+                1.0,
+                intensity_multiplier=1.5,
+            )
+
+            assert float(alpha[0, 0]) == pytest.approx(min(math.exp(-1.0) * 1.5, 1.0))
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_wide_bloom_profile_presets_reshape_tail_energy(self, mock_pyobjc):
+        """Tintilla should be able to bend the wide-bloom knee without changing the whole additive stack."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            tight = mod._continuous_glow_pass_specs(mod.WIDE_BLOOM_PROFILE_TIGHT)[2]
+            quest = mod._continuous_glow_pass_specs(mod.WIDE_BLOOM_PROFILE_QUEST)[2]
+            mist = mod._continuous_glow_pass_specs(mod.WIDE_BLOOM_PROFILE_MIST)[2]
+
+            assert tight["falloff"] < quest["falloff"] < mist["falloff"]
+            assert tight["power"] > quest["power"] > mist["power"]
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_edge_mix_keeps_dark_scenes_purely_additive_until_light_backgrounds(self, mock_pyobjc):
         """Dark scenes should not carry any subtractive vignette until the background is genuinely bright."""
         sys.modules.pop("spoke.glow", None)

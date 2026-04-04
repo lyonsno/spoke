@@ -28,6 +28,8 @@ from Quartz import (
     CAMediaTimingFunction,
 )
 from .tintilla import (
+    ADDITIVE_CURVE_MODE_EXPONENTIAL,
+    ADDITIVE_CURVE_MODE_RATIONAL,
     SCREEN_GLOW_CORE_LAYER_ID,
     SCREEN_GLOW_TIGHT_BLOOM_LAYER_ID,
     SCREEN_GLOW_WIDE_BLOOM_LAYER_ID,
@@ -35,6 +37,9 @@ from .tintilla import (
     SCREEN_VIGNETTE_CORE_LAYER_ID,
     SCREEN_VIGNETTE_MID_LAYER_ID,
     SCREEN_VIGNETTE_TAIL_LAYER_ID,
+    WIDE_BLOOM_PROFILE_MIST,
+    WIDE_BLOOM_PROFILE_QUEST,
+    WIDE_BLOOM_PROFILE_TIGHT,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,11 @@ _VIGNETTE_LAYER_IDS = [
     SCREEN_VIGNETTE_MID_LAYER_ID,
     SCREEN_VIGNETTE_TAIL_LAYER_ID,
 ]
+_WIDE_BLOOM_PROFILE_SPECS = {
+    WIDE_BLOOM_PROFILE_TIGHT: {"falloff": 12.0, "power": 4.2},
+    WIDE_BLOOM_PROFILE_QUEST: {"falloff": 15.0, "power": 3.7},
+    WIDE_BLOOM_PROFILE_MIST: {"falloff": 18.5, "power": 3.1},
+}
 
 
 def _scale_color_saturation(
@@ -395,15 +405,42 @@ def _display_signed_distance_field(geometry: dict):
 
 
 def _distance_field_opacity(distance: float, falloff: float, power: float) -> float:
+    return _distance_field_opacity_with_mode(
+        distance,
+        falloff,
+        power,
+        ADDITIVE_CURVE_MODE_EXPONENTIAL,
+    )
+
+
+def _distance_field_opacity_with_mode(
+    distance: float,
+    falloff: float,
+    power: float,
+    curve_mode: str,
+) -> float:
     normalized = max(distance, 0.0) / max(falloff, 1e-6)
+    if curve_mode == ADDITIVE_CURVE_MODE_RATIONAL:
+        return 1.0 / (1.0 + normalized ** power)
     return math.exp(-(normalized ** power))
 
 
-def _distance_field_alpha(signed_distance, falloff: float, power: float):
+def _distance_field_alpha(
+    signed_distance,
+    falloff: float,
+    power: float,
+    curve_mode: str = ADDITIVE_CURVE_MODE_EXPONENTIAL,
+    intensity_multiplier: float = 1.0,
+):
     import numpy as np
 
     distance = np.clip(-signed_distance, 0.0, None)
-    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
+    normalized = distance / max(falloff, 1e-6)
+    if curve_mode == ADDITIVE_CURVE_MODE_RATIONAL:
+        alpha = 1.0 / (1.0 + np.power(normalized, power, dtype=np.float32))
+    else:
+        alpha = np.exp(-np.power(normalized, power, dtype=np.float32))
+    alpha = np.clip(alpha * float(intensity_multiplier), 0.0, 1.0)
     return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
 
 
@@ -443,22 +480,43 @@ def _alpha_field_to_image(alpha):
     return image, payload
 
 
-def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
-    signed_distance = _display_signed_distance_field(geometry)
+def _distance_field_masks_for_specs(
+    geometry: dict,
+    specs: list[dict],
+    *,
+    curve_mode: str = ADDITIVE_CURVE_MODE_EXPONENTIAL,
+    intensity_multiplier: float = 1.0,
+    signed_distance=None,
+) -> list[dict]:
+    if signed_distance is None:
+        signed_distance = _display_signed_distance_field(geometry)
     masks = []
     for spec in specs:
         alpha = _distance_field_alpha(
             signed_distance,
             spec["falloff"] * geometry["scale"],
             spec["power"],
+            curve_mode=curve_mode,
+            intensity_multiplier=intensity_multiplier,
         )
         image, payload = _alpha_field_to_image(alpha)
         masks.append({"image": image, "payload": payload, "spec": spec})
     return masks
 
 
-def _continuous_glow_pass_specs():
+def _scale_sdf_layer_alpha(alpha: float, intensity_multiplier: float) -> float:
+    return min(alpha * intensity_multiplier, 1.0)
+
+
+def _continuous_glow_pass_specs(
+    wide_bloom_profile: str = WIDE_BLOOM_PROFILE_QUEST,
+    intensity_multiplier: float = 1.0,
+):
     """Procedural additive passes driven from one shared distance field."""
+    wide_bloom_spec = _WIDE_BLOOM_PROFILE_SPECS.get(
+        wide_bloom_profile,
+        _WIDE_BLOOM_PROFILE_SPECS[WIDE_BLOOM_PROFILE_QUEST],
+    )
     return [
         {
             "name": "core",
@@ -466,7 +524,7 @@ def _continuous_glow_pass_specs():
             "falloff": 3.2,
             "power": 2.7,
             "fill_role": "inner",
-            "fill_alpha": 0.28,
+            "fill_alpha": _scale_sdf_layer_alpha(0.28, intensity_multiplier),
         },
         {
             "name": "tight_bloom",
@@ -474,15 +532,15 @@ def _continuous_glow_pass_specs():
             "falloff": 7.2,
             "power": 3.2,
             "fill_role": "middle",
-            "fill_alpha": 0.18,
+            "fill_alpha": _scale_sdf_layer_alpha(0.18, intensity_multiplier),
         },
         {
             "name": "wide_bloom",
             "path_kind": "distance_field",
-            "falloff": 15.0,
-            "power": 3.7,
+            "falloff": wide_bloom_spec["falloff"],
+            "power": wide_bloom_spec["power"],
             "fill_role": "outer",
-            "fill_alpha": 0.12,
+            "fill_alpha": _scale_sdf_layer_alpha(0.12, intensity_multiplier),
         },
     ]
 
@@ -569,6 +627,12 @@ class GlowOverlay(NSObject):
         self._brightness_timer = None
         self._brightness = 0.5
         self._visual_layer_state = None
+        self._glow_geometry = None
+        self._glow_signed_distance = None
+        self._glow_mask_scale = 1.0
+        self._active_additive_curve_mode = ADDITIVE_CURVE_MODE_EXPONENTIAL
+        self._active_additive_mask_intensity = 1.0
+        self._active_wide_bloom_profile = WIDE_BLOOM_PROFILE_QUEST
         return self
 
     def set_visual_layer_state(self, state) -> None:
@@ -586,6 +650,7 @@ class GlowOverlay(NSObject):
         self._apply_visual_layer_state()
 
     def _apply_visual_layer_state(self) -> None:
+        self._refresh_glow_masks_if_needed()
         state = getattr(self, "_visual_layer_state", None)
         if hasattr(self, "_glow_pass_layers"):
             for layer_id, entry in zip(_GLOW_LAYER_IDS, self._glow_pass_layers):
@@ -631,8 +696,9 @@ class GlowOverlay(NSObject):
         mask_scale = _screen_backing_scale(self._screen)
         geometry = _display_shape_geometry(self._screen, w, h, mask_scale)
         geometry["scale"] = mask_scale
-
-        glow_colors = _glow_role_colors(_GLOW_COLOR)
+        self._glow_geometry = geometry
+        self._glow_signed_distance = _display_signed_distance_field(geometry)
+        self._glow_mask_scale = mask_scale
 
         # ── Optional screen dim: subtle dark backdrop for glow contrast ──
         self._dim_layer = None
@@ -653,8 +719,22 @@ class GlowOverlay(NSObject):
 
         # Procedural additive passes: one continuous field, different falloff curves.
         glow_pass_layers = []
-        self._mask_payloads = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
+        self._glow_mask_payloads = []
+        self._vignette_mask_payloads = []
+        curve_mode, intensity_multiplier, wide_bloom_profile = self._current_additive_tuning()
+        self._active_additive_curve_mode = curve_mode
+        self._active_additive_mask_intensity = intensity_multiplier
+        self._active_wide_bloom_profile = wide_bloom_profile
+        for entry in _distance_field_masks_for_specs(
+            geometry,
+            _continuous_glow_pass_specs(
+                wide_bloom_profile=wide_bloom_profile,
+                intensity_multiplier=intensity_multiplier,
+            ),
+            curve_mode=curve_mode,
+            intensity_multiplier=intensity_multiplier,
+            signed_distance=self._glow_signed_distance,
+        ):
             spec = entry["spec"]
             layer = CALayer.alloc().init()
             layer.setFrame_(((0, 0), (w, h)))
@@ -664,7 +744,7 @@ class GlowOverlay(NSObject):
             mask_layer.setContentsScale_(mask_scale)
             layer.setMask_(mask_layer)
             self._glow_layer.addSublayer_(layer)
-            self._mask_payloads.append(entry["payload"])
+            self._glow_mask_payloads.append(entry["payload"])
             glow_pass_layers.append({"layer": layer, "spec": spec})
 
         self._glow_pass_layers = glow_pass_layers
@@ -687,9 +767,10 @@ class GlowOverlay(NSObject):
             mask_layer.setContentsScale_(mask_scale)
             layer.setMask_(mask_layer)
             self._vignette_layer.addSublayer_(layer)
-            self._mask_payloads.append(entry["payload"])
+            self._vignette_mask_payloads.append(entry["payload"])
             vignette_pass_layers.append({"layer": layer, "spec": spec})
 
+        self._mask_payloads = self._glow_mask_payloads + self._vignette_mask_payloads
         self._vignette_pass_layers = vignette_pass_layers
         self._apply_glow_color(_GLOW_COLOR)
         self._apply_visual_layer_state()
@@ -697,6 +778,67 @@ class GlowOverlay(NSObject):
         content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
+
+    def _current_additive_tuning(self) -> tuple[str, float, str]:
+        state = getattr(self, "_visual_layer_state", None)
+        if state is None:
+            return (
+                ADDITIVE_CURVE_MODE_EXPONENTIAL,
+                1.0,
+                WIDE_BLOOM_PROFILE_QUEST,
+            )
+        curve_mode = (
+            state.additive_curve_mode()
+            if hasattr(state, "additive_curve_mode")
+            else ADDITIVE_CURVE_MODE_EXPONENTIAL
+        )
+        intensity = (
+            state.additive_mask_intensity()
+            if hasattr(state, "additive_mask_intensity")
+            else 1.0
+        )
+        profile = (
+            state.wide_bloom_profile()
+            if hasattr(state, "wide_bloom_profile")
+            else WIDE_BLOOM_PROFILE_QUEST
+        )
+        return (curve_mode, intensity, profile)
+
+    def _refresh_glow_masks_if_needed(self) -> None:
+        if not hasattr(self, "_glow_pass_layers") or getattr(self, "_glow_geometry", None) is None:
+            return
+        curve_mode, intensity_multiplier, wide_bloom_profile = self._current_additive_tuning()
+        if (
+            curve_mode == self._active_additive_curve_mode
+            and intensity_multiplier == self._active_additive_mask_intensity
+            and wide_bloom_profile == self._active_wide_bloom_profile
+        ):
+            return
+        self._active_additive_curve_mode = curve_mode
+        self._active_additive_mask_intensity = intensity_multiplier
+        self._active_wide_bloom_profile = wide_bloom_profile
+        new_payloads = []
+        masks = _distance_field_masks_for_specs(
+            self._glow_geometry,
+            _continuous_glow_pass_specs(
+                wide_bloom_profile=wide_bloom_profile,
+                intensity_multiplier=intensity_multiplier,
+            ),
+            curve_mode=curve_mode,
+            intensity_multiplier=intensity_multiplier,
+            signed_distance=self._glow_signed_distance,
+        )
+        for entry, layer_entry in zip(masks, self._glow_pass_layers):
+            layer_entry["spec"] = entry["spec"]
+            mask_layer = layer_entry["layer"].mask()
+            new_payloads.append(entry["payload"])
+            if mask_layer is None:
+                continue
+            mask_layer.setContents_(entry["image"])
+            mask_layer.setContentsScale_(self._glow_mask_scale)
+        if new_payloads:
+            self._glow_mask_payloads = new_payloads
+            self._mask_payloads = self._glow_mask_payloads + getattr(self, "_vignette_mask_payloads", [])
 
     def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
         """Push the current glow color through the procedural glow/vignette passes."""
