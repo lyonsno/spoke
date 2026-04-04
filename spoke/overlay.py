@@ -279,15 +279,38 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     contents without needing a separate mask layer.
     """
     import numpy as np
-    from .glow import _premultiplied_rgba_to_image
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
 
-    alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32, copy=False)
-    rgba = np.empty(alpha.shape + (4,), dtype=np.float32)
-    rgba[..., 0] = (r / 255.0) * alpha
-    rgba[..., 1] = (g / 255.0) * alpha
-    rgba[..., 2] = (b / 255.0) * alpha
-    rgba[..., 3] = alpha
-    return _premultiplied_rgba_to_image(rgba)
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    # Premultiply: channel = channel_value * alpha / 255
+    rgba[..., 0] = np.clip(r * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip(g * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip(b * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 3] = mask_alpha
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
 
 
 def _build_ridge_image(field_width: float, field_height: float,
