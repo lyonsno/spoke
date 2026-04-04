@@ -346,6 +346,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
+        self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -758,6 +759,18 @@ class SpokeAppDelegate(NSObject):
 
     # ── hold callbacks (called on main thread) ──────────────
 
+    def _on_cancel_spring_start(self) -> None:
+        """Called from the event tap when enter goes down while space is
+        held and the command overlay is active.  Activates the cancel
+        spring if generation is in progress."""
+        if not self._transcribing:
+            return
+        logger.info("Cancel spring activated (enter added to hold during active generation)")
+        self._cancel_spring_active = True
+        self._cancel_spring_start = time.monotonic()
+        if self._command_overlay is not None:
+            self._command_overlay.set_cancel_spring(1.0)
+
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):
             logger.warning("Hold started before models were ready — ignoring")
@@ -773,6 +786,12 @@ class SpokeAppDelegate(NSObject):
             or getattr(tts, "_stream", None) is not None
         )
         # ── Cancel spring: space+enter hold during active generation ──
+        # If the spring was already activated by the enter-during-hold
+        # callback, don't cancel the stream or start recording.
+        if getattr(self, '_cancel_spring_active', False):
+            logger.info("Hold timer fired while cancel spring active — suppressing recording")
+            return
+
         # Don't cancel immediately — start the visual spring wind-up.
         # The cancel fires on release if the spring is past threshold.
         enter_held = getattr(self._detector, '_enter_held', False) is True
