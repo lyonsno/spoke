@@ -2473,12 +2473,13 @@ class SpokeAppDelegate(NSObject):
                 state["launch_target"] = launch_target
             if self._command_client is not None:
                 assistant_title = "Assistant Model"
-                if getattr(self, "_command_server_unreachable", False):
+                server_unreachable = getattr(self, "_command_server_unreachable", False)
+                if server_unreachable:
                     assistant_title = "Assistant Model (server unreachable)"
                 state["assistant"] = {
                     "title": assistant_title,
                     "selected": self._command_model_id,
-                    "models": self._command_model_options,
+                    "models": [] if server_unreachable else self._command_model_options,
                 }
                 state["assistant_backend"] = {
                     "title": "Assistant Backend",
