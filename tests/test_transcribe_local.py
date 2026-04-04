@@ -356,31 +356,29 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_uses_float16_for_unquantized_whisper_repos(self, mock_load_model):
         """Unquantized MLX Whisper repos should warm with float16."""
-        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
 
         mock_load_model.return_value = MagicMock()
         client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx")
-        with patch("spoke.transcribe_local.mx", new=MagicMock(float16="float16")):
-            client.prepare()
+        client.prepare()
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx",
-            dtype="float16",
+            dtype=mx.float16,
         )
 
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_keeps_float16_for_quantized_whisper_repos(self, mock_load_model):
         """Quantized Whisper repos should keep the float16 warmup path."""
-        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
 
         mock_load_model.return_value = MagicMock()
         client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx-8bit")
-        with patch("spoke.transcribe_local.mx", new=MagicMock(float16="float16")):
-            client.prepare()
+        client.prepare()
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx-8bit",
-            dtype="float16",
+            dtype=mx.float16,
         )
 
 
