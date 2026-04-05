@@ -204,9 +204,7 @@ class TerraformHUD(NSObject):
         frame = NSMakeRect(x, y, _PANEL_WIDTH, _PANEL_HEIGHT)
 
         style = (
-            _NSWindowStyleMaskTitled
-            | _NSWindowStyleMaskClosable
-            | _NSWindowStyleMaskResizable
+            _NSWindowStyleMaskResizable
             | _NSWindowStyleMaskUtilityWindow
             | NSWindowStyleMaskNonactivatingPanel
         )
@@ -217,9 +215,7 @@ class TerraformHUD(NSObject):
         self._panel.setTitle_("Terror Form")
         self._panel.setLevel_(3)  # NSFloatingWindowLevel
         self._panel.setOpaque_(False)
-        self._panel.setBackgroundColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.1, 0.1, 0.12, 0.92)
-        )
+        self._panel.setBackgroundColor_(NSColor.clearColor())
         self._panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
@@ -228,10 +224,11 @@ class TerraformHUD(NSObject):
         self._panel.setFloatingPanel_(True)
         self._panel.setBecomesKeyOnlyIfNeeded_(True)
 
-        # Scroll view for the topoi list
+        # Scroll view for the topoi list — no visible scrollbar,
+        # content fades to transparent at top and bottom edges.
         content_frame = self._panel.contentView().bounds()
         self._scroll_view = NSScrollView.alloc().initWithFrame_(content_frame)
-        self._scroll_view.setHasVerticalScroller_(True)
+        self._scroll_view.setHasVerticalScroller_(False)
         self._scroll_view.setHasHorizontalScroller_(False)
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setAutoresizingMask_(18)  # width + height flex
@@ -240,6 +237,22 @@ class TerraformHUD(NSObject):
         self._content_view = NSView.alloc().initWithFrame_(content_frame)
         self._content_view.setWantsLayer_(True)
         self._scroll_view.setDocumentView_(self._content_view)
+
+        # Fade mask: content fades to transparent at top and bottom
+        self._scroll_view.setWantsLayer_(True)
+        fade_height = content_frame.size.height
+        fade_width = content_frame.size.width
+        _FADE_FRACTION = 0.08  # 8% of panel height fades at each edge
+
+        mask_layer = Quartz.CAGradientLayer.layer()
+        mask_layer.setFrame_(((0, 0), (fade_width, fade_height)))
+        clear = Quartz.CGColorCreateGenericRGB(0, 0, 0, 0)
+        opaque = Quartz.CGColorCreateGenericRGB(0, 0, 0, 1)
+        mask_layer.setColors_([clear, opaque, opaque, clear])
+        mask_layer.setLocations_([0.0, _FADE_FRACTION, 1.0 - _FADE_FRACTION, 1.0])
+        mask_layer.setStartPoint_((0.5, 0.0))
+        mask_layer.setEndPoint_((0.5, 1.0))
+        self._scroll_view.layer().setMask_(mask_layer)
 
         self._panel.contentView().addSubview_(self._scroll_view)
 
@@ -305,13 +318,13 @@ class TerraformHUD(NSObject):
         for subview in list(self._content_view.subviews()):
             subview.removeFromSuperview()
 
-        width = self._scroll_view.bounds().size.width - 16  # scroll bar margin
+        width = self._scroll_view.bounds().size.width - 8  # edge padding
         total_height = max(
             len(self._topoi) * (_ROW_HEIGHT + 4) + _PADDING,
             self._scroll_view.bounds().size.height,
         )
 
-        self._content_view.setFrameSize_((width + 16, total_height))
+        self._content_view.setFrameSize_((self._scroll_view.bounds().size.width, total_height))
 
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * (_ROW_HEIGHT + 4)
