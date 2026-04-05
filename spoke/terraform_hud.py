@@ -201,6 +201,16 @@ class _ManualScrollView(NSView):
             self.addSubview_(view)
             self._apply_scroll()
 
+    def hitTest_(self, point):
+        """Claim all mouse events within bounds — prevents scroll/click
+        from falling through gaps between cards to windows behind."""
+        if self.mouse_inRect_flipped_(point, self.frame(), False):
+            return self
+        return None
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
     def scrollWheel_(self, event):
         if self._content is None:
             return
