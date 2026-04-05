@@ -247,6 +247,32 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_brightness_resample_samples_below_glow_window(self, mock_pyobjc, monkeypatch):
+        """Recurring brightness adaptation should grade the scene under our window stack, not our own overlays."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._brightness = 0.2
+            glow._window.windowNumber.return_value = 321
+            glow._apply_glow_color = MagicMock()
+            glow._dim_layer.presentationLayer.return_value = None
+
+            captured = {}
+
+            def _sample(screen, excluding_window_id=None):
+                captured["excluding_window_id"] = excluding_window_id
+                return 0.9
+
+            monkeypatch.setattr(mod, "_sample_screen_brightness", _sample)
+
+            glow.brightnessResample_(None)
+
+            assert captured["excluding_window_id"] == 321
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_show_applies_dark_background_glow_style(self, mock_pyobjc, monkeypatch):
         """Dark backgrounds should cache the calmer, less saturated glow style."""
         sys.modules.pop("spoke.glow", None)

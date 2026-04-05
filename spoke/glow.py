@@ -140,7 +140,7 @@ _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 4.575  # back to original
 
 
-def _sample_screen_brightness(screen) -> float:
+def _sample_screen_brightness(screen, excluding_window_id=None) -> float:
     """Sample average brightness from 4 small patches (one per quadrant).
 
     Each patch is 50x50 pixels, inset 25% from each screen edge to avoid
@@ -151,6 +151,7 @@ def _sample_screen_brightness(screen) -> float:
         from Quartz import (
             CGWindowListCreateImage,
             kCGWindowListOptionOnScreenBelowWindow,
+            kCGWindowListOptionOnScreenOnly,
             kCGNullWindowID,
             CGImageGetWidth,
             CGImageGetHeight,
@@ -178,12 +179,13 @@ def _sample_screen_brightness(screen) -> float:
             py = oy + fh * cy_frac - ps / 2
             rect = ((px, py), (ps, ps))
 
-            image = CGWindowListCreateImage(
-                rect,
-                kCGWindowListOptionOnScreenBelowWindow,
-                kCGNullWindowID,
-                0,
+            option = (
+                kCGWindowListOptionOnScreenBelowWindow
+                if excluding_window_id not in (None, 0)
+                else kCGWindowListOptionOnScreenOnly
             )
+            window_id = excluding_window_id if excluding_window_id not in (None, 0) else kCGNullWindowID
+            image = CGWindowListCreateImage(rect, option, window_id, 0)
             if image is None:
                 continue
 
@@ -927,7 +929,13 @@ class GlowOverlay(NSObject):
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
         if not self._visible:
             return
-        new_brightness = _sample_screen_brightness(self._screen)
+        window_id = None
+        if self._window is not None and hasattr(self._window, "windowNumber"):
+            try:
+                window_id = int(self._window.windowNumber())
+            except Exception:
+                window_id = None
+        new_brightness = _sample_screen_brightness(self._screen, excluding_window_id=window_id)
         if abs(new_brightness - self._brightness) < 0.02:
             return  # no meaningful change
         self._brightness = new_brightness
