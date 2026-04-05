@@ -556,7 +556,7 @@ def _continuous_vignette_pass_specs():
             "falloff": 6.8,
             "power": 1.55,
             "alpha": 1.0,
-            "color_scale": 0.20,
+            "color_scale": 0.08,
         },
         {
             "name": "mid",
@@ -564,7 +564,7 @@ def _continuous_vignette_pass_specs():
             "falloff": 15.5,
             "power": 1.7,
             "alpha": 0.86,
-            "color_scale": 0.28,
+            "color_scale": 0.12,
         },
         {
             "name": "tail",
@@ -572,7 +572,7 @@ def _continuous_vignette_pass_specs():
             "falloff": 28.0,
             "power": 1.75,
             "alpha": 0.88,
-            "color_scale": 0.36,
+            "color_scale": 0.16,
         },
     ]
 
