@@ -323,6 +323,7 @@ class TestExecuteTool:
         tts_client._model_id = "k2-fsa/OmniVoice"
         tts_client._model = None
         tts_client._base_url = ""
+        tts_client.is_warming = False
 
         result = mod.execute_tool(
             name="read_aloud",
@@ -333,6 +334,31 @@ class TestExecuteTool:
         assert "Error speaking text: Local OmniVoice TTS is not ready yet." in result
         assert "cold-load would block this command turn" in result
         tts_client.speak.assert_not_called()
+
+    def test_execute_read_aloud_local_omnivoice_waits_for_inflight_warmup(self):
+        """A local OmniVoice warmup already in flight should be allowed to finish."""
+        mod = _import_tools()
+        tts_client = MagicMock()
+        tts_client._model_id = "k2-fsa/OmniVoice"
+        tts_client._model = None
+        tts_client._base_url = ""
+        tts_client.is_warming = True
+
+        def finish_warmup(timeout: float) -> bool:
+            tts_client._model = object()
+            return True
+
+        tts_client.wait_until_ready.side_effect = finish_warmup
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "literal:hello world"},
+            tts_client=tts_client,
+        )
+
+        tts_client.wait_until_ready.assert_called_once_with(timeout=15.0)
+        tts_client.speak.assert_called_once_with("hello world")
+        assert result == "Speaking: hello world"
 
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""

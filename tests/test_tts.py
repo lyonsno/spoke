@@ -601,6 +601,35 @@ class TestGPULockDiscipline:
 
         assert locked_during_load == [True], "Lock must be held during model loading"
 
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_warm_exposes_inflight_state_and_wait_until_ready(self, mock_load, mock_sd):
+        """warm() should expose an in-flight state that callers can wait on."""
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_load(_model_id):
+            started.set()
+            assert release.wait(timeout=2.0), "warm load was never released"
+            return MagicMock()
+
+        mock_load.side_effect = blocking_load
+
+        from spoke.tts import TTSClient
+
+        client = TTSClient()
+        client.warm()
+
+        assert started.wait(timeout=1.0), "warm() never started loading"
+        assert client.is_warming is True
+        assert client.is_loaded is False
+
+        release.set()
+
+        assert client.wait_until_ready(timeout=1.0) is True
+        assert client.is_warming is False
+        assert client.is_loaded is True
+
 
 class TestAmplitudeCallback:
     """Verify amplitude callback is invoked per chunk during playback."""

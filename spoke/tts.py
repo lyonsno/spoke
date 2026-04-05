@@ -329,6 +329,11 @@ class TTSClient:
         self._audio_fade_start_gain = 1.0
         self._audio_fade_target_gain = 1.0
         self._audio_fade_started_at = time.monotonic()
+        self._warm_lock = threading.Lock()
+        self._warm_thread: threading.Thread | None = None
+        self._warm_in_progress = False
+        self._warm_completed = threading.Event()
+        self._warm_error: Exception | None = None
 
     @classmethod
     def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient | RemoteTTSClient"]:
@@ -356,6 +361,8 @@ class TTSClient:
         if self._model is None:
             logger.info("Loading TTS model %s …", self._model_id)
             self._model = tts_load(self._model_id)
+            self._warm_error = None
+            self._warm_completed.set()
             logger.info("TTS model loaded.")
 
     def warm(self) -> None:
@@ -366,9 +373,26 @@ class TTSClient:
             with lock_ctx:
                 try:
                     self._ensure_model()
-                except Exception:
+                except Exception as exc:
+                    self._warm_error = exc
                     logger.warning("TTS model warm-up failed", exc_info=True)
-        threading.Thread(target=_warm, daemon=True).start()
+                finally:
+                    with self._warm_lock:
+                        self._warm_in_progress = False
+                        self._warm_completed.set()
+
+        with self._warm_lock:
+            if self._model is not None:
+                self._warm_error = None
+                self._warm_completed.set()
+                return
+            if self._warm_in_progress and self._warm_thread is not None and self._warm_thread.is_alive():
+                return
+            self._warm_error = None
+            self._warm_completed.clear()
+            self._warm_in_progress = True
+            self._warm_thread = threading.Thread(target=_warm, daemon=True)
+            self._warm_thread.start()
 
     def unload(self) -> None:
         """Release the TTS model to free memory."""
@@ -376,10 +400,30 @@ class TTSClient:
             return
         logger.info("Unloading TTS model %s", self._model_id)
         self._model = None
+        self._warm_completed.clear()
 
     @property
     def is_loaded(self) -> bool:
         """Whether the model is currently resident in memory."""
+        return self._model is not None
+
+    @property
+    def is_warming(self) -> bool:
+        """Whether a background warmup is currently in flight."""
+        with self._warm_lock:
+            if self._warm_in_progress and self._warm_thread is not None and not self._warm_thread.is_alive():
+                self._warm_in_progress = False
+            return self._warm_in_progress
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait for an in-flight warmup to finish."""
+        if self._model is not None:
+            return True
+        if not self.is_warming:
+            return self._model is not None
+        finished = self._warm_completed.wait(timeout=timeout)
+        if not finished:
+            return False
         return self._model is not None
 
     def _current_audio_gain_locked(self, now: float) -> float:
