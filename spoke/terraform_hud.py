@@ -16,13 +16,10 @@ from pathlib import Path
 import objc
 from AppKit import (
     NSBackingStoreBuffered,
-    NSBezierPath,
     NSColor,
     NSFont,
-    NSGraphicsContext,
     NSPanel,
     NSScreen,
-    NSScrollView,
     NSTextField,
     NSView,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
@@ -192,12 +189,54 @@ def _make_label(
     return label
 
 
-class _DraggableScrollView(NSScrollView):
-    """NSScrollView that allows click-drag to move the parent window.
+class _ManualScrollView(NSView):
+    """Plain NSView that scrolls its content by adjusting frame origin.
 
-    Two-finger trackpad scrolling still works normally via scrollWheel:.
-    Single-click drag repositions the panel.
+    Replaces NSScrollView to avoid NSClipView layer-caching ghosts.
+    Handles scrollWheel for trackpad scroll, mouseDown/Dragged for
+    window repositioning, and applies a gradient fade mask.
     """
+
+    def initWithFrame_(self, frame):
+        self = objc.super(_ManualScrollView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._scroll_offset = 0.0  # how far the content is scrolled (positive = scrolled down)
+        self._content: NSView | None = None
+        self.setWantsLayer_(True)
+        self.layer().setMasksToBounds_(True)
+
+        # Fade mask
+        h = frame.size.height
+        w = frame.size.width
+        _FADE_FRACTION = 0.08
+        mask = Quartz.CAGradientLayer.layer()
+        mask.setFrame_(((0, 0), (w, h)))
+        clear = Quartz.CGColorCreateGenericRGB(0, 0, 0, 0)
+        opaque = Quartz.CGColorCreateGenericRGB(0, 0, 0, 1)
+        mask.setColors_([clear, opaque, opaque, clear])
+        mask.setLocations_([0.0, _FADE_FRACTION, 1.0 - _FADE_FRACTION, 1.0])
+        mask.setStartPoint_((0.5, 0.0))
+        mask.setEndPoint_((0.5, 1.0))
+        self.layer().setMask_(mask)
+        return self
+
+    def setContent_(self, view):
+        """Replace the scrollable content view."""
+        if self._content is not None:
+            self._content.removeFromSuperview()
+        self._content = view
+        if view is not None:
+            self.addSubview_(view)
+            self._apply_scroll()
+
+    def scrollWheel_(self, event):
+        if self._content is None:
+            return
+        # deltaY is positive when scrolling up (content moves down)
+        self._scroll_offset -= event.deltaY() * 3.0
+        self._clamp_scroll()
+        self._apply_scroll()
 
     def mouseDown_(self, event):
         self._drag_origin = event.locationInWindow()
@@ -215,6 +254,27 @@ class _DraggableScrollView(NSScrollView):
         frame = win.frame()
         win.setFrameOrigin_((frame.origin.x + dx, frame.origin.y + dy))
 
+    def _clamp_scroll(self):
+        if self._content is None:
+            self._scroll_offset = 0.0
+            return
+        content_h = self._content.frame().size.height
+        visible_h = self.bounds().size.height
+        max_scroll = max(0.0, content_h - visible_h)
+        self._scroll_offset = max(0.0, min(self._scroll_offset, max_scroll))
+
+    def _apply_scroll(self):
+        if self._content is None:
+            return
+        content_h = self._content.frame().size.height
+        visible_h = self.bounds().size.height
+        # In flipped-ish terms: offset 0 = top of content visible
+        # NSView y=0 is bottom, so we position the content such that
+        # the top of the content aligns with the top of the visible area
+        # when scroll_offset is 0.
+        y = -(content_h - visible_h) + self._scroll_offset
+        self._content.setFrameOrigin_((0, y))
+
 
 class TerraformHUD(NSObject):
     """Manages the Terraform topoi HUD panel."""
@@ -225,7 +285,7 @@ class TerraformHUD(NSObject):
             return None
         self._panel: NSPanel | None = None
         self._content_view: NSView | None = None
-        self._scroll_view: NSScrollView | None = None
+        self._scroll_view: _ManualScrollView | None = None
         self._topoi: list[Topos] = []
         self._timer: NSTimer | None = None
         self._anim_timer: NSTimer | None = None
@@ -267,40 +327,10 @@ class TerraformHUD(NSObject):
         self._panel.setFloatingPanel_(True)
         self._panel.setBecomesKeyOnlyIfNeeded_(True)
 
-        # Scroll view for the topoi list — no visible scrollbar,
-        # content fades to transparent at top and bottom edges.
+        # Manual scroll view — no NSScrollView/NSClipView layer caching
         content_frame = self._panel.contentView().bounds()
-        self._scroll_view = _DraggableScrollView.alloc().initWithFrame_(content_frame)
-        self._scroll_view.setHasVerticalScroller_(False)
-        self._scroll_view.setHasHorizontalScroller_(False)
-        self._scroll_view.setDrawsBackground_(False)
-        self._scroll_view.setAutoresizingMask_(18)  # width + height flex
 
-        # Document view (the actual content that scrolls) — replaced
-        # each refresh cycle to avoid ghost layer accumulation.
-        self._content_view = NSView.alloc().initWithFrame_(content_frame)
-        self._scroll_view.setDocumentView_(self._content_view)
-        # Disable scroll-copy optimization — it caches bitmaps of the
-        # document view which become ghosts when the content is replaced.
-        self._scroll_view.contentView().setCopiesOnScroll_(False)
-
-        # Fade mask: content fades to transparent at top and bottom
-        self._scroll_view.setWantsLayer_(True)
-        fade_height = content_frame.size.height
-        fade_width = content_frame.size.width
-        _FADE_FRACTION = 0.08  # 8% of panel height fades at each edge
-
-        mask_layer = Quartz.CAGradientLayer.layer()
-        mask_layer.setFrame_(((0, 0), (fade_width, fade_height)))
-        clear = Quartz.CGColorCreateGenericRGB(0, 0, 0, 0)
-        opaque = Quartz.CGColorCreateGenericRGB(0, 0, 0, 1)
-        mask_layer.setColors_([clear, opaque, opaque, clear])
-        mask_layer.setLocations_([0.0, _FADE_FRACTION, 1.0 - _FADE_FRACTION, 1.0])
-        mask_layer.setStartPoint_((0.5, 0.0))
-        mask_layer.setEndPoint_((0.5, 1.0))
-        self._scroll_view.layer().setMask_(mask_layer)
-
-        # Stats label at the top of the panel (above the scroll view)
+        # Stats label at the top of the panel
         _STATS_HEIGHT = 20
         stats_frame = NSMakeRect(8, content_frame.size.height - _STATS_HEIGHT,
                                   content_frame.size.width - 16, _STATS_HEIGHT)
@@ -310,11 +340,11 @@ class TerraformHUD(NSObject):
         )
         self._panel.contentView().addSubview_(self._stats_label)
 
-        # Shrink scroll view to make room for stats
+        # Scroll area below stats
         scroll_frame = NSMakeRect(0, 0, content_frame.size.width,
                                    content_frame.size.height - _STATS_HEIGHT)
-        self._scroll_view.setFrame_(scroll_frame)
-
+        self._scroll_view = _ManualScrollView.alloc().initWithFrame_(scroll_frame)
+        self._scroll_view.setAutoresizingMask_(18)  # width + height flex
         self._panel.contentView().addSubview_(self._scroll_view)
 
         # Initial load
@@ -451,18 +481,9 @@ class TerraformHUD(NSObject):
             self._panel.orderFront_(None)
 
     def _rebuild_content(self) -> None:
-        """Rebuild the scrollable content from current topoi.
-
-        Replaces the entire document view each cycle rather than
-        mutating in place — prevents ghost layers from accumulating
-        when AppKit's layer-backed view teardown leaves orphans.
-        """
+        """Rebuild the scrollable content from current topoi."""
         if self._scroll_view is None:
             return
-
-        # Preserve scroll position across rebuild
-        clip_view = self._scroll_view.contentView()
-        old_origin = clip_view.bounds().origin if clip_view else None
 
         scroll_bounds = self._scroll_view.bounds()
         width = scroll_bounds.size.width - 8  # edge padding
@@ -472,7 +493,7 @@ class TerraformHUD(NSObject):
             scroll_bounds.size.height,
         )
 
-        # Build a fresh document view — no mutation of the old one
+        # Build a fresh content view
         new_content = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, scroll_bounds.size.width, total_height)
         )
@@ -483,17 +504,6 @@ class TerraformHUD(NSObject):
             row.setFrameOrigin_((4, y))
             new_content.addSubview_(row)
 
-        # Swap document view atomically
-        self._scroll_view.setDocumentView_(new_content)
+        # Swap content — old view is fully removed and deallocated
+        self._scroll_view.setContent_(new_content)
         self._content_view = new_content
-
-        # Force the clip view to flush any cached bitmap from the old document
-        clip_view = self._scroll_view.contentView()
-        if clip_view is not None:
-            clip_view.setNeedsDisplay_(True)
-            if clip_view.layer():
-                clip_view.layer().setNeedsDisplay()
-
-        # Restore scroll position
-        if old_origin is not None and clip_view is not None:
-            clip_view.setBoundsOrigin_(old_origin)
