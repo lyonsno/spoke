@@ -700,30 +700,23 @@ class TestCommandCompletionAutoplay:
         delegate._command_tool_used_tts = False
         return delegate
 
-    def test_command_complete_triggers_tts(self, main_module):
-        """When TTS client is present, commandComplete_ calls speak_async."""
+    def test_command_complete_does_not_autoplay(self, main_module):
+        """commandComplete_ no longer auto-plays TTS — read_aloud tool handles speech."""
         tts = MagicMock()
-        tts.speak_async.return_value = MagicMock(spec=threading.Thread)
         delegate = self._make_delegate(main_module, tts_client=tts)
 
         delegate.commandComplete_({"token": 1, "response": "Hello there"})
 
-        tts.speak_async.assert_called_once()
-        args, kwargs = tts.speak_async.call_args
-        assert args[0] == "Hello there"
-        assert kwargs.get("amplitude_callback") is not None
-        assert kwargs.get("done_callback") is not None
+        tts.speak_async.assert_not_called()
 
-    def test_command_complete_skips_autoplay_when_tool_already_spoke(self, main_module):
-        """If read_aloud already launched speech this turn, skip final-response autoplay."""
+    def test_command_complete_clears_tool_tts_flag(self, main_module):
+        """commandComplete_ resets _command_tool_used_tts for the next turn."""
         tts = MagicMock()
         delegate = self._make_delegate(main_module, tts_client=tts)
         delegate._command_tool_used_tts = True
 
         delegate.commandComplete_({"token": 1, "response": "Reading that now"})
 
-        tts.speak_async.assert_not_called()
-        delegate._command_overlay.tts_start.assert_not_called()
         assert delegate._command_tool_used_tts is False
 
     def test_command_complete_no_tts_when_disabled(self, main_module):

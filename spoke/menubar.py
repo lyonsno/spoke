@@ -225,7 +225,7 @@ class MenuBarIcon(NSObject):
                 if assistant:
                     menu.addItem_(
                         self._build_choice_submenu_item(
-                            "Assistant Model",
+                            assistant.get("title", "Assistant Model"),
                             "assistant",
                             assistant["selected"],
                             assistant["models"],
@@ -274,7 +274,7 @@ class MenuBarIcon(NSObject):
                 if tts_model:
                     menu.addItem_(
                         self._build_choice_submenu_item(
-                            "TTS Model",
+                            tts_model.get("title", "TTS Model"),
                             "tts",
                             tts_model["selected"],
                             tts_model["models"],

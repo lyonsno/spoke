@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import time
@@ -75,6 +76,8 @@ _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
+_DEFAULT_CLOUD_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+_DEFAULT_CLOUD_MODEL = "gemini-2.5-flash"
 _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 
 
@@ -380,15 +383,32 @@ class SpokeAppDelegate(NSObject):
             self._command_url = command_url
             if command_backend == "sidecar":
                 self._command_sidecar_url = command_url
-            self._command_model_id = (
-                os.environ.get("SPOKE_COMMAND_MODEL")
-                or self._load_command_model_preference()
-                or _DEFAULT_COMMAND_MODEL
-            )
-            self._command_client = CommandClient(
-                base_url=command_url,
-                model=self._command_model_id,
-            )
+            cloud_api_key = None
+            if command_backend == "cloud":
+                self._command_model_id = (
+                    os.environ.get("SPOKE_COMMAND_MODEL")
+                    or self._load_cloud_model_preference()
+                    or _DEFAULT_CLOUD_MODEL
+                )
+                cloud_api_key = (
+                    os.environ.get("SPOKE_COMMAND_API_KEY")
+                    or self._load_cloud_api_key_preference()
+                    or os.environ.get("GEMINI_API_KEY", "")
+                )
+            else:
+                self._command_model_id = (
+                    os.environ.get("SPOKE_COMMAND_MODEL")
+                    or self._load_command_model_preference()
+                    or _DEFAULT_COMMAND_MODEL
+                )
+            client_kwargs = {
+                "base_url": command_url,
+                "model": self._command_model_id,
+            }
+            if cloud_api_key:
+                client_kwargs["api_key"] = cloud_api_key
+            self._command_client = CommandClient(**client_kwargs)
+            self._command_server_unreachable = False
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
@@ -410,6 +430,7 @@ class SpokeAppDelegate(NSObject):
             self._command_model_id = None
             self._command_model_options = []
             self._command_models_refresh_in_flight = False
+            self._command_server_unreachable = False
             self._command_overlay = None
             self._scene_cache = None
             self._tool_schemas = None
@@ -417,6 +438,7 @@ class SpokeAppDelegate(NSObject):
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
         self._heartbeat.set_context(
+            launch_target=os.environ.get("SPOKE_LAUNCH_TARGET_ID"),
             worktree=os.getcwd(),
         )
         self._heartbeat.set_evict_callback(self._evict_model)
@@ -432,6 +454,7 @@ class SpokeAppDelegate(NSObject):
             self._load_preference("tts_sidecar_url") or _DEFAULT_TTS_SIDECAR_URL
         )
         self._tts_client = self._build_tts_client()
+        self._tts_server_unreachable = False
         self._command_tool_used_tts = False
         if self._tts_client is not None:
             backend_label = "sidecar" if isinstance(self._tts_client, RemoteTTSClient) else "local"
@@ -2246,55 +2269,11 @@ class SpokeAppDelegate(NSObject):
                 logger.exception("Command overlay finish failed")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
-        # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
-        tts = getattr(self, "_tts_client", None)
-        tool_used_tts = getattr(self, "_command_tool_used_tts", False)
+        # TTS autoplay removed — the model has read_aloud as a tool; if it
+        # chose not to call it, the response is text-only.  Clean up the
+        # tool-used flag so it doesn't leak across commands.
         self._command_tool_used_tts = False
-        logger.info(
-            "TTS autoplay decision: response=%d chars, tts_client=%s, tool_used_tts=%s, model=%s",
-            len(response) if response else 0,
-            tts is not None,
-            tool_used_tts,
-            getattr(tts, "_model_id", "?") if tts else "none",
-        )
-        if not response:
-            logger.info("TTS autoplay: skipped — no response text")
-        elif tts is None:
-            logger.info("TTS autoplay: skipped — no TTS client")
-            if self._menubar is not None:
-                self._menubar.set_status_text("TTS: not configured")
-        elif tool_used_tts:
-            logger.info("TTS autoplay: skipped — tool already used TTS")
-        if response and tts is not None and not tool_used_tts:
-            if self._glow is not None:
-                self._glow.hide()
-            if overlay is not None:
-                try:
-                    overlay.tts_start()
-                except Exception:
-                    logger.exception("Command overlay TTS start failed")
-            self._touch_model(tts)
-            try:
-                logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
-                tts.speak_async(
-                    response,
-                    amplitude_callback=self._on_tts_amplitude,
-                    done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "ttsFinished:", None, False
-                    ),
-                    error_callback=lambda msg: self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "ttsError:", msg, False
-                    ),
-                )
-                logger.info("TTS autoplay: speak_async returned (queued)")
-            except Exception:
-                logger.exception("Command autoplay failed to start")
-                if overlay is not None:
-                    try:
-                        overlay.tts_stop()
-                    except Exception:
-                        logger.exception("Command overlay TTS stop failed")
-        elif self._glow is not None:
+        if self._glow is not None:
             self._glow.hide()
 
     def _on_tts_amplitude(self, rms: float) -> None:
@@ -2536,9 +2515,14 @@ class SpokeAppDelegate(NSObject):
             if launch_target is not None:
                 state["launch_target"] = launch_target
             if self._command_client is not None:
+                assistant_title = "Assistant Model"
+                server_unreachable = getattr(self, "_command_server_unreachable", False)
+                if server_unreachable:
+                    assistant_title = "Assistant Model (server unreachable)"
                 state["assistant"] = {
+                    "title": assistant_title,
                     "selected": self._command_model_id,
-                    "models": self._command_model_options,
+                    "models": [] if server_unreachable else self._command_model_options,
                 }
                 state["assistant_backend"] = {
                     "title": "Assistant Backend",
@@ -2557,7 +2541,15 @@ class SpokeAppDelegate(NSObject):
                             == "sidecar",
                             True,
                         ),
+                        (
+                            "cloud",
+                            "Cloud",
+                            getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+                            == "cloud",
+                            True,
+                        ),
                         ("configure", "Set Sidecar URL…", False, True),
+                        ("configure_cloud", "Set Cloud Endpoint…", False, True),
                     ],
                 }
             tts_client = getattr(self, "_tts_client", None)
@@ -2638,7 +2630,7 @@ class SpokeAppDelegate(NSObject):
                     if sidecar_models:
                         tts_models = sidecar_models
                     elif current_tts_model:
-                        tts_models = [(current_tts_model, current_tts_model, True)]
+                        tts_models = [(current_tts_model, f"{current_tts_model} (fallback)", True)]
                     else:
                         tts_models = []
                 else:
@@ -2646,8 +2638,13 @@ class SpokeAppDelegate(NSObject):
                         (model_id, label, model_id == current_tts_model)
                         for model_id, label in _TTS_MODELS
                     ]
-                if tts_models:
+                tts_unreachable = getattr(self, "_tts_server_unreachable", False)
+                if tts_models or (tts_backend == "sidecar" and tts_unreachable):
+                    tts_title = "TTS Model"
+                    if tts_backend == "sidecar" and tts_unreachable:
+                        tts_title = "TTS Model (server unreachable)"
                     state["tts"] = {
+                        "title": tts_title,
                         "selected": current_tts_model,
                         "models": tts_models,
                     }
@@ -2995,6 +2992,28 @@ class SpokeAppDelegate(NSObject):
             self._load_preferences().get("command_sidecar_url")
         )
 
+    def _load_cloud_url_preference(self) -> str | None:
+        return self._normalize_command_url(
+            self._load_preferences().get("command_cloud_url")
+        )
+
+    def _load_cloud_api_key_preference(self) -> str | None:
+        val = self._load_preferences().get("command_cloud_api_key")
+        return str(val).strip() if val else None
+
+    def _load_cloud_model_preference(self) -> str | None:
+        val = self._load_preferences().get("command_cloud_model")
+        return str(val).strip() if val else None
+
+    def _save_cloud_preferences(
+        self, cloud_url: str, cloud_api_key: str, cloud_model: str
+    ) -> bool:
+        payload = self._load_preferences()
+        payload["command_cloud_url"] = self._normalize_command_url(cloud_url)
+        payload["command_cloud_api_key"] = cloud_api_key.strip() if cloud_api_key else ""
+        payload["command_cloud_model"] = cloud_model.strip() if cloud_model else ""
+        return self._save_preferences(payload)
+
     def _save_model_preferences(
         self, preview_model: str, transcription_model: str
     ) -> bool:
@@ -3053,7 +3072,7 @@ class SpokeAppDelegate(NSObject):
         if value is None:
             return None
         backend = str(value).strip().lower()
-        if backend in {"local", "sidecar"}:
+        if backend in {"local", "sidecar", "cloud"}:
             return backend
         return None
 
@@ -3074,6 +3093,9 @@ class SpokeAppDelegate(NSObject):
             logger.warning(
                 "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
             )
+        if pref_backend == "cloud":
+            cloud_url = self._load_cloud_url_preference() or _DEFAULT_CLOUD_URL
+            return "cloud", cloud_url
         return "local", _DEFAULT_COMMAND_URL
 
     def _build_tts_client(self):
@@ -3097,6 +3119,7 @@ class SpokeAppDelegate(NSObject):
         """Fetch available models from the TTS sidecar's /v1/models endpoint."""
         url = getattr(self, "_tts_sidecar_url", "")
         if not url:
+            self._tts_server_unreachable = True
             return []
         import urllib.request
         import urllib.error
@@ -3107,7 +3130,9 @@ class SpokeAppDelegate(NSObject):
                 data = json.loads(resp.read().decode())
         except Exception:
             logger.warning("Failed to fetch TTS sidecar models from %s", models_url, exc_info=True)
+            self._tts_server_unreachable = True
             return []
+        self._tts_server_unreachable = False
         current_model = ""
         tts = getattr(self, "_tts_client", None)
         if tts is not None:
@@ -3255,14 +3280,16 @@ class SpokeAppDelegate(NSObject):
     ) -> list[tuple[str, str, bool]]:
         command_backend = getattr(self, "_command_backend", "local")
         server_model_ids: list[str] = []
-        server_reachable = False
+        server_reachable = True
         if self._command_client is not None:
             try:
                 server_model_ids = self._command_client.list_models()
                 server_reachable = True
             except Exception:
+                server_reachable = False
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
-        if command_backend == "sidecar":
+        if command_backend in ("sidecar", "cloud"):
+            self._command_server_unreachable = not server_reachable and not server_model_ids
             model_ids = server_model_ids or ([selected_model] if selected_model else [])
         else:
             if not server_reachable:
@@ -3299,26 +3326,25 @@ class SpokeAppDelegate(NSObject):
     def _seed_command_model_options(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk.
-
-        For the local backend, only list models when the server is
-        reachable.  Listing disk-only models causes the menu to look
-        populated while every request fails with connection refused.
-        """
-        if getattr(self, "_command_backend", "local") == "sidecar":
+        """Seed the Assistant menu — sidecar/cloud queries /v1/models, local uses disk."""
+        if getattr(self, "_command_backend", "local") in ("sidecar", "cloud"):
             if self._command_client is not None:
                 try:
                     server_model_ids = self._command_client.list_models()
                     if server_model_ids:
+                        self._command_server_unreachable = False
                         return [
                             (mid, mid, mid == selected_model)
                             for mid in server_model_ids
                         ]
                 except Exception:
+                    self._command_server_unreachable = True
                     logger.warning(
-                        "Sidecar model seed failed — falling back to persisted model",
+                        "Model seed failed — falling back to persisted model",
                         exc_info=True,
                     )
+            else:
+                self._command_server_unreachable = True
             return [(selected_model, selected_model, True)] if selected_model else []
         # Local backend: check server reachability before listing disk models
         server_reachable = False
@@ -3371,7 +3397,7 @@ class SpokeAppDelegate(NSObject):
         options = payload.get("options") or []
         self._command_model_options = options
         if (
-            command_backend == "sidecar"
+            command_backend in ("sidecar", "cloud")
             and options
             and self._command_model_id not in {model_id for model_id, _, _ in options}
         ):
@@ -3425,7 +3451,10 @@ class SpokeAppDelegate(NSObject):
         if selection == "configure":
             self._configure_command_sidecar_url()
             return
-        if selection not in {"local", "sidecar"}:
+        if selection == "configure_cloud":
+            self._configure_cloud_endpoint()
+            return
+        if selection not in {"local", "sidecar", "cloud"}:
             return
 
         current_backend = getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
@@ -3442,9 +3471,16 @@ class SpokeAppDelegate(NSObject):
                     self._menubar.set_status_text("Assistant sidecar URL required")
                 return
 
-        target_url = (
-            target_sidecar_url if selection == "sidecar" else _DEFAULT_COMMAND_URL
-        )
+        if selection == "cloud":
+            cloud_url = self._load_cloud_url_preference()
+            if not cloud_url:
+                self._configure_cloud_endpoint()
+                return
+            target_url = cloud_url
+        elif selection == "sidecar":
+            target_url = target_sidecar_url
+        else:
+            target_url = _DEFAULT_COMMAND_URL
         persisted_sidecar_url = (
             target_sidecar_url if selection == "sidecar" else current_sidecar_url
         )
@@ -3520,6 +3556,70 @@ class SpokeAppDelegate(NSObject):
         if not isinstance(value, str):
             return None
         return self._normalize_command_url(value)
+
+    def _configure_cloud_endpoint(self) -> None:
+        current_url = self._load_cloud_url_preference() or _DEFAULT_CLOUD_URL
+        current_key = self._load_cloud_api_key_preference() or ""
+        current_model = self._load_cloud_model_preference() or _DEFAULT_CLOUD_MODEL
+
+        alert = NSAlert.new()
+        alert.setMessageText_("Cloud Assistant Endpoint")
+        alert.setInformativeText_(
+            "OpenAI-compatible endpoint for cloud assistant.\n"
+            "Example: https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+
+        from AppKit import NSView
+        container = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 90))
+
+        url_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 60, 320, 24))
+        url_field.setStringValue_(current_url)
+        url_field.setPlaceholderString_("Endpoint URL")
+        container.addSubview_(url_field)
+
+        key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 30, 320, 24))
+        key_field.setStringValue_(current_key)
+        key_field.setPlaceholderString_("API Key")
+        container.addSubview_(key_field)
+
+        model_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        model_field.setStringValue_(current_model)
+        model_field.setPlaceholderString_("Model (e.g. gemini-2.5-flash)")
+        container.addSubview_(model_field)
+
+        alert.setAccessoryView_(container)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+
+        cloud_url = self._normalize_command_url(
+            url_field.stringValue() if isinstance(url_field.stringValue(), str) else ""
+        )
+        cloud_key = str(key_field.stringValue()).strip() if key_field.stringValue() else ""
+        cloud_model = str(model_field.stringValue()).strip() if model_field.stringValue() else ""
+
+        if not cloud_url:
+            if self._menubar is not None:
+                self._menubar.set_status_text("Cloud endpoint URL required")
+            return
+
+        if not self._save_cloud_preferences(cloud_url, cloud_key, cloud_model):
+            logger.warning("Couldn't persist cloud endpoint config")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save cloud config")
+            return
+
+        if not self._save_command_backend_preferences(
+            "cloud", self._normalize_command_url(getattr(self, "_command_sidecar_url", None))
+        ):
+            logger.warning("Couldn't persist cloud backend selection")
+            return
+
+        self._command_backend = "cloud"
+        self._command_url = cloud_url
+        self._relaunch()
 
     def _apply_tts_model_selection(self, model_id: str) -> None:
         tts = getattr(self, "_tts_client", None)
@@ -4122,6 +4222,7 @@ def _acquire_instance_lock() -> None:
     )
     lock_file = open(lock_path, "a+")
     lock_file.seek(0)
+    old_pid: int | None = None
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -4159,6 +4260,20 @@ def _acquire_instance_lock() -> None:
             _record_runtime_phase("instance_lock.exit_existing_instance", lock_path=lock_path)
             sys.exit(0)
 
+    # Lock acquired — but a predecessor can release the flock before it has
+    # fully exited. Treat unreaped zombies as already dead rather than as live
+    # blocked apps, so the warning/SIGKILL path reflects real survivorship.
+    if old_pid is not None and old_pid != current_pid and _is_non_zombie_process_alive(old_pid):
+        logger.warning(
+            "Predecessor pid=%d released lock but is still alive — sending SIGKILL",
+            old_pid,
+        )
+        try:
+            os.kill(old_pid, sig.SIGKILL)
+            time.sleep(0.1)
+        except (ProcessLookupError, PermissionError):
+            pass
+
     lock_file.seek(0)
     lock_file.truncate()
     lock_file.write(str(current_pid))
@@ -4171,6 +4286,32 @@ def _acquire_instance_lock() -> None:
     _record_runtime_phase("instance_lock.acquired", lock_path=lock_path)
     # Keep lock_file alive for process lifetime
     _acquire_instance_lock._lock_file = lock_file
+
+
+def _is_non_zombie_process_alive(pid: int) -> bool:
+    """Return True only for running, non-zombie processes owned by this user."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        # Fall back to the kill(0) probe if process-state lookup fails.
+        return True
+
+    state = result.stdout.strip()
+    if state.startswith("Z"):
+        return False
+    return True
 
 
 def main() -> None:

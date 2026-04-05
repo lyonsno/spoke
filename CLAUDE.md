@@ -156,3 +156,4 @@ When updating `spoke` Epistaxis state:
 
 Use descriptive commit messages. Include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` in all commits.
 Unless the user explicitly says otherwise, push commits after creating them.
+If commit/push is the required next step, needing sandbox/escalation approval is not a reason to defer it or leave work local-only. Request the permission and continue.

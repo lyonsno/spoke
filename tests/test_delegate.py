@@ -923,6 +923,7 @@ class TestDualModelConfiguration:
         model_state = d._handle_model_menu_action(None)
 
         assert model_state["assistant"] == {
+            "title": "Assistant Model",
             "selected": "qwen3p5-35B-A3B",
             "models": [
                 ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
@@ -946,7 +947,9 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local OMLX", False, True),
                 ("sidecar", "Sidecar OMLX", True, True),
+                ("cloud", "Cloud", False, True),
                 ("configure", "Set Sidecar URL…", False, True),
+                ("configure_cloud", "Set Cloud Endpoint…", False, True),
             ],
         }
 
@@ -2692,7 +2695,7 @@ class TestCommandCallbacks:
         d._command_overlay.set_response_text.assert_called_once_with("Done.")
         d._command_overlay.finish.assert_called_once()
 
-    def test_command_complete_finish_failure_still_starts_autoplay(
+    def test_command_complete_finish_failure_hides_glow(
         self, main_module, monkeypatch, caplog
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -2706,28 +2709,27 @@ class TestCommandCallbacks:
             d.commandComplete_({"token": 1, "response": "Hello there"})
 
         assert d._transcribing is False
-        d._tts_client.speak_async.assert_called_once()
-        d._command_overlay.tts_start.assert_called_once()
+        # Autoplay removed — TTS is only triggered via read_aloud tool
+        d._tts_client.speak_async.assert_not_called()
+        d._glow.hide.assert_called()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         assert "Command overlay finish failed" in caplog.text
 
-    def test_command_complete_autoplay_failure_is_suppressed(
-        self, main_module, monkeypatch, caplog
+    def test_command_complete_no_autoplay(
+        self, main_module, monkeypatch
     ):
+        """commandComplete_ does not auto-play TTS — the model uses read_aloud tool instead."""
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()
         d._transcription_token = 1
         d._transcribing = True
         d._tts_client = MagicMock()
-        d._tts_client.speak_async.side_effect = RuntimeError("tts launch")
 
-        with caplog.at_level(logging.ERROR):
-            d.commandComplete_({"token": 1, "response": "Hello there"})
+        d.commandComplete_({"token": 1, "response": "Hello there"})
 
         assert d._transcribing is False
-        d._command_overlay.tts_stop.assert_called_once()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
-        assert "Command autoplay failed to start" in caplog.text
+        d._tts_client.speak_async.assert_not_called()
+        d._glow.hide.assert_called()
 
     def test_tool_executor_marks_tool_tts_usage(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -2769,7 +2771,8 @@ class TestCommandCallbacks:
         executor = d._make_tool_executor()
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
 
-        assert result == "Error speaking text: device unavailable"
+        assert "Error speaking text: TTS playback failed." in result
+        assert "device unavailable" in result
         assert d._command_tool_used_tts is False
         d._tts_client.speak.assert_called_once_with("hello world")
 
@@ -2803,7 +2806,7 @@ class TestCommandCallbacks:
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
 
-    def test_command_complete_finish_failure_still_starts_autoplay(
+    def test_command_complete_finish_failure_hides_glow(
         self, main_module, monkeypatch, caplog
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -2817,28 +2820,10 @@ class TestCommandCallbacks:
             d.commandComplete_({"token": 1, "response": "Hello there"})
 
         assert d._transcribing is False
-        d._tts_client.speak_async.assert_called_once()
-        d._command_overlay.tts_start.assert_called_once()
+        d._tts_client.speak_async.assert_not_called()
+        d._glow.hide.assert_called()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         assert "Command overlay finish failed" in caplog.text
-
-    def test_command_complete_autoplay_failure_is_suppressed(
-        self, main_module, monkeypatch, caplog
-    ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_overlay = MagicMock()
-        d._transcription_token = 1
-        d._transcribing = True
-        d._tts_client = MagicMock()
-        d._tts_client.speak_async.side_effect = RuntimeError("tts launch")
-
-        with caplog.at_level(logging.ERROR):
-            d.commandComplete_({"token": 1, "response": "Hello there"})
-
-        assert d._transcribing is False
-        d._command_overlay.tts_stop.assert_called_once()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
-        assert "Command autoplay failed to start" in caplog.text
 
     def test_tts_amplitude_update_failure_is_suppressed(
         self, main_module, monkeypatch, caplog

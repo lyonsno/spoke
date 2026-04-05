@@ -49,15 +49,18 @@ _SYSTEM_PROMPT = (
     "it when the user asks about their email. Keep queries specific to limit "
     "results — combine filters like 'is:starred newer_than:3d' or "
     "'from:alice subject:invoice'.\n\n"
-    "Prefer refs over regenerated text. If the user asks you to read something "
-    "visible, call capture_context first, then read_aloud with a block ref. "
-    "If the user asks to read selected text or the clipboard, use read_aloud directly "
-    "with selection:frontmost or clipboard:current. If the user asks you to say "
-    "or read exact text that is not coming from another source, call read_aloud "
-    "directly with literal:<exact text to speak>. Do not pretend read_aloud is "
-    "limited to visible text. Use add_to_tray when the user "
-    "wants content kept for later use rather than spoken immediately. Do not restate "
-    "visible text in your response when a ref can be spoken instead."
+    "Output mode: by default your response is displayed as text on screen — "
+    "do NOT call read_aloud unless the user explicitly asks you to say, read, "
+    "or speak something. For generated text, lists, code, structured content, "
+    "or anything the user would want to read, copy, or reference later, just "
+    "respond in plain text.\n\n"
+    "When read_aloud IS appropriate (user said 'read this', 'say that', etc.): "
+    "prefer refs over regenerated text. If reading something visible, call "
+    "capture_context first, then read_aloud with a block ref. For selected text "
+    "or the clipboard, use read_aloud directly with selection:frontmost or "
+    "clipboard:current. For arbitrary phrases the user asks you to say, use "
+    "read_aloud with literal:<exact text>. Use add_to_tray when the user "
+    "wants content kept for later use rather than spoken immediately."
 )
 
 
@@ -81,7 +84,17 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
     ):
-        self._base_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
+        raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
+        # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
+        # prefix in the base URL already.  Detect this so we don't double it
+        # when building /v1/models and /v1/chat/completions paths.
+        from urllib.parse import urlparse
+        path = urlparse(raw_url).path.rstrip("/")
+        self._url_has_version_prefix = any(
+            seg.startswith("v") and seg[1:].replace("beta", "").isdigit()
+            for seg in path.split("/") if seg
+        )
+        self._base_url = raw_url
         self._model = (
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", _DEFAULT_COMMAND_MODEL)
@@ -111,7 +124,7 @@ class CommandClient:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         req = urllib.request.Request(
-            f"{self._base_url}/v1/models",
+            f"{self._base_url}/models" if self._url_has_version_prefix else f"{self._base_url}/v1/models",
             headers=headers,
             method="GET",
         )
@@ -235,7 +248,7 @@ class CommandClient:
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
 
-            url = f"{self._base_url}/v1/chat/completions"
+            url = f"{self._base_url}/chat/completions" if self._url_has_version_prefix else f"{self._base_url}/v1/chat/completions"
             req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
             # Track tool call deltas for this round

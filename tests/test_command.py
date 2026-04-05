@@ -145,6 +145,27 @@ class TestCommandClient:
         assert req.full_url == "http://localhost:9999/v1/models"
         assert req.get_method() == "GET"
 
+    def test_list_models_skips_v1_prefix_for_cloud_urls(self):
+        """Cloud OpenAI-compat endpoints already include a version prefix."""
+        from spoke.command import CommandClient
+
+        payload = {"data": [{"id": "gemini-2.5-flash"}]}
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="key",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
+            assert client.list_models() == ["gemini-2.5-flash"]
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/models"
+
     def test_list_models_sends_auth_header(self):
         """list_models() should reuse the configured bearer token."""
         from spoke.command import CommandClient
