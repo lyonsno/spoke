@@ -84,6 +84,7 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
+_DARK_TEXT_CUTOUT_FILTER = "destinationOut"
 _TEXT_SNAP_SPEED = 0.18
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -792,6 +793,19 @@ class TranscriptionOverlay(NSObject):
             return
         layer.setBackgroundColor_(None)
 
+    def _apply_text_compositing_mode(self, brightness: float) -> None:
+        """Flip preview text into cutout mode on dark backgrounds."""
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return
+        if hasattr(text_view, "setWantsLayer_"):
+            text_view.setWantsLayer_(True)
+        layer = text_view.layer() if hasattr(text_view, "layer") else None
+        if layer is None or not hasattr(layer, "setCompositingFilter_"):
+            return
+        filter_name = _DARK_TEXT_CUTOUT_FILTER if brightness <= 0.15 else None
+        layer.setCompositingFilter_(filter_name)
+
     # ── amplitude-reactive text ──────────────────────────────
 
     def update_text_amplitude(self, amplitude: float) -> None:
@@ -825,6 +839,7 @@ class TranscriptionOverlay(NSObject):
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
         t = getattr(self, "_brightness", 0.0)
+        self._apply_text_compositing_mode(t)
 
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays

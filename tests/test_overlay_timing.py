@@ -279,6 +279,34 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_dark_background_text_punches_through_fill(self, mock_pyobjc):
+        """On dark backgrounds, preview text should act as a cutout through the light fill."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(0.0, immediate=True)
+
+            overlay.update_text_amplitude(10.0)
+
+            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with("destinationOut")
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_text_stays_normal_instead_of_cutting_out(self, mock_pyobjc):
+        """On bright backgrounds, preview text should render normally rather than punching holes in the dark fill."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay.update_text_amplitude(10.0)
+
+            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with(None)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_text_snap_speed_is_slower_for_visual_stability(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
