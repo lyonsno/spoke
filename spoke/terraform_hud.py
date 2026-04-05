@@ -438,9 +438,17 @@ class TerraformHUD(NSObject):
         if self._content_view is None:
             return
 
-        # Remove old subviews
+        # Preserve scroll position across rebuild
+        clip_view = self._scroll_view.contentView()
+        old_origin = clip_view.bounds().origin if clip_view else None
+
+        # Remove old subviews and their layer trees
         for subview in list(self._content_view.subviews()):
             subview.removeFromSuperview()
+        # Also clear any orphaned sublayers on the content view itself
+        if self._content_view.layer() and self._content_view.layer().sublayers():
+            for sl in list(self._content_view.layer().sublayers()):
+                sl.removeFromSuperlayer()
 
         width = self._scroll_view.bounds().size.width - 8  # edge padding
         row_stride = _ROW_CONTAINER_HEIGHT + 4
@@ -456,3 +464,7 @@ class TerraformHUD(NSObject):
             row = ToposRowView.createWithTopos_width_(topos, width)
             row.setFrameOrigin_((4, y))
             self._content_view.addSubview_(row)
+
+        # Restore scroll position
+        if old_origin is not None and clip_view is not None:
+            clip_view.setBoundsOrigin_(old_origin)
