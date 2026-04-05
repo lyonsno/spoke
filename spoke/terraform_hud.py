@@ -147,6 +147,7 @@ class ToposRowView(NSView):
 
         # --- Layer 3 (top): the card itself ---
         card_layer = Quartz.CAGradientLayer.layer()
+        card_layer.setName_("card")
         card_layer.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
         card_layer.setType_("radial")
         card_layer.setCornerRadius_(8.0)
@@ -388,14 +389,17 @@ class TerraformHUD(NSObject):
         self._refresh()
 
     def _animTick_(self, timer) -> None:
-        """Modulate bloom ring opacity with phase-shifted sine waves."""
+        """Modulate bloom and card opacity with three phase-shifted sine waves."""
         if self._content_view is None:
             return
         t = _time.monotonic()
-        # Outer bloom: slower, larger amplitude — 8s period
-        outer_opacity = 0.6 + 0.4 * math.sin(t * 2.0 * math.pi / 8.0)
-        # Inner bloom: faster, smaller amplitude — 5s period, phase-shifted
-        inner_opacity = 0.7 + 0.3 * math.sin(t * 2.0 * math.pi / 5.0 + 1.2)
+        # Outer amber ring: 9s period, subtle (0.6–1.0), phase 0
+        outer_opacity = 0.8 + 0.2 * math.sin(t * 2.0 * math.pi / 9.0)
+        # Inner cool ring: 7s period, subtle (0.65–1.0), phase offset 2.1
+        inner_opacity = 0.825 + 0.175 * math.sin(t * 2.0 * math.pi / 7.0 + 2.1)
+        # Card (temperature color): 11s period, deeper breathing (0.5–1.0), phase offset 4.0
+        # Same trough depth as the rings but peak reaches full opacity
+        card_opacity = 0.75 + 0.25 * math.sin(t * 2.0 * math.pi / 11.0 + 4.0)
 
         for subview in self._content_view.subviews():
             layer = subview.layer()
@@ -407,6 +411,8 @@ class TerraformHUD(NSObject):
                     sublayer.setOpacity_(outer_opacity)
                 elif name == "inner_bloom":
                     sublayer.setOpacity_(inner_opacity)
+                elif name == "card":
+                    sublayer.setOpacity_(card_opacity)
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis and rebuild the view."""
