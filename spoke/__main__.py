@@ -454,6 +454,7 @@ class SpokeAppDelegate(NSObject):
             self._load_preference("tts_sidecar_url") or _DEFAULT_TTS_SIDECAR_URL
         )
         self._tts_client = self._build_tts_client()
+        self._tts_server_unreachable = False
         self._command_tool_used_tts = False
         if self._tts_client is not None:
             backend_label = "sidecar" if isinstance(self._tts_client, RemoteTTSClient) else "local"
@@ -2667,8 +2668,6 @@ class SpokeAppDelegate(NSObject):
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
                         tts_models = sidecar_models
-                    elif current_tts_model:
-                        tts_models = [(current_tts_model, current_tts_model, True)]
                     else:
                         tts_models = []
                 else:
@@ -2676,8 +2675,13 @@ class SpokeAppDelegate(NSObject):
                         (model_id, label, model_id == current_tts_model)
                         for model_id, label in _TTS_MODELS
                     ]
-                if tts_models:
+                tts_unreachable = getattr(self, "_tts_server_unreachable", False)
+                if tts_models or (tts_backend == "sidecar" and tts_unreachable):
+                    tts_title = "TTS Model"
+                    if tts_backend == "sidecar" and tts_unreachable:
+                        tts_title = "TTS Model (server unreachable)"
                     state["tts"] = {
+                        "title": tts_title,
                         "selected": current_tts_model,
                         "models": tts_models,
                     }
@@ -3152,6 +3156,7 @@ class SpokeAppDelegate(NSObject):
         """Fetch available models from the TTS sidecar's /v1/models endpoint."""
         url = getattr(self, "_tts_sidecar_url", "")
         if not url:
+            self._tts_server_unreachable = True
             return []
         import urllib.request
         import urllib.error
@@ -3162,7 +3167,9 @@ class SpokeAppDelegate(NSObject):
                 data = json.loads(resp.read().decode())
         except Exception:
             logger.warning("Failed to fetch TTS sidecar models from %s", models_url, exc_info=True)
+            self._tts_server_unreachable = True
             return []
+        self._tts_server_unreachable = False
         current_model = ""
         tts = getattr(self, "_tts_client", None)
         if tts is not None:
