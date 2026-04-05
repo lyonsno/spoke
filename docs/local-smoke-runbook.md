@@ -92,6 +92,11 @@ wrong.
 Each worktree can carry a `.spoke-smoke-env` file at the repo root. Use that
 for branch-local launch tweaks instead of editing the shared launcher.
 
+For the canonical MLX-audio sidecar location, launch command, and required
+served model set, use [`docs/mlx-audio-sidecar.md`](mlx-audio-sidecar.md) and
+`./scripts/setup-mlx-audio-server.sh`. Do not leave that contract discoverable
+only via a one-off `.spoke-smoke-env`.
+
 Common overrides:
 
 ```sh

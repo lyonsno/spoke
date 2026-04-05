@@ -6,7 +6,7 @@ Hold the spacebar anywhere on the system, speak, release, and `spoke` pastes the
 
 - Local MLX Whisper
 - Local Qwen3-ASR via MLX
-- Remote OpenAI-compatible `/v1/audio/transcriptions` sidecar
+- Remote OpenAI-compatible audio sidecars for transcription and TTS
 
 <video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
 
@@ -25,7 +25,7 @@ Quick taps still produce a normal space. Longer holds trigger recording, show th
 - Screen-edge glow driven by microphone amplitude
 - Local transcription by default (Whisper or Qwen3-ASR) when `SPOKE_WHISPER_URL` is unset
 - Optional spoken-command pathway with local tool calls and overlay output
-- Optional remote sidecar mode for heavier models
+- Optional remote sidecar mode for heavier transcription and TTS models
 - Voice command pathway via Shift+Space — sends utterances to a local LLM with streaming response overlay
 - OCR-verified paste with automatic recovery overlay on failure
 - Decoder-loop and silence-hallucination deduplication
@@ -74,7 +74,7 @@ Use a Qwen model name to switch the local backend:
 SPOKE_WHISPER_MODEL=Qwen/Qwen3-ASR-0.6B uv run spoke
 ```
 
-### Remote sidecar
+### Remote sidecars
 
 Point `spoke` at any OpenAI-compatible transcription server:
 
@@ -82,25 +82,39 @@ Point `spoke` at any OpenAI-compatible transcription server:
 SPOKE_WHISPER_URL=http://<host>:8000 uv run spoke
 ```
 
-Example sidecar on Apple Silicon (TTS + STT):
+For the canonical MLX-audio sidecar that `spoke` tracks for remote TTS and STT,
+use the sibling Voxtral-capable fork documented in
+[`docs/mlx-audio-sidecar.md`](docs/mlx-audio-sidecar.md):
 
 ```sh
 ./scripts/setup-mlx-audio-server.sh --start --port 9001
 ```
 
-This installs `mlx-audio` as a uv tool with all runtime deps patched (the
-published extras are missing several transitive dependencies — see the script
-for details). Once running, load models dynamically:
+That script syncs `../mlx-audio-pr-607-voxtral-tts` with the exact extras the
+sidecar needs and starts `.venv/bin/mlx_audio.server` on port `9001`.
+
+The tracked TTS serving surface is:
+
+- `mlx-community/Voxtral-4B-TTS-2603-mlx-6bit`
+- `mlx-community/VibeVoice-Realtime-0.5B-fp16`
+- `mlx-community/Kokoro-82M-bf16`
+- `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit`
+
+Once running, load models dynamically:
 
 ```sh
 curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
+curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/VibeVoice-Realtime-0.5B-fp16"
 curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
+curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
 ```
 
-Or start the server manually after install:
+Or start the server manually from the fork checkout:
 
 ```sh
-mlx_audio.server --host 0.0.0.0 --port 9001 --workers 1
+cd ../mlx-audio-pr-607-voxtral-tts
+uv sync --extra server --extra tts --extra sts
+.venv/bin/mlx_audio.server --host 0.0.0.0 --port 9001 --workers 1
 ```
 
 > **Note:** The binary is `mlx_audio.server` (dots), not `mlx-audio-server` (dashes).
@@ -166,6 +180,8 @@ choices across relaunches.
 | `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override. When set, both preview and final use the same model. |
 | `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Preview model identifier. Use `Qwen/Qwen3-ASR-0.6B` for local streaming preview, or any menu-listed Whisper variant. |
 | `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-large-v3-turbo` | Final transcription model identifier. Use `Qwen/Qwen3-ASR-0.6B` or any menu-listed Whisper variant. |
+| `SPOKE_TTS_VOICE` | unset | Enables TTS when set. Used by both the local MLX TTS runtime and the sidecar TTS backend. |
+| `SPOKE_TTS_MODEL` | `mlx-community/Voxtral-4B-TTS-2603-mlx-4bit` | Initial TTS model selection. For the tracked sidecar-served models, see `docs/mlx-audio-sidecar.md`. |
 | `SPOKE_COMMAND_URL` | unset | OpenAI-compatible OMLX chat endpoint used by the assistant command pathway. |
 | `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Initial assistant model identifier. When the command pathway is enabled, the menu bar persists the selected assistant model across relaunches. |
 | `SPOKE_COMMAND_MODEL_DIR` | `~/.lmstudio/models` | Optional local model inventory scanned to seed extra Assistant menu entries in `org/model` form alongside the server-reported `/v1/models` list. |
@@ -173,6 +189,11 @@ choices across relaunches.
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
 | `SPOKE_COMMAND_URL` | unset | Local LLM server for voice commands (Shift+Space). Chat completions endpoint. |
 | `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model name sent in command requests. |
+
+`spoke` persists the active TTS backend, sidecar URL, selected TTS model, and
+voice in `~/Library/Application Support/Spoke/model_preferences.json`. The
+repo-owned sidecar bootstrap and fork location are documented in
+[`docs/mlx-audio-sidecar.md`](docs/mlx-audio-sidecar.md).
 
 ### Command and Gmail
 
