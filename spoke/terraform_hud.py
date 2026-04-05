@@ -93,63 +93,38 @@ class ToposRowView(NSView):
         card_y = (_ROW_CONTAINER_HEIGHT - _ROW_HEIGHT) / 2.0
         card_x = 0.0
 
-        # --- Layer 1 (bottom): outer bloom ring — temperature tinted ---
-        outer_layer = Quartz.CAGradientLayer.layer()
-        outer_layer.setName_("outer_bloom")
-        ox = card_x - _OUTER_EXPAND
-        oy = card_y - _OUTER_EXPAND
-        ow = width + _OUTER_EXPAND * 2
-        oh = _ROW_HEIGHT + _OUTER_EXPAND * 2
-        outer_layer.setFrame_(((ox, oy), (ow, oh)))
-        outer_layer.setType_("radial")
-        outer_layer.setCornerRadius_(12.0)
-        # Transparent center → temperature color at edges (inverted SDF)
-        outer_center = Quartz.CGColorCreateGenericRGB(r, g, b, 0.0)
-        outer_mid = Quartz.CGColorCreateGenericRGB(r, g, b, a * 0.4)
-        outer_edge = Quartz.CGColorCreateGenericRGB(r, g, b, a * 0.8)
-        outer_layer.setColors_([outer_center, outer_mid, outer_edge])
-        outer_layer.setLocations_([0.0, 0.4, 1.0])
-        outer_layer.setStartPoint_((0.5, 0.5))
-        outer_layer.setEndPoint_((1.0, 1.0))
-        try:
-            blur_outer = Quartz.CIFilter.filterWithName_("CIGaussianBlur")
-            blur_outer.setValue_forKey_(4.0, "inputRadius")
-            outer_layer.setFilters_([blur_outer])
-        except Exception:
-            pass
-        view.layer().addSublayer_(outer_layer)
+        # --- Outer glow: invisible shape that casts a temperature-colored shadow ---
+        outer_glow = Quartz.CALayer.layer()
+        outer_glow.setName_("outer_bloom")
+        outer_glow.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
+        outer_glow.setCornerRadius_(10.0)
+        outer_glow.setBackgroundColor_(
+            Quartz.CGColorCreateGenericRGB(r, g, b, 0.01)  # near-invisible
+        )
+        outer_glow.setShadowColor_(Quartz.CGColorCreateGenericRGB(r, g, b, 1.0))
+        outer_glow.setShadowOffset_((0, 0))
+        outer_glow.setShadowRadius_(8.0)
+        outer_glow.setShadowOpacity_(min(a * 5.0, 0.6))
+        view.layer().addSublayer_(outer_glow)
 
-        # --- Layer 2 (middle): inner bloom ring — temperature tinted, tighter ---
-        bloom_layer = Quartz.CAGradientLayer.layer()
-        bloom_layer.setName_("inner_bloom")
-        bx = card_x - _BLOOM_EXPAND
-        by = card_y - _BLOOM_EXPAND
-        bw = width + _BLOOM_EXPAND * 2
-        bh = _ROW_HEIGHT + _BLOOM_EXPAND * 2
-        bloom_layer.setFrame_(((bx, by), (bw, bh)))
-        bloom_layer.setType_("radial")
-        bloom_layer.setCornerRadius_(10.0)
-        # Transparent center → desaturated temperature at edges
-        dr = r * 0.6 + 0.4  # pull toward white
-        dg = g * 0.6 + 0.4
-        db = b * 0.6 + 0.4
-        bloom_center = Quartz.CGColorCreateGenericRGB(dr, dg, db, 0.0)
-        bloom_mid = Quartz.CGColorCreateGenericRGB(dr, dg, db, a * 0.6)
-        bloom_edge = Quartz.CGColorCreateGenericRGB(dr, dg, db, a * 1.2)
-        bloom_layer.setColors_([bloom_center, bloom_mid, bloom_edge])
-        bloom_layer.setLocations_([0.0, 0.5, 1.0])
-        bloom_layer.setStartPoint_((0.5, 0.5))
-        bloom_layer.setEndPoint_((1.0, 1.0))
-        try:
-            blur_bloom = Quartz.CIFilter.filterWithName_("CIGaussianBlur")
-            blur_bloom.setValue_forKey_(6.0, "inputRadius")
-            bloom_layer.setFilters_([blur_bloom])
-        except Exception:
-            pass
-        view.layer().addSublayer_(bloom_layer)
+        # --- Inner glow: tighter, desaturated toward white ---
+        dr = r * 0.5 + 0.5  # pull toward white
+        dg = g * 0.5 + 0.5
+        db = b * 0.5 + 0.5
+        inner_glow = Quartz.CALayer.layer()
+        inner_glow.setName_("inner_bloom")
+        inner_glow.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
+        inner_glow.setCornerRadius_(10.0)
+        inner_glow.setBackgroundColor_(
+            Quartz.CGColorCreateGenericRGB(dr, dg, db, 0.01)  # near-invisible
+        )
+        inner_glow.setShadowColor_(Quartz.CGColorCreateGenericRGB(dr, dg, db, 1.0))
+        inner_glow.setShadowOffset_((0, 0))
+        inner_glow.setShadowRadius_(4.0)
+        inner_glow.setShadowOpacity_(min(a * 8.0, 0.5))
+        view.layer().addSublayer_(inner_glow)
 
-        # --- Layer 3 (top): frosted bubble card matching overlay language ---
-        # Desaturated blue-white fill from overlay.py _BG_COLOR_DARK
+        # --- Card: frosted bubble matching overlay language ---
         card_layer = Quartz.CALayer.layer()
         card_layer.setName_("card")
         card_layer.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
