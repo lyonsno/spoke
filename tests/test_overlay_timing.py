@@ -71,6 +71,37 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_set_text_seeds_text_polarity_before_first_amplitude_tick(self, mock_pyobjc):
+        """Fresh preview text should not wait for RMS churn before snapping to the current polarity."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._visible = True
+            overlay._text_view = MagicMock()
+            overlay._typewriter_target = ""
+            overlay._typewriter_displayed = ""
+            overlay._typewriter_hwm = 0
+            overlay._typewriter_timer = None
+            overlay._update_layout = MagicMock()
+            overlay._cancel_typewriter = MagicMock()
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._text_amplitude = 0.0
+
+            timer = object()
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = timer
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+
+            overlay.set_text("abc")
+
+            assert any(
+                call.args == (0.0, 0.0, 0.0, 0.88)
+                for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
+            )
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_glow_amplitude_smoothing_converges(
         self, mock_pyobjc
     ):
@@ -189,6 +220,22 @@ class TestAdaptiveOverlayCompositing:
             overlay.set_brightness(0.7, immediate=True)
             assert overlay._brightness == pytest.approx(0.7)
             assert overlay._brightness_target == pytest.approx(0.7)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_immediate_brightness_snap_reapplies_visible_text_style(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._typewriter_displayed = "hello"
+            overlay._set_text_view_content = MagicMock()
+
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._set_text_view_content.assert_called_once()
+            assert overlay._set_text_view_content.call_args.args[0] == "hello"
+            assert "base_color" in overlay._set_text_view_content.call_args.kwargs
         finally:
             sys.modules.pop("spoke.overlay", None)
 

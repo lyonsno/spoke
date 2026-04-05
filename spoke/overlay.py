@@ -725,7 +725,7 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_target = ""
         self._typewriter_displayed = ""
         self._typewriter_hwm = 0  # furthest position typewriter has reached
-        self._set_text_view_content("")
+        self._refresh_preview_text_style(text="", snap_polarity=True)
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
         self._window.setAlphaValue_(0.0)
@@ -766,6 +766,8 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = min(max(brightness, 0.0), 1.0)
         if immediate:
             self._brightness = self._brightness_target
+            if self._visible and self._text_view is not None:
+                self._refresh_preview_text_style(snap_polarity=True)
 
     def hide(self, *, fade_duration: float | None = None) -> None:
         """Fade the overlay out smoothly."""
@@ -835,6 +837,56 @@ class TranscriptionOverlay(NSObject):
             self._fade_timer.invalidate()
             self._fade_timer = None
 
+    def _preview_text_colors(
+        self, *, snap_polarity: bool = False
+    ) -> tuple[NSColor, NSColor]:
+        scaled = min(getattr(self, "_text_amplitude", 0.0) / _TEXT_AMP_SATURATION, 1.0)
+        t = getattr(self, "_brightness", 0.0)
+
+        if t > 0.15:
+            text_alpha = _lerp(0.80, 1.0, scaled)
+        else:
+            text_alpha = 0.88
+
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+
+        if snap_polarity or not hasattr(self, "_text_lum"):
+            current_text_lum = target_text_lum
+        else:
+            current_text_lum = getattr(self, "_text_lum", target_text_lum)
+            _TEXT_SNAP_SPEED = 0.35
+            current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
+
+        self._text_lum = current_text_lum
+        tr = tg = tb = current_text_lum
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
+        ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            ontology_r,
+            ontology_g,
+            ontology_b,
+            text_alpha,
+        )
+        return base_color, ontology_color
+
+    def _refresh_preview_text_style(
+        self, *, text: str | None = None, snap_polarity: bool = False
+    ) -> None:
+        if self._text_view is None:
+            return
+        if text is None:
+            text = getattr(self, "_typewriter_displayed", "")
+        base_color, ontology_color = self._preview_text_colors(
+            snap_polarity=snap_polarity
+        )
+        self._set_text_view_content(
+            text,
+            base_color=base_color,
+            ontology_color=ontology_color,
+        )
+
     def _set_text_view_content(
         self,
         text: str,
@@ -862,6 +914,8 @@ class TranscriptionOverlay(NSObject):
 
         if not text:
             self._text_view.setString_("")
+            if hasattr(self._text_view, "setTextColor_"):
+                self._text_view.setTextColor_(self._current_text_color)
             return
 
         text_storage = self._text_view.textStorage() if hasattr(self._text_view, "textStorage") else None
@@ -897,6 +951,7 @@ class TranscriptionOverlay(NSObject):
             return
 
         self._typewriter_target = text
+        self._refresh_preview_text_style(snap_polarity=True)
 
         # If the new text doesn't start with what we've displayed,
         # the transcription revised earlier words.
@@ -978,45 +1033,8 @@ class TranscriptionOverlay(NSObject):
             self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
 
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
-
         t = getattr(self, "_brightness", 0.0)
-
-        # Text: anchored near-opaque.  Dark on white backgrounds, white on
-        # dark backgrounds.  Text does NOT breathe with amplitude — it stays
-        # legible and stable.  The SDF fill breathes instead.
-        # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
-        # On light backgrounds, slight RMS waiver: floor 0.80, ceiling 1.0.
-        if t > 0.15:
-            _TEXT_ANCHOR_ALPHA = _lerp(0.80, 1.0, scaled)
-        else:
-            _TEXT_ANCHOR_ALPHA = 0.88
-        # Text contrasts against the fill: light fill (dark bg) → dark text,
-        # dark fill (light bg) → white text.
-        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
-        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
-
-        # Ease-out snap: chase the target with a fast-start, slow-finish curve.
-        # ~200ms at 60Hz = ~12 frames.  The ease-out makes the snap feel
-        # satisfying — it commits immediately then settles.
-        current_text_lum = getattr(self, '_text_lum', target_text_lum)
-        _TEXT_SNAP_SPEED = 0.35  # ease-out: big initial jump, then settles
-        current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
-        self._text_lum = current_text_lum
-        tr = tg = tb = current_text_lum
-        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
-        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
-        ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            ontology_r,
-            ontology_g,
-            ontology_b,
-            _TEXT_ANCHOR_ALPHA,
-        )
-        self._set_text_view_content(
-            getattr(self, "_typewriter_displayed", ""),
-            base_color=base_color,
-            ontology_color=ontology_color,
-        )
+        self._refresh_preview_text_style()
 
         # SDF fill breathes with amplitude.  On light backgrounds the fill
         # is relatively MORE assertive (because the glow is dimming the same
