@@ -164,6 +164,20 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_additive_stack_now_biases_wide_bloom_over_core(self, mock_pyobjc):
+        """Vision Quest should let the wide bloom carry more of the additive read while the core backs off."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            specs = mod._continuous_glow_pass_specs()
+            core = next(spec for spec in specs if spec["name"] == "core")
+            wide = next(spec for spec in specs if spec["name"] == "wide_bloom")
+
+            assert core["fill_alpha"] == pytest.approx(0.14)
+            assert wide["fill_alpha"] == pytest.approx(0.24)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_edge_mix_keeps_dark_scenes_purely_additive_until_light_backgrounds(self, mock_pyobjc):
         """Dark scenes should not carry any subtractive vignette until the background is genuinely bright."""
         sys.modules.pop("spoke.glow", None)
@@ -236,9 +250,90 @@ class TestGlowTuning:
             assert core["alpha"] == pytest.approx(1.0)
             assert mid["alpha"] == pytest.approx(1.0)
             assert tail["alpha"] == pytest.approx(0.9)
-            assert core["color_scale"] == pytest.approx(0.015)
-            assert mid["color_scale"] == pytest.approx(0.03)
+            assert core["color_scale"] == pytest.approx(0.00375)
+            assert mid["color_scale"] == pytest.approx(0.015)
             assert tail["color_scale"] == pytest.approx(0.06)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_rational_curve_can_drive_vignette_masks_too(self, mock_pyobjc):
+        """The same rational curve family should be available to the subtractive vignette masks."""
+        import numpy as np
+
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            signed_distance = np.array([[-20.0]], dtype=np.float32)
+            exponential = mod._distance_field_alpha(
+                signed_distance,
+                40.0,
+                1.55,
+                curve_mode=mod.ADDITIVE_CURVE_MODE_EXPONENTIAL,
+            )
+            rational = mod._distance_field_alpha(
+                signed_distance,
+                40.0,
+                1.55,
+                curve_mode=mod.ADDITIVE_CURVE_MODE_RATIONAL,
+            )
+
+            assert float(rational[0, 0]) > float(exponential[0, 0])
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_vignette_masks_follow_the_live_curve_toggle(self, mock_pyobjc, monkeypatch):
+        """The live vignette stack should rebuild from the same curve family toggle as the additive glow."""
+        import numpy as np
+
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            class _State:
+                def additive_curve_mode(self):
+                    return mod.ADDITIVE_CURVE_MODE_RATIONAL
+
+                def additive_mask_intensity(self):
+                    return 1.0
+
+                def wide_bloom_profile(self):
+                    return mod.WIDE_BLOOM_PROFILE_QUEST
+
+            def _layer_entry():
+                layer = MagicMock()
+                layer.mask.return_value = MagicMock()
+                return {"layer": layer, "spec": {}}
+
+            glow = mod.GlowOverlay.__new__(mod.GlowOverlay)
+            glow._visual_layer_state = _State()
+            glow._glow_geometry = {
+                "pixel_width": 8,
+                "pixel_height": 8,
+                "top_radius": 1.0,
+                "bottom_radius": 1.0,
+                "notch": None,
+                "scale": 1.0,
+            }
+            glow._glow_signed_distance = np.full((8, 8), -4.0, dtype=np.float32)
+            glow._glow_mask_scale = 1.0
+            glow._active_additive_curve_mode = mod.ADDITIVE_CURVE_MODE_EXPONENTIAL
+            glow._active_vignette_curve_mode = mod.ADDITIVE_CURVE_MODE_EXPONENTIAL
+            glow._active_additive_mask_intensity = 1.0
+            glow._active_wide_bloom_profile = mod.WIDE_BLOOM_PROFILE_QUEST
+            glow._glow_pass_layers = [_layer_entry(), _layer_entry(), _layer_entry()]
+            glow._vignette_pass_layers = [_layer_entry(), _layer_entry(), _layer_entry()]
+            glow._glow_mask_payloads = []
+            glow._vignette_mask_payloads = []
+            monkeypatch.setattr(
+                mod,
+                "_alpha_field_to_image",
+                lambda alpha: (object(), object()),
+            )
+
+            glow._refresh_glow_masks_if_needed()
+
+            assert glow._active_vignette_curve_mode == mod.ADDITIVE_CURVE_MODE_RATIONAL
+            for entry in glow._vignette_pass_layers:
+                entry["layer"].mask.return_value.setContents_.assert_called_once()
         finally:
             sys.modules.pop("spoke.glow", None)
 

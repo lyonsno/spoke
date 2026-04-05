@@ -526,7 +526,7 @@ def _continuous_glow_pass_specs(
             "falloff": 3.2,
             "power": 2.7,
             "fill_role": "inner",
-            "fill_alpha": _scale_sdf_layer_alpha(0.28, intensity_multiplier),
+            "fill_alpha": _scale_sdf_layer_alpha(0.14, intensity_multiplier),
         },
         {
             "name": "tight_bloom",
@@ -542,7 +542,7 @@ def _continuous_glow_pass_specs(
             "falloff": wide_bloom_spec["falloff"],
             "power": wide_bloom_spec["power"],
             "fill_role": "outer",
-            "fill_alpha": _scale_sdf_layer_alpha(0.12, intensity_multiplier),
+            "fill_alpha": _scale_sdf_layer_alpha(0.24, intensity_multiplier),
         },
     ]
 
@@ -556,7 +556,7 @@ def _continuous_vignette_pass_specs():
             "falloff": 14.0,
             "power": 1.35,
             "alpha": 1.0,
-            "color_scale": 0.015,
+            "color_scale": 0.00375,
         },
         {
             "name": "mid",
@@ -564,7 +564,7 @@ def _continuous_vignette_pass_specs():
             "falloff": 28.0,
             "power": 1.45,
             "alpha": 1.0,
-            "color_scale": 0.03,
+            "color_scale": 0.015,
         },
         {
             "name": "tail",
@@ -633,6 +633,7 @@ class GlowOverlay(NSObject):
         self._glow_signed_distance = None
         self._glow_mask_scale = 1.0
         self._active_additive_curve_mode = ADDITIVE_CURVE_MODE_EXPONENTIAL
+        self._active_vignette_curve_mode = ADDITIVE_CURVE_MODE_EXPONENTIAL
         self._active_additive_mask_intensity = 1.0
         self._active_wide_bloom_profile = WIDE_BLOOM_PROFILE_QUEST
         return self
@@ -759,7 +760,12 @@ class GlowOverlay(NSObject):
         self._vignette_layer.setOpacity_(0.0)
 
         vignette_pass_layers = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_vignette_pass_specs()):
+        for entry in _distance_field_masks_for_specs(
+            geometry,
+            _continuous_vignette_pass_specs(),
+            curve_mode=curve_mode,
+            signed_distance=self._glow_signed_distance,
+        ):
             spec = entry["spec"]
             layer = CALayer.alloc().init()
             layer.setFrame_(((0, 0), (w, h)))
@@ -812,35 +818,64 @@ class GlowOverlay(NSObject):
         curve_mode, intensity_multiplier, wide_bloom_profile = self._current_additive_tuning()
         if (
             curve_mode == self._active_additive_curve_mode
+            and curve_mode == self._active_vignette_curve_mode
             and intensity_multiplier == self._active_additive_mask_intensity
             and wide_bloom_profile == self._active_wide_bloom_profile
         ):
             return
-        self._active_additive_curve_mode = curve_mode
-        self._active_additive_mask_intensity = intensity_multiplier
-        self._active_wide_bloom_profile = wide_bloom_profile
-        new_payloads = []
-        masks = _distance_field_masks_for_specs(
-            self._glow_geometry,
-            _continuous_glow_pass_specs(
-                wide_bloom_profile=wide_bloom_profile,
-                intensity_multiplier=intensity_multiplier,
-            ),
-            curve_mode=curve_mode,
-            intensity_multiplier=intensity_multiplier,
-            signed_distance=self._glow_signed_distance,
+        curve_changed = curve_mode != self._active_additive_curve_mode
+        additive_changed = (
+            curve_changed
+            or intensity_multiplier != self._active_additive_mask_intensity
+            or wide_bloom_profile != self._active_wide_bloom_profile
         )
-        for entry, layer_entry in zip(masks, self._glow_pass_layers):
-            layer_entry["spec"] = entry["spec"]
-            mask_layer = layer_entry["layer"].mask()
-            new_payloads.append(entry["payload"])
-            if mask_layer is None:
-                continue
-            mask_layer.setContents_(entry["image"])
-            mask_layer.setContentsScale_(self._glow_mask_scale)
-        if new_payloads:
-            self._glow_mask_payloads = new_payloads
-            self._mask_payloads = self._glow_mask_payloads + getattr(self, "_vignette_mask_payloads", [])
+        if additive_changed:
+            self._active_additive_curve_mode = curve_mode
+            self._active_additive_mask_intensity = intensity_multiplier
+            self._active_wide_bloom_profile = wide_bloom_profile
+            new_payloads = []
+            masks = _distance_field_masks_for_specs(
+                self._glow_geometry,
+                _continuous_glow_pass_specs(
+                    wide_bloom_profile=wide_bloom_profile,
+                    intensity_multiplier=intensity_multiplier,
+                ),
+                curve_mode=curve_mode,
+                intensity_multiplier=intensity_multiplier,
+                signed_distance=self._glow_signed_distance,
+            )
+            for entry, layer_entry in zip(masks, self._glow_pass_layers):
+                layer_entry["spec"] = entry["spec"]
+                mask_layer = layer_entry["layer"].mask()
+                new_payloads.append(entry["payload"])
+                if mask_layer is None:
+                    continue
+                mask_layer.setContents_(entry["image"])
+                mask_layer.setContentsScale_(self._glow_mask_scale)
+            if new_payloads:
+                self._glow_mask_payloads = new_payloads
+
+        if curve_mode != self._active_vignette_curve_mode:
+            self._active_vignette_curve_mode = curve_mode
+            new_vignette_payloads = []
+            vignette_masks = _distance_field_masks_for_specs(
+                self._glow_geometry,
+                _continuous_vignette_pass_specs(),
+                curve_mode=curve_mode,
+                signed_distance=self._glow_signed_distance,
+            )
+            for entry, layer_entry in zip(vignette_masks, self._vignette_pass_layers):
+                layer_entry["spec"] = entry["spec"]
+                mask_layer = layer_entry["layer"].mask()
+                new_vignette_payloads.append(entry["payload"])
+                if mask_layer is None:
+                    continue
+                mask_layer.setContents_(entry["image"])
+                mask_layer.setContentsScale_(self._glow_mask_scale)
+            if new_vignette_payloads:
+                self._vignette_mask_payloads = new_vignette_payloads
+
+        self._mask_payloads = self._glow_mask_payloads + getattr(self, "_vignette_mask_payloads", [])
 
     def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
         """Push the current glow color through the procedural glow/vignette passes."""
