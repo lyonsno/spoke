@@ -318,7 +318,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be high on light backgrounds
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.9 < fill_opacity < 0.98
+            assert 0.95 < fill_opacity < 0.995
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -381,10 +381,24 @@ class TestAdaptiveOverlayCompositing:
         try:
             width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
 
-            assert width == pytest.approx(12.5)
-            assert interior_floor == pytest.approx(0.9994)
+            assert width == pytest.approx(14.5)
+            assert interior_floor == pytest.approx(0.9997)
             assert opacity_min == pytest.approx(0.48)
-            assert opacity_max == pytest.approx(0.94)
+            assert opacity_max == pytest.approx(0.98)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_dark_background_fill_profile_gets_more_signal_too(self, mock_pyobjc):
+        """Dark-background white fill should also get a stronger source shape, not just the dark-language variant."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(0.0)
+
+            assert width == pytest.approx(3.6)
+            assert interior_floor == pytest.approx(0.72)
+            assert opacity_min == pytest.approx(0.06)
+            assert opacity_max == pytest.approx(0.98)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

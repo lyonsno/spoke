@@ -128,10 +128,10 @@ _TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
 def _fill_profile_for_brightness(brightness: float) -> tuple[float, float, float, float]:
     """Return source-shape and opacity controls for the preview dark-language fill."""
     t = min(max(brightness, 0.0), 1.0)
-    width = _lerp(2.5, 12.5, t)
-    interior_floor = _lerp(0.55, 0.9994, t)
+    width = _lerp(3.6, 14.5, t)
+    interior_floor = _lerp(0.72, 0.9997, t)
     opacity_min = _lerp(0.06, 0.48, t)
-    opacity_max = _lerp(0.92, 0.94, t)
+    opacity_max = _lerp(0.98, 0.98, t)
     return width, interior_floor, opacity_min, opacity_max
 
 

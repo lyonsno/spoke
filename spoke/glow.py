@@ -80,10 +80,10 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.1449  # 140% of the calmer baseline so the border keeps dancing at rest
+_GLOW_BASE_OPACITY = 0.07245  # half the prior floor so the dark-language glow starts quieter at rest
 _GLOW_PEAK_TARGET = 0.90
-_GLOW_BASE_OPACITY_DARK = 0.375
-_GLOW_BASE_OPACITY_LIGHT = 0.4116
+_GLOW_BASE_OPACITY_DARK = 0.1875
+_GLOW_BASE_OPACITY_LIGHT = 0.2058
 _GLOW_PEAK_TARGET_DARK = 0.90
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
@@ -103,17 +103,17 @@ _CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.636  # pumped 50%
+_DIM_OPACITY_DARK = 0.294  # 70% of the prior hold-time dim curve
+_DIM_OPACITY_LIGHT = 0.4452
 
 def _dim_target_for_brightness(brightness: float) -> float:
-    # Spike to 0.80 at mid-gray
+    # Keep the same curve shape, but at 70% of the prior hold-time opacity.
     if brightness <= 0.5:
         t = brightness / 0.5
-        return _DIM_OPACITY_DARK + t * (0.80 - _DIM_OPACITY_DARK)
+        return _DIM_OPACITY_DARK + t * (0.56 - _DIM_OPACITY_DARK)
     else:
         t = (brightness - 0.5) / 0.5
-        return 0.80 + t * (_DIM_OPACITY_LIGHT - 0.80)
+        return 0.56 + t * (_DIM_OPACITY_LIGHT - 0.56)
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.99  # 3x faster (was 0.90)
