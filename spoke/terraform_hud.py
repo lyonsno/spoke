@@ -178,6 +178,30 @@ def _make_label(
     return label
 
 
+class _DraggableScrollView(NSScrollView):
+    """NSScrollView that allows click-drag to move the parent window.
+
+    Two-finger trackpad scrolling still works normally via scrollWheel:.
+    Single-click drag repositions the panel.
+    """
+
+    def mouseDown_(self, event):
+        self._drag_origin = event.locationInWindow()
+
+    def mouseDragged_(self, event):
+        origin = getattr(self, '_drag_origin', None)
+        if origin is None:
+            return
+        win = self.window()
+        if win is None:
+            return
+        current = event.locationInWindow()
+        dx = current.x - origin.x
+        dy = current.y - origin.y
+        frame = win.frame()
+        win.setFrameOrigin_((frame.origin.x + dx, frame.origin.y + dy))
+
+
 class TerraformHUD(NSObject):
     """Manages the Terraform topoi HUD panel."""
 
@@ -213,7 +237,7 @@ class TerraformHUD(NSObject):
             frame, style, NSBackingStoreBuffered, False
         )
         self._panel.setTitle_("Terror Form")
-        self._panel.setLevel_(3)  # NSFloatingWindowLevel
+        self._panel.setLevel_(26)  # above glow/dimmer layer (level 25)
         self._panel.setOpaque_(False)
         self._panel.setBackgroundColor_(NSColor.clearColor())
         self._panel.setCollectionBehavior_(
@@ -227,7 +251,7 @@ class TerraformHUD(NSObject):
         # Scroll view for the topoi list — no visible scrollbar,
         # content fades to transparent at top and bottom edges.
         content_frame = self._panel.contentView().bounds()
-        self._scroll_view = NSScrollView.alloc().initWithFrame_(content_frame)
+        self._scroll_view = _DraggableScrollView.alloc().initWithFrame_(content_frame)
         self._scroll_view.setHasVerticalScroller_(False)
         self._scroll_view.setHasHorizontalScroller_(False)
         self._scroll_view.setDrawsBackground_(False)
