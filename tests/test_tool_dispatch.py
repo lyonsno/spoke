@@ -310,7 +310,8 @@ class TestExecuteTool:
             tts_client=tts_client,
         )
 
-        assert result == "Error speaking text: audio device unavailable"
+        assert "Error speaking text: TTS playback failed." in result
+        assert "audio device unavailable" in result
 
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""
