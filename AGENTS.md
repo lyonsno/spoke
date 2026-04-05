@@ -39,6 +39,7 @@ When updating `spoke` Epistaxis state:
 ## Commits
 
 Unless the user explicitly says otherwise, push commits after creating them.
+If commit/push is the required next step, needing sandbox/escalation approval is not a reason to defer it or leave work local-only. Request the permission and continue.
 
 ## Integration Tip
 
