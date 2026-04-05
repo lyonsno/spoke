@@ -315,10 +315,6 @@ class TestExecuteTool:
 
         assert "Error speaking text: TTS playback failed." in result
         assert "audio device unavailable" in result
-<<<<<<< HEAD
-=======
-        assert "RuntimeError" in result
->>>>>>> 6e8cbeb (Fix TTS initialization without env voice)
 
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""

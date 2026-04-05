@@ -2033,7 +2033,7 @@ class SpokeAppDelegate(NSObject):
     def _make_tool_executor(self):
         """Build a tool executor closure with current app state."""
         scene_cache = self._scene_cache
-        raw_tts_client = getattr(self, "_tts_client", None)
+        raw_tts_client = self._ensure_tts_client(allow_default_voice=True)
         tts_client = raw_tts_client
         # Get last assistant response for last_response refs
         last_response = None
@@ -2543,9 +2543,15 @@ class SpokeAppDelegate(NSObject):
                     ],
                 }
             tts_client = getattr(self, "_tts_client", None)
-            if tts_client is not None or os.environ.get("SPOKE_TTS_VOICE"):
-                tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
-                tts_backend = getattr(self, "_tts_backend", "local")
+            tts_backend = getattr(self, "_tts_backend", "local")
+            tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
+            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+            saved_tts_model = (
+                self._load_preference("tts_sidecar_model")
+                if tts_backend == "sidecar"
+                else self._load_preference("tts_model")
+            ) or os.environ.get("SPOKE_TTS_MODEL", "")
+            if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend == "sidecar":
                 has_tts_sidecar_url = bool(tts_sidecar_url)
                 tts_target = "not active"
                 if tts_client is not None:
@@ -2610,11 +2616,14 @@ class SpokeAppDelegate(NSObject):
                     ],
                 }
             tts = getattr(self, "_tts_client", None)
-            tts_backend = getattr(self, "_tts_backend", "local")
-            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
-            show_tts_menus = tts is not None or tts_backend == "sidecar" or tts_voice_pref
+            show_tts_menus = (
+                tts is not None
+                or tts_backend == "sidecar"
+                or bool(tts_voice_pref)
+                or bool(saved_tts_model)
+            )
             if show_tts_menus:
-                current_tts_model = getattr(tts, "_model_id", "") if tts else ""
+                current_tts_model = getattr(tts, "_model_id", "") if tts else saved_tts_model
                 if tts_backend == "sidecar":
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
@@ -3101,14 +3110,24 @@ class SpokeAppDelegate(NSObject):
             return "cloud", cloud_url
         return "local", _DEFAULT_COMMAND_URL
 
-    def _build_tts_client(self):
+    def _ensure_tts_client(self, *, allow_default_voice: bool = False):
+        """Return the active TTS client, building it lazily when appropriate."""
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            return tts
+        tts = self._build_tts_client(allow_default_voice=allow_default_voice)
+        if tts is not None:
+            self._tts_client = tts
+            backend_label = "sidecar" if isinstance(tts, RemoteTTSClient) else "local"
+            logger.info("TTS enabled: backend=%s voice=%s", backend_label, getattr(tts, "_voice", ""))
+        return tts
+
+    def _build_tts_client(self, *, allow_default_voice: bool = False):
         """Build a TTS client based on backend preference and env vars."""
         voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
-        if not voice and self._tts_backend == "local":
-            voice = _DEFAULT_VOICE
-        if not voice:
-            return None
         if self._tts_backend == "sidecar" and self._tts_sidecar_url:
+            if not voice:
+                return None
             model_id = (
                 self._load_preference("tts_sidecar_model")
                 or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
@@ -3122,9 +3141,11 @@ class SpokeAppDelegate(NSObject):
             self._load_preference("tts_model")
             or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
         )
+        if not voice and not allow_default_voice:
+            return None
         return TTSClient(
             model_id=model_id,
-            voice=voice,
+            voice=voice or None,
             gpu_lock=self._local_inference_lock,
         )
 

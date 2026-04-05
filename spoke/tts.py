@@ -158,6 +158,11 @@ def _is_omnivoice_model(model_id: str) -> bool:
     return model_id.strip().lower() == "k2-fsa/omnivoice"
 
 
+def _default_voice_for_model(model_id: str) -> str | None:
+    """Return the implicit local voice to use for a model, if any."""
+    return None if _is_omnivoice_model(model_id) else _DEFAULT_VOICE
+
+
 def _omnivoice_dtype(torch_module, device_map: str):
     dtype_name = os.environ.get("SPOKE_OMNIVOICE_DTYPE", "").strip()
     if dtype_name:
@@ -210,7 +215,7 @@ def omnivoice_load(model_id: str):
     return model
 
 
-def _generate_kwargs(model, *, text: str, voice: str,
+def _generate_kwargs(model, *, text: str, voice: str | None,
                      temperature: float, top_k: int, top_p: float,
                      model_id: str | None = None) -> dict:
     """Build kwargs for model.generate(), passing only params it accepts.
@@ -233,7 +238,9 @@ def _generate_kwargs(model, *, text: str, voice: str,
                            inspect.Parameter.KEYWORD_ONLY)}
     is_omnivoice = model_id is not None and _is_omnivoice_model(model_id)
     voice_key = "instruct" if is_omnivoice else "voice"
-    all_extras = {voice_key: voice}
+    all_extras: dict[str, object] = {}
+    if voice:
+        all_extras[voice_key] = voice
     if not is_omnivoice:
         all_extras.update(
             {
@@ -300,14 +307,14 @@ class TTSClient:
     def __init__(
         self,
         model_id: str = _DEFAULT_MODEL_ID,
-        voice: str = _DEFAULT_VOICE,
+        voice: str | None = None,
         temperature: float = _DEFAULT_TEMPERATURE,
         top_k: int = _DEFAULT_TOP_K,
         top_p: float = _DEFAULT_TOP_P,
         gpu_lock: threading.Lock | None = None,
     ):
         self._model_id = model_id
-        self._voice = voice
+        self._voice = _default_voice_for_model(model_id) if voice is None else voice
         self._temperature = temperature
         self._top_k = top_k
         self._top_p = top_p

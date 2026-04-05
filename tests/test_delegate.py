@@ -981,6 +981,30 @@ class TestDualModelConfiguration:
             for model_id, _label, _enabled in model_state["tts"]["models"]
         )
 
+    def test_handle_model_menu_none_keeps_tts_controls_for_saved_model_without_live_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._tts_client = None
+        saved = {"tts_model": "k2-fsa/OmniVoice"}
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_backend"]["title"] == "TTS Backend: Local"
+        assert model_state["tts"]["selected"] == "k2-fsa/OmniVoice"
+        assert model_state["tts_voice"] == {
+            "type": "toggle",
+            "title": "TTS Voice: (not set)",
+            "items": [
+                ("configure_voice", "Set TTS Voice…", False, True),
+            ],
+        }
+
     def test_handle_model_menu_none_marks_missing_sidecar_voice_discovery(
         self, main_module, monkeypatch
     ):
@@ -1033,26 +1057,23 @@ class TestDualModelConfiguration:
         )
         assert result is MockTTS.return_value
 
-    def test_build_tts_client_local_falls_back_to_default_voice(
+    def test_build_tts_client_local_omnivoice_without_voice_skips_startup_client(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._tts_backend = "local"
         d._tts_sidecar_url = ""
         d._local_inference_lock = object()
-        d._load_preference = lambda key: None
+        saved = {"tts_model": "k2-fsa/OmniVoice"}
+        d._load_preference = lambda key: saved.get(key)
         monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
         monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
 
         with patch.object(main_module, "TTSClient") as MockTTS:
             result = d._build_tts_client()
 
-        MockTTS.assert_called_once_with(
-            model_id="mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
-            voice="casual_female",
-            gpu_lock=d._local_inference_lock,
-        )
-        assert result is MockTTS.return_value
+        MockTTS.assert_not_called()
+        assert result is None
 
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
@@ -2820,6 +2841,24 @@ class TestCommandCallbacks:
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
         d._tts_client.speak.assert_called_once_with("hello world")
+
+    def test_tool_executor_lazily_builds_tts_client_for_read_aloud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._tts_client = None
+        built_tts = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=built_tts)
+
+        executor = d._make_tool_executor()
+        result = executor("read_aloud", {"source_ref": "literal:hello world"})
+
+        d._ensure_tts_client.assert_called_once_with(allow_default_voice=True)
+        built_tts.speak.assert_called_once_with("hello world")
+        assert result == "Speaking: hello world"
+        assert d._command_tool_used_tts is True
 
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
