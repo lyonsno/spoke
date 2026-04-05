@@ -76,7 +76,7 @@ def _temp_color(temperature: str | None) -> NSColor:
 
 
 class ToposRowView(NSView):
-    """A single row in the topoi list — bloom rings + card, stacked additively."""
+    """A single row in the topoi list — frosted bubble matching overlay language."""
 
     @classmethod
     def createWithTopos_width_(cls, topos: Topos, width: float) -> ToposRowView:
@@ -93,7 +93,7 @@ class ToposRowView(NSView):
         card_y = (_ROW_CONTAINER_HEIGHT - _ROW_HEIGHT) / 2.0
         card_x = 0.0
 
-        # --- Layer 1 (bottom): outer amber-white bloom ring (inverted — bright at edges) ---
+        # --- Layer 1 (bottom): outer bloom ring — temperature tinted ---
         outer_layer = Quartz.CAGradientLayer.layer()
         outer_layer.setName_("outer_bloom")
         ox = card_x - _OUTER_EXPAND
@@ -103,10 +103,10 @@ class ToposRowView(NSView):
         outer_layer.setFrame_(((ox, oy), (ow, oh)))
         outer_layer.setType_("radial")
         outer_layer.setCornerRadius_(12.0)
-        # Transparent center → warm amber-white at edges
-        outer_center = Quartz.CGColorCreateGenericRGB(1.0, 0.92, 0.8, 0.0)
-        outer_mid = Quartz.CGColorCreateGenericRGB(1.0, 0.88, 0.7, 0.03)
-        outer_edge = Quartz.CGColorCreateGenericRGB(1.0, 0.85, 0.6, 0.06)
+        # Transparent center → temperature color at edges (inverted SDF)
+        outer_center = Quartz.CGColorCreateGenericRGB(r, g, b, 0.0)
+        outer_mid = Quartz.CGColorCreateGenericRGB(r, g, b, a * 0.4)
+        outer_edge = Quartz.CGColorCreateGenericRGB(r, g, b, a * 0.8)
         outer_layer.setColors_([outer_center, outer_mid, outer_edge])
         outer_layer.setLocations_([0.0, 0.4, 1.0])
         outer_layer.setStartPoint_((0.5, 0.5))
@@ -119,7 +119,7 @@ class ToposRowView(NSView):
             pass
         view.layer().addSublayer_(outer_layer)
 
-        # --- Layer 2 (middle): inner white-blue bloom ring (inverted — bright at edges) ---
+        # --- Layer 2 (middle): inner bloom ring — temperature tinted, tighter ---
         bloom_layer = Quartz.CAGradientLayer.layer()
         bloom_layer.setName_("inner_bloom")
         bx = card_x - _BLOOM_EXPAND
@@ -129,10 +129,13 @@ class ToposRowView(NSView):
         bloom_layer.setFrame_(((bx, by), (bw, bh)))
         bloom_layer.setType_("radial")
         bloom_layer.setCornerRadius_(10.0)
-        # Transparent center → cool white-blue at edges
-        bloom_center = Quartz.CGColorCreateGenericRGB(0.85, 0.9, 1.0, 0.0)
-        bloom_mid = Quartz.CGColorCreateGenericRGB(0.8, 0.88, 1.0, 0.05)
-        bloom_edge = Quartz.CGColorCreateGenericRGB(0.7, 0.85, 1.0, 0.10)
+        # Transparent center → desaturated temperature at edges
+        dr = r * 0.6 + 0.4  # pull toward white
+        dg = g * 0.6 + 0.4
+        db = b * 0.6 + 0.4
+        bloom_center = Quartz.CGColorCreateGenericRGB(dr, dg, db, 0.0)
+        bloom_mid = Quartz.CGColorCreateGenericRGB(dr, dg, db, a * 0.6)
+        bloom_edge = Quartz.CGColorCreateGenericRGB(dr, dg, db, a * 1.2)
         bloom_layer.setColors_([bloom_center, bloom_mid, bloom_edge])
         bloom_layer.setLocations_([0.0, 0.5, 1.0])
         bloom_layer.setStartPoint_((0.5, 0.5))
@@ -145,20 +148,22 @@ class ToposRowView(NSView):
             pass
         view.layer().addSublayer_(bloom_layer)
 
-        # --- Layer 3 (top): the card itself ---
-        card_layer = Quartz.CAGradientLayer.layer()
+        # --- Layer 3 (top): frosted bubble card matching overlay language ---
+        # Desaturated blue-white fill from overlay.py _BG_COLOR_DARK
+        card_layer = Quartz.CALayer.layer()
         card_layer.setName_("card")
         card_layer.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
-        card_layer.setType_("radial")
-        card_layer.setCornerRadius_(8.0)
-        # Temperature color center → fully transparent edge (no dark inversion)
-        card_center = Quartz.CGColorCreateGenericRGB(r, g, b, a * 3.0)
-        card_mid = Quartz.CGColorCreateGenericRGB(r, g, b, a * 1.2)
-        card_edge = Quartz.CGColorCreateGenericRGB(r, g, b, 0.0)
-        card_layer.setColors_([card_center, card_mid, card_edge])
-        card_layer.setLocations_([0.0, 0.4, 1.0])
-        card_layer.setStartPoint_((0.5, 0.5))
-        card_layer.setEndPoint_((1.0, 1.0))
+        card_layer.setCornerRadius_(10.0)
+        card_layer.setMasksToBounds_(True)
+        # Match overlay bg: desaturated blue-white (0.50, 0.59, 0.84) at 40% sat
+        card_layer.setBackgroundColor_(
+            Quartz.CGColorCreateGenericRGB(0.38, 0.42, 0.56, 0.82)
+        )
+        # Temperature-tinted border
+        card_layer.setBorderWidth_(1.0)
+        card_layer.setBorderColor_(
+            Quartz.CGColorCreateGenericRGB(r, g, b, min(a * 4.0, 0.5))
+        )
         view.layer().addSublayer_(card_layer)
 
         # --- Text labels (positioned relative to card_y) ---
