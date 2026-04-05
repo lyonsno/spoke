@@ -36,6 +36,8 @@ from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
 logger = logging.getLogger(__name__)
 
+_METAL_COMMAND_FILL_ENABLED = os.environ.get("SPOKE_METAL_COMMAND_FILL", "0") == "1"
+
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
@@ -273,10 +275,20 @@ class CommandOverlay(NSObject):
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        # Fill layer — colored SDF image with baked alpha, same as preview overlay
-        self._fill_layer = CALayer.alloc().init()
-        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
-        self._fill_layer.setContentsGravity_("resize")
+        # Fill layer — same preview-fill substrate, optionally Metal-backed.
+        self._fill_renderer = None
+        if _METAL_COMMAND_FILL_ENABLED:
+            from .overlay import _maybe_create_metal_preview_fill_renderer
+
+            self._fill_renderer = _maybe_create_metal_preview_fill_renderer(
+                (win_w, win_h), self._ridge_scale
+            )
+        if self._fill_renderer is not None:
+            self._fill_layer = self._fill_renderer.layer()
+        else:
+            self._fill_layer = CALayer.alloc().init()
+            self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+            self._fill_layer.setContentsGravity_("resize")
 
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
@@ -1059,6 +1071,38 @@ class CommandOverlay(NSObject):
 
     # ── ridge masks ────────────────────────────────────────
 
+    def _refresh_fill_surface(self, width: float, height: float) -> bool:
+        renderer = getattr(self, "_fill_renderer", None)
+        sdf = getattr(self, "_fill_sdf", None)
+        if renderer is None or sdf is None:
+            return False
+
+        total_w = width + 2 * _OUTER_FEATHER
+        total_h = height + 2 * _OUTER_FEATHER
+        scale = getattr(self, "_fill_scale", getattr(self, "_ridge_scale", 2.0))
+        bg_r, bg_g, bg_b = _background_color_for_brightness(
+            getattr(self, "_brightness", 0.0)
+        )
+        fill_opacity = _BG_ALPHA
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
+            if hasattr(self._fill_layer, "opacity"):
+                try:
+                    fill_opacity = self._fill_layer.opacity()
+                except Exception:
+                    pass
+
+        renderer.set_geometry(total_w, total_h, sdf, scale)
+        renderer.set_fill_state((bg_r, bg_g, bg_b), float(fill_opacity), 0.775)
+        renderer.draw_frame()
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
+            if hasattr(self._fill_layer, "setCompositingFilter_"):
+                self._fill_layer.setCompositingFilter_(
+                    _fill_compositing_filter_for_brightness(
+                        getattr(self, "_brightness", 0.0)
+                    )
+                )
+        return True
+
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge mask + build fill image."""
         from .overlay import (
@@ -1078,6 +1122,8 @@ class CommandOverlay(NSObject):
                 total_w, total_h, width, height,
                 _OVERLAY_CORNER_RADIUS, scale,
             )
+            self._fill_sdf = sdf
+            self._fill_scale = scale
 
             fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
             bg_r, bg_g, bg_b = _background_color_for_brightness(
@@ -1090,7 +1136,13 @@ class CommandOverlay(NSObject):
         except (ImportError, Exception):
             return
 
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+        fill_routed_to_metal = self._refresh_fill_surface(width, height)
+
+        if (
+            not fill_routed_to_metal
+            and hasattr(self, '_fill_layer')
+            and self._fill_layer is not None
+        ):
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
             if hasattr(self._fill_layer, "setCompositingFilter_"):
@@ -1161,7 +1213,12 @@ class CommandOverlay(NSObject):
         if abs(self._brightness - last_t) > 0.03:
             self._fill_image_brightness = self._brightness
             content_frame = self._content_view.frame()
-            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+            if not self._refresh_fill_surface(
+                content_frame.size.width, content_frame.size.height
+            ):
+                self._apply_ridge_masks(
+                    content_frame.size.width, content_frame.size.height
+                )
         self._apply_thinking_label_theme()
 
     def _apply_thinking_label_theme(self) -> None:
