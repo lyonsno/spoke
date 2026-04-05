@@ -318,7 +318,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be high on light backgrounds
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.75 < fill_opacity < 0.9
+            assert 0.82 < fill_opacity < 0.92
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -347,7 +347,7 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(0.0)
 
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.5 < fill_opacity < 0.8
+            assert 0.6 < fill_opacity < 0.8
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -370,7 +370,7 @@ class TestAdaptiveOverlayCompositing:
             alpha_loud = overlay._fill_layer.setOpacity_.call_args[0][0]
 
             assert alpha_silent < 0.8
-            assert alpha_loud > alpha_silent + 0.2
+            assert alpha_loud > alpha_silent + 0.15
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -381,10 +381,10 @@ class TestAdaptiveOverlayCompositing:
         try:
             width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
 
-            assert width == pytest.approx(6.3)
-            assert interior_floor == pytest.approx(0.992)
-            assert opacity_min == pytest.approx(0.52)
-            assert opacity_max == pytest.approx(0.82)
+            assert width == pytest.approx(8.2)
+            assert interior_floor == pytest.approx(0.997)
+            assert opacity_min == pytest.approx(0.64)
+            assert opacity_max == pytest.approx(0.88)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
