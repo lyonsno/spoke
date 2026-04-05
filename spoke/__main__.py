@@ -779,14 +779,9 @@ class SpokeAppDelegate(NSObject):
         self._register_loaded_models()
         self._start_heartbeat_timer()
 
-        # Warm TTS after Whisper is loaded, but keep it off the main thread.
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            threading.Thread(
-                target=self._warm_tts_in_background,
-                daemon=True,
-                name="tts-warmup",
-            ).start()
+        # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
+        # MLX lock transcription uses, which starves preview/final text on
+        # OmniVoice surfaces until the TTS model finishes loading.
 
     def clientWarmupFailed_(self, _sender) -> None:
         self._warmup_in_flight = False

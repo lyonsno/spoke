@@ -2092,6 +2092,18 @@ class TestWarmupContract:
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         mock_phase.assert_called_with("app.ready")
 
+    def test_warmup_success_does_not_start_tts_warmup(
+        self, main_module, monkeypatch
+    ):
+        """Startup must not warm TTS, because that can starve transcription on local MLX."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            d.clientWarmupSucceeded_(None)
+
+        mock_thread_cls.assert_not_called()
+
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""
 
