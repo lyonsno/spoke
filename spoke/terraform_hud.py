@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 _PREFS_PATH = Path.home() / "Library" / "Application Support" / "Spoke" / "terraform_hud.json"
 
 # Refresh interval in seconds
-_REFRESH_INTERVAL = 5.0
+_REFRESH_INTERVAL = 2.0  # fast enough to re-assert window ordering after glow
 
 # Visual constants
 _PANEL_WIDTH = 320
@@ -88,9 +88,14 @@ class ToposRowView(NSView):
             Quartz.CGColorCreateGenericRGB(0.38, 0.42, 0.56, 0.82)
         )
 
-        # Text — color matched to overlay _TEXT_COLOR_DARK (dark text on light fill)
+        # Text — primary matches overlay _TEXT_COLOR_DARK, secondary tinted by temperature
         _text_color = NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.85)
-        _sub_color = NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.55)
+        rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
+        r, g, b, _a = rgba
+        # Temperature-tinted secondary text — saturated enough to read as color
+        _sub_color = NSColor.colorWithRed_green_blue_alpha_(
+            r * 0.7, g * 0.7, b * 0.7, 0.9
+        )
 
         name = disambiguated_name(topos)
         name_label = _make_label(
@@ -293,11 +298,8 @@ class TerraformHUD(NSObject):
         self._panel.setLevel_(1000)  # well above glow/dimmer layer (level 25)
         self._panel.setOpaque_(False)
         self._panel.setHasShadow_(False)  # shadow renders as a ghost copy on transparent windows
-        # Tiny alpha — visually invisible but prevents click-through.
-        # Fully clear backgrounds make macOS treat the window as transparent to events.
-        self._panel.setBackgroundColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.005)
-        )
+        self._panel.setBackgroundColor_(NSColor.clearColor())
+        self._panel.setIgnoresMouseEvents_(False)
         self._panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
