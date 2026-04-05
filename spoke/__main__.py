@@ -2653,12 +2653,25 @@ class SpokeAppDelegate(NSObject):
                         "models": voice_models,
                     }
                 else:
+                    title = f"TTS Voice: {current_voice or '(not set)'}"
+                    items = [
+                        ("configure_voice", "Set TTS Voice\u2026", False, True),
+                    ]
+                    if tts_backend == "sidecar":
+                        title += " [sidecar /v1/voices needed]"
+                        items = [
+                            (
+                                "voice_discovery_unavailable",
+                                "Voice discovery unavailable on this sidecar",
+                                False,
+                                False,
+                            ),
+                            *items,
+                        ]
                     state["tts_voice"] = {
                         "type": "toggle",
-                        "title": f"TTS Voice: {current_voice or '(not set)'}",
-                        "items": [
-                            ("configure_voice", "Set TTS Voice\u2026", False, True),
-                        ],
+                        "title": title,
+                        "items": items,
                     }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:

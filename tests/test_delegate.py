@@ -981,6 +981,33 @@ class TestDualModelConfiguration:
             for model_id, _label, _enabled in model_state["tts"]["models"]
         )
 
+    def test_handle_model_menu_none_marks_missing_sidecar_voice_discovery(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_client._model_id = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+        d._tts_client._voice = "casual_female"
+        d._tts_backend = "sidecar"
+        d._tts_sidecar_url = "http://other-box:9001"
+        d._discover_tts_sidecar_models = MagicMock(
+            return_value=[
+                ("mlx-community/Voxtral-4B-TTS-2603-mlx-4bit", "Voxtral 4B (4-bit)", True)
+            ]
+        )
+        d._discover_tts_sidecar_voices = MagicMock(return_value=[])
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_voice"] == {
+            "type": "toggle",
+            "title": "TTS Voice: casual_female [sidecar /v1/voices needed]",
+            "items": [
+                ("voice_discovery_unavailable", "Voice discovery unavailable on this sidecar", False, False),
+                ("configure_voice", "Set TTS Voice…", False, True),
+            ],
+        }
+
     def test_build_tts_client_local_uses_saved_preferences_without_env(
         self, main_module, monkeypatch
     ):
