@@ -2264,55 +2264,11 @@ class SpokeAppDelegate(NSObject):
                 logger.exception("Command overlay finish failed")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
-        # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
-        tts = getattr(self, "_tts_client", None)
-        tool_used_tts = getattr(self, "_command_tool_used_tts", False)
+        # TTS autoplay removed — the model has read_aloud as a tool; if it
+        # chose not to call it, the response is text-only.  Clean up the
+        # tool-used flag so it doesn't leak across commands.
         self._command_tool_used_tts = False
-        logger.info(
-            "TTS autoplay decision: response=%d chars, tts_client=%s, tool_used_tts=%s, model=%s",
-            len(response) if response else 0,
-            tts is not None,
-            tool_used_tts,
-            getattr(tts, "_model_id", "?") if tts else "none",
-        )
-        if not response:
-            logger.info("TTS autoplay: skipped — no response text")
-        elif tts is None:
-            logger.info("TTS autoplay: skipped — no TTS client")
-            if self._menubar is not None:
-                self._menubar.set_status_text("TTS: not configured")
-        elif tool_used_tts:
-            logger.info("TTS autoplay: skipped — tool already used TTS")
-        if response and tts is not None and not tool_used_tts:
-            if self._glow is not None:
-                self._glow.hide()
-            if overlay is not None:
-                try:
-                    overlay.tts_start()
-                except Exception:
-                    logger.exception("Command overlay TTS start failed")
-            self._touch_model(tts)
-            try:
-                logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
-                tts.speak_async(
-                    response,
-                    amplitude_callback=self._on_tts_amplitude,
-                    done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "ttsFinished:", None, False
-                    ),
-                    error_callback=lambda msg: self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "ttsError:", msg, False
-                    ),
-                )
-                logger.info("TTS autoplay: speak_async returned (queued)")
-            except Exception:
-                logger.exception("Command autoplay failed to start")
-                if overlay is not None:
-                    try:
-                        overlay.tts_stop()
-                    except Exception:
-                        logger.exception("Command overlay TTS stop failed")
-        elif self._glow is not None:
+        if self._glow is not None:
             self._glow.hide()
 
     def _on_tts_amplitude(self, rms: float) -> None:
