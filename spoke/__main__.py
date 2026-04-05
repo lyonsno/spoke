@@ -107,8 +107,13 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
-from .tts import TTSClient, RemoteTTSClient
-from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S, _is_process_alive
+from .tts import TTSClient, RemoteTTSClient, _DEFAULT_VOICE
+from .heartbeat import (
+    HeartbeatManager,
+    zombie_sweep,
+    HEARTBEAT_INTERVAL_S,
+    _is_process_alive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -493,7 +498,7 @@ class SpokeAppDelegate(NSObject):
         self._heartbeat.set_evict_callback(self._evict_model)
         self._heartbeat_timer = None
 
-        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
+        # TTS autoplay — initialized if a voice is configured via preferences or env.
         # Preference-based model override takes priority over env var.
         tts_model_pref = self._load_preferences().get("tts_model")
         if tts_model_pref:
@@ -3085,6 +3090,8 @@ class SpokeAppDelegate(NSObject):
     def _build_tts_client(self):
         """Build a TTS client based on backend preference and env vars."""
         voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
+        if not voice and self._tts_backend == "local":
+            voice = _DEFAULT_VOICE
         if not voice:
             return None
         if self._tts_backend == "sidecar" and self._tts_sidecar_url:
@@ -3097,7 +3104,15 @@ class SpokeAppDelegate(NSObject):
                 model_id=model_id,
                 voice=voice,
             )
-        return TTSClient.from_env(gpu_lock=self._local_inference_lock)
+        model_id = (
+            self._load_preference("tts_model")
+            or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+        )
+        return TTSClient(
+            model_id=model_id,
+            voice=voice,
+            gpu_lock=self._local_inference_lock,
+        )
 
     def _discover_tts_sidecar_models(self) -> list[tuple[str, str, bool]]:
         """Fetch available models from the TTS sidecar's /v1/models endpoint."""

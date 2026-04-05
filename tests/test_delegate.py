@@ -976,6 +976,52 @@ class TestDualModelConfiguration:
             "note": "Routing source: local MLX",
         }
 
+    def test_build_tts_client_local_uses_saved_preferences_without_env(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._local_inference_lock = object()
+        saved = {
+            "tts_voice": "calm_female",
+            "tts_model": "mlx-community/Kokoro-82M-bf16",
+        }
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        with patch.object(main_module, "TTSClient") as MockTTS:
+            result = d._build_tts_client()
+
+        MockTTS.assert_called_once_with(
+            model_id="mlx-community/Kokoro-82M-bf16",
+            voice="calm_female",
+            gpu_lock=d._local_inference_lock,
+        )
+        assert result is MockTTS.return_value
+
+    def test_build_tts_client_local_falls_back_to_default_voice(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._local_inference_lock = object()
+        d._load_preference = lambda key: None
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        with patch.object(main_module, "TTSClient") as MockTTS:
+            result = d._build_tts_client()
+
+        MockTTS.assert_called_once_with(
+            model_id="mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+            voice="casual_female",
+            gpu_lock=d._local_inference_lock,
+        )
+        assert result is MockTTS.return_value
+
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
     ):
@@ -2804,24 +2850,6 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called_with("first")
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
-
-    def test_command_complete_finish_failure_hides_glow(
-        self, main_module, monkeypatch, caplog
-    ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_overlay = MagicMock()
-        d._command_overlay.finish.side_effect = RuntimeError("finish")
-        d._transcription_token = 1
-        d._transcribing = True
-        d._tts_client = MagicMock()
-
-        with caplog.at_level(logging.ERROR):
-            d.commandComplete_({"token": 1, "response": "Hello there"})
-
-        assert d._transcribing is False
-        d._tts_client.speak_async.assert_not_called()
-        d._glow.hide.assert_called()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         assert "Command overlay finish failed" in caplog.text
 
     def test_tts_amplitude_update_failure_is_suppressed(

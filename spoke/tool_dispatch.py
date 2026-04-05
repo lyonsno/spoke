@@ -338,7 +338,7 @@ def _execute_read_aloud(
         logger.warning("read_aloud: no tts_client available")
         return (
             "Error: TTS client is not available. "
-            "This means SPOKE_TTS_VOICE is not set in the environment, "
+            "This usually means no TTS voice/backend is configured, "
             "or the TTS client failed to initialize at startup. "
             "Tell the user: TTS is not configured."
         )
