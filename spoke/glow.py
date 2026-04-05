@@ -103,17 +103,17 @@ _CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.294  # 70% of the prior hold-time dim curve
-_DIM_OPACITY_LIGHT = 0.4452
+_DIM_OPACITY_DARK = 0.147  # 50% of the prior hold-time dim curve
+_DIM_OPACITY_LIGHT = 0.2226
 
 def _dim_target_for_brightness(brightness: float) -> float:
-    # Keep the same curve shape, but at 70% of the prior hold-time opacity.
+    # Keep the same curve shape, but at 50% of the prior hold-time opacity.
     if brightness <= 0.5:
         t = brightness / 0.5
-        return _DIM_OPACITY_DARK + t * (0.56 - _DIM_OPACITY_DARK)
+        return _DIM_OPACITY_DARK + t * (0.28 - _DIM_OPACITY_DARK)
     else:
         t = (brightness - 0.5) / 0.5
-        return 0.56 + t * (_DIM_OPACITY_LIGHT - 0.56)
+        return 0.28 + t * (_DIM_OPACITY_LIGHT - 0.28)
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.99  # 3x faster (was 0.90)
@@ -123,7 +123,7 @@ _DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
 _FADE_IN_S = 0.026
 _FADE_OUT_S = 0.066
 _GLOW_SHOW_FADE_S = 0.066
-_GLOW_HIDE_FADE_S = 0.2
+_GLOW_HIDE_FADE_S = 0.6
 _GLOW_SHOW_TIMING = "easeIn"
 _DIM_SHOW_FADE_S = 0.36
 _DIM_HIDE_FADE_S = 0.8

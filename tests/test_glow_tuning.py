@@ -41,6 +41,7 @@ class TestGlowTuning:
             assert mod._DIM_SHOW_FADE_S == pytest.approx(0.36)
             assert mod._DIM_HIDE_FADE_S == pytest.approx(0.8)
             assert mod._GLOW_SHOW_TIMING == "easeIn"
+            assert mod._GLOW_HIDE_FADE_S == pytest.approx(0.6)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -207,14 +208,14 @@ class TestGlowTuning:
             sys.modules.pop("spoke.glow", None)
 
     def test_light_background_dimmer_moves_closer_to_opaque(self, mock_pyobjc):
-        """Hold-time dimming should back off to 70% of its previous curve without changing its shape."""
+        """Hold-time dimming should back off to 50% of the current curve without changing its shape."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._DIM_OPACITY_DARK == pytest.approx(0.294)
-            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.4452)
+            assert mod._DIM_OPACITY_DARK == pytest.approx(0.147)
+            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.2226)
             assert mod._dim_target_for_brightness(0.0) == pytest.approx(mod._DIM_OPACITY_DARK)
-            assert mod._dim_target_for_brightness(0.5) == pytest.approx(0.56)
+            assert mod._dim_target_for_brightness(0.5) == pytest.approx(0.28)
             assert mod._dim_target_for_brightness(1.0) == pytest.approx(mod._DIM_OPACITY_LIGHT)
         finally:
             sys.modules.pop("spoke.glow", None)
