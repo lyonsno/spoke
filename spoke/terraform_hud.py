@@ -43,7 +43,7 @@ from Foundation import (
     NSTimer,
 )
 
-from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, format_topos_summary
+from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, count_attractors, format_topos_summary
 
 logger = logging.getLogger(__name__)
 
@@ -447,11 +447,13 @@ class TerraformHUD(NSObject):
         self._rebuild_content()
 
     def _update_stats(self, topoi: list[Topos]) -> None:
-        """Update the stats label with temperature counts from the full list."""
+        """Update the stats label with topos + attractor counts."""
         if not hasattr(self, "_stats_label") or self._stats_label is None:
             return
         from collections import Counter
         counts = Counter(t.temperature or "unknown" for t in topoi)
+
+        # Topos counts
         parts = []
         for temp in ("hot", "warm", "cool", "cold", "katástasis"):
             n = counts.get(temp, 0)
@@ -460,7 +462,23 @@ class TerraformHUD(NSObject):
         unknown = counts.get("unknown", 0)
         if unknown:
             parts.append(f"{unknown} ?")
-        self._stats_label.setStringValue_(" · ".join(parts) if parts else "")
+        topos_line = " · ".join(parts) if parts else "no topoi"
+
+        # Attractor counts
+        att = count_attractors()
+        att_parts = []
+        if att.active:
+            att_parts.append(f"{att.active} active")
+        if att.soak:
+            att_parts.append(f"{att.soak} soak")
+        if att.smoke:
+            att_parts.append(f"{att.smoke} smoke")
+        if att.katastasis:
+            att_parts.append(f"{att.katastasis} settled")
+        att_line = " · ".join(att_parts) if att_parts else ""
+        att_summary = f"  ⫶  {att.total} attractors ({att_line})" if att.total else ""
+
+        self._stats_label.setStringValue_(f"{topos_line}{att_summary}")
         # Re-assert window ordering in case glow used orderFrontRegardless
         if self._panel is not None and self._visible:
             self._panel.orderFront_(None)

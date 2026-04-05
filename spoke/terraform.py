@@ -254,6 +254,73 @@ def filter_topoi(
     return result
 
 
+@dataclass
+class AttractorStats:
+    """Counts of attractors by status."""
+
+    total: int = 0
+    active: int = 0
+    soak: int = 0
+    smoke: int = 0
+    katastasis: int = 0
+
+
+def count_attractors(
+    epistaxis_root: str | Path | None = None,
+) -> AttractorStats:
+    """Count attractors by status from frontmatter.
+
+    Scans both ``attractors/`` (top-level, cross-repo) and
+    ``projects/spoke/attractors/`` for ``.md`` files with YAML frontmatter.
+    Files without a ``status:`` field are counted as active.
+    """
+    root = Path(epistaxis_root) if epistaxis_root else Path.home() / "dev" / "epistaxis"
+    env_override = os.environ.get("SPOKE_EPISTAXIS_ROOT")
+    if env_override:
+        root = Path(env_override)
+
+    stats = AttractorStats()
+    dirs = [
+        root / "attractors",
+        root / "projects" / "spoke" / "attractors",
+    ]
+    seen: set[str] = set()  # dedup by filename
+
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for f in d.glob("*.md"):
+            if f.name in seen:
+                continue
+            seen.add(f.name)
+            stats.total += 1
+
+            # Try to read status from frontmatter
+            status = "active"  # default if no frontmatter
+            try:
+                head = f.read_text(encoding="utf-8", errors="replace")[:500]
+                if head.startswith("---"):
+                    end = head.find("---", 3)
+                    if end != -1:
+                        fm = head[3:end]
+                        m = re.search(r"^status:\s*(.+)$", fm, re.MULTILINE)
+                        if m:
+                            status = m.group(1).strip().lower()
+            except OSError:
+                pass
+
+            if status in ("soak", "soaking"):
+                stats.soak += 1
+            elif status in ("smoke", "smoking"):
+                stats.smoke += 1
+            elif status in ("katástasis", "katastasis", "settled"):
+                stats.katastasis += 1
+            else:
+                stats.active += 1
+
+    return stats
+
+
 def format_topos_summary(topos: Topos) -> str:
     """One-line summary for display."""
     name = topos.semeion or topos.id
