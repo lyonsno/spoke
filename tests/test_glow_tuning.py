@@ -57,9 +57,9 @@ class TestGlowTuning:
             light_sat = colorsys.rgb_to_hsv(*light_color)[1]
 
             assert light_base > dark_base
-            assert light_peak > dark_peak
+            assert light_peak < dark_peak
             assert dark_peak == pytest.approx(mod._GLOW_PEAK_TARGET_DARK)
-            assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
+            assert light_peak == pytest.approx(0.75)
             assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
             assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
             assert dark_base == pytest.approx(0.1875)
@@ -429,12 +429,13 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_white_backgrounds_can_drive_the_glow_to_full_opacity(self, mock_pyobjc):
-        """Bright scenes should be allowed to push the glow all the way to full strength."""
+    def test_white_backgrounds_now_cap_the_glow_at_three_quarters(self, mock_pyobjc):
+        """Bright scenes should top out lower so we can inspect the new white-side headroom more gently."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
             assert mod._GLOW_MAX_OPACITY == pytest.approx(1.0)
+            assert mod._GLOW_PEAK_TARGET_LIGHT == pytest.approx(0.75)
         finally:
             sys.modules.pop("spoke.glow", None)
 
