@@ -54,10 +54,10 @@ _REFRESH_INTERVAL = 5.0
 _PANEL_WIDTH = 320
 _PANEL_HEIGHT = 900
 _ROW_HEIGHT = 60
-_ROW_CONTAINER_HEIGHT = 76  # extra vertical space for bloom layers
+_ROW_CONTAINER_HEIGHT = 64  # tight — bloom bleeds slightly into neighbors
 _PADDING = 8
-_BLOOM_EXPAND = 6    # how many px the inner bloom ring extends beyond the card
-_OUTER_EXPAND = 10   # how many px the outer amber ring extends beyond the card
+_BLOOM_EXPAND = 4    # how many px the inner bloom ring extends beyond the card
+_OUTER_EXPAND = 6    # how many px the outer amber ring extends beyond the card
 
 # Temperature colors (background tint)
 _TEMP_COLORS = {
@@ -323,6 +323,9 @@ class TerraformHUD(NSObject):
         # each refresh cycle to avoid ghost layer accumulation.
         self._content_view = NSView.alloc().initWithFrame_(content_frame)
         self._scroll_view.setDocumentView_(self._content_view)
+        # Disable scroll-copy optimization — it caches bitmaps of the
+        # document view which become ghosts when the content is replaced.
+        self._scroll_view.contentView().setCopiesOnScroll_(False)
 
         # Fade mask: content fades to transparent at top and bottom
         self._scroll_view.setWantsLayer_(True)
@@ -506,7 +509,7 @@ class TerraformHUD(NSObject):
 
         scroll_bounds = self._scroll_view.bounds()
         width = scroll_bounds.size.width - 8  # edge padding
-        row_stride = _ROW_CONTAINER_HEIGHT + 4
+        row_stride = _ROW_CONTAINER_HEIGHT + 2
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
             scroll_bounds.size.height,
@@ -526,6 +529,13 @@ class TerraformHUD(NSObject):
         # Swap document view atomically
         self._scroll_view.setDocumentView_(new_content)
         self._content_view = new_content
+
+        # Force the clip view to flush any cached bitmap from the old document
+        clip_view = self._scroll_view.contentView()
+        if clip_view is not None:
+            clip_view.setNeedsDisplay_(True)
+            if clip_view.layer():
+                clip_view.layer().setNeedsDisplay()
 
         # Restore scroll position
         if old_origin is not None and clip_view is not None:
