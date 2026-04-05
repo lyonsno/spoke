@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from collections.abc import Callable
 
 import objc
 from AppKit import (
@@ -207,6 +208,12 @@ class CommandOverlay(NSObject):
         # Thinking timer state
         self._thinking_timer: NSTimer | None = None
         self._thinking_seconds = 0.0
+
+        # Cancel spring state — 0.0 = idle, 1.0 = fully wound
+        self._cancel_spring = 0.0
+        self._cancel_spring_target = 0.0  # 1.0 while winding, 0.0 while unwinding
+        self._cancel_spring_fired = False  # True once threshold crossed
+        self._on_cancel_spring_threshold: Callable[[], None] | None = None
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
@@ -273,6 +280,12 @@ class CommandOverlay(NSObject):
 
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+
+        # Cancel spring tint layer — sits above fill, masked to the same SDF shape
+        self._spring_tint_layer = CALayer.alloc().init()
+        self._spring_tint_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._spring_tint_layer.setOpacity_(0.0)
+        wrapper.layer().insertSublayer_above_(self._spring_tint_layer, self._fill_layer)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -464,6 +477,16 @@ class CommandOverlay(NSObject):
         # Don't cancel pulse here — let it continue during fade-out.
         # It will be cancelled when the fade completes (window ordered out).
         self._start_fade_out()
+
+    def set_cancel_spring(self, target: float) -> None:
+        """Set the cancel spring target (0.0 = idle, 1.0 = winding up).
+
+        The spring animates toward the target in the pulse tick, so
+        calling this once starts the wind-up or snap-back.
+        """
+        self._cancel_spring_target = max(0.0, min(1.0, target))
+        if target > 0.0:
+            self._cancel_spring_fired = False  # reset for new wind-up
 
     def set_utterance(self, text: str) -> None:
         """Show the user's utterance in the text view at reduced opacity."""
@@ -809,13 +832,54 @@ class CommandOverlay(NSObject):
         if self._color_phase > 1.0:
             self._color_phase -= 1.0
         hue = self._color_phase
+
+        # ── Cancel spring animation ──
+        # The spring chases _cancel_spring_target with asymmetric speed:
+        # winding up is deliberate (~600ms to full), easing out is smooth
+        # (~300ms with deceleration).
+        _SPRING_THRESHOLD = 0.83  # ~500ms into the 600ms wind-up
+        spring = self._cancel_spring
+        target = self._cancel_spring_target
+        if spring < target:
+            # Wind up — deliberate
+            spring = min(target, spring + dt / 0.6)
+            # Fire cancel at threshold crossing — don't wait for release
+            if spring >= _SPRING_THRESHOLD and not self._cancel_spring_fired:
+                self._cancel_spring_fired = True
+                self._cancel_spring_target = 0.0  # start ease-out
+                target = 0.0
+                cb = self._on_cancel_spring_threshold
+                if cb is not None:
+                    cb()
+        if spring > target:
+            # Ease out — smooth deceleration (quadratic decay)
+            rate = dt / 0.3 * (1.0 + spring)  # faster when higher
+            spring = max(target, spring - rate)
+        self._cancel_spring = spring
+
+        if spring > 0.001:
+            # Blend hue toward warm amber (~0.08, orange-gold).
+            # Use shortest arc around the hue wheel.
+            amber_hue = 0.08
+            if hue > 0.5 + amber_hue:
+                target_hue = 1.0 + amber_hue  # wrap forward
+            else:
+                target_hue = amber_hue
+            hue = hue + (target_hue - hue) * spring
+            if hue >= 1.0:
+                hue -= 1.0
+
         # Log color phase every ~1s (every 30th tick)
         if not hasattr(self, '_color_log_counter'):
             self._color_log_counter = 0
         self._color_log_counter += 1
         if self._color_log_counter % 30 == 0:
-            logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
-        s, v = 0.228, 0.81  # desaturated — legible, ambient, not neon
+            logger.info("Color phase: %.3f hue, vel_phase=%.3f, spring=%.3f", hue, self._color_velocity_phase, spring)
+
+        # Saturation and value — spring winds up saturation toward vivid red
+        base_s, base_v = 0.228, 0.81  # desaturated — legible, ambient, not neon
+        s = base_s + (0.75 - base_s) * spring  # 0.228 → 0.75 at full wind
+        v = base_v + (0.90 - base_v) * spring  # 0.81  → 0.90 at full wind
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
@@ -881,6 +945,16 @@ class CommandOverlay(NSObject):
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+        # Cancel spring: warm amber tint over the overlay shape.
+        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
+            if spring > 0.01:
+                from Quartz import CGColorCreateSRGB
+                # Warm golden-amber tint — visible, thermal, not alarming
+                cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
+                self._spring_tint_layer.setBackgroundColor_(cg_color)
+                self._spring_tint_layer.setOpacity_(0.5 * spring)
+            else:
+                self._spring_tint_layer.setOpacity_(0.0)
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -1023,6 +1097,15 @@ class CommandOverlay(NSObject):
                 self._fill_layer.setCompositingFilter_(
                     _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
                 )
+        # Keep the spring tint layer's mask in sync with the fill shape
+        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
+            self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
+            # Use the fill image as a mask so the tint only shows within the overlay
+            mask = CALayer.alloc().init()
+            mask.setFrame_(((0, 0), (total_w, total_h)))
+            mask.setContents_(fill_image)
+            mask.setContentsGravity_("resize")
+            self._spring_tint_layer.setMask_(mask)
 
     # ── layout ──────────────────────────────────────────────
 

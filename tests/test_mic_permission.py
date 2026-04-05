@@ -359,7 +359,7 @@ class TestSingleInstanceGuardDiagnostics:
         )
 
         with patch.dict(sys.modules, {"fcntl": fake_fcntl}):
-            with patch.object(main_module.os.path, "expanduser", return_value=str(lock_path)):
+            with patch.object(main_module, "_LOCK_PATH", str(lock_path)):
                 with patch.object(main_module.os, "getpid", return_value=222):
                     with patch.object(main_module.os, "getppid", return_value=333):
                         with patch.object(main_module.os, "kill") as mock_kill:

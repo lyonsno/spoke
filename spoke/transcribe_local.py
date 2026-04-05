@@ -10,13 +10,11 @@ from __future__ import annotations
 import importlib
 import io
 import logging
+import os
 from pathlib import Path
 import wave
 
-import mlx.core as mx
 import numpy as np
-import mlx_whisper
-from mlx_whisper.load_models import load_model
 
 from .dedup import truncate_repetition, is_hallucination, repair_ontology_terms
 
@@ -26,16 +24,35 @@ _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 _DEFAULT_DECODE_TIMEOUT = 30.0
 _DEFAULT_EAGER_EVAL = False
 
+mx = None
+mlx_whisper = None
+load_model = None
+
+
+def _ensure_mlx_whisper_runtime():
+    """Import MLX Whisper only when the local client is actually used."""
+    global mx, mlx_whisper, load_model
+    if mx is None:
+        mx = importlib.import_module("mlx.core")
+    if mlx_whisper is None:
+        mlx_whisper = importlib.import_module("mlx_whisper")
+    if load_model is None:
+        load_model = importlib.import_module("mlx_whisper.load_models").load_model
+    return mx, mlx_whisper, load_model
+
 
 def _supports_decode_option(option_name: str) -> bool:
-    decoding_module = getattr(mlx_whisper, "decoding", None)
+    runtime_whisper = mlx_whisper
+    if runtime_whisper is None:
+        _, runtime_whisper, _ = _ensure_mlx_whisper_runtime()
+    decoding_module = getattr(runtime_whisper, "decoding", None)
     options_cls = getattr(decoding_module, "DecodingOptions", None)
     fields = getattr(options_cls, "__dataclass_fields__", None)
     if isinstance(fields, dict):
         return option_name in fields
 
-    module_file = getattr(mlx_whisper, "__file__", None)
-    if module_file is None:
+    module_file = getattr(runtime_whisper, "__file__", None)
+    if module_file is None or not isinstance(module_file, (str, bytes, os.PathLike)):
         # Test doubles often replace mlx_whisper with a MagicMock. Default to
         # "supported" there so unit tests can assert the intended call shape.
         return True
@@ -89,15 +106,17 @@ class LocalTranscriptionClient:
 
     def _load_dtype(self):
         """Choose the MLX dtype used to warm the selected Whisper repo."""
-        return mx.float16
+        runtime_mx, _, _ = _ensure_mlx_whisper_runtime()
+        return runtime_mx.float16
 
     def prepare(self) -> None:
         """Warm the Whisper model cache without running a transcription."""
         if self._loaded:
             self._install_model_holder()
             return
+        _, _, runtime_load_model = _ensure_mlx_whisper_runtime()
         logger.info("Preloading Whisper model %s", self._model)
-        self._model_instance = load_model(self._model, dtype=self._load_dtype())
+        self._model_instance = runtime_load_model(self._model, dtype=self._load_dtype())
         self._loaded = True
         self._install_model_holder()
 
@@ -112,6 +131,7 @@ class LocalTranscriptionClient:
 
         self._ensure_model()
         self._install_model_holder()
+        _, runtime_whisper, _ = _ensure_mlx_whisper_runtime()
 
         # Decode WAV bytes to float32 numpy array — bypass ffmpeg entirely
         audio = self._decode_wav(wav_bytes)
@@ -137,7 +157,7 @@ class LocalTranscriptionClient:
         else:
             kwargs["decode_timeout"] = self._decode_timeout
 
-        result = mlx_whisper.transcribe(audio, **kwargs)
+        result = runtime_whisper.transcribe(audio, **kwargs)
 
         text = result.get("text", "").strip()
         text = truncate_repetition(text)
@@ -161,6 +181,27 @@ class LocalTranscriptionClient:
             pcm = np.frombuffer(frames, dtype=np.int16)
             return pcm.astype(np.float32) / 32768.0
 
+    def unload(self) -> None:
+        """Release the loaded Whisper model to free memory."""
+        if not self._loaded:
+            return
+        logger.info("Unloading Whisper model %s", self._model)
+        self._model_instance = None
+        self._loaded = False
+        # Clear mlx-whisper's singleton cache so it doesn't hold a ref.
+        try:
+            transcribe_module = importlib.import_module("mlx_whisper.transcribe")
+            if getattr(transcribe_module.ModelHolder, "model_path", None) == self._model:
+                transcribe_module.ModelHolder.model = None
+                transcribe_module.ModelHolder.model_path = ""
+        except Exception:
+            pass
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is currently resident in memory."""
+        return self._loaded
+
     def close(self) -> None:
-        """No-op — no persistent resources to clean up."""
-        pass
+        """Release resources."""
+        self.unload()

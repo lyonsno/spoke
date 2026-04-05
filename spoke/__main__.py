@@ -346,11 +346,15 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
+        self._detector._on_cancel_spring_start = self._on_cancel_spring_start
+        self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
         self._transcribing = False
         self._transcription_token = 0
+        self._cancel_spring_active = False
+        self._cancel_spring_start = 0.0
         self._preview_active = False
         self._preview_thread: threading.Thread | None = None
         self._preview_done = threading.Event()
@@ -490,6 +494,7 @@ class SpokeAppDelegate(NSObject):
             from .command_overlay import CommandOverlay
             self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
             self._command_overlay.setup()
+            self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
         # Step 1: Request mic permission with a test recording.
@@ -756,6 +761,58 @@ class SpokeAppDelegate(NSObject):
 
     # ── hold callbacks (called on main thread) ──────────────
 
+    def _on_cancel_spring_start(self) -> None:
+        """Called from the event tap when enter goes down while space is
+        held and the command overlay is active.  Activates the cancel
+        spring if generation is in progress."""
+        if not self._transcribing:
+            return
+        if getattr(self, '_cancel_spring_active', False):
+            return  # already winding — ignore key repeat
+        logger.info("Cancel spring activated (enter added to hold during active generation)")
+        self._cancel_spring_active = True
+        self._cancel_spring_start = time.monotonic()
+        self._detector.cancel_spring_active = True  # capture gesture in input tap
+        overlay = self._command_overlay
+        if overlay is not None:
+            overlay.set_cancel_spring(1.0)
+        else:
+            logger.warning("Cancel spring: no command overlay available")
+
+    def _on_cancel_spring_threshold(self) -> None:
+        """Called from the overlay pulse tick when the spring crosses the
+        cancel threshold.  Fires immediately — no waiting for key release."""
+        if not getattr(self, '_cancel_spring_active', False):
+            return
+        logger.info(
+            "Cancel spring threshold crossed — cancelling generation (token %d)",
+            self._transcription_token,
+        )
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        self._transcription_token += 1
+        self._transcribing = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Cancelled")
+
+    def _on_cancel_spring_release(self) -> None:
+        """Called from the event tap when either key is released while
+        the cancel spring is active.  If the threshold already fired,
+        this is a no-op (just clean up).  If released early, snap back."""
+        if not getattr(self, '_cancel_spring_active', False):
+            return
+        # Threshold already fired — just clean up state
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        elapsed = time.monotonic() - self._cancel_spring_start
+        logger.info(
+            "Cancel spring released at %.0fms — below threshold, snapping back",
+            elapsed * 1000,
+        )
+        # Snap back visually (the overlay ease-out handles the animation)
+        if self._command_overlay is not None:
+            self._command_overlay.set_cancel_spring(0.0)
+
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):
             logger.warning("Hold started before models were ready — ignoring")
@@ -770,15 +827,29 @@ class SpokeAppDelegate(NSObject):
             getattr(tts, "_playback_active", False)
             or getattr(tts, "_stream", None) is not None
         )
-        if self._transcribing:
-            if tts_playing:
-                logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
-                tts.cancel()
-            else:
-                logger.info("Hold during active stream — cancelling")
-                self._transcription_token += 1
-                self._transcribing = False
-            # Fall through to start recording
+        # ── Cancel spring: space+enter hold during active generation ──
+        # If the spring was already activated by the enter-during-hold
+        # callback, don't cancel the stream or start recording.
+        if getattr(self, '_cancel_spring_active', False):
+            logger.info("Hold timer fired while cancel spring active — suppressing recording")
+            return
+
+        # Don't cancel immediately — start the visual spring wind-up.
+        # The cancel fires on release if the spring is past threshold.
+        enter_held = getattr(self._detector, '_enter_held', False) is True
+        if self._transcribing and enter_held and not tts_playing:
+            logger.info("Space+enter hold during active generation — starting cancel spring")
+            self._cancel_spring_active = True
+            self._cancel_spring_start = time.monotonic()
+            self._detector.cancel_spring_active = True
+            if self._command_overlay is not None:
+                self._command_overlay.set_cancel_spring(1.0)
+            return  # don't start recording
+
+        if self._transcribing and tts_playing:
+            logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
+            tts.cancel()
+            # Fall through to start recording (generation continues)
         # Keep the detector flag aligned with the overlay's real visible state.
         overlay_visible = (
             self._command_overlay is not None
@@ -1896,6 +1967,7 @@ class SpokeAppDelegate(NSObject):
                     text,
                     tools=self._tool_schemas,
                     tool_executor=self._make_tool_executor(),
+                    cancel_check=lambda: token != self._transcription_token,
                 ):
                     if token != self._transcription_token:
                         stale_break = True
@@ -2040,6 +2112,7 @@ class SpokeAppDelegate(NSObject):
                 utterance,
                 tools=self._tool_schemas,
                 tool_executor=self._make_tool_executor(),
+                cancel_check=lambda: token != self._transcription_token,
             ):
                 if token != self._transcription_token:
                     stale_break = True
@@ -2145,6 +2218,11 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        # Reset cancel spring if generation finishes while spring is winding
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        if self._command_overlay is not None:
+            self._command_overlay.set_cancel_spring(0.0)
         overlay = self._command_overlay
         if overlay is not None:
             overlay.set_tool_active(False)
@@ -3172,30 +3250,38 @@ class SpokeAppDelegate(NSObject):
     ) -> list[tuple[str, str, bool]]:
         command_backend = getattr(self, "_command_backend", "local")
         server_model_ids: list[str] = []
+        server_reachable = False
         if self._command_client is not None:
             try:
                 server_model_ids = self._command_client.list_models()
+                server_reachable = True
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
         if command_backend == "sidecar":
             model_ids = server_model_ids or ([selected_model] if selected_model else [])
         else:
-            local_model_dir = Path(
-                os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
-            ).expanduser()
-            local_model_ids = _iter_local_command_model_ids(local_model_dir)
-            if local_model_ids:
-                local_model_set = set(local_model_ids)
-                model_ids = [
-                    model_id
-                    for model_id in server_model_ids
-                    if model_id in local_model_set
-                ]
-                model_ids.extend(
-                    model_id for model_id in local_model_ids if model_id not in model_ids
-                )
+            if not server_reachable:
+                # Don't list local-disk models when the server is down —
+                # they'll appear selectable but fail on every request.
+                logger.info("Local model server unreachable — suppressing disk-only model list")
+                model_ids = []
             else:
-                model_ids = server_model_ids
+                local_model_dir = Path(
+                    os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+                ).expanduser()
+                local_model_ids = _iter_local_command_model_ids(local_model_dir)
+                if local_model_ids:
+                    local_model_set = set(local_model_ids)
+                    model_ids = [
+                        model_id
+                        for model_id in server_model_ids
+                        if model_id in local_model_set
+                    ]
+                    model_ids.extend(
+                        model_id for model_id in local_model_ids if model_id not in model_ids
+                    )
+                else:
+                    model_ids = server_model_ids
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
@@ -3208,7 +3294,12 @@ class SpokeAppDelegate(NSObject):
     def _seed_command_model_options(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk."""
+        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk.
+
+        For the local backend, only list models when the server is
+        reachable.  Listing disk-only models causes the menu to look
+        populated while every request fails with connection refused.
+        """
         if getattr(self, "_command_backend", "local") == "sidecar":
             if self._command_client is not None:
                 try:
@@ -3224,6 +3315,16 @@ class SpokeAppDelegate(NSObject):
                         exc_info=True,
                     )
             return [(selected_model, selected_model, True)] if selected_model else []
+        # Local backend: check server reachability before listing disk models
+        server_reachable = False
+        if self._command_client is not None:
+            try:
+                self._command_client.list_models()
+                server_reachable = True
+            except Exception:
+                logger.info("Local model server unreachable at seed — suppressing model list")
+        if not server_reachable:
+            return []
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
