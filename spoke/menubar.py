@@ -273,7 +273,7 @@ class MenuBarIcon(NSObject):
                 if tts_model:
                     menu.addItem_(
                         self._build_choice_submenu_item(
-                            "TTS Model",
+                            tts_model.get("title", "TTS Model"),
                             "tts",
                             tts_model["selected"],
                             tts_model["models"],
