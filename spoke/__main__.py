@@ -39,6 +39,36 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject
 
+_NS_COMMAND_KEY_MASK = 1 << 20
+
+
+class _PastableTextField(NSTextField):
+    """NSTextField subclass that handles Cmd+V/C/X/A in modal alerts.
+
+    NSAlert modals lack an Edit menu, so standard key equivalents for
+    paste/copy/cut/select-all don't dispatch.  This override routes them
+    to the field editor directly.
+    """
+
+    def performKeyEquivalent_(self, event) -> bool:
+        if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
+            chars = event.charactersIgnoringModifiers()
+            editor = self.currentEditor()
+            if editor is not None:
+                if chars == "v":
+                    editor.paste_(self)
+                    return True
+                if chars == "c":
+                    editor.copy_(self)
+                    return True
+                if chars == "x":
+                    editor.cut_(self)
+                    return True
+                if chars == "a":
+                    editor.selectAll_(self)
+                    return True
+        return super().performKeyEquivalent_(event)
+
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .focus_check import has_focused_text_input, focused_text_contains
@@ -3190,7 +3220,7 @@ class SpokeAppDelegate(NSObject):
         alert.setInformativeText_(
             "Enter the base URL for the OpenAI-compatible /v1/audio/speech endpoint."
         )
-        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         field.setStringValue_(current_url)
         alert.setAccessoryView_(field)
         alert.addButtonWithTitle_("Save")
@@ -3539,7 +3569,7 @@ class SpokeAppDelegate(NSObject):
         alert.setInformativeText_(
             "Enter the OpenAI-compatible base URL for the assistant sidecar."
         )
-        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         field.setStringValue_(current_url)
         alert.setAccessoryView_(field)
         alert.addButtonWithTitle_("Save")
@@ -3567,17 +3597,17 @@ class SpokeAppDelegate(NSObject):
         from AppKit import NSView
         container = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 90))
 
-        url_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 60, 320, 24))
+        url_field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 60, 320, 24))
         url_field.setStringValue_(current_url)
         url_field.setPlaceholderString_("Endpoint URL")
         container.addSubview_(url_field)
 
-        key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 30, 320, 24))
+        key_field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 30, 320, 24))
         key_field.setStringValue_(current_key)
         key_field.setPlaceholderString_("API Key")
         container.addSubview_(key_field)
 
-        model_field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        model_field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         model_field.setStringValue_(current_model)
         model_field.setPlaceholderString_("Model (e.g. gemini-2.5-flash)")
         container.addSubview_(model_field)
@@ -3666,7 +3696,7 @@ class SpokeAppDelegate(NSObject):
         alert.setInformativeText_(
             "Enter the voice name to use for TTS synthesis."
         )
-        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         field.setStringValue_(current_voice)
         alert.setAccessoryView_(field)
         alert.addButtonWithTitle_("Save")
