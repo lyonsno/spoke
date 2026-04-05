@@ -897,6 +897,21 @@ class TestTrayAwareness:
 
         assert det._enter_held is True
 
+    def test_keypad_enter_keydown_sets_enter_held(self, input_tap_module):
+        """Keypad Enter keyDown should also set _enter_held."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.KEYPAD_ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert det._enter_held is True
+
     def test_enter_keyup_clears_enter_held(self, input_tap_module):
         """Enter keyUp should clear _enter_held flag."""
         mod = input_tap_module
@@ -987,6 +1002,31 @@ class TestTrayAwareness:
 
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_keypad_enter_tap_before_recording_release_routes_assistant(
+        self, input_tap_module
+    ):
+        """Keypad Enter should route the recording chord to assistant too."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.KEYPAD_ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None
+        assert result_up is None
+
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
     def test_enter_tap_before_waiting_release_routes_assistant(self, input_tap_module):

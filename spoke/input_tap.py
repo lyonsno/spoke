@@ -51,7 +51,10 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
-ENTER_KEYCODE = 36
+RETURN_KEYCODE = 36
+ENTER_KEYCODE = RETURN_KEYCODE
+KEYPAD_ENTER_KEYCODE = 76
+ENTER_KEYCODES = frozenset({ENTER_KEYCODE, KEYPAD_ENTER_KEYCODE})
 # Modifiers that prevent recording when held during spacebar press.
 # Shift is intentionally excluded — shift+space starts recording normally,
 # and shift is detected at release to route to the tray.
@@ -575,7 +578,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
         # Track enter key state for command fast path
-        if keycode == ENTER_KEYCODE:
+        if keycode in ENTER_KEYCODES:
             det._enter_held = True
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
@@ -604,7 +607,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     elif event_type == kCGEventKeyUp:
         flags = CGEventGetFlags(event)
         # Track enter key release
-        if keycode == ENTER_KEYCODE:
+        if keycode in ENTER_KEYCODES:
             # Cancel spring capture: either key releasing evaluates the spring
             if getattr(det, 'cancel_spring_active', False):
                 det._enter_held = False
