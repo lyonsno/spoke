@@ -33,13 +33,13 @@ class TestGlowTuning:
         glow._dim_layer.opacity.return_value = 0.0
         return glow
 
-    def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
-        """The temporary dimmer patch should keep fade timings short enough to avoid overlap."""
+    def test_screen_dim_fade_durations_back_off_for_vision_quest_merge(self):
+        """The Vision Quest carry should let the dimmer breathe longer instead of snapping off quickly."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._DIM_SHOW_FADE_S == pytest.approx(0.36)
-            assert mod._DIM_HIDE_FADE_S == pytest.approx(0.8)
+            assert mod._DIM_SHOW_FADE_S == pytest.approx(0.72)
+            assert mod._DIM_HIDE_FADE_S == pytest.approx(1.6)
             assert mod._GLOW_SHOW_TIMING == "easeIn"
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -57,9 +57,9 @@ class TestGlowTuning:
             light_sat = colorsys.rgb_to_hsv(*light_color)[1]
 
             assert light_base > dark_base
-            assert light_peak > dark_peak
+            assert light_peak < dark_peak
             assert dark_peak == pytest.approx(mod._GLOW_PEAK_TARGET_DARK)
-            assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
+            assert light_peak == pytest.approx(mod._GLOW_PEAK_TARGET_LIGHT)
             assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
             assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
             assert light_base == pytest.approx(mod._GLOW_BASE_OPACITY_LIGHT)
@@ -124,15 +124,15 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_light_background_dimmer_moves_closer_to_opaque(self, mock_pyobjc):
-        """Bright scenes should darken more assertively behind the border treatment."""
+    def test_light_background_dimmer_backs_off_from_opaque(self, mock_pyobjc):
+        """The merged Vision Quest dimmer should keep the same shape while using a much lighter hand."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._DIM_OPACITY_DARK == pytest.approx(0.42)
-            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.636)
+            assert mod._DIM_OPACITY_DARK == pytest.approx(0.147)
+            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.2226)
             assert mod._dim_target_for_brightness(0.0) == pytest.approx(mod._DIM_OPACITY_DARK)
-            assert mod._dim_target_for_brightness(0.5) == pytest.approx(0.8)
+            assert mod._dim_target_for_brightness(0.5) == pytest.approx(0.28)
             assert mod._dim_target_for_brightness(1.0) == pytest.approx(mod._DIM_OPACITY_LIGHT)
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -144,7 +144,36 @@ class TestGlowTuning:
         try:
             specs = mod._continuous_vignette_pass_specs()
             tail = next(spec for spec in specs if spec["name"] == "tail")
-            assert tail["alpha"] == pytest.approx(0.28)
+            assert tail["alpha"] == pytest.approx(0.9)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_additive_stack_biases_wide_bloom_over_core(self, mock_pyobjc):
+        """The Vision Quest carry should leave the broad tail as the dominant additive shell."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            specs = mod._continuous_glow_pass_specs()
+            core = next(spec for spec in specs if spec["name"] == "core")
+            wide = next(spec for spec in specs if spec["name"] == "wide_bloom")
+
+            assert wide["falloff"] > core["falloff"]
+            assert wide["fill_alpha"] > core["fill_alpha"]
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_vignette_passes_encode_layered_floor_and_peak_gains(self, mock_pyobjc):
+        """Bright-scene vignette should carry separate quiet/loud weighting by stratum."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            specs = mod._continuous_vignette_pass_specs()
+            core = next(spec for spec in specs if spec["name"] == "core")
+            mid = next(spec for spec in specs if spec["name"] == "mid")
+            tail = next(spec for spec in specs if spec["name"] == "tail")
+
+            assert core["floor_gain"] > mid["floor_gain"] > tail["floor_gain"]
+            assert core["peak_gain"] > mid["peak_gain"] > tail["peak_gain"]
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -217,7 +246,7 @@ class TestGlowTuning:
             glow.hide()
 
             call = mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-            assert call.args[0] == pytest.approx(0.816)
+            assert call.args[0] == pytest.approx(2.416)
             assert call.args[1] is glow
             assert call.args[2] == "hideWindowAfterFade:"
             assert call.args[3] == 1

@@ -217,12 +217,12 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.1449  # 140% of the calmer baseline so the border keeps dancing at rest
+_GLOW_BASE_OPACITY = 0.07245  # calmer floor so the edge stack can swell without looking constantly pinned
 _GLOW_PEAK_TARGET = 0.90
-_GLOW_BASE_OPACITY_DARK = 0.375
-_GLOW_BASE_OPACITY_LIGHT = 0.4116
+_GLOW_BASE_OPACITY_DARK = 0.1875
+_GLOW_BASE_OPACITY_LIGHT = 0.2058
 _GLOW_PEAK_TARGET_DARK = 0.90
-_GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
+_GLOW_PEAK_TARGET_LIGHT = 0.75
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
@@ -240,30 +240,32 @@ _CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.636  # pumped 50%
+_DIM_OPACITY_DARK = 0.147
+_DIM_OPACITY_LIGHT = 0.2226
 
 def _dim_target_for_brightness(brightness: float) -> float:
-    # Spike to 0.80 at mid-gray
+    # Keep the same mid-gray apex while backing the whole dimmer curve off.
     if brightness <= 0.5:
         t = brightness / 0.5
-        return _DIM_OPACITY_DARK + t * (0.80 - _DIM_OPACITY_DARK)
+        return _DIM_OPACITY_DARK + t * (0.28 - _DIM_OPACITY_DARK)
     else:
         t = (brightness - 0.5) / 0.5
-        return 0.80 + t * (_DIM_OPACITY_LIGHT - 0.80)
+        return 0.28 + t * (_DIM_OPACITY_LIGHT - 0.28)
 
-# Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.99  # 3x faster (was 0.90)
-_DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
+# Amplitude smoothing: slower additive attack/release, with a separate subtractive envelope.
+_RISE_FACTOR = 0.90
+_DECAY_FACTOR = 0.40
+_VIGNETTE_RISE_FACTOR = 0.9292893218813453
+_VIGNETTE_DECAY_FACTOR = 0.282842712474619
 
-# Fade timing (all 3x faster)
+# Fade timing: keep the same shape but let the edge material breathe longer.
 _FADE_IN_S = 0.026
 _FADE_OUT_S = 0.066
-_GLOW_SHOW_FADE_S = 0.066
-_GLOW_HIDE_FADE_S = 0.2
+_GLOW_SHOW_FADE_S = 0.132
+_GLOW_HIDE_FADE_S = 2.4
 _GLOW_SHOW_TIMING = "easeIn"
-_DIM_SHOW_FADE_S = 0.36
-_DIM_HIDE_FADE_S = 0.8
+_DIM_SHOW_FADE_S = 0.72
+_DIM_HIDE_FADE_S = 1.6
 _WINDOW_TEARDOWN_CUSHION_S = 0.016
 
 
@@ -274,7 +276,7 @@ _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_START = 0.55
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 4.575  # back to original
+_VIGNETTE_OPACITY_SCALE = 0.78
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -610,16 +612,16 @@ def _continuous_glow_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 3.2,
-            "power": 2.7,
+            "falloff": 5.0,
+            "power": 2.1,
             "fill_role": "inner",
-            "fill_alpha": 0.28,
+            "fill_alpha": 0.08,
         },
         {
             "name": "tight_bloom",
             "path_kind": "distance_field",
-            "falloff": 7.2,
-            "power": 3.2,
+            "falloff": 11.5,
+            "power": 2.6,
             "fill_role": "middle",
             "fill_alpha": 0.18,
         },
@@ -649,28 +651,42 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 2.5,
-            "power": 2.4,       # relaxed from 3.5 — softer edge
-            "alpha": 0.65,      # eased from 0.88
-            "color_scale": 0.08,
+            "falloff": 21.0,
+            "power": 0.95,
+            "alpha": 1.0,
+            "color_scale": 0.0009375,
+            "floor_gain": 2.0,
+            "peak_gain": 4.0,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 6.0,
-            "power": 2.6,       # relaxed from 3.5
-            "alpha": 0.35,      # eased from 0.52
-            "color_scale": 0.10,
+            "falloff": 42.0,
+            "power": 1.05,
+            "alpha": 1.0,
+            "color_scale": 0.00375,
+            "floor_gain": 1.0,
+            "peak_gain": 0.7,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 12.0,
-            "power": 3.0,       # relaxed from 3.8
-            "alpha": 0.28,      # eased from 0.45
-            "color_scale": 0.12,
+            "falloff": 60.0,
+            "power": 1.15,
+            "alpha": 0.9,
+            "color_scale": 0.015,
+            "floor_gain": 0.75,
+            "peak_gain": 0.5,
         },
     ]
+
+
+def _vignette_pass_opacity(base_opacity: float, amplitude_opacity: float, spec: dict) -> float:
+    """Scale each vignette stratum independently while keeping one shared RMS envelope."""
+    floor_gain = float(spec.get("floor_gain", 1.0))
+    peak_gain = float(spec.get("peak_gain", floor_gain))
+    gain = floor_gain + (peak_gain - floor_gain) * min(max(amplitude_opacity, 0.0), 1.0)
+    return min(max(base_opacity * gain, 0.0), 1.0)
 
 def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSColor]:
     """Build additive glow colors keyed by intensity role."""
@@ -835,6 +851,7 @@ class GlowOverlay(NSObject):
         self._window: NSWindow | None = None
         self._glow_layer: CALayer | None = None
         self._smoothed_amplitude = 0.0
+        self._vignette_smoothed_amplitude = 0.0
         self._visible = False
         self._fade_in_until = 0.0
         self._update_count = 0
@@ -1011,6 +1028,7 @@ class GlowOverlay(NSObject):
         self._hide_generation += 1
         self._visible = True
         self._smoothed_amplitude = 0.0
+        self._vignette_smoothed_amplitude = 0.0
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
@@ -1211,11 +1229,19 @@ class GlowOverlay(NSObject):
         # Subtract floor — only signal above ambient triggers the glow
         signal = max(rms - self._noise_floor, 0.0)
 
-        # Smooth: rise fast, decay slow
+        # Smooth the additive glow separately from the subtractive stack.
         if signal > self._smoothed_amplitude:
             self._smoothed_amplitude += (signal - self._smoothed_amplitude) * _RISE_FACTOR
         else:
             self._smoothed_amplitude *= _DECAY_FACTOR
+
+        vignette_smoothed = getattr(self, "_vignette_smoothed_amplitude", 0.0)
+        if signal > vignette_smoothed:
+            self._vignette_smoothed_amplitude = vignette_smoothed + (
+                signal - vignette_smoothed
+            ) * _VIGNETTE_RISE_FACTOR
+        else:
+            self._vignette_smoothed_amplitude = vignette_smoothed * _VIGNETTE_DECAY_FACTOR
 
         # Map smoothed amplitude to opacity range [base, max]
         # Fixed multiplier — ceiling is absolute, floor is adaptive
@@ -1227,6 +1253,12 @@ class GlowOverlay(NSObject):
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
         opacity = self._glow_base_opacity + amplitude_opacity * (_GLOW_MAX_OPACITY - self._glow_base_opacity)
         opacity = min(opacity, self._glow_peak_target)
+        vignette_amplitude_linear = min(self._vignette_smoothed_amplitude * _GLOW_MULTIPLIER, 1.0)
+        vignette_amplitude_opacity = math.log1p(vignette_amplitude_linear * 20.0) / math.log1p(20.0)
+        vignette_opacity = self._glow_base_opacity + vignette_amplitude_opacity * (
+            _GLOW_MAX_OPACITY - self._glow_base_opacity
+        )
+        vignette_opacity = min(vignette_opacity, self._glow_peak_target)
 
         # Apply recording-cap countdown: shift color from turquoise to amber
         # as the cap approaches — passive visual warning visible at any opacity.
@@ -1245,7 +1277,17 @@ class GlowOverlay(NSObject):
         subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
         self._glow_layer.setOpacity_(opacity * additive_mix)
         if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-            self._vignette_layer.setOpacity_(opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE)
+            base_vignette_opacity = vignette_opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE
+            self._vignette_layer.setOpacity_(1.0 if base_vignette_opacity > 0.0 else 0.0)
+            if hasattr(self, "_vignette_pass_layers"):
+                for entry in self._vignette_pass_layers:
+                    entry["layer"].setOpacity_(
+                        _vignette_pass_opacity(
+                            base_vignette_opacity,
+                            vignette_amplitude_opacity,
+                            entry["spec"],
+                        )
+                    )
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
