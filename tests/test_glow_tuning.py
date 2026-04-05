@@ -163,6 +163,12 @@ class TestGlowTuning:
 
             assert tight["falloff"] < quest["falloff"] < mist["falloff"]
             assert tight["power"] > quest["power"] > mist["power"]
+            assert tight["falloff"] == pytest.approx(18.0)
+            assert quest["falloff"] == pytest.approx(24.0)
+            assert mist["falloff"] == pytest.approx(30.0)
+            assert tight["power"] == pytest.approx(3.4)
+            assert quest["power"] == pytest.approx(2.9)
+            assert mist["power"] == pytest.approx(2.4)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -173,8 +179,13 @@ class TestGlowTuning:
         try:
             specs = mod._continuous_glow_pass_specs()
             core = next(spec for spec in specs if spec["name"] == "core")
+            tight = next(spec for spec in specs if spec["name"] == "tight_bloom")
             wide = next(spec for spec in specs if spec["name"] == "wide_bloom")
 
+            assert core["falloff"] == pytest.approx(5.0)
+            assert core["power"] == pytest.approx(2.1)
+            assert tight["falloff"] == pytest.approx(11.5)
+            assert tight["power"] == pytest.approx(2.6)
             assert core["fill_alpha"] == pytest.approx(0.14)
             assert wide["fill_alpha"] == pytest.approx(0.48)
         finally:

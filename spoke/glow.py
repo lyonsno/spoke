@@ -55,9 +55,9 @@ _VIGNETTE_LAYER_IDS = [
     SCREEN_VIGNETTE_TAIL_LAYER_ID,
 ]
 _WIDE_BLOOM_PROFILE_SPECS = {
-    WIDE_BLOOM_PROFILE_TIGHT: {"falloff": 12.0, "power": 4.2},
-    WIDE_BLOOM_PROFILE_QUEST: {"falloff": 15.0, "power": 3.7},
-    WIDE_BLOOM_PROFILE_MIST: {"falloff": 18.5, "power": 3.1},
+    WIDE_BLOOM_PROFILE_TIGHT: {"falloff": 18.0, "power": 3.4},
+    WIDE_BLOOM_PROFILE_QUEST: {"falloff": 24.0, "power": 2.9},
+    WIDE_BLOOM_PROFILE_MIST: {"falloff": 30.0, "power": 2.4},
 }
 
 
@@ -525,16 +525,16 @@ def _continuous_glow_pass_specs(
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 3.2,
-            "power": 2.7,
+            "falloff": 5.0,
+            "power": 2.1,
             "fill_role": "inner",
             "fill_alpha": _scale_sdf_layer_alpha(0.14, intensity_multiplier),
         },
         {
             "name": "tight_bloom",
             "path_kind": "distance_field",
-            "falloff": 7.2,
-            "power": 3.2,
+            "falloff": 11.5,
+            "power": 2.6,
             "fill_role": "middle",
             "fill_alpha": _scale_sdf_layer_alpha(0.18, intensity_multiplier),
         },
