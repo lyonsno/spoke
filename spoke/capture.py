@@ -472,7 +472,6 @@ class AudioCapture:
                 self._process_vad_decision(max_prob >= SPEECH_PROB_THRESHOLD, chunk, max_prob)
             else:
                 # Fallback: RMS-based detection when Silero is unavailable
-                rms = float(np.sqrt(np.mean(chunk ** 2)))
                 self._process_vad_decision(rms > 0.01, chunk, rms)
                 if not self._silero_warned:
                     logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
@@ -480,8 +479,8 @@ class AudioCapture:
 
     def _process_vad_decision(self, is_speech_now: bool, chunk: np.ndarray, prob: float) -> None:
         """Process a single Silero VAD decision and manage state transitions."""
-        if len(self._frames) % 50 == 0:
-            logger.info(
+        if logger.isEnabledFor(logging.DEBUG) and len(self._frames) % 50 == 0:
+            logger.debug(
                 "VAD tick: prob=%.4f, is_speech=%s, speech_trig=%d/%d, silence_trig=%d/%d, grace=%d",
                 prob, self._is_speech,
                 self._speech_trigger_count, MIN_SPEECH_FRAMES,
@@ -498,16 +497,12 @@ class AudioCapture:
                     if self._vad_cb is not None:
                         self._queue_callback_event("vad", True)
                     self._current_segment_chunks.extend(self._ring_buffer)
-                    if getattr(self, '_speech_chunks', None) is None:
-                        self._speech_chunks = []
                     self._speech_chunks.extend(self._ring_buffer)
                     self._ring_buffer.clear()
             else:
                 self._speech_trigger_count = 0
         else:
             self._current_segment_chunks.append(chunk)
-            if getattr(self, '_speech_chunks', None) is None:
-                self._speech_chunks = []
             self._speech_chunks.append(chunk)
 
             force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
