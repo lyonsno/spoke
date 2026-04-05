@@ -1160,6 +1160,82 @@ class TestDualModelConfiguration:
         MockTTS.assert_not_called()
         assert result is None
 
+    def test_handle_model_menu_none_surfaces_transcription_backend(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_sidecar_url = ""
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription_backend"] == {
+            "title": "Transcription: Local",
+            "items": [
+                ("local", "Local Whisper", True),
+                ("sidecar", "Sidecar (not configured)", False, False),
+                ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+            ],
+        }
+
+    def test_handle_model_menu_none_surfaces_transcription_backend_sidecar(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._whisper_sidecar_url = "http://my-server:8080"
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription_backend"]["title"] == "Transcription: Sidecar"
+        items = model_state["transcription_backend"]["items"]
+        assert items[0] == ("local", "Local Whisper", False)
+        assert items[1][0] == "sidecar"
+        assert items[1][2] is True  # selected
+
+    def test_selecting_transcription_backend_sidecar_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_sidecar_url = "http://my-server:8080"
+        d._save_preference = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("transcription_backend", "sidecar"))
+
+        d._save_preference.assert_called_once_with("whisper_backend", "sidecar")
+        mock_execv.assert_called_once()
+
+    def test_selecting_transcription_backend_sidecar_blocked_without_url(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_sidecar_url = ""
+        d._menubar = MagicMock()
+        d._save_preference = MagicMock()
+
+        d._handle_model_menu_action(("transcription_backend", "sidecar"))
+
+        d._save_preference.assert_not_called()
+        d._menubar.set_status_text.assert_called_once_with(
+            "No Whisper sidecar URL configured"
+        )
+
+    def test_selecting_transcription_backend_noop_when_already_selected(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._save_preference = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("transcription_backend", "local"))
+
+        d._save_preference.assert_not_called()
+        mock_execv.assert_not_called()
+
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
     ):

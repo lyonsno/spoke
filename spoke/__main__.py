@@ -132,6 +132,7 @@ _DEFAULT_COMMAND_SIDECAR_URL = ""
 _DEFAULT_CLOUD_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _DEFAULT_CLOUD_MODEL = "gemini-2.5-flash"
 _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
+_DEFAULT_WHISPER_SIDECAR_URL = ""
 
 
 def _url_host(url: str) -> str:
@@ -577,6 +578,27 @@ class SpokeAppDelegate(NSObject):
             )
             sys.exit(1)
 
+        # Whisper transcription backend — env var is the base, prefs override.
+        self._whisper_sidecar_url = (
+            self._load_preference("whisper_sidecar_url")
+            or os.environ.get("SPOKE_WHISPER_URL", "")
+            or _DEFAULT_WHISPER_SIDECAR_URL
+        )
+        saved_whisper_backend = self._load_preference("whisper_backend")
+        if saved_whisper_backend:
+            self._whisper_backend = saved_whisper_backend
+        elif whisper_url:
+            self._whisper_backend = "sidecar"
+        else:
+            self._whisper_backend = "local"
+        # If sidecar URL came from env but not yet saved, adopt it.
+        if whisper_url and not self._load_preference("whisper_sidecar_url"):
+            self._whisper_sidecar_url = whisper_url
+        # Resolve effective whisper URL from backend choice.
+        if self._whisper_backend == "sidecar" and self._whisper_sidecar_url:
+            whisper_url = self._whisper_sidecar_url
+        elif self._whisper_backend == "local":
+            whisper_url = ""
         self._whisper_url = whisper_url
         self._preview_model_id, self._transcription_model_id = self._resolve_model_ids()
         self._client_cache: dict[tuple[str, str], object] = {}
@@ -2810,6 +2832,21 @@ class SpokeAppDelegate(NSObject):
                         else "Routing source: local runtime"
                     ),
                 }
+            whisper_backend = getattr(self, "_whisper_backend", "local")
+            whisper_sidecar_url = getattr(self, "_whisper_sidecar_url", "")
+            has_whisper_sidecar_url = bool(whisper_sidecar_url)
+            state["transcription_backend"] = {
+                "title": f"Transcription: {'Sidecar' if whisper_backend == 'sidecar' else 'Local'}",
+                "items": [
+                    ("local", "Local Whisper", whisper_backend == "local"),
+                    ("sidecar", (
+                        f"Sidecar ({_url_host(whisper_sidecar_url)})"
+                        if has_whisper_sidecar_url
+                        else "Sidecar (not configured)"
+                    ), whisper_backend == "sidecar", has_whisper_sidecar_url),
+                    ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+                ],
+            }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
                 state["local_whisper"] = {
@@ -2951,6 +2988,9 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "tts":
             self._apply_tts_model_selection(model_id)
+            return
+        if role == "transcription_backend":
+            self._apply_transcription_backend_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -3500,6 +3540,55 @@ class SpokeAppDelegate(NSObject):
             return
         if self._menubar is not None:
             self._menubar.set_status_text("TTS sidecar URL saved")
+
+    def _apply_transcription_backend_selection(self, backend: str) -> None:
+        """Switch Whisper transcription backend between 'local' and 'sidecar', then relaunch."""
+        if backend == "configure_whisper":
+            self._configure_whisper_sidecar_url()
+            return
+        if backend == getattr(self, "_whisper_backend", "local"):
+            return
+        if backend == "sidecar" and not getattr(self, "_whisper_sidecar_url", ""):
+            logger.warning("Cannot switch to sidecar: no Whisper sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No Whisper sidecar URL configured")
+            return
+        logger.info("Switching Whisper backend: %s -> %s", self._whisper_backend, backend)
+        self._save_preference("whisper_backend", backend)
+        self._whisper_backend = backend
+        self._relaunch()
+
+    def _configure_whisper_sidecar_url(self) -> None:
+        """Show a dialog to set or change the Whisper sidecar URL."""
+        current_url = getattr(self, "_whisper_sidecar_url", "") or ""
+        alert = NSAlert.new()
+        alert.setMessageText_("Whisper Sidecar URL")
+        alert.setInformativeText_(
+            "Enter the base URL for the OpenAI-compatible "
+            "/v1/audio/transcriptions endpoint."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_url)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip().rstrip("/")
+        if not value:
+            return
+        self._save_preference("whisper_sidecar_url", value)
+        self._whisper_sidecar_url = value
+        logger.info("Whisper sidecar URL saved: %s", value)
+        if self._whisper_backend == "sidecar":
+            self._relaunch()
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text("Whisper sidecar URL saved")
 
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)
