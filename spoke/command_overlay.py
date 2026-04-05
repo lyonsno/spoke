@@ -86,6 +86,7 @@ _BRIGHTNESS_CHASE = 0.08
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
 _USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
+_RESPONSE_TEXT_DARK_BG_TARGET = (0.96, 0.97, 1.0)
 _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
@@ -113,6 +114,12 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
     return _lerp_color(_PREVIEW_BG_COLOR_DARK, _PREVIEW_BG_COLOR_LIGHT, _clamp01(brightness))
 
 
+def _fill_profile_for_brightness(brightness: float) -> tuple[float, float, float, float]:
+    from .overlay import _fill_profile_for_brightness as _preview_fill_profile_for_brightness
+
+    return _preview_fill_profile_for_brightness(brightness)
+
+
 def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
     return _lerp_color(_USER_TEXT_COLOR_DARK, _USER_TEXT_COLOR_LIGHT, _clamp01(brightness))
 
@@ -121,10 +128,11 @@ def _response_color_for_brightness(
     color: tuple[float, float, float],
     brightness: float,
 ) -> tuple[float, float, float]:
-    # Keep the hue-rotating identity, but bias toward a dark endpoint on
-    # bright screens so the response remains readable.
-    t = _clamp01(brightness) ** 1.15
-    return _lerp_color(color, _RESPONSE_TEXT_LIGHT_BG_TARGET, t)
+    # Keep the hue-rotating identity in the middle, but commit to strong
+    # contrast at the extremes: near-white on dark backgrounds, dark on light.
+    t = _clamp01(brightness)
+    dark_biased = _lerp_color(color, _RESPONSE_TEXT_DARK_BG_TARGET, (1.0 - t) ** 0.8)
+    return _lerp_color(dark_biased, _RESPONSE_TEXT_LIGHT_BG_TARGET, t ** 1.15)
 
 
 def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -967,7 +975,9 @@ class CommandOverlay(NSObject):
         # Drive the SDF fill layer with the pulse — the fill breathes
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+            _fill_width, _fill_floor, fill_min, fill_max = _fill_profile_for_brightness(t)
+            fill_opacity = _lerp(fill_min, fill_max, breath)
+            self._fill_layer.setOpacity_(min(fill_opacity, 0.98))
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
@@ -1102,7 +1112,14 @@ class CommandOverlay(NSObject):
                 _OVERLAY_CORNER_RADIUS, scale,
             )
 
-            fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+            fill_width, fill_floor, _fill_min, _fill_max = _fill_profile_for_brightness(
+                getattr(self, '_brightness', 0.0)
+            )
+            fill_alpha = _glow_fill_alpha(
+                sdf,
+                width=fill_width * scale,
+                interior_floor=fill_floor,
+            )
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
             )

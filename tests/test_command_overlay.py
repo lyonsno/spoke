@@ -402,6 +402,22 @@ class TestAdaptiveCompositing:
             sys.modules.pop("spoke.command_overlay", None)
             sys.modules.pop("spoke.overlay", None)
 
+    def test_fill_profile_tracks_preview_overlay_dark_language(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        sys.modules.pop("spoke.overlay", None)
+        command_mod = importlib.import_module("spoke.command_overlay")
+        overlay_mod = importlib.import_module("spoke.overlay")
+        try:
+            assert command_mod._fill_profile_for_brightness(0.0) == pytest.approx(
+                overlay_mod._fill_profile_for_brightness(0.0)
+            )
+            assert command_mod._fill_profile_for_brightness(1.0) == pytest.approx(
+                overlay_mod._fill_profile_for_brightness(1.0)
+            )
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+            sys.modules.pop("spoke.overlay", None)
+
     def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
@@ -446,6 +462,16 @@ class TestAdaptiveCompositing:
             assert sum(light) < sum(dark)
             assert light[2] == max(light)
             assert max(light) < 0.12
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_response_color_turns_nearly_white_on_dark_backgrounds(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark = mod._response_color_for_brightness((0.82, 0.66, 0.94), 0.0)
+
+            assert min(dark) > 0.92
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
