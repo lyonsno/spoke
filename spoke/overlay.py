@@ -86,7 +86,7 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
 _DARK_TEXT_CUTOUT_FILTER = "destinationOut"
-_TEXT_SNAP_SPEED = 0.18
+_TEXT_SNAP_SPEED = 0.35
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
 # bright ghostly bubble that reads as additive glow.
@@ -385,6 +385,8 @@ class TranscriptionOverlay(NSObject):
         self._preview_surface_signature = None
         self._metal_preview_renderer = None
         self._metal_preview_active = False
+        self._metal_preview_ready = False
+        self._preview_surface_alpha = _TEXT_ALPHA_MIN
 
         # Adaptive compositing defaults dark until we get a brightness sample.
         self._brightness = 0.0
@@ -749,12 +751,22 @@ class TranscriptionOverlay(NSObject):
         renderer = getattr(self, "_metal_preview_renderer", None)
         active = bool(use_metal and renderer is not None)
         self._metal_preview_active = active
+        self._metal_preview_ready = False
         self._preview_surface_signature = None
         if renderer is not None:
-            renderer.set_hidden(not active)
-        self._set_view_alpha(getattr(self, "_scroll_view", None), 0.0 if active else 1.0)
+            renderer.set_hidden_(True) if hasattr(renderer, "set_hidden_") else renderer.set_hidden(True)
+            if hasattr(renderer, "set_opacity"):
+                renderer.set_opacity(0.0)
+        self._set_view_alpha(getattr(self, "_scroll_view", None), 1.0)
 
     def _preview_surface_uses_metal(self) -> bool:
+        return bool(
+            getattr(self, "_metal_preview_active", False)
+            and getattr(self, "_metal_preview_ready", False)
+            and getattr(self, "_metal_preview_renderer", None) is not None
+        )
+
+    def _preview_surface_wants_metal(self) -> bool:
         return bool(
             getattr(self, "_metal_preview_active", False)
             and getattr(self, "_metal_preview_renderer", None) is not None
@@ -786,30 +798,48 @@ class TranscriptionOverlay(NSObject):
         scroll_view = getattr(self, "_scroll_view", None)
         if scroll_view is None or not hasattr(scroll_view, "bounds"):
             return None
-        if hasattr(scroll_view, "displayIfNeeded"):
-            scroll_view.displayIfNeeded()
-        bounds = scroll_view.bounds()
-        cache = getattr(scroll_view, "bitmapImageRepForCachingDisplayInRect_", None)
-        render = getattr(scroll_view, "cacheDisplayInRect_toBitmapImageRep_", None)
-        if cache is None or render is None:
+        restore_alpha = None
+        set_alpha = getattr(scroll_view, "setAlphaValue_", None)
+        get_alpha = getattr(scroll_view, "alphaValue", None)
+        if callable(set_alpha):
+            try:
+                restore_alpha = float(get_alpha()) if callable(get_alpha) else None
+            except Exception:
+                restore_alpha = None
+            if restore_alpha is not None and restore_alpha < 0.999:
+                set_alpha(1.0)
+        try:
+            if hasattr(scroll_view, "displayIfNeeded"):
+                scroll_view.displayIfNeeded()
+            bounds = scroll_view.bounds()
+            cache = getattr(scroll_view, "bitmapImageRepForCachingDisplayInRect_", None)
+            render = getattr(scroll_view, "cacheDisplayInRect_toBitmapImageRep_", None)
+            if cache is None or render is None:
+                return None
+            rep = cache(bounds)
+            if rep is None:
+                return None
+            render(bounds, rep)
+            if hasattr(rep, "CGImage"):
+                return rep.CGImage()
             return None
-        rep = cache(bounds)
-        if rep is None:
-            return None
-        render(bounds, rep)
-        if hasattr(rep, "CGImage"):
-            return rep.CGImage()
-        return None
+        finally:
+            if restore_alpha is not None and callable(set_alpha) and abs(restore_alpha - 1.0) > 0.001:
+                set_alpha(restore_alpha)
 
     def _sync_preview_surface(self, *, force: bool = False) -> bool:
-        if not self._preview_surface_uses_metal():
+        if not self._preview_surface_wants_metal():
             return False
         renderer = getattr(self, "_metal_preview_renderer", None)
         scroll_view = getattr(self, "_scroll_view", None)
         if renderer is None or scroll_view is None:
             return False
         signature = self._preview_surface_signature_for_current_state()
-        if not force and signature == getattr(self, "_preview_surface_signature", None):
+        if (
+            not force
+            and getattr(self, "_metal_preview_ready", False)
+            and signature == getattr(self, "_preview_surface_signature", None)
+        ):
             return False
         contents_scale = (
             self._screen.backingScaleFactor()
@@ -819,16 +849,37 @@ class TranscriptionOverlay(NSObject):
         renderer.set_frame(scroll_view.frame(), contents_scale)
         image = self._snapshot_preview_surface_image()
         if image is None:
+            self._metal_preview_ready = False
+            renderer.set_hidden(True)
+            renderer.set_opacity(0.0)
+            self._set_view_alpha(scroll_view, 1.0)
+            self._apply_text_view_alpha(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
             return False
-        renderer.update_cgimage(image)
+        if not renderer.update_cgimage(image):
+            self._metal_preview_ready = False
+            renderer.set_hidden(True)
+            renderer.set_opacity(0.0)
+            self._set_view_alpha(scroll_view, 1.0)
+            self._apply_text_view_alpha(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
+            return False
+        self._metal_preview_ready = True
+        renderer.set_hidden(False)
+        renderer.set_opacity(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
+        self._set_view_alpha(scroll_view, 0.0)
+        self._apply_text_compositing_mode(getattr(self, "_brightness", 0.0))
         self._preview_surface_signature = signature
         return True
 
     def _apply_preview_surface_alpha(self, alpha: float) -> None:
+        self._preview_surface_alpha = alpha
         if self._preview_surface_uses_metal():
             self._set_view_alpha(getattr(self, "_scroll_view", None), 0.0)
             self._metal_preview_renderer.set_opacity(alpha)
             return
+        renderer = getattr(self, "_metal_preview_renderer", None)
+        if self._preview_surface_wants_metal() and renderer is not None:
+            renderer.set_hidden(True)
+            renderer.set_opacity(0.0)
         self._set_view_alpha(getattr(self, "_scroll_view", None), 1.0)
         self._apply_text_view_alpha(alpha)
 
@@ -1066,9 +1117,9 @@ class TranscriptionOverlay(NSObject):
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
         # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
-        # On light backgrounds, slight RMS waiver: floor 0.80, ceiling 1.0.
+        # On light backgrounds, keep the preview fully legible for smoking.
         if t > 0.15:
-            _TEXT_ANCHOR_ALPHA = _lerp(0.80, 1.0, scaled)
+            _TEXT_ANCHOR_ALPHA = 1.0
         else:
             _TEXT_ANCHOR_ALPHA = 0.88
         # Text contrasts against the fill: light fill (dark bg) → dark text,

@@ -308,11 +308,11 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_text_snap_speed_is_slower_for_visual_stability(self, mock_pyobjc):
+    def test_text_snap_speed_is_faster_for_smokeability(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._TEXT_SNAP_SPEED == pytest.approx(0.18)
+            assert mod._TEXT_SNAP_SPEED == pytest.approx(0.35)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -330,7 +330,7 @@ class TestAdaptiveOverlayCompositing:
             text_r, text_g, text_b, text_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
             # White text on dark fill for light backgrounds
             assert text_r > 0.7 and text_g > 0.7 and text_b > 0.7
-            assert text_alpha > 0.5
+            assert text_alpha > 0.95
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -524,6 +524,14 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_light_background_text_snap_is_faster_for_smokeability(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._TEXT_SNAP_SPEED == pytest.approx(0.35)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
 
 class TestPreviewTextPayloadInvalidation:
     """Preview text should only rebuild its CPU payload when the seam actually changes."""
@@ -621,6 +629,66 @@ class TestMetalPreviewSurfaceSync:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_pending_metal_handoff_keeps_appkit_preview_visible(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._scroll_view = MagicMock()
+            overlay._text_view = MagicMock()
+            overlay._metal_preview_renderer = MagicMock()
+            overlay._metal_preview_active = True
+            overlay._metal_preview_ready = False
+
+            overlay._apply_preview_surface_alpha(0.88)
+
+            overlay._scroll_view.setAlphaValue_.assert_called_with(1.0)
+            overlay._text_view.setAlphaValue_.assert_called_with(0.88)
+            overlay._metal_preview_renderer.set_opacity.assert_called_with(0.0)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_first_metal_snapshot_forces_scroll_view_opaque_then_restores_hidden(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._screen = MagicMock()
+            overlay._screen.backingScaleFactor.return_value = 2.0
+            overlay._scroll_view = MagicMock()
+            overlay._text_view = MagicMock()
+            overlay._preview_surface_alpha = 0.88
+            overlay._text_payload_signature = ("Epistaxis", "light-text", None)
+            overlay._preview_surface_signature = None
+            overlay._metal_preview_renderer = MagicMock()
+            overlay._metal_preview_renderer.update_cgimage.return_value = True
+            overlay._metal_preview_active = True
+            overlay._metal_preview_ready = False
+            overlay._brightness = 0.0
+
+            bounds = MagicMock()
+            frame = MagicMock()
+            frame_size = MagicMock()
+            frame_size.width = 200.0
+            frame_size.height = 60.0
+            frame.size = frame_size
+            overlay._scroll_view.bounds.return_value = bounds
+            overlay._scroll_view.frame.return_value = frame
+            overlay._scroll_view.alphaValue.return_value = 0.0
+            rep = MagicMock()
+            rep.CGImage.return_value = "cgimage"
+            overlay._scroll_view.bitmapImageRepForCachingDisplayInRect_.return_value = rep
+
+            assert overlay._sync_preview_surface(force=True) is True
+
+            assert overlay._metal_preview_ready is True
+            assert overlay._scroll_view.setAlphaValue_.call_args_list[0][0][0] == 1.0
+            assert overlay._scroll_view.setAlphaValue_.call_args_list[-1][0][0] == 0.0
+            overlay._metal_preview_renderer.set_hidden.assert_called_with(False)
+            overlay._metal_preview_renderer.set_opacity.assert_called_with(0.88)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_typewriter_steps_resnapshot_metal_preview_surface(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -629,7 +697,9 @@ class TestMetalPreviewSurfaceSync:
             overlay._typewriter_displayed = "Epi"
             overlay._typewriter_target = "Epistaxis"
             overlay._typewriter_hwm = len(overlay._typewriter_displayed)
-            overlay._update_layout = MagicMock()
+            overlay._update_layout = MagicMock(
+                side_effect=lambda: overlay._sync_preview_surface(force=True)
+            )
 
             overlay.typewriterStep_(None)
 
@@ -646,7 +716,9 @@ class TestMetalPreviewSurfaceSync:
             overlay._typewriter_target = overlay._typewriter_displayed
             overlay._typewriter_hwm = len(overlay._typewriter_displayed)
             overlay._cancel_typewriter = MagicMock()
-            overlay._update_layout = MagicMock()
+            overlay._update_layout = MagicMock(
+                side_effect=lambda: overlay._sync_preview_surface(force=True)
+            )
 
             overlay.set_text("Completely different partial")
 
