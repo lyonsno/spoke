@@ -13,6 +13,7 @@ import gc
 import json
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -84,7 +85,24 @@ def _is_spoke_process(pid: int) -> bool:
             timeout=5,
         )
         cmd = result.stdout.strip()
-        return "spoke" in cmd and ("-m" in cmd or "spoke/" in cmd)
+        if not cmd:
+            return False
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            parts = cmd.split()
+
+        for idx, part in enumerate(parts[:-1]):
+            if part == "-m" and parts[idx + 1] == "spoke":
+                return True
+        if any(
+            part.endswith("/spoke/__main__.py") or part.endswith("\\spoke\\__main__.py")
+            for part in parts
+        ):
+            return True
+        if "sys.argv" in cmd and "-m" in cmd and "spoke" in cmd:
+            return True
+        return False
     except Exception:
         return False
 
