@@ -417,6 +417,7 @@ class SpokeAppDelegate(NSObject):
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
         self._heartbeat.set_context(
+            launch_target=os.environ.get("SPOKE_LAUNCH_TARGET_ID"),
             worktree=os.getcwd(),
         )
         self._heartbeat.set_evict_callback(self._evict_model)
