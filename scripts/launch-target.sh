@@ -112,17 +112,32 @@ with log_file.open("a", encoding="utf-8") as log:
             log.write("No repo .venv Python found and UV launcher is unavailable.\n")
             raise SystemExit(1)
 
-        subprocess.run(
-            ["pkill", "-TERM", "-f", "python.*spoke"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        time.sleep(0.5)
         lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
+        old_pid = None
+        try:
+            old_pid = int(lock_file.read_text().strip())
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+
+        if old_pid is not None and old_pid != os.getpid():
+            import signal as _sig
+            try:
+                os.kill(old_pid, _sig.SIGTERM)
+                log.write(f"Launch target handoff: sent SIGTERM to pid {old_pid}\n")
+                for _ in range(25):
+                    time.sleep(0.2)
+                    try:
+                        os.kill(old_pid, 0)
+                    except ProcessLookupError:
+                        break
+                else:
+                    os.kill(old_pid, _sig.SIGKILL)
+                    log.write(f"Launch target handoff: escalated to SIGKILL for pid {old_pid}\n")
+            except (ProcessLookupError, PermissionError):
+                pass
         lock_file.unlink(missing_ok=True)
 
-        log.write("Launch target handoff: terminated prior local python-based spoke processes.\n")
+        log.write("Launch target handoff: prior instance cleared.\n")
         log.write(f"Launcher child command: {command!r}\n")
         log.flush()
 
