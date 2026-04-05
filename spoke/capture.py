@@ -27,15 +27,58 @@ SAMPLE_RATE = 16_000
 CHANNELS = 1
 DTYPE = "float32"
 BLOCKSIZE = 1024  # ~64 ms at 16 kHz — 16Hz amplitude updates
+SILERO_CHUNK = 512  # Silero VAD requires exactly 512 samples at 16kHz
 
-# VAD parameters for opportunistic slicing
-MIN_SPEECH_FRAMES = 3      # ~192ms of consecutive speech to trigger
-MIN_SILENCE_FRAMES = 12    # ~768ms of consecutive silence to slice
-PRE_SPEECH_MARGIN = 6      # ~384ms padding before speech
-NOISE_FLOOR_WINDOW = 50    # ~3.2s of history for noise floor
-THRESHOLD_MULTIPLIER = 2.5
-MIN_THRESHOLD = 0.001
-MAX_SEGMENT_CHUNKS = 468   # ~30s maximum segment duration
+# VAD parameters for opportunistic slicing (Silero-based)
+SPEECH_PROB_THRESHOLD = 0.5   # Silero probability threshold for speech
+MIN_SPEECH_FRAMES = 3         # ~192ms (3 × 64ms callbacks) to confirm speech
+MIN_SILENCE_FRAMES = 12       # ~768ms (12 × 64ms callbacks) to confirm silence
+PRE_SPEECH_MARGIN = 6         # ~384ms padding before speech (in BLOCKSIZE chunks)
+MAX_SEGMENT_CHUNKS = 468      # ~30s maximum segment duration (in BLOCKSIZE chunks)
+VAD_GRACE_PERIOD_SECS = 5.0
+
+# Path to cached Silero VAD JIT model
+_SILERO_VAD_JIT_PATHS = [
+    "/Users/noahlyons/.cache/torch/hub/snakers4_silero-vad_master/src/silero_vad/data/silero_vad.jit",
+]
+
+
+def _load_silero_vad():
+    """Load Silero VAD JIT model. Returns (model, sample_rate_tensor) or (None, None)."""
+    try:
+        import torch
+    except ImportError:
+        logger.warning("torch not available — Silero VAD disabled")
+        return None, None
+
+    for path in _SILERO_VAD_JIT_PATHS:
+        try:
+            model = torch.jit.load(path)
+            model.eval()
+            sr = torch.tensor(SAMPLE_RATE)
+            model(torch.zeros(1, SILERO_CHUNK), sr)
+            model.reset_states()
+            logger.info("Silero VAD loaded from %s", path)
+            return model, sr
+        except Exception:
+            continue
+
+    try:
+        model, _utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            onnx=False,
+            trust_repo=True,
+        )
+        model.eval()
+        sr = torch.tensor(SAMPLE_RATE)
+        model(torch.zeros(1, SILERO_CHUNK), sr)
+        model.reset_states()
+        logger.info("Silero VAD loaded from torch hub")
+        return model, sr
+    except Exception:
+        logger.warning("Failed to load Silero VAD — VAD disabled", exc_info=True)
+        return None, None
 
 
 class AudioCapture:
@@ -57,13 +100,21 @@ class AudioCapture:
         self._vad_cb: Callable[[bool], None] | None = None
         self._read_cursor: int = 0  # index into _frames for incremental reads
         
-        # VAD state
+        # VAD state (Silero-based)
         self._is_speech: bool = False
         self._speech_trigger_count: int = 0
         self._silence_trigger_count: int = 0
-        self._noise_floor_history: deque[float] = deque(maxlen=NOISE_FLOOR_WINDOW)
         self._current_segment_chunks: list[np.ndarray] = []
         self._ring_buffer: deque[np.ndarray] = deque(maxlen=PRE_SPEECH_MARGIN)
+        self._grace_chunks_remaining: int = 0
+
+        # Silero VAD model (loaded once, reused across recordings)
+        self._silero_model, self._silero_sr = _load_silero_vad()
+        self._torch = None
+        self._silero_warned = False
+        if self._silero_model is not None:
+            import torch
+            self._torch = torch
         
         # Async encoding state
         self._encode_queue: queue.Queue | None = None
@@ -204,10 +255,12 @@ class AudioCapture:
         self._is_speech = False
         self._speech_trigger_count = 0
         self._silence_trigger_count = 0
-        self._noise_floor_history.clear()
         self._current_segment_chunks = []
         self._speech_chunks = []
         self._ring_buffer.clear()
+        self._grace_chunks_remaining = int(VAD_GRACE_PERIOD_SECS * SAMPLE_RATE / BLOCKSIZE)
+        if self._silero_model is not None:
+            self._silero_model.reset_states()
         
         if self._segment_cb is not None:
             self._encode_queue = queue.Queue()
@@ -295,22 +348,25 @@ class AudioCapture:
 
             self._encode_queue = None
             self._encode_thread = None
+            had_vad = self._vad_cb is not None or self._segment_cb is not None
             self._amplitude_cb = None
             self._vad_cb = None
             self._stop_callback_dispatch()
             self._current_segment_chunks = []
             self._ring_buffer.clear()
-            self._noise_floor_history.clear()
 
             self._segment_cb = None
-            
-            # Use trimmed chunks if available
+
+            # Use trimmed speech chunks if available; if VAD never detected
+            # speech, return empty for VAD-aware callers.
             speech_chunks = getattr(self, "_speech_chunks", None)
             if speech_chunks is not None and len(speech_chunks) > 0:
                 final_chunks = list(speech_chunks)
                 if self._is_speech:
                     final_chunks.extend(self._current_segment_chunks)
                 wav_bytes = self._encode_wav(np.concatenate(final_chunks))
+            elif had_vad:
+                wav_bytes = b""
             else:
                 wav_bytes = self._encode_wav(self._get_all_frames())
 
@@ -326,7 +382,6 @@ class AudioCapture:
         self._stop_callback_dispatch()
         self._current_segment_chunks = []
         self._ring_buffer.clear()
-        self._noise_floor_history.clear()
         
         return b""
 
@@ -396,67 +451,82 @@ class AudioCapture:
         if self._amplitude_cb is not None:
             self._queue_callback_event("amplitude", rms)
             
-        if self._segment_cb is not None or hasattr(self, '_vad_cb'):
-            # Ensure it runs if either callback is present!
-            self._noise_floor_history.append(rms)
-            noise_floor = min(self._noise_floor_history) if self._noise_floor_history else 0.0
-            threshold = max(noise_floor * THRESHOLD_MULTIPLIER, MIN_THRESHOLD)
-            
-            # Debug log every 50 chunks (~3 seconds)
-            if logger.isEnabledFor(logging.DEBUG) and len(self._frames) % 50 == 0:
-                logger.debug(
-                    "VAD tick: rms=%.4f thr=%.4f is_speech=%s trigger=%d/%d",
-                    rms,
-                    threshold,
-                    self._is_speech,
-                    self._speech_trigger_count,
-                    MIN_SPEECH_FRAMES,
-                )
+        if self._segment_cb is not None or self._vad_cb is not None:
+            # Grace period: suppress silence transitions but do NOT force speech.
+            # Silero still decides — grace only prevents premature silence-idle
+            # transitions during the first few seconds of recording.
+            if self._grace_chunks_remaining > 0:
+                self._grace_chunks_remaining -= 1
 
-            if not self._is_speech:
-                self._ring_buffer.append(chunk)
-
-                if rms > threshold:
-                    self._speech_trigger_count += 1
-                    if self._speech_trigger_count >= MIN_SPEECH_FRAMES:
-                        self._is_speech = True
-                        if self._vad_cb is not None:
-                            self._queue_callback_event("vad", True)
-                        self._current_segment_chunks.extend(self._ring_buffer)
-                        if getattr(self, '_speech_chunks', None) is None:
-                            self._speech_chunks = []
-                        self._speech_chunks.extend(self._ring_buffer)
-                        self._ring_buffer.clear()
-                else:
-                    self._speech_trigger_count = 0
+            # Run Silero VAD on each 512-sample sub-chunk, take max probability
+            if self._silero_model is not None:
+                torch = self._torch
+                max_prob = 0.0
+                for offset in range(0, len(chunk), SILERO_CHUNK):
+                    sub = chunk[offset:offset + SILERO_CHUNK]
+                    if len(sub) < SILERO_CHUNK:
+                        break
+                    tensor = torch.from_numpy(sub).unsqueeze(0)
+                    prob = self._silero_model(tensor, self._silero_sr).item()
+                    max_prob = max(max_prob, prob)
+                self._process_vad_decision(max_prob >= SPEECH_PROB_THRESHOLD, chunk, max_prob)
             else:
-                self._current_segment_chunks.append(chunk)
-                if getattr(self, '_speech_chunks', None) is None:
-                    self._speech_chunks = []
-                self._speech_chunks.append(chunk)
-                
-                force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
-                
-                if force_slice or rms <= threshold:
-                    if rms <= threshold:
-                        self._silence_trigger_count += 1
-                    else:
-                        self._silence_trigger_count = MIN_SILENCE_FRAMES  # Force immediate slice
-                        
-                    if self._silence_trigger_count >= MIN_SILENCE_FRAMES:
-                        self._is_speech = False
-                        if self._vad_cb is not None:
-                            self._queue_callback_event("vad", False)
-                        self._speech_trigger_count = 0
-                        self._silence_trigger_count = 0
-                        
-                        if self._encode_queue is not None:
-                            segment_samples = np.concatenate(self._current_segment_chunks)
-                            self._encode_queue.put(segment_samples)
-                            
-                        self._current_segment_chunks = []
+                # Fallback: RMS-based detection when Silero is unavailable
+                self._process_vad_decision(rms > 0.01, chunk, rms)
+                if not self._silero_warned:
+                    logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
+                    self._silero_warned = True
+
+    def _process_vad_decision(self, is_speech_now: bool, chunk: np.ndarray, prob: float) -> None:
+        """Process a single Silero VAD decision and manage state transitions."""
+        if logger.isEnabledFor(logging.DEBUG) and len(self._frames) % 50 == 0:
+            logger.debug(
+                "VAD tick: prob=%.4f, is_speech=%s, speech_trig=%d/%d, silence_trig=%d/%d, grace=%d",
+                prob, self._is_speech,
+                self._speech_trigger_count, MIN_SPEECH_FRAMES,
+                self._silence_trigger_count, MIN_SILENCE_FRAMES,
+                self._grace_chunks_remaining,
+            )
+
+        if not self._is_speech:
+            self._ring_buffer.append(chunk)
+            if is_speech_now:
+                self._speech_trigger_count += 1
+                if self._speech_trigger_count >= MIN_SPEECH_FRAMES:
+                    self._is_speech = True
+                    if self._vad_cb is not None:
+                        self._queue_callback_event("vad", True)
+                    self._current_segment_chunks.extend(self._ring_buffer)
+                    self._speech_chunks.extend(self._ring_buffer)
+                    self._ring_buffer.clear()
+            else:
+                self._speech_trigger_count = 0
+        else:
+            self._current_segment_chunks.append(chunk)
+            self._speech_chunks.append(chunk)
+
+            force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
+
+            if self._grace_chunks_remaining <= 0 and (force_slice or not is_speech_now):
+                if not is_speech_now:
+                    self._silence_trigger_count += 1
                 else:
+                    self._silence_trigger_count = MIN_SILENCE_FRAMES
+
+                if self._silence_trigger_count >= MIN_SILENCE_FRAMES:
+                    self._is_speech = False
+                    if self._vad_cb is not None:
+                        self._queue_callback_event("vad", False)
+                    self._speech_trigger_count = 0
                     self._silence_trigger_count = 0
+
+                    if self._encode_queue is not None:
+                        segment_samples = np.concatenate(self._current_segment_chunks)
+                        self._encode_queue.put(segment_samples)
+
+                    self._current_segment_chunks = []
+            elif is_speech_now:
+                self._silence_trigger_count = max(0, self._silence_trigger_count - 2)
 
     def _get_all_frames(self) -> np.ndarray:
         """Concatenate all captured frames into a single array."""

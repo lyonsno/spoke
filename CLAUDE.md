@@ -10,22 +10,14 @@ Treat the repo as renamed for documentation purposes and keep naming consistent 
 
 ## Branching
 
-**`main-next` is the active integration branch.** All new feature branches,
-fix branches, and worktrees must be sliced from `origin/main-next`, not from
-`main` or `dev`. `main` is reference-only and receives promotions from `main-next`
-after smoke validation. Do not branch from `main` for new work. Do not land
-new work onto `main` directly.
+**`main` is the integration branch.** `main-next` is retired — it was
+force-pushed onto `main` on 2026-04-04 and the two are now identical.
+All new feature branches, fix branches, and worktrees must be sliced
+from `origin/main`. Do not use `main-next`, `dev`, or any other branch
+as a base.
 
-Treat remote `origin/main-next` as the source of truth rather than any older
-local trunk witness or smoke worktree. If a local surface named `Main Next
-Trunk` exists, refresh or recreate it from current `origin/main-next` before
-calling it the current tip.
-
-Before creating a worktree: `git fetch origin main-next` and branch from
-`origin/main-next`. Failing to do this means your branch will be missing
-weeks of integration work (sidecar toggle, lazy MLX startup, ontology
-vocabulary, overlay cleanup, etc.) and will diverge from every other active
-surface.
+Before creating a worktree: `git fetch origin main` and branch from
+`origin/main`.
 
 ## Testing
 
@@ -33,29 +25,18 @@ Always run `uv run pytest -q` after code changes and before committing. All test
 
 ## Smoke testing
 
-There are two Automator-bound launcher scripts:
+One Automator-bound launcher script: `scripts/launch-main.sh`, bound to
+`Ctrl+Opt+Cmd+Space`. It reads the launcher registry
+(`~/.config/spoke/launch_targets.json`), launches the selected target, and
+kills any existing spoke instance first. If the selected target path is
+missing or invalid, it falls back to the checkout containing the script and
+shows a macOS notification to indicate fallback.
 
-- `scripts/launch-dev.sh` — launches from `~/.config/spoke/dev-target` when that file exists; otherwise falls back to the checkout containing the script.
-- `scripts/launch-smoke.sh` — launches from whatever worktree path is written
-  in `~/.config/spoke/smoke-target`.
+There are no file-based launcher targets (`main-target`, `dev-target`,
+`smoke-target`). Those are retired. The registry is the single source of
+truth for which worktree launches.
 
-When you want the stable dev hotkey to follow a fresh main/dev worktree, point
-the dev launcher at it:
-
-```sh
-echo '/path/to/worktree' > ~/.config/spoke/dev-target
-```
-
-When a change is ready for human smoke testing, point the smoke launcher at
-the active worktree and tell the user it's ready:
-
-```sh
-echo '/path/to/worktree' > ~/.config/spoke/smoke-target
-```
-
-**Every smoke-ready surface must be added to the launcher registry**
-(`~/.config/spoke/launch_targets.json`) with a descriptive label and selected
-as the active target. The registry entry must include:
+**Every smoke-ready surface must be added to the launcher registry** with:
 - `id`: short snake_case identifier
 - `label`: human-readable label (use the operation codename if one exists)
 - `path`: absolute path to the worktree
@@ -63,17 +44,7 @@ as the active target. The registry entry must include:
 
 If the surface has a sēmeion (operation codename), use it as the label.
 Include the branch name in the `note` field so the user can identify which
-code is running.
-
-The registry is the primary launch surface — file-based targets
-(`dev-target`, `smoke-target`) are secondary. If a surface isn't in the
-registry, the user can't reach it from the menubar, and it's effectively
-not smoke-ready regardless of what the file-based targets say. Also update
-the file-based targets (`main-target`, `dev-target`, `smoke-target`) to
-point at the new worktree so all launch paths converge.
-
-The user triggers the smoke Automator hotkey themselves. Do not kill the
-running process or relaunch — `launch-smoke.sh` handles that.
+code is running. Select the target in the registry's `selected` field.
 
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
@@ -81,16 +52,17 @@ Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 Do not tell the user a surface is "smoke-ready" unless the launcher path is
 ready too. For `spoke`, that means:
 
-- the branch/worktree itself contains any launcher or launch-target code the smoke flow depends on
-- the launcher target file or launch-target registry entry has been updated to the intended worktree
-- required `.spoke-smoke-env` values are present and do not secretly force some other branch, endpoint, or interpreter than the one being claimed
-- the corresponding `~/Library/Logs/spoke-*-launch.log` shows the launcher choosing the intended worktree/path rather than a fallback
-- if the app has been relaunched, the menubar `Source:` and `Branch:` lines match the claimed surface
+- the registry entry has been added and selected
+- required `.spoke-smoke-env` values are present and correct
+- `~/Library/Logs/spoke-main-launch.log` shows the launcher choosing the
+  intended worktree/path rather than a fallback
+- if the app has been relaunched, the menubar `Source:` and `Branch:` lines
+  match the claimed surface
 
 If only the code is ready but the launcher contract has not been checked,
 describe it as branch-ready or code-ready, not smoke-ready.
 
-After pointing the smoke target, **ask the user if the spacebar is working**
+After updating the registry, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality
 from logs or process state.
 

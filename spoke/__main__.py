@@ -3605,13 +3605,6 @@ class SpokeAppDelegate(NSObject):
                 )
             prepare = getattr(client, "prepare", None)
             if callable(prepare):
-                if isinstance(client, (LocalTranscriptionClient, LocalQwenClient)):
-                    logger.info(
-                        "Deferring startup warmup for local MLX %s client (%s) until first use",
-                        role,
-                        model_id,
-                    )
-                    continue
                 with self._local_inference_context(client):
                     prepare()
                 _record_runtime_phase(

@@ -1,4 +1,5 @@
-# API key for sidecar OMLX — required for /v1/models discovery.
-# SPOKE_COMMAND_URL is intentionally absent (Thunder-Strike Armor env-unhook).
+# Smoke env for Operation Panic Switch.
+# Points at sidecar OMLX on MacBook-Pro-2.local for testing cancel chord.
+export SPOKE_COMMAND_URL="http://MacBook-Pro-2.local:8001"
 export SPOKE_COMMAND_API_KEY="1234"
 export OMLX_SERVER_API_KEY="1234"
