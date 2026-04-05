@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import time
@@ -4116,6 +4117,7 @@ def _acquire_instance_lock() -> None:
     )
     lock_file = open(lock_path, "a+")
     lock_file.seek(0)
+    old_pid: int | None = None
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -4153,6 +4155,20 @@ def _acquire_instance_lock() -> None:
             _record_runtime_phase("instance_lock.exit_existing_instance", lock_path=lock_path)
             sys.exit(0)
 
+    # Lock acquired — but a predecessor can release the flock before it has
+    # fully exited. Treat unreaped zombies as already dead rather than as live
+    # blocked apps, so the warning/SIGKILL path reflects real survivorship.
+    if old_pid is not None and old_pid != current_pid and _is_non_zombie_process_alive(old_pid):
+        logger.warning(
+            "Predecessor pid=%d released lock but is still alive — sending SIGKILL",
+            old_pid,
+        )
+        try:
+            os.kill(old_pid, sig.SIGKILL)
+            time.sleep(0.1)
+        except (ProcessLookupError, PermissionError):
+            pass
+
     lock_file.seek(0)
     lock_file.truncate()
     lock_file.write(str(current_pid))
@@ -4165,6 +4181,32 @@ def _acquire_instance_lock() -> None:
     _record_runtime_phase("instance_lock.acquired", lock_path=lock_path)
     # Keep lock_file alive for process lifetime
     _acquire_instance_lock._lock_file = lock_file
+
+
+def _is_non_zombie_process_alive(pid: int) -> bool:
+    """Return True only for running, non-zombie processes owned by this user."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        # Fall back to the kill(0) probe if process-state lookup fails.
+        return True
+
+    state = result.stdout.strip()
+    if state.startswith("Z"):
+        return False
+    return True
 
 
 def main() -> None:

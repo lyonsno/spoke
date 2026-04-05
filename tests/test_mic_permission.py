@@ -358,16 +358,21 @@ class TestSingleInstanceGuardDiagnostics:
             flock=MagicMock(side_effect=[OSError("busy"), None]),
         )
 
+        def fake_kill(pid, sig_num):
+            if sig_num == 0:
+                raise ProcessLookupError()
+
         with patch.dict(sys.modules, {"fcntl": fake_fcntl}):
             with patch.object(main_module, "_LOCK_PATH", str(lock_path)):
                 with patch.object(main_module.os, "getpid", return_value=222):
                     with patch.object(main_module.os, "getppid", return_value=333):
-                        with patch.object(main_module.os, "kill") as mock_kill:
+                        with patch.object(main_module.os, "kill", side_effect=fake_kill) as mock_kill:
                             with patch.object(main_module, "logger", MagicMock()) as mock_logger:
                                 with patch("time.sleep"):
                                     main_module._acquire_instance_lock()
 
-        mock_kill.assert_called_once_with(111, signal.SIGTERM)
+        mock_kill.assert_any_call(111, signal.SIGTERM)
+        mock_kill.assert_any_call(111, 0)
         mock_logger.info.assert_any_call(
             "Single-instance guard starting (pid=%d ppid=%d lock=%s)",
             222,
@@ -379,3 +384,84 @@ class TestSingleInstanceGuardDiagnostics:
             111,
             222,
         )
+
+    def test_instance_lock_sigkills_predecessor_still_running_after_lock_acquired(
+        self, main_module, tmp_path
+    ):
+        """If predecessor released the flock but is still running, SIGKILL it."""
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("111")
+        fake_fcntl = types.SimpleNamespace(
+            LOCK_EX=1,
+            LOCK_NB=2,
+            flock=MagicMock(side_effect=[OSError("busy"), None]),
+        )
+
+        kill_calls = []
+
+        def fake_kill(pid, sig_num):
+            kill_calls.append((pid, sig_num))
+            if sig_num == 0:
+                return
+
+        with patch.dict(sys.modules, {"fcntl": fake_fcntl}):
+            with patch.object(main_module, "_LOCK_PATH", str(lock_path)):
+                with patch.object(main_module.os, "getpid", return_value=222):
+                    with patch.object(main_module.os, "getppid", return_value=333):
+                        with patch.object(main_module.os, "kill", side_effect=fake_kill) as mock_kill:
+                            with patch.object(main_module, "logger", MagicMock()) as mock_logger:
+                                with patch("subprocess.run", return_value=types.SimpleNamespace(stdout="S\n")):
+                                    with patch("time.sleep"):
+                                        main_module._acquire_instance_lock()
+
+        mock_kill.assert_any_call(111, signal.SIGTERM)
+        mock_kill.assert_any_call(111, 0)
+        mock_kill.assert_any_call(111, signal.SIGKILL)
+        mock_logger.warning.assert_any_call(
+            "Predecessor pid=%d released lock but is still alive — sending SIGKILL",
+            111,
+        )
+
+    def test_instance_lock_does_not_sigkill_unreaped_zombie_after_lock_acquired(
+        self, main_module, tmp_path
+    ):
+        """A zombie predecessor should not be reported as a live blocked app."""
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("111")
+        fake_fcntl = types.SimpleNamespace(
+            LOCK_EX=1,
+            LOCK_NB=2,
+            flock=MagicMock(side_effect=[OSError("busy"), None]),
+        )
+
+        kill_calls = []
+
+        def fake_kill(pid, sig_num):
+            kill_calls.append((pid, sig_num))
+            if sig_num == 0:
+                return
+
+        fake_ps = types.SimpleNamespace(stdout="Z\n")
+
+        with patch.dict(sys.modules, {"fcntl": fake_fcntl}):
+            with patch.object(main_module, "_LOCK_PATH", str(lock_path)):
+                with patch.object(main_module.os, "getpid", return_value=222):
+                    with patch.object(main_module.os, "getppid", return_value=333):
+                        with patch.object(main_module.os, "kill", side_effect=fake_kill) as mock_kill:
+                            with patch.object(main_module, "logger", MagicMock()) as mock_logger:
+                                with patch("subprocess.run", return_value=fake_ps):
+                                    with patch("time.sleep"):
+                                        main_module._acquire_instance_lock()
+
+        mock_kill.assert_any_call(111, signal.SIGTERM)
+        mock_kill.assert_any_call(111, 0)
+        assert (111, signal.SIGKILL) not in kill_calls
+        mock_logger.warning.assert_any_call(
+            "Single-instance guard sending SIGTERM to prior pid=%d from pid=%d",
+            111,
+            222,
+        )
+        assert call(
+            "Predecessor pid=%d released lock but is still alive — sending SIGKILL",
+            111,
+        ) not in mock_logger.warning.call_args_list
