@@ -306,7 +306,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_fill_is_opaque(self, mock_pyobjc):
-        """On bright backgrounds, the fill layer stays strong without pinning at the ceiling."""
+        """On bright backgrounds, the fill peak should get much darker without raising the floor again."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -318,7 +318,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be high on light backgrounds
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.72 < fill_opacity < 0.82
+            assert 0.9 < fill_opacity < 0.98
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -375,16 +375,16 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_fill_profile_pushes_more_signal_into_the_sdf(self, mock_pyobjc):
-        """Bright-screen dark fill should get darker from the source shape while lowering opacity multipliers."""
+        """Bright-screen dark fill should get much darker at the top end from the SDF itself."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
 
-            assert width == pytest.approx(10.0)
-            assert interior_floor == pytest.approx(0.9985)
+            assert width == pytest.approx(12.5)
+            assert interior_floor == pytest.approx(0.9994)
             assert opacity_min == pytest.approx(0.48)
-            assert opacity_max == pytest.approx(0.78)
+            assert opacity_max == pytest.approx(0.94)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

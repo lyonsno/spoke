@@ -219,15 +219,15 @@ class TestGlowTuning:
             sys.modules.pop("spoke.glow", None)
 
     def test_light_background_vignette_tail_doubles_in_strength(self, mock_pyobjc):
-        """The widest bright-scene edge tail should get darker from the source shape while the live multiplier eases back."""
+        """The widest bright-scene edge tail should get much darker from the source shape without touching the floor multiplier."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
             specs = mod._continuous_vignette_pass_specs()
             tail = next(spec for spec in specs if spec["name"] == "tail")
             assert mod._VIGNETTE_OPACITY_SCALE == pytest.approx(0.78)
-            assert tail["falloff"] == pytest.approx(22.5)
-            assert tail["alpha"] == pytest.approx(0.66)
+            assert tail["falloff"] == pytest.approx(28.0)
+            assert tail["alpha"] == pytest.approx(0.88)
         finally:
             sys.modules.pop("spoke.glow", None)
 
