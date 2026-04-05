@@ -2668,6 +2668,8 @@ class SpokeAppDelegate(NSObject):
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
                         tts_models = sidecar_models
+                    elif current_tts_model:
+                        tts_models = [(current_tts_model, f"{current_tts_model} (fallback)", True)]
                     else:
                         tts_models = []
                 else:
