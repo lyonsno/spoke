@@ -407,11 +407,11 @@ class SpokeAppDelegate(NSObject):
             if cloud_api_key:
                 client_kwargs["api_key"] = cloud_api_key
             self._command_client = CommandClient(**client_kwargs)
+            self._command_server_unreachable = False
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
             self._command_models_refresh_in_flight = False
-            self._command_server_unreachable = False
             self._command_overlay: TranscriptionOverlay | None = None
             self._scene_cache = SceneCaptureCache(max_captures=10)
             self._tool_schemas = get_tool_schemas()

@@ -276,13 +276,16 @@ class TestExecuteTool:
         assert "error" in parsed
 
     def test_execute_read_aloud_literal(self):
-        """Test that execute_tool resolves a literal ref and returns the text."""
+        """Test that execute_tool resolves a literal ref and speaks it."""
         mod = _import_tools()
+        tts_client = MagicMock()
         result = mod.execute_tool(
             name="read_aloud",
             arguments={"source_ref": "literal:hello world"},
+            tts_client=tts_client,
         )
-        assert "hello world" in result
+        assert result == "Speaking: hello world"
+        tts_client.speak.assert_called_once_with("hello world")
 
     def test_execute_read_aloud_uses_blocking_speak(self):
         """read_aloud should block until TTS finishes so multi-call turns play sequentially."""
@@ -310,7 +313,8 @@ class TestExecuteTool:
             tts_client=tts_client,
         )
 
-        assert result == "Error speaking text: audio device unavailable"
+        assert "Error speaking text: TTS playback failed." in result
+        assert "audio device unavailable" in result
 
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""

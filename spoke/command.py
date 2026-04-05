@@ -81,7 +81,17 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
     ):
-        self._base_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
+        raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
+        # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
+        # prefix in the base URL already.  Detect this so we don't double it
+        # when building /v1/models and /v1/chat/completions paths.
+        from urllib.parse import urlparse
+        path = urlparse(raw_url).path.rstrip("/")
+        self._url_has_version_prefix = any(
+            seg.startswith("v") and seg[1:].replace("beta", "").isdigit()
+            for seg in path.split("/") if seg
+        )
+        self._base_url = raw_url
         self._model = (
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", _DEFAULT_COMMAND_MODEL)
@@ -111,7 +121,7 @@ class CommandClient:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         req = urllib.request.Request(
-            f"{self._base_url}/v1/models",
+            f"{self._base_url}/models" if self._url_has_version_prefix else f"{self._base_url}/v1/models",
             headers=headers,
             method="GET",
         )
@@ -235,7 +245,7 @@ class CommandClient:
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
 
-            url = f"{self._base_url}/v1/chat/completions"
+            url = f"{self._base_url}/chat/completions" if self._url_has_version_prefix else f"{self._base_url}/v1/chat/completions"
             req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
             # Track tool call deltas for this round
