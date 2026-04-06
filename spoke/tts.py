@@ -675,17 +675,37 @@ class TTSClient:
                         if results_iter is None:
                             continue
                         chunk_count = 0
+                        last_chunk = None
                         for materialized in results_iter:
                             if self._cancelled:
+                                if last_chunk:
+                                    playback_queue.put(last_chunk)
                                 return
-                            # Apply fade-in to first chunk of each sentence
+
+                            if last_chunk:
+                                playback_queue.put(last_chunk)
+
+                            # Apply fade-in to first chunk.
                             if chunk_count == 0:
                                 materialized.audio = _apply_sentence_fades(
-                                    materialized.audio, materialized.sample_rate,
-                                    fade_in=True, fade_out=False,
+                                    materialized.audio,
+                                    materialized.sample_rate,
+                                    fade_in=True,
+                                    fade_out=False,
                                 )
-                            playback_queue.put(materialized)
+
+                            last_chunk = materialized
                             chunk_count += 1
+
+                        # The final chunk is in last_chunk; apply fade-out.
+                        if last_chunk:
+                            last_chunk.audio = _apply_sentence_fades(
+                                last_chunk.audio,
+                                last_chunk.sample_rate,
+                                fade_in=False,  # Already applied if it was the first.
+                                fade_out=True,
+                            )
+                            playback_queue.put(last_chunk)
                         # Signal sentence boundary (playback reopens stream
                         # here to follow device changes)
                         if chunk_count > 0:
