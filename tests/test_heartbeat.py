@@ -277,6 +277,16 @@ class TestIsProcessAlive:
     def test_nonexistent_pid(self):
         assert not _is_process_alive(99999999)
 
+    def test_generic_ps_lookup_error_preserves_successful_kill_probe(self):
+        with mock.patch("spoke.heartbeat.os.kill") as mock_kill:
+            with mock.patch(
+                "spoke.heartbeat.subprocess.run",
+                side_effect=OSError("ps failed"),
+            ):
+                assert _is_process_alive(77777)
+
+        mock_kill.assert_called_once_with(77777, 0)
+
 
 # ── Client unload methods ──────────────────────────────────────
 
