@@ -269,6 +269,21 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_boundary_peak_profile_is_subpixel_thin_by_one_pixel_out(self, mock_pyobjc):
+        """The hard border peak should collapse almost completely within ~1 pixel."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            _, _, dark_width, dark_power = mod._fill_boundary_peak_profile_for_brightness(0.0)
+            _, _, light_width, light_power = mod._fill_boundary_peak_profile_for_brightness(1.0)
+
+            assert mod._boundary_peak_weight(0.0, dark_width, dark_power) == pytest.approx(1.0)
+            assert mod._boundary_peak_weight(0.0, light_width, light_power) == pytest.approx(1.0)
+            assert mod._boundary_peak_weight(1.0, dark_width, dark_power) < 0.12
+            assert mod._boundary_peak_weight(1.0, light_width, light_power) < 0.12
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -280,7 +295,7 @@ class TestAdaptiveOverlayCompositing:
 
             for _ in range(30):
                 overlay.update_text_amplitude(0.0)
-            assert overlay._brightness > 0.6
+            assert overlay._brightness > 0.76
 
             for _ in range(100):
                 overlay.update_text_amplitude(0.0)

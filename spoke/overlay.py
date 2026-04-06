@@ -236,9 +236,18 @@ def _fill_boundary_peak_profile_for_brightness(
     t = min(max(brightness, 0.0), 1.0)
     peak_rgb = _fill_boundary_peak_rgb_for_brightness(t)
     peak_alpha = 1.0
-    peak_width = _lerp(1.35, 1.75, t)
-    peak_power = _lerp(2.8, 2.2, t)
+    peak_width = _lerp(0.32, 0.42, t)
+    peak_power = _lerp(1.45, 1.30, t)
     return peak_rgb, peak_alpha, peak_width, peak_power
+
+
+def _boundary_peak_weight(
+    signed_distance: float,
+    peak_width: float,
+    peak_power: float,
+) -> float:
+    normalized = abs(float(signed_distance)) / max(float(peak_width), 1e-6)
+    return math.exp(-(normalized ** float(peak_power)))
 
 
 def _truncate_preview(text: str | None) -> str:
@@ -1163,7 +1172,7 @@ class TranscriptionOverlay(NSObject):
             self._text_amplitude *= ease
 
         # Chase brightness target over roughly half a second at the live update cadence.
-        _BRIGHTNESS_CHASE = 0.08
+        _BRIGHTNESS_CHASE = 0.13
         target = getattr(self, "_brightness_target", 0.0)
         current = getattr(self, "_brightness", 0.0)
         if abs(target - current) > 0.001:
