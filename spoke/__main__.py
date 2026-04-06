@@ -633,10 +633,10 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
-        # Terraform topoi HUD — starts open
+        # Terraform topoi HUD — restores last visibility state (default: open)
         from .terraform_hud import TerraformHUD
         self._terraform_hud = TerraformHUD.alloc().init()
-        self._terraform_hud.show()
+        self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
         # Step 1: Request mic permission with a test recording.
