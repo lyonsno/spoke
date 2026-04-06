@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ class Topos:
     attractors: list[str] = field(default_factory=list)
     machine: str | None = None
     tool: str | None = None
+    observed: str | None = None
     all_semeions: list[str] = field(default_factory=list)
 
 
@@ -143,6 +145,11 @@ def parse_topoi(text: str) -> list[Topos]:
             if tool_m and not topos.tool:
                 topos.tool = tool_m.group(1).strip()
 
+            # Observed timestamp
+            obs_m = re.search(r"Observed:\s*`?([^`\n]+)`?", content)
+            if obs_m and not topos.observed:
+                topos.observed = obs_m.group(1).strip()
+
             # Status (the last "Status:" line wins)
             if content.startswith("Status:") or "Status:" in content:
                 status_m = re.search(r"Status:\s*\**(.+)", content)
@@ -174,28 +181,75 @@ def parse_topoi(text: str) -> list[Topos]:
     return topoi
 
 
+_DEFAULT_EPISTAXIS_REPO = Path.home() / "dev" / "epistaxis"
+_DEFAULT_EPISTAXIS_REL = "projects/spoke/epistaxis.md"
+
+
+def _fetch_remote_text(repo: Path, rel_path: str) -> str | None:
+    """Fetch a file from origin/main without touching the worktree.
+
+    Runs ``git fetch origin main`` (quiet, fast) then reads the file
+    via ``git show origin/main:<path>``. Returns None on any failure.
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), "fetch", "--quiet", "origin", "main"],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        logger.debug("git fetch failed for %s", repo, exc_info=True)
+    # Even if fetch fails, try git show — we might have a recent fetch
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "show", f"origin/main:{rel_path}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        logger.debug("git show failed for %s:%s", repo, rel_path, exc_info=True)
+    return None
+
+
 def load_topoi(
     path: str | Path | None = None,
 ) -> list[Topos]:
-    """Load and parse topoi from an epistaxis note file.
+    """Load and parse topoi from epistaxis.
+
+    By default fetches from ``origin/main`` in the epistaxis repo so the
+    HUD always reflects the pushed (shared) state. Falls back to reading
+    the local file if the remote fetch fails.
 
     Parameters
     ----------
     path : str or Path, optional
-        Override path to the epistaxis note. Defaults to
-        ``~/dev/epistaxis/projects/spoke/epistaxis.md``.
+        Override path to a local epistaxis note (bypasses remote fetch).
     """
-    note_path = Path(path) if path else _DEFAULT_EPISTAXIS_NOTE
     env_override = os.environ.get("SPOKE_EPISTAXIS_NOTE")
-    if env_override:
-        note_path = Path(env_override)
+    if path or env_override:
+        note_path = Path(path or env_override)
+        if not note_path.exists():
+            logger.warning("epistaxis note not found: %s", note_path)
+            return []
+        text = note_path.read_text(encoding="utf-8")
+        return parse_topoi(text)
 
-    if not note_path.exists():
-        logger.warning("epistaxis note not found: %s", note_path)
-        return []
+    # Try remote first
+    text = _fetch_remote_text(_DEFAULT_EPISTAXIS_REPO, _DEFAULT_EPISTAXIS_REL)
+    if text:
+        return parse_topoi(text)
 
-    text = note_path.read_text(encoding="utf-8")
-    return parse_topoi(text)
+    # Fall back to local
+    local = _DEFAULT_EPISTAXIS_NOTE
+    if local.exists():
+        logger.info("Remote fetch failed — falling back to local epistaxis")
+        return parse_topoi(local.read_text(encoding="utf-8"))
+
+    logger.warning("epistaxis note not found (remote or local)")
+    return []
 
 
 # Temperature sort order: hot first, then warm, cool, cold, katastasis last.

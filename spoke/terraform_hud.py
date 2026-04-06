@@ -105,6 +105,13 @@ class ToposRowView(NSView):
             badge_parts.append(topos.temperature)
         if topos.tool:
             badge_parts.append(topos.tool)
+        if topos.observed:
+            # Show just the compact part — date or time
+            obs = topos.observed
+            if "T" in obs:
+                # ISO timestamp — show just the time portion
+                obs = obs.split("T")[1][:5]  # HH:MM
+            badge_parts.append(obs)
         if badge_parts:
             badge_text = " · ".join(badge_parts)
             badge_label = _make_label(
