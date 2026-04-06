@@ -477,8 +477,9 @@ class TestShiftLateLatching:
 
         assert det._shift_latched is False
 
-    def test_shift_tap_during_idle_fires_idle_callback(self, input_tap_module):
-        """Standalone shift tap while idle should trigger the idle shift callback."""
+    def test_shift_tap_during_idle_fires_idle_callback_after_defer(self, input_tap_module):
+        """Standalone shift tap while idle should trigger the idle shift callback
+        after the double-tap window expires (deferred to avoid firing on double-tap)."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -493,6 +494,12 @@ class TestShiftLateLatching:
         Quartz.CGEventGetFlags.return_value = 0
         mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
 
+        # Not fired immediately — deferred until double-tap window expires
+        det._on_shift_tap_idle.assert_not_called()
+        assert det._shift_single_tap_timer is not None
+
+        # Simulate timer firing
+        det._shiftSingleTapFired_(None)
         det._on_shift_tap_idle.assert_called_once_with()
 
     def test_shift_modified_typing_during_idle_does_not_fire_idle_callback(self, input_tap_module):
@@ -1507,3 +1514,32 @@ class TestDoubleTapGestures:
         assert result_down is event
         assert result_up is event
         on_double_enter.assert_not_called()
+
+    def test_double_tap_shift_does_not_fire_single_tap(self, input_tap_module, monkeypatch):
+        """Double-tap Shift should NOT fire _on_shift_tap_idle (TTS toggle).
+        The single-tap action must be deferred and cancelled when the second
+        tap arrives within the double-tap window."""
+        import time as _time
+        mod = input_tap_module
+        det, _, _, _, on_double_shift = self._make_detector(mod)
+        on_single_shift = MagicMock()
+        det._on_shift_tap_idle = on_single_shift
+        mod._active_detector = det
+        event = MagicMock()
+
+        # First shift tap
+        now = 1000.0
+        monkeypatch.setattr(_time, "monotonic", lambda: now)
+        self._shift_tap(mod, event)
+
+        # Single-tap should NOT have fired yet (deferred)
+        on_single_shift.assert_not_called()
+
+        # Second shift tap within window
+        now = 1000.2
+        monkeypatch.setattr(_time, "monotonic", lambda: now)
+        self._shift_tap(mod, event)
+
+        # Double-tap should fire, single-tap should never fire
+        on_double_shift.assert_called_once()
+        on_single_shift.assert_not_called()

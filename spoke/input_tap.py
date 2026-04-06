@@ -149,6 +149,7 @@ class SpacebarHoldDetector(NSObject):
         self._on_double_tap_shift: Callable[[], None] | None = None
         self._last_idle_enter_up: float = 0.0
         self._last_idle_shift_up: float = 0.0
+        self._shift_single_tap_timer: NSTimer | None = None
 
         return self
 
@@ -230,6 +231,7 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_safety_timer()
         self._cancel_forwarding_timer()
         self._cancel_release_decision_timer()
+        self._cancel_shift_single_tap_timer()
         self._forwarding = False
         self._enter_held = False
         self._enter_latched = False
@@ -525,6 +527,18 @@ class SpacebarHoldDetector(NSObject):
             self._release_decision_timer.invalidate()
             self._release_decision_timer = None
 
+    def _cancel_shift_single_tap_timer(self) -> None:
+        if getattr(self, "_shift_single_tap_timer", None) is not None:
+            self._shift_single_tap_timer.invalidate()
+            self._shift_single_tap_timer = None
+
+    def _shiftSingleTapFired_(self, timer: NSTimer) -> None:
+        """Double-tap window expired — fire the deferred single-tap action."""
+        self._shift_single_tap_timer = None
+        on_shift_tap_idle = getattr(self, '_on_shift_tap_idle', None)
+        if on_shift_tap_idle is not None:
+            on_shift_tap_idle()
+
     def _finish_pending_release(self, enter_held: bool) -> None:
         if not getattr(self, "_pending_release_active", False):
             return
@@ -699,15 +713,22 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                     last = getattr(det, '_last_idle_shift_up', 0.0)
                     if (now - last) < _DOUBLE_TAP_WINDOW_S:
                         det._last_idle_shift_up = 0.0  # reset
+                        # Cancel the deferred single-tap from the first tap
+                        det._cancel_shift_single_tap_timer()
                         cb = getattr(det, '_on_double_tap_shift', None)
                         if cb is not None:
                             logger.info("Double-tap Shift — toggling HUD")
                             cb()
                     else:
                         det._last_idle_shift_up = now
-                        on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
-                        if on_shift_tap_idle is not None:
-                            on_shift_tap_idle()
+                        # Defer single-tap action until double-tap window expires.
+                        # If a second tap arrives, the timer is cancelled.
+                        det._cancel_shift_single_tap_timer()
+                        det._shift_single_tap_timer = (
+                            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                                _DOUBLE_TAP_WINDOW_S, det, "_shiftSingleTapFired:", None, False
+                            )
+                        )
                 det._idle_shift_interrupted = False
 
     return event
