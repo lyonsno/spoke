@@ -1135,6 +1135,10 @@ class SpokeAppDelegate(NSObject):
             glow_brightness = getattr(self._glow, "_brightness", 0.0)
             if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
                 self._overlay.set_brightness(glow_brightness)
+            # Sync HUD brightness for adaptive compositing
+            hud = getattr(self, '_terraform_hud', None)
+            if hud is not None and glow_brightness != getattr(hud, '_brightness', 0.0):
+                hud.set_brightness(glow_brightness)
             self._sync_command_overlay_brightness()
             # Text breathing: glow's smoothed amplitude, scaled independently
             self._overlay.update_text_amplitude(

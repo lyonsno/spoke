@@ -91,19 +91,27 @@ def _format_observed(raw: str) -> str:
         return raw.strip()
 
 
-# Base SDF fill color — matches overlay _BG_COLOR_DARK desaturated cornflower
-_SDF_BASE_RGB = (0.50 * 0.6 + 0.5 * 0.4,
-                 0.59 * 0.6 + 0.5 * 0.4,
-                 0.84 * 0.6 + 0.5 * 0.4)  # ~40% saturation of (0.50, 0.59, 0.84)
+# Adaptive fill colors — same visual language as overlay.py
+_SDF_BASE_DARK = (0.50 * 0.6 + 0.5 * 0.4,
+                  0.59 * 0.6 + 0.5 * 0.4,
+                  0.84 * 0.6 + 0.5 * 0.4)  # desaturated cornflower on dark bg
+_SDF_BASE_LIGHT = (0.10, 0.10, 0.12)       # near-black on light bg
 _SDF_CARD_ALPHA = 0.55  # per-card opacity — translucent, not flat
 
 
-def _temp_fill_color(temperature: str | None) -> tuple[float, float, float]:
-    """Blend overlay base color with temperature tint for SDF card fill."""
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * min(max(t, 0.0), 1.0)
+
+
+def _temp_fill_color(temperature: str | None, brightness: float = 0.0) -> tuple[float, float, float]:
+    """Blend adaptive base color with temperature tint for SDF card fill."""
     rgba = _TEMP_COLORS.get(temperature or "", (0.5, 0.5, 0.5, 0.08))
     tr, tg, tb, ta = rgba
+    # Interpolate base color by brightness
+    br = _lerp(_SDF_BASE_DARK[0], _SDF_BASE_LIGHT[0], brightness)
+    bg = _lerp(_SDF_BASE_DARK[1], _SDF_BASE_LIGHT[1], brightness)
+    bb = _lerp(_SDF_BASE_DARK[2], _SDF_BASE_LIGHT[2], brightness)
     # Mix: base * (1 - ta) + temp_color * ta  (ta is small, 0.08-0.15)
-    br, bg, bb = _SDF_BASE_RGB
     return (br * (1.0 - ta) + tr * ta,
             bg * (1.0 - ta) + tg * ta,
             bb * (1.0 - ta) + tb * ta)
@@ -408,9 +416,11 @@ class TerraformHUD(NSObject):
                 self._scroll_view._metal_renderer = self._metal_renderer
                 self._scroll_view._backing_scale = scale
                 # Insert Metal layer at bottom of scroll view's layer stack
-                self._scroll_view.layer().insertSublayer_atIndex_(
-                    self._metal_renderer.layer(), 0,
-                )
+                metal_layer = self._metal_renderer.layer()
+                self._scroll_view.layer().insertSublayer_atIndex_(metal_layer, 0)
+                # Additive blending — same visual language as the overlay
+                if hasattr(metal_layer, "setCompositingFilter_"):
+                    metal_layer.setCompositingFilter_("plusL")
             except Exception:
                 logger.debug("Metal card renderer init failed, using frost fallback", exc_info=True)
                 self._metal_renderer = None
@@ -492,6 +502,25 @@ class TerraformHUD(NSObject):
             self.hide()
         else:
             self.show()
+
+    def set_brightness(self, brightness: float) -> None:
+        """Update screen brightness for adaptive compositing.
+
+        On dark backgrounds (< 0.15): additive blending ("plusL"),
+        light fill color — cards glow.
+        On light backgrounds: normal blending, dark fill — cards read
+        as material cutouts.
+        """
+        self._brightness = min(max(brightness, 0.0), 1.0)
+        if self._metal_renderer is None:
+            return
+        metal_layer = self._metal_renderer.layer()
+        if not hasattr(metal_layer, "setCompositingFilter_"):
+            return
+        if self._brightness < 0.15:
+            metal_layer.setCompositingFilter_("plusL")
+        else:
+            metal_layer.setCompositingFilter_(None)
 
     def restore_visibility(self) -> None:
         """Restore last saved visibility state (default: visible)."""
@@ -640,7 +669,7 @@ class TerraformHUD(NSObject):
             cards = []
             for i, topos in enumerate(self._topoi):
                 y = total_height - (i + 1) * row_stride
-                cr, cg, cb = _temp_fill_color(topos.temperature)
+                cr, cg, cb = _temp_fill_color(topos.temperature, getattr(self, '_brightness', 0.0))
                 cards.append(CardInfo(
                     x=(inset + 4.0) * scale,
                     y=y * scale,

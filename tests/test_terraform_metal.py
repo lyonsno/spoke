@@ -100,18 +100,22 @@ def test_fallback_when_metal_unavailable():
 
 def test_temp_fill_color_blending():
     """Temperature fill colors blend base with temperature tint."""
-    from spoke.terraform_hud import _temp_fill_color, _SDF_BASE_RGB, _TEMP_COLORS
+    from spoke.terraform_hud import _temp_fill_color, _SDF_BASE_DARK, _TEMP_COLORS
 
-    # "hot" should shift base toward red
-    r, g, b = _temp_fill_color("hot")
-    br, bg, bb = _SDF_BASE_RGB
+    # "hot" on dark bg should shift base toward red
+    r, g, b = _temp_fill_color("hot", brightness=0.0)
+    br, bg, bb = _SDF_BASE_DARK
     assert r > br  # red component increased
     assert g < bg  # green component decreased (toward 0.3)
 
     # Unknown temperature should return near-base color
-    r2, g2, b2 = _temp_fill_color(None)
+    r2, g2, b2 = _temp_fill_color(None, brightness=0.0)
     assert abs(r2 - br) < 0.05
     assert abs(g2 - bg) < 0.05
+
+    # Light bg should produce darker base
+    r3, g3, b3 = _temp_fill_color(None, brightness=1.0)
+    assert r3 < r2  # darker on light bg
 
 
 def test_temp_fill_color_all_temperatures():
