@@ -765,15 +765,6 @@ class TerraformHUD(NSObject):
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
-        # Sample screen brightness for adaptive compositing
-        try:
-            from .glow import _sample_screen_brightness
-            screen = NSScreen.mainScreen()
-            if screen is not None:
-                self.set_brightness(_sample_screen_brightness(screen))
-        except Exception:
-            pass
-
         raw = load_topoi()
         self._update_stats(raw)
         filtered = filter_topoi(
@@ -784,6 +775,16 @@ class TerraformHUD(NSObject):
         )
         self._topoi = sort_topoi(filtered, key=self._sort_key)
         self._rebuild_content()
+
+        # Sample screen brightness AFTER topoi are loaded so
+        # _redraw_metal_cards has cards to work with
+        try:
+            from .glow import _sample_screen_brightness
+            screen = NSScreen.mainScreen()
+            if screen is not None:
+                self.set_brightness(_sample_screen_brightness(screen))
+        except Exception:
+            pass
 
     def _update_stats(self, topoi: list[Topos]) -> None:
         """Update the stats label with topos + attractor counts."""
