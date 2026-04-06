@@ -13,6 +13,7 @@ dependencies = [
     "mlx-qwen3-asr>=0.3.2",
     "pyobjc-framework-vision>=12.1",
     "pvporcupine>=3.0",
+    "websockets>=15.0",
 ]
 
 [project.scripts]

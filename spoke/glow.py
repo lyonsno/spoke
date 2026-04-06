@@ -763,6 +763,17 @@ class GlowOverlay(NSObject):
             anim.setTimingFunction_(CAMediaTimingFunction.functionWithName_("easeInEaseOut"))
             self._dim_layer.addAnimation_forKey_(anim, "dimAdapt")
 
+    _LIVE_MODE_COLOR = (0.95, 0.65, 0.15)  # warm amber/gold
+
+    def set_live_mode(self, active: bool) -> None:
+        """Switch the glow between normal recording mode and live conversation mode."""
+        self._live_mode_active = active
+        if active:
+            self._apply_glow_color(self._LIVE_MODE_COLOR)
+            self.show()
+        else:
+            self._apply_glow_color(_GLOW_COLOR)
+
     def hide(self) -> None:
         """Fade the glow window out smoothly."""
         if self._window is None:
