@@ -323,6 +323,9 @@ def _apply_sentence_fades(audio: np.ndarray, sample_rate: int,
     return audio
 
 
+_SENTENCE_BOUNDARY = object()  # sentinel pushed into queue between sentences
+
+
 class TTSClient:
     """Lazy-loading TTS client with cancellation support."""
 
@@ -661,6 +664,10 @@ class TTSClient:
                                 )
                             playback_queue.put(materialized)
                             chunk_count += 1
+                        # Signal sentence boundary (playback reopens stream
+                        # here to follow device changes)
+                        if chunk_count > 0:
+                            playback_queue.put(_SENTENCE_BOUNDARY)
                         if chunk_count > 0:
                             logger.info("TTS speak: generated sentence %d/%d (%d chunks)",
                                        idx + 1, len(sentences), chunk_count)
@@ -683,6 +690,17 @@ class TTSClient:
                         continue
                     if item is None:
                         break
+                    if item is _SENTENCE_BOUNDARY:
+                        # Reopen stream at sentence boundary to follow
+                        # the current default output device (e.g. Bluetooth
+                        # connected mid-playback).
+                        if stream is not None:
+                            stream.stop()
+                            stream.close()
+                            stream = None
+                            self._stream = None
+                            self._last_chunk = None
+                        continue
 
                     audio = np.array(item.audio, dtype=np.float32)
                     if audio.ndim == 1:
