@@ -616,7 +616,7 @@ class SpokeAppDelegate(NSObject):
             )
             sys.exit(1)
 
-        # Whisper transcription backend — env var is the base, prefs override.
+        # Whisper backend configuration — shared URL/key pool.
         self._whisper_sidecar_url = (
             self._load_preference("whisper_sidecar_url")
             or os.environ.get("SPOKE_WHISPER_URL", "")
@@ -633,42 +633,51 @@ class SpokeAppDelegate(NSObject):
             self._load_preference("whisper_cloud_model")
             or _DEFAULT_WHISPER_CLOUD_MODEL
         )
-        saved_whisper_backend = self._load_preference("whisper_backend")
-        if saved_whisper_backend:
-            self._whisper_backend = saved_whisper_backend
-        elif whisper_url:
-            self._whisper_backend = "sidecar"
-        else:
-            self._whisper_backend = "local"
         # If sidecar URL came from env but not yet saved, adopt it.
         if whisper_url and not self._load_preference("whisper_sidecar_url"):
             self._whisper_sidecar_url = whisper_url
-        # Resolve effective whisper URL from backend choice.
-        whisper_api_key = ""
-        if self._whisper_backend == "sidecar" and self._whisper_sidecar_url:
-            whisper_url = self._whisper_sidecar_url
-        elif self._whisper_backend == "cloud" and self._whisper_cloud_url:
-            whisper_url = self._whisper_cloud_url
-            whisper_api_key = self._whisper_cloud_api_key
-        elif self._whisper_backend == "local":
-            whisper_url = ""
-        self._whisper_url = whisper_url
-        self._whisper_api_key = whisper_api_key
+
+        # Per-role backend selection: preview (partials) and transcription (finals).
+        default_backend = "sidecar" if whisper_url else "local"
+        self._whisper_backend = (
+            self._load_preference("whisper_backend") or default_backend
+        )
+        self._preview_backend = (
+            self._load_preference("preview_backend") or self._whisper_backend
+        )
+
+        # Resolve effective URL + API key for each role.
+        transcription_url, transcription_api_key = self._resolve_whisper_endpoint(
+            self._whisper_backend
+        )
+        preview_url, preview_api_key = self._resolve_whisper_endpoint(
+            self._preview_backend
+        )
+        self._whisper_url = transcription_url
+        self._whisper_api_key = transcription_api_key
+        self._preview_url = preview_url
+        self._preview_api_key = preview_api_key
+
         self._preview_model_id, self._transcription_model_id = self._resolve_model_ids()
-        # Cloud backend uses its own model ID for both roles.
+        # Cloud backend uses its own model ID for each role.
         if self._whisper_backend == "cloud":
-            self._preview_model_id = self._whisper_cloud_model
             self._transcription_model_id = self._whisper_cloud_model
+        if self._preview_backend == "cloud":
+            self._preview_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
         self._capture = AudioCapture()
         self._capture.warmup()
-        self._local_mode = not bool(whisper_url)
+        self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
             self._local_whisper_eager_eval,
         ) = self._resolve_local_whisper_settings()
-        self._client = self._get_client(whisper_url, self._transcription_model_id)
-        self._preview_client = self._get_client(whisper_url, self._preview_model_id)
+        self._client = self._get_client(
+            transcription_url, self._transcription_model_id, transcription_api_key,
+        )
+        self._preview_client = self._get_client(
+            preview_url, self._preview_model_id, preview_api_key,
+        )
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
             self._on_hold_end,
@@ -1454,7 +1463,7 @@ class SpokeAppDelegate(NSObject):
 
     def _preview_batch_intervals(self) -> tuple[float, float]:
         """Return (min_interval, initial_delay) for batch preview by backend."""
-        backend = getattr(self, "_whisper_backend", "local")
+        backend = getattr(self, "_preview_backend", "local")
         if backend == "cloud":
             return (3.0, 1.0)
         if backend == "sidecar":
@@ -2900,6 +2909,7 @@ class SpokeAppDelegate(NSObject):
                     ),
                 }
             whisper_backend = getattr(self, "_whisper_backend", "local")
+            preview_backend = getattr(self, "_preview_backend", "local")
             whisper_sidecar_url = getattr(self, "_whisper_sidecar_url", "")
             has_whisper_sidecar_url = bool(whisper_sidecar_url)
             whisper_cloud_url = getattr(self, "_whisper_cloud_url", "")
@@ -2911,23 +2921,31 @@ class SpokeAppDelegate(NSObject):
                 "sidecar": "Sidecar",
                 "cloud": "Cloud (OpenAI)",
             }
-            state["transcription_backend"] = {
-                "title": f"Transcription: {backend_labels.get(whisper_backend, whisper_backend)}",
-                "items": [
-                    ("local", "Local Whisper", whisper_backend == "local"),
+
+            def _backend_items(selected: str) -> list:
+                return [
+                    ("local", "Local Whisper", selected == "local"),
                     ("sidecar", (
                         f"Sidecar ({_url_host(whisper_sidecar_url)})"
                         if has_whisper_sidecar_url
                         else "Sidecar (not configured)"
-                    ), whisper_backend == "sidecar", has_whisper_sidecar_url),
+                    ), selected == "sidecar", has_whisper_sidecar_url),
                     ("cloud", (
                         "Cloud (OpenAI)"
                         if has_whisper_cloud
                         else "Cloud (not configured)"
-                    ), whisper_backend == "cloud", has_whisper_cloud),
+                    ), selected == "cloud", has_whisper_cloud),
                     ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
                     ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
-                ],
+                ]
+
+            state["transcription_backend"] = {
+                "title": f"Final: {backend_labels.get(whisper_backend, whisper_backend)}",
+                "items": _backend_items(whisper_backend),
+            }
+            state["preview_backend"] = {
+                "title": f"Preview: {backend_labels.get(preview_backend, preview_backend)}",
+                "items": _backend_items(preview_backend),
             }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
@@ -3073,6 +3091,9 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "transcription_backend":
             self._apply_transcription_backend_selection(model_id)
+            return
+        if role == "preview_backend":
+            self._apply_preview_backend_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -3268,6 +3289,14 @@ class SpokeAppDelegate(NSObject):
             self._sanitize_model_id(preview_model, role="preview"),
             self._sanitize_model_id(transcription_model, role="transcription"),
         )
+
+    def _resolve_whisper_endpoint(self, backend: str) -> tuple[str, str]:
+        """Return (url, api_key) for the given backend choice."""
+        if backend == "sidecar" and self._whisper_sidecar_url:
+            return (self._whisper_sidecar_url, "")
+        if backend == "cloud" and self._whisper_cloud_url:
+            return (self._whisper_cloud_url, self._whisper_cloud_api_key)
+        return ("", "")
 
     def _resolve_model_ids(self) -> tuple[str, str]:
         prefs = self._load_model_preferences()
@@ -3648,6 +3677,31 @@ class SpokeAppDelegate(NSObject):
         self._whisper_backend = backend
         self._relaunch()
 
+    def _apply_preview_backend_selection(self, backend: str) -> None:
+        """Switch preview (partials) backend between local/sidecar/cloud, then relaunch."""
+        if backend == "configure_whisper":
+            self._configure_whisper_sidecar_url()
+            return
+        if backend == "configure_whisper_cloud":
+            self._configure_whisper_cloud()
+            return
+        if backend == getattr(self, "_preview_backend", "local"):
+            return
+        if backend == "sidecar" and not getattr(self, "_whisper_sidecar_url", ""):
+            logger.warning("Cannot switch preview to sidecar: no Whisper sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No Whisper sidecar URL configured")
+            return
+        if backend == "cloud" and not getattr(self, "_whisper_cloud_api_key", ""):
+            logger.warning("Cannot switch preview to cloud: no API key configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No cloud API key configured")
+            return
+        logger.info("Switching preview backend: %s -> %s", self._preview_backend, backend)
+        self._save_preference("preview_backend", backend)
+        self._preview_backend = backend
+        self._relaunch()
+
     def _configure_whisper_sidecar_url(self) -> None:
         """Show a dialog to set or change the Whisper sidecar URL."""
         current_url = getattr(self, "_whisper_sidecar_url", "") or ""
@@ -3718,17 +3772,16 @@ class SpokeAppDelegate(NSObject):
             self._whisper_backend = "cloud"
         self._relaunch()
 
-    def _get_client(self, whisper_url: str, model_id: str):
-        cache_key = (whisper_url, model_id)
+    def _get_client(self, whisper_url: str, model_id: str, api_key: str = ""):
+        cache_key = (whisper_url, model_id, api_key)
         if cache_key in self._client_cache:
             return self._client_cache[cache_key]
-        client = self._build_client(whisper_url, model_id)
+        client = self._build_client(whisper_url, model_id, api_key=api_key)
         self._client_cache[cache_key] = client
         return client
 
-    def _build_client(self, whisper_url: str, model_id: str):
+    def _build_client(self, whisper_url: str, model_id: str, api_key: str = ""):
         if whisper_url:
-            api_key = getattr(self, "_whisper_api_key", "")
             logger.info("Using remote transcription: %s (%s)", whisper_url, model_id)
             return TranscriptionClient(
                 base_url=whisper_url, model=model_id, api_key=api_key,

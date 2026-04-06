@@ -1178,59 +1178,52 @@ class TestDualModelConfiguration:
         MockTTS.assert_not_called()
         assert result is None
 
-    def test_handle_model_menu_none_surfaces_transcription_backend(
+    def test_handle_model_menu_none_surfaces_transcription_and_preview_backends(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
+        d._preview_backend = "local"
         d._whisper_sidecar_url = ""
         d._whisper_cloud_url = ""
         d._whisper_cloud_api_key = ""
 
         model_state = d._handle_model_menu_action(None)
 
+        expected_items = [
+            ("local", "Local Whisper", True),
+            ("sidecar", "Sidecar (not configured)", False, False),
+            ("cloud", "Cloud (not configured)", False, False),
+            ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+            ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
+        ]
         assert model_state["transcription_backend"] == {
-            "title": "Transcription: Local",
-            "items": [
-                ("local", "Local Whisper", True),
-                ("sidecar", "Sidecar (not configured)", False, False),
-                ("cloud", "Cloud (not configured)", False, False),
-                ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
-                ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
-            ],
+            "title": "Final: Local",
+            "items": expected_items,
+        }
+        assert model_state["preview_backend"] == {
+            "title": "Preview: Local",
+            "items": expected_items,
         }
 
-    def test_handle_model_menu_none_surfaces_transcription_backend_sidecar(
-        self, main_module, monkeypatch
-    ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._whisper_backend = "sidecar"
-        d._whisper_sidecar_url = "http://my-server:8080"
-        d._whisper_cloud_url = ""
-        d._whisper_cloud_api_key = ""
-
-        model_state = d._handle_model_menu_action(None)
-
-        assert model_state["transcription_backend"]["title"] == "Transcription: Sidecar"
-        items = model_state["transcription_backend"]["items"]
-        assert items[0] == ("local", "Local Whisper", False)
-        assert items[1][0] == "sidecar"
-        assert items[1][2] is True  # selected
-
-    def test_handle_model_menu_none_surfaces_transcription_backend_cloud(
+    def test_handle_model_menu_independent_preview_and_transcription_backends(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "cloud"
+        d._preview_backend = "local"
         d._whisper_sidecar_url = ""
         d._whisper_cloud_url = "https://api.openai.com"
         d._whisper_cloud_api_key = "sk-test"
 
         model_state = d._handle_model_menu_action(None)
 
-        assert model_state["transcription_backend"]["title"] == "Transcription: Cloud (OpenAI)"
-        items = model_state["transcription_backend"]["items"]
-        assert items[2] == ("cloud", "Cloud (OpenAI)", True, True)
+        assert model_state["transcription_backend"]["title"] == "Final: Cloud (OpenAI)"
+        assert model_state["preview_backend"]["title"] == "Preview: Local"
+        final_items = model_state["transcription_backend"]["items"]
+        assert final_items[2] == ("cloud", "Cloud (OpenAI)", True, True)
+        preview_items = model_state["preview_backend"]["items"]
+        assert preview_items[0] == ("local", "Local Whisper", True)
 
     def test_selecting_transcription_backend_sidecar_persists_and_relaunches(
         self, main_module, monkeypatch
@@ -1290,6 +1283,20 @@ class TestDualModelConfiguration:
 
         d._save_preference.assert_not_called()
         mock_execv.assert_not_called()
+
+    def test_selecting_preview_backend_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_backend = "local"
+        d._whisper_sidecar_url = "http://my-server:8080"
+        d._save_preference = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("preview_backend", "sidecar"))
+
+        d._save_preference.assert_called_once_with("preview_backend", "sidecar")
+        mock_execv.assert_called_once()
 
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
