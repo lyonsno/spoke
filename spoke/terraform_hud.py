@@ -559,8 +559,10 @@ class TerraformHUD(NSObject):
         else:
             self.show()
 
-    def _build_card_list(self, brightness: float) -> list[CardInfo]:
-        """Build card info list for a given brightness level."""
+    def _redraw_metal_cards(self) -> None:
+        """Render card layers. Only called on data/scroll changes."""
+        if self._metal_renderer is None or not self._topoi:
+            return
         scroll_bounds = self._scroll_view.bounds()
         inset = _GLOW_MARGIN
         card_width = scroll_bounds.size.width - inset * 2 - 8
@@ -570,10 +572,11 @@ class TerraformHUD(NSObject):
             scroll_bounds.size.height,
         )
         scale = getattr(self._scroll_view, '_backing_scale', 2.0)
+        # One neutral color — compositing mode does the dark/light shift
         cards = []
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
-            cr, cg, cb = _temp_fill_color(topos.temperature, brightness)
+            cr, cg, cb = _temp_fill_color(topos.temperature, 0.0)
             cards.append(CardInfo(
                 x=(inset + 4.0) * scale,
                 y=y * scale,
@@ -582,16 +585,7 @@ class TerraformHUD(NSObject):
                 r=cr, g=cg, b=cb,
                 alpha=_SDF_CARD_ALPHA,
             ))
-        return cards
-
-    def _redraw_metal_cards(self) -> None:
-        """Render both dark and light card layers. Only on data/scroll changes."""
-        if self._metal_renderer is None or not self._topoi:
-            return
-        self._metal_renderer.set_cards(
-            self._build_card_list(brightness=0.0),   # dark bg: light fill
-            self._build_card_list(brightness=1.0),   # light bg: dark fill
-        )
+        self._metal_renderer.set_cards(cards, cards)
         self._metal_renderer.draw_frame()
 
     def cleanup(self) -> None:
@@ -770,17 +764,59 @@ class TerraformHUD(NSObject):
         self._refresh()
 
     def _brightnessSample_(self, timer) -> None:
-        """Async screen brightness sample — capture off main thread,
-        deliver result back to main thread for one redraw."""
+        """Async screen brightness sample — excludes our own window,
+        samples one patch at screen center, delivers to main thread."""
         import threading
         screen = NSScreen.mainScreen()
         if screen is None:
             return
+        # Grab window number on main thread (cheap)
+        panel = self._panel
+        win_id = panel.windowNumber() if panel is not None else 0
+
         def _sample():
             try:
-                from .glow import _sample_screen_brightness
-                val = _sample_screen_brightness(screen)
-                # Deliver to main thread
+                from Quartz import (
+                    CGWindowListCreateImage,
+                    kCGWindowListOptionOnScreenBelowWindow,
+                    CGImageGetWidth,
+                    CGImageGetHeight,
+                    CGImageGetDataProvider,
+                    CGDataProviderCopyData,
+                )
+                frame = screen.frame()
+                # One 50x50 patch at screen center — global position,
+                # not affected by HUD scroll
+                ps = 50
+                cx = frame.origin.x + frame.size.width * 0.5 - ps / 2
+                cy = frame.origin.y + frame.size.height * 0.5 - ps / 2
+                rect = ((cx, cy), (ps, ps))
+
+                # Capture below our window — excludes HUD and everything above it
+                image = CGWindowListCreateImage(
+                    rect,
+                    kCGWindowListOptionOnScreenBelowWindow,
+                    win_id if win_id > 0 else 0,
+                    0,
+                )
+                if image is None:
+                    return
+
+                w = CGImageGetWidth(image)
+                h = CGImageGetHeight(image)
+                data = CGDataProviderCopyData(CGImageGetDataProvider(image))
+                if data is None or len(data) == 0 or w * h == 0:
+                    return
+
+                # Average brightness from BGRA bytes
+                total = 0.0
+                pixel_count = w * h
+                bpp = len(data) // pixel_count if pixel_count > 0 else 4
+                for i in range(0, min(len(data), pixel_count * bpp), bpp):
+                    b, g, r = data[i], data[i + 1], data[i + 2]
+                    total += (0.299 * r + 0.587 * g + 0.114 * b)
+                val = total / (pixel_count * 255.0) if pixel_count > 0 else 0.5
+
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "_brightnessArrived:", val, False
                 )
