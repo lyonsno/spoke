@@ -637,9 +637,7 @@ class TerraformHUD(NSObject):
         # Skip full view rebuild if topos data hasn't changed
         topos_keys = [(t.id, t.temperature, t.status, t.tool, t.observed) for t in self._topoi]
         if topos_keys == getattr(self, '_last_topos_keys', None):
-            # Data unchanged — just redraw Metal if active
-            if self._metal_renderer is not None:
-                self._metal_renderer.draw_frame()
+            # Data unchanged — Metal layer retains its last frame, no redraw needed
             return
         self._last_topos_keys = topos_keys
 

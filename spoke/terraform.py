@@ -248,20 +248,29 @@ def _fetch_remote_text(repo: Path, rel_path: str) -> str | None:
     return None
 
 
+_load_topoi_cache: list[Topos] | None = None
+_load_topoi_cache_mtime: float = 0.0
+_load_topoi_last_fetch: float = 0.0
+_REMOTE_FETCH_INTERVAL = 60.0  # seconds between git fetch calls
+
+
 def load_topoi(
     path: str | Path | None = None,
 ) -> list[Topos]:
     """Load and parse topoi from epistaxis.
 
-    By default fetches from ``origin/main`` in the epistaxis repo so the
-    HUD always reflects the pushed (shared) state. Falls back to reading
-    the local file if the remote fetch fails.
+    Uses the local file for fast-path reads (mtime check, no subprocess).
+    Remote fetch runs at most once per 60s in the background to keep
+    origin/main fresh without blocking the main thread.
 
     Parameters
     ----------
     path : str or Path, optional
         Override path to a local epistaxis note (bypasses remote fetch).
     """
+    global _load_topoi_cache, _load_topoi_cache_mtime, _load_topoi_last_fetch
+    import time
+
     env_override = os.environ.get("SPOKE_EPISTAXIS_NOTE")
     if path or env_override:
         note_path = Path(path or env_override)
@@ -271,16 +280,35 @@ def load_topoi(
         text = note_path.read_text(encoding="utf-8")
         return parse_topoi(text)
 
-    # Try remote first
-    text = _fetch_remote_text(_DEFAULT_EPISTAXIS_REPO, _DEFAULT_EPISTAXIS_REL)
-    if text:
-        return parse_topoi(text)
-
-    # Fall back to local
+    # Fast path: read local file, only re-parse if mtime changed
     local = _DEFAULT_EPISTAXIS_NOTE
     if local.exists():
-        logger.info("Remote fetch failed — falling back to local epistaxis")
-        return parse_topoi(local.read_text(encoding="utf-8"))
+        try:
+            mtime = local.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if _load_topoi_cache is not None and mtime == _load_topoi_cache_mtime:
+            return _load_topoi_cache
+        text = local.read_text(encoding="utf-8")
+        _load_topoi_cache = parse_topoi(text)
+        _load_topoi_cache_mtime = mtime
+
+    # Kick off a remote fetch periodically (non-blocking on the read path)
+    now = time.monotonic()
+    if now - _load_topoi_last_fetch > _REMOTE_FETCH_INTERVAL:
+        _load_topoi_last_fetch = now
+        try:
+            import threading
+            threading.Thread(
+                target=_fetch_remote_text,
+                args=(_DEFAULT_EPISTAXIS_REPO, _DEFAULT_EPISTAXIS_REL),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    if _load_topoi_cache is not None:
+        return _load_topoi_cache
 
     logger.warning("epistaxis note not found (remote or local)")
     return []
