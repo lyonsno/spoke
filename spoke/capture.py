@@ -98,6 +98,7 @@ class AudioCapture:
         self._amplitude_cb: Callable[[float], None] | None = None
         self._segment_cb: Callable[[bytes], None] | None = None
         self._vad_cb: Callable[[bool], None] | None = None
+        self._raw_chunk_cb: Callable[[np.ndarray], None] | None = None
         self._read_cursor: int = 0  # index into _frames for incremental reads
         
         # VAD state (Silero-based)
@@ -222,10 +223,11 @@ class AudioCapture:
                 logger.error("Error in callback dispatch worker", exc_info=True)
 
     def start(
-        self, 
+        self,
         amplitude_callback: Callable[[float], None] | None = None,
         segment_callback: Callable[[bytes], None] | None = None,
-        vad_state_callback: Callable[[bool], None] | None = None
+        vad_state_callback: Callable[[bool], None] | None = None,
+        raw_chunk_callback: Callable[[np.ndarray], None] | None = None,
     ) -> None:
         """Begin recording.
 
@@ -237,6 +239,10 @@ class AudioCapture:
         segment_callback : callable, optional
             Called with bounded WAV bytes when a silence boundary is reached.
             Invoked from a background worker thread.
+        raw_chunk_callback : callable, optional
+            Called with the raw float32 numpy chunk per audio block.
+            Used by live streaming modes to forward audio without buffering.
+            Called from the PortAudio thread — keep it fast.
         """
         # Stop any existing stream to avoid leaking PortAudio resources
         if self._stream is not None:
@@ -250,6 +256,7 @@ class AudioCapture:
         self._amplitude_cb = amplitude_callback
         self._segment_cb = segment_callback
         self._vad_cb = vad_state_callback
+        self._raw_chunk_cb = raw_chunk_callback
         
         # Reset VAD state
         self._is_speech = False
@@ -469,6 +476,9 @@ class AudioCapture:
             logger.warning("sounddevice status: %s", status)
 
         chunk = indata[:, 0].copy()  # mono, float32
+
+        if self._raw_chunk_cb is not None:
+            self._raw_chunk_cb(chunk)
 
         with self._lock:
             self._frames.append(chunk)

@@ -772,6 +772,13 @@ class SpokeAppDelegate(NSObject):
         self._transcription_token = 0
         self._cancel_spring_active = False
         self._cancel_spring_start = 0.0
+        self._live_mode = False
+        self._live_arm_timer = None
+        self._live_exit_timer = None
+        self._live_client = None
+        self._live_player = None
+        self._live_session_timer = None
+        self._live_warning_timer = None
         self._preview_active = False
         self._preview_thread: threading.Thread | None = None
         self._preview_done = threading.Event()
@@ -1288,7 +1295,254 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is not None:
             self._command_overlay.set_cancel_spring(0.0)
 
+    # ── Gemini Live conversation mode ────────────────────────────────
+
+    _LIVE_ARM_DELAY = 2.6   # seconds after hold starts (400ms hold threshold already elapsed → 3000ms total)
+    _LIVE_EXIT_DELAY = 3.0  # seconds for exit hold
+    _LIVE_SESSION_WARN = 14 * 60   # 14 minutes
+    _LIVE_SESSION_MAX = 15 * 60    # 15 minutes
+
+    def _start_live_arm_timer(self) -> None:
+        self._cancel_live_arm_timer()
+        from Foundation import NSTimer
+        self._live_arm_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._LIVE_ARM_DELAY, self, "_liveArmFired:", None, False
+        )
+
+    def _cancel_live_arm_timer(self) -> None:
+        if self._live_arm_timer is not None:
+            self._live_arm_timer.invalidate()
+            self._live_arm_timer = None
+
+    def _liveArmFired_(self, timer) -> None:
+        """Space+enter held for 3000ms total — enter live conversation mode."""
+        self._live_arm_timer = None
+        logger.info("Live arm timer fired — entering live mode")
+        # Stop normal recording and discard audio
+        if self._capture is not None:
+            self._capture.stop()
+        self._preview_active = False
+        if self._glow is not None:
+            self._glow.hide()
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._menubar is not None:
+            self._menubar.set_recording(False)
+        self._enter_live_mode()
+
+    def _start_live_exit_timer(self) -> None:
+        self._cancel_live_exit_timer()
+        from Foundation import NSTimer
+        self._live_exit_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._LIVE_EXIT_DELAY, self, "_liveExitFired:", None, False
+        )
+
+    def _cancel_live_exit_timer(self) -> None:
+        if self._live_exit_timer is not None:
+            self._live_exit_timer.invalidate()
+            self._live_exit_timer = None
+
+    def _liveExitFired_(self, timer) -> None:
+        """Exit hold reached 3000ms — leave live conversation mode."""
+        self._live_exit_timer = None
+        logger.info("Live exit timer fired — exiting live mode")
+        self._exit_live_mode()
+
+    def _enter_live_mode(self) -> None:
+        from spoke.gemini_live import GeminiLiveClient, LiveAudioPlayer
+
+        self._live_mode = True
+        self._transcribing = False
+
+        # Resolve API key (cloud prefs first, then env)
+        api_key = (
+            self._load_cloud_api_key_preference()
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
+        if not api_key:
+            logger.error("No Gemini API key available for live mode")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Live mode needs a Gemini API key")
+            self._live_mode = False
+            return
+
+        live_model = (
+            self._load_preferences().get("live_model")
+            or os.environ.get("SPOKE_LIVE_MODEL", "gemini-2.0-flash-live")
+        )
+        live_voice = (
+            self._load_preferences().get("live_voice")
+            or os.environ.get("SPOKE_LIVE_VOICE", "Puck")
+        )
+
+        self._live_player = LiveAudioPlayer(
+            amplitude_callback=self._on_live_playback_amplitude,
+        )
+        self._live_client = GeminiLiveClient(
+            api_key,
+            model=live_model,
+            voice=live_voice,
+        )
+        self._live_client.on_audio_chunk = self._live_player.write_chunk
+        self._live_client.on_text_chunk = self._on_live_text
+        self._live_client.on_turn_complete = self._on_live_turn_complete
+        self._live_client.on_interrupted = self._on_live_interrupted
+        self._live_client.on_error = self._on_live_error
+
+        if self._menubar is not None:
+            self._menubar.set_status_text("Connecting to Gemini Live...")
+
+        threading.Thread(
+            target=self._live_connect_worker, daemon=True, name="live-connect"
+        ).start()
+
+    def _live_connect_worker(self) -> None:
+        try:
+            self._live_client.connect()
+        except Exception as exc:
+            logger.error("Gemini Live connect failed: %s", exc)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "_liveConnectFailed:", str(exc), False
+            )
+            return
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "_liveConnected:", None, False
+        )
+
+    def _liveConnected_(self, _) -> None:
+        """Main thread: WebSocket connected — start streaming audio."""
+        if not self._live_mode:
+            return  # user already exited
+        logger.info("Gemini Live connected — starting audio stream")
+        try:
+            self._capture.start(
+                amplitude_callback=self._on_amplitude,
+                raw_chunk_callback=self._live_client.send_audio,
+            )
+        except Exception:
+            logger.exception("Failed to start audio capture for live mode")
+            self._exit_live_mode()
+            return
+
+        if self._glow is not None:
+            self._glow.set_live_mode(True)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Live conversation active")
+
+        # Session timeout timers
+        from Foundation import NSTimer
+        self._live_warning_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._LIVE_SESSION_WARN, self, "_liveSessionWarning:", None, False
+        )
+        self._live_session_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._LIVE_SESSION_MAX, self, "_liveSessionTimeout:", None, False
+        )
+
+    def _liveConnectFailed_(self, error_msg) -> None:
+        """Main thread: connection failed."""
+        self._live_mode = False
+        if self._live_player is not None:
+            self._live_player.close()
+            self._live_player = None
+        self._live_client = None
+        if self._menubar is not None:
+            self._menubar.set_status_text(f"Live mode failed: {error_msg}")
+
+    def _exit_live_mode(self) -> None:
+        if not self._live_mode:
+            return
+        self._live_mode = False
+        logger.info("Exiting Gemini Live mode")
+
+        # Stop audio capture
+        if self._capture is not None:
+            try:
+                self._capture.stop()
+            except Exception:
+                pass
+
+        # Disconnect client
+        if self._live_client is not None:
+            threading.Thread(
+                target=self._live_client.disconnect, daemon=True, name="live-disconnect"
+            ).start()
+            self._live_client = None
+
+        # Close player
+        if self._live_player is not None:
+            self._live_player.close()
+            self._live_player = None
+
+        # Cancel session timers
+        if self._live_session_timer is not None:
+            self._live_session_timer.invalidate()
+            self._live_session_timer = None
+        if self._live_warning_timer is not None:
+            self._live_warning_timer.invalidate()
+            self._live_warning_timer = None
+
+        # Restore visual state
+        if self._glow is not None:
+            self._glow.set_live_mode(False)
+            self._glow.hide()
+        if self._menubar is not None:
+            self._menubar.set_recording(False)
+            self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _on_live_playback_amplitude(self, rms: float) -> None:
+        """Feed Gemini's voice amplitude to the glow overlay."""
+        if self._glow is not None:
+            self._glow.update_amplitude(rms)
+
+    def _on_live_text(self, text: str) -> None:
+        logger.info("Gemini Live text: %s", text[:200])
+
+    def _on_live_turn_complete(self) -> None:
+        logger.info("Gemini Live turn complete")
+
+    def _on_live_interrupted(self) -> None:
+        logger.info("Gemini Live interrupted — flushing playback")
+        if self._live_player is not None:
+            self._live_player.flush()
+
+    def _on_live_error(self, error_msg: str) -> None:
+        logger.error("Gemini Live error: %s", error_msg)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "_liveErrorOnMain:", error_msg, False
+        )
+
+    def _liveErrorOnMain_(self, error_msg) -> None:
+        """Main thread: WebSocket error — exit live mode."""
+        self._exit_live_mode()
+        if self._menubar is not None:
+            self._menubar.set_status_text(f"Live session ended: {error_msg}")
+
+    def _liveSessionWarning_(self, timer) -> None:
+        """14 minutes elapsed — warn the user."""
+        self._live_warning_timer = None
+        logger.info("Gemini Live session approaching 15-minute limit")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Live session ending in 1 minute")
+
+    def _liveSessionTimeout_(self, timer) -> None:
+        """15 minutes elapsed — auto-disconnect."""
+        self._live_session_timer = None
+        logger.info("Gemini Live session timeout — disconnecting")
+        self._exit_live_mode()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Live session ended (15 min limit)")
+
     def _on_hold_start(self) -> None:
+        # ── Live mode: new hold starts exit countdown ──
+        if getattr(self, "_live_mode", False):
+            enter_held = getattr(self._detector, '_enter_held', False) is True
+            if enter_held:
+                logger.info("Hold start in live mode with enter — arming exit timer (3000ms)")
+                self._start_live_exit_timer()
+            else:
+                logger.info("Hold start in live mode without enter — ignoring")
+            return
+
         if not getattr(self, "_models_ready", True):
             logger.warning("Hold started before models were ready — ignoring")
             self._hold_rejected_during_warmup = True
@@ -1433,6 +1687,12 @@ class SpokeAppDelegate(NSObject):
             target=self._preview_loop, args=(token,), daemon=True
         )
         self._preview_thread.start()
+
+        # ── Live mode arm: space+enter hold, no generation in flight ──
+        enter_held = getattr(self._detector, '_enter_held', False) is True
+        if enter_held and not self._transcribing and not getattr(self, "_live_mode", False):
+            logger.info("Space+enter hold — arming live mode timer (2600ms remaining)")
+            self._start_live_arm_timer()
 
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread."""
@@ -1703,6 +1963,15 @@ class SpokeAppDelegate(NSObject):
         enter_held: bool = False,
         **_kwargs,  # absorb legacy toggle_command_overlay from any remaining callers
     ) -> None:
+        # ── Live mode: cancel exit timer if hold was too short ──
+        if getattr(self, "_live_mode", False):
+            self._cancel_live_exit_timer()
+            return
+
+        # Cancel live arm timer if hold ended before 3000ms threshold
+        if getattr(self, "_live_arm_timer", None) is not None:
+            self._cancel_live_arm_timer()
+
         if getattr(self, "_hold_rejected_during_warmup", False):
             self._hold_rejected_during_warmup = False
             logger.info(
