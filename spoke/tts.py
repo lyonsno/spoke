@@ -670,8 +670,10 @@ class TTSClient:
             gen_thread = threading.Thread(target=_generate_all, daemon=True)
             gen_thread.start()
 
+            stream: sd.OutputStream | None = None
             try:
                 chunk_count = 0
+                write_chunk_size: int = 0
                 while True:
                     if self._cancelled:
                         break
@@ -681,13 +683,68 @@ class TTSClient:
                         continue
                     if item is None:
                         break
+
+                    audio = np.array(item.audio, dtype=np.float32)
+                    if audio.ndim == 1:
+                        audio = audio.reshape(-1, 1)
+                    sr = item.sample_rate
+
+                    # Open stream lazily on first chunk (sample rate may vary)
+                    if stream is None:
+                        write_chunk_size = int(sr * 0.064)
+                        stream = sd.OutputStream(
+                            samplerate=sr,
+                            channels=audio.shape[1],
+                            dtype="float32",
+                        )
+                        self._stream = stream
+                        self._last_chunk = None
+                        stream.start()
+                        logger.info(
+                            "TTS playback stream opened: sample_rate=%d channels=%d device=%s",
+                            sr, audio.shape[1], _playback_device_summary(),
+                        )
+
                     chunk_count += 1
                     if chunk_count == 1:
                         logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
-                                   len(item.audio), item.sample_rate)
-                    self._play_result(item, amplitude_callback=amplitude_callback)
+                                   len(audio), sr)
+
+                    # Write audio in ~64ms sub-chunks with gain modulation
+                    offset = 0
+                    while offset < len(audio):
+                        if self._cancelled:
+                            break
+                        end = min(offset + write_chunk_size, len(audio))
+                        chunk = audio[offset:end]
+                        gain = self._current_audio_gain()
+                        shaped_chunk = chunk * gain
+                        self._last_chunk = shaped_chunk
+                        stream.write(shaped_chunk)
+                        if amplitude_callback is not None:
+                            rms = float(np.sqrt(np.mean(shaped_chunk ** 2)))
+                            amplitude_callback(rms)
+                        offset = end
+
                 logger.info("TTS speak: finished (%d chunks played)", chunk_count)
             finally:
+                # Fade out on cancel
+                if self._cancelled and stream is not None and self._last_chunk is not None:
+                    fade_samples = int(24000 * 0.05)
+                    last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                    fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                    try:
+                        stream.write(fade_ramp)
+                    except Exception:
+                        pass
+                # Close the single stream
+                if stream is not None:
+                    stream.stop()
+                    stream.close()
+                    self._stream = None
+                    self._last_chunk = None
+                if amplitude_callback is not None:
+                    amplitude_callback(0.0)
                 # Drain queue so gen thread doesn't block on put()
                 self._cancelled = True
                 while True:

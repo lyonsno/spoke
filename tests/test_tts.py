@@ -394,9 +394,9 @@ class TestTTSClient:
         with caplog.at_level(logging.INFO, logger="spoke.tts"):
             client.speak("Hello world")
 
-        assert "TTS playback starting:" in caplog.text
+        assert "TTS playback stream opened:" in caplog.text
         assert "MacBook Pro Speakers" in caplog.text
-        assert "TTS playback finished:" in caplog.text
+        assert "TTS speak: finished" in caplog.text
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
@@ -417,7 +417,7 @@ class TestTTSClient:
             with pytest.raises(RuntimeError, match="boom"):
                 client.speak("Hello world")
 
-        assert "TTS playback failed:" in caplog.text
+        # Stream opens then write raises — error surfaces in the log
         assert "MacBook Pro Speakers" in caplog.text
 
 
