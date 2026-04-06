@@ -103,6 +103,49 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_set_text_seeds_dark_fill_material_before_first_resize_or_amplitude_tick(
+        self, mock_pyobjc
+    ):
+        """Fresh dark-scene preview text should not wait for growth or RMS churn to gain its material fill."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._visible = True
+            overlay._text_view = MagicMock()
+            overlay._fill_layer = MagicMock()
+            overlay._fill_renderer = MagicMock()
+            overlay._content_view = MagicMock()
+            overlay._content_view.frame.return_value = MagicMock(
+                size=MagicMock(
+                    width=mod._OVERLAY_WIDTH,
+                    height=mod._OVERLAY_HEIGHT,
+                )
+            )
+            overlay._fill_sdf = object()
+            overlay._fill_corner_peak_attenuation = object()
+            overlay._fill_scale = 2.0
+            overlay._typewriter_target = ""
+            overlay._typewriter_displayed = ""
+            overlay._typewriter_hwm = 0
+            overlay._typewriter_timer = None
+            overlay._update_layout = MagicMock()
+            overlay._cancel_typewriter = MagicMock()
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._text_amplitude = 0.0
+            overlay._fill_surface_opacity = mod._BG_ALPHA_MIN
+
+            timer = object()
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = timer
+
+            overlay.set_text("abc")
+
+            assert overlay._fill_surface_opacity > 0.55
+            overlay._fill_renderer.set_fill_state.assert_called()
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_text_breathing_updates_layer_opacity_without_rebuilding_content(self, mock_pyobjc):
         """Live breathing should modulate layer opacity, not rewrite the whole preview text every tick."""
         sys.modules.pop("spoke.overlay", None)

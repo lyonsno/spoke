@@ -294,6 +294,17 @@ def _fill_curve_profile_for_brightness(
     )
 
 
+def _preview_text_present_fill_drive_floor(brightness: float) -> float:
+    """Return a minimum material drive once preview text is visible.
+
+    The empty overlay can stay faint, but once preview text starts streaming
+    the dark-scene substrate should not wait for later RMS churn or the first
+    growth pass to become materially present.
+    """
+    t = min(max(brightness, 0.0), 1.0)
+    return _lerp(0.82, 0.0, t)
+
+
 def _boundary_peak_weight(
     signed_distance: float,
     peak_width: float,
@@ -1362,6 +1373,39 @@ class TranscriptionOverlay(NSObject):
             )
         text_storage.setAttributedString_(attr_str)
 
+    def _seed_fill_material_for_visible_text(self) -> None:
+        """Seed the preview fill once text becomes visible so short states match later ones."""
+        if getattr(self, "_fill_override_rgb", None) is not None:
+            return
+        if not (getattr(self, "_typewriter_target", "") or getattr(self, "_typewriter_displayed", "")):
+            return
+        if not hasattr(self, "_fill_layer") or self._fill_layer is None:
+            return
+
+        t = getattr(self, "_brightness", 0.0)
+        scaled = min(getattr(self, "_text_amplitude", 0.0) / _TEXT_AMP_SATURATION, 1.0)
+        fill_drive = _lerp(scaled, scaled * scaled, t)
+        fill_drive = max(fill_drive, _preview_text_present_fill_drive_floor(t))
+        fill_min = _lerp(0.04, 0.84, t)
+        fill_max = _lerp(0.72, 0.99, t)
+        fill_opacity = _lerp(fill_min, fill_max, fill_drive)
+        current_opacity = self._current_fill_surface_opacity()
+        if fill_opacity <= current_opacity + 1e-4:
+            return
+
+        self._set_fill_surface_opacity(fill_opacity)
+        content = getattr(self, "_content_view", None)
+        if not content:
+            return
+        cf = content.frame()
+        if getattr(self, "_fill_renderer", None) is not None:
+            self._update_fill_image(
+                cf.size.width + 2 * _OUTER_FEATHER,
+                cf.size.height + 2 * _OUTER_FEATHER,
+            )
+        else:
+            self._apply_ridge_masks(cf.size.width, cf.size.height)
+
     # ── typewriter effect ────────────────────────────────────
 
     def set_text(self, text: str) -> None:
@@ -1370,6 +1414,7 @@ class TranscriptionOverlay(NSObject):
             return
 
         self._typewriter_target = text
+        self._seed_fill_material_for_visible_text()
         self._refresh_preview_text_style(snap_polarity=True)
 
         # If the new text doesn't start with what we've displayed,
