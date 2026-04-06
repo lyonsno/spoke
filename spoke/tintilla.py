@@ -70,6 +70,9 @@ class LayerVisibilityState:
         self._additive_curve_mode = ADDITIVE_CURVE_MODE_EXPONENTIAL
         self._additive_mask_intensity = ADDITIVE_MASK_INTENSITY_LEVELS[0]
         self._wide_bloom_profile = WIDE_BLOOM_PROFILE_QUEST
+        self._vignette_curve_mode = ADDITIVE_CURVE_MODE_EXPONENTIAL
+        self._vignette_mask_intensity = ADDITIVE_MASK_INTENSITY_LEVELS[0]
+        self._vignette_profile = WIDE_BLOOM_PROFILE_QUEST
 
     def add_listener(self, listener: Callable[["LayerVisibilityState"], None]) -> None:
         self._listeners.append(listener)
@@ -135,6 +138,43 @@ class LayerVisibilityState:
         self._wide_bloom_profile = profile
         self._notify()
 
+    def vignette_curve_mode(self) -> str:
+        return self._vignette_curve_mode
+
+    def set_vignette_curve_mode(self, mode: str) -> None:
+        if mode not in {ADDITIVE_CURVE_MODE_EXPONENTIAL, ADDITIVE_CURVE_MODE_RATIONAL}:
+            return
+        if self._vignette_curve_mode == mode:
+            return
+        self._vignette_curve_mode = mode
+        self._notify()
+
+    def vignette_mask_intensity(self) -> float:
+        return self._vignette_mask_intensity
+
+    def set_vignette_mask_intensity(self, intensity: float) -> None:
+        try:
+            intensity = float(intensity)
+        except (TypeError, ValueError):
+            return
+        if intensity not in ADDITIVE_MASK_INTENSITY_LEVELS:
+            return
+        if self._vignette_mask_intensity == intensity:
+            return
+        self._vignette_mask_intensity = intensity
+        self._notify()
+
+    def vignette_profile(self) -> str:
+        return self._vignette_profile
+
+    def set_vignette_profile(self, profile: str) -> None:
+        if profile not in WIDE_BLOOM_PROFILE_OPTIONS:
+            return
+        if self._vignette_profile == profile:
+            return
+        self._vignette_profile = profile
+        self._notify()
+
     def _notify(self) -> None:
         for listener in list(self._listeners):
             listener(self)
@@ -150,9 +190,12 @@ class TintillaPanelController(NSObject):
         self._state = state
         self._panel = None
         self._buttons_by_layer_id: dict[str, object] = {}
-        self._curve_mode_button = None
-        self._mask_intensity_buttons_by_value: dict[float, object] = {}
+        self._additive_curve_mode_button = None
+        self._additive_mask_intensity_buttons_by_value: dict[float, object] = {}
         self._wide_bloom_profile_buttons_by_value: dict[str, object] = {}
+        self._vignette_curve_mode_button = None
+        self._vignette_mask_intensity_buttons_by_value: dict[float, object] = {}
+        self._vignette_profile_buttons_by_value: dict[str, object] = {}
         return self
 
     def setup(self) -> None:
@@ -162,7 +205,7 @@ class TintillaPanelController(NSObject):
         width = 280.0
         row_height = 26.0
         padding = 14.0
-        top_controls = 118.0
+        top_controls = 206.0
         height = top_controls + padding * 2 + len(LAYER_SPECS) * row_height
         frame = NSMakeRect(80.0, 120.0, width, height)
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
@@ -193,11 +236,13 @@ class TintillaPanelController(NSObject):
         content = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
         self._panel.setContentView_(content)
 
-        curve_button = NSButton.alloc().initWithFrame_(NSMakeRect(padding, height - 34.0, 148.0, 24.0))
-        curve_button.setTarget_(self)
-        curve_button.setAction_("toggleAdditiveCurveMode:")
-        content.addSubview_(curve_button)
-        self._curve_mode_button = curve_button
+        additive_curve_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(padding, height - 34.0, 180.0, 24.0)
+        )
+        additive_curve_button.setTarget_(self)
+        additive_curve_button.setAction_("toggleAdditiveCurveMode:")
+        content.addSubview_(additive_curve_button)
+        self._additive_curve_mode_button = additive_curve_button
 
         intensity_x = padding
         for intensity in ADDITIVE_MASK_INTENSITY_LEVELS:
@@ -207,7 +252,7 @@ class TintillaPanelController(NSObject):
             button.setAction_("selectAdditiveMaskIntensity:")
             button.setRepresentedObject_(intensity)
             content.addSubview_(button)
-            self._mask_intensity_buttons_by_value[intensity] = button
+            self._additive_mask_intensity_buttons_by_value[intensity] = button
             intensity_x += 58.0
 
         profile_x = padding
@@ -221,19 +266,53 @@ class TintillaPanelController(NSObject):
             self._wide_bloom_profile_buttons_by_value[profile] = button
             profile_x += 68.0
 
-        all_on = NSButton.alloc().initWithFrame_(NSMakeRect(padding, height - 118.0, 80.0, 24.0))
+        vignette_curve_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(padding, height - 124.0, 200.0, 24.0)
+        )
+        vignette_curve_button.setTarget_(self)
+        vignette_curve_button.setAction_("toggleVignetteCurveMode:")
+        content.addSubview_(vignette_curve_button)
+        self._vignette_curve_mode_button = vignette_curve_button
+
+        vignette_intensity_x = padding
+        for intensity in ADDITIVE_MASK_INTENSITY_LEVELS:
+            button = NSButton.alloc().initWithFrame_(
+                NSMakeRect(vignette_intensity_x, height - 152.0, 52.0, 24.0)
+            )
+            button.setTitle_(f"{intensity:.1f}")
+            button.setTarget_(self)
+            button.setAction_("selectVignetteMaskIntensity:")
+            button.setRepresentedObject_(intensity)
+            content.addSubview_(button)
+            self._vignette_mask_intensity_buttons_by_value[intensity] = button
+            vignette_intensity_x += 58.0
+
+        vignette_profile_x = padding
+        for profile in WIDE_BLOOM_PROFILE_OPTIONS:
+            button = NSButton.alloc().initWithFrame_(
+                NSMakeRect(vignette_profile_x, height - 180.0, 62.0, 24.0)
+            )
+            button.setTitle_(profile.title())
+            button.setTarget_(self)
+            button.setAction_("selectVignetteProfile:")
+            button.setRepresentedObject_(profile)
+            content.addSubview_(button)
+            self._vignette_profile_buttons_by_value[profile] = button
+            vignette_profile_x += 68.0
+
+        all_on = NSButton.alloc().initWithFrame_(NSMakeRect(padding, height - 208.0, 80.0, 24.0))
         all_on.setTitle_("All On")
         all_on.setTarget_(self)
         all_on.setAction_("enableAllLayers:")
         content.addSubview_(all_on)
 
-        all_off = NSButton.alloc().initWithFrame_(NSMakeRect(100.0, height - 118.0, 80.0, 24.0))
+        all_off = NSButton.alloc().initWithFrame_(NSMakeRect(100.0, height - 208.0, 80.0, 24.0))
         all_off.setTitle_("All Off")
         all_off.setTarget_(self)
         all_off.setAction_("disableAllLayers:")
         content.addSubview_(all_off)
 
-        y = height - 148.0
+        y = height - 238.0
         for index, (layer_id, label) in enumerate(LAYER_SPECS):
             button = NSButton.alloc().initWithFrame_(NSMakeRect(padding, y - index * row_height, width - padding * 2, 22.0))
             button.setButtonType_(NSSwitchButton)
@@ -257,21 +336,41 @@ class TintillaPanelController(NSObject):
 
     def _refresh_controls(self) -> None:
         current_mode = self._state.additive_curve_mode()
-        if self._curve_mode_button is not None:
-            self._curve_mode_button.setTitle_(
-                f"Curve: {'Rational' if current_mode == ADDITIVE_CURVE_MODE_RATIONAL else 'Exponential'}"
+        if self._additive_curve_mode_button is not None:
+            self._additive_curve_mode_button.setTitle_(
+                f"Glow Curve: {'Rational' if current_mode == ADDITIVE_CURVE_MODE_RATIONAL else 'Exponential'}"
             )
-            self._curve_mode_button.setState_(
+            self._additive_curve_mode_button.setState_(
                 NSControlStateValueOn if current_mode == ADDITIVE_CURVE_MODE_RATIONAL else NSControlStateValueOff
             )
         current_intensity = self._state.additive_mask_intensity()
-        for intensity, button in self._mask_intensity_buttons_by_value.items():
+        for intensity, button in self._additive_mask_intensity_buttons_by_value.items():
             button.setState_(
                 NSControlStateValueOn if intensity == current_intensity else NSControlStateValueOff
             )
         current_profile = self._state.wide_bloom_profile()
         for profile, button in self._wide_bloom_profile_buttons_by_value.items():
             button.setState_(NSControlStateValueOn if profile == current_profile else NSControlStateValueOff)
+        current_vignette_mode = self._state.vignette_curve_mode()
+        if self._vignette_curve_mode_button is not None:
+            self._vignette_curve_mode_button.setTitle_(
+                f"Vignette Curve: {'Rational' if current_vignette_mode == ADDITIVE_CURVE_MODE_RATIONAL else 'Exponential'}"
+            )
+            self._vignette_curve_mode_button.setState_(
+                NSControlStateValueOn
+                if current_vignette_mode == ADDITIVE_CURVE_MODE_RATIONAL
+                else NSControlStateValueOff
+            )
+        current_vignette_intensity = self._state.vignette_mask_intensity()
+        for intensity, button in self._vignette_mask_intensity_buttons_by_value.items():
+            button.setState_(
+                NSControlStateValueOn if intensity == current_vignette_intensity else NSControlStateValueOff
+            )
+        current_vignette_profile = self._state.vignette_profile()
+        for profile, button in self._vignette_profile_buttons_by_value.items():
+            button.setState_(
+                NSControlStateValueOn if profile == current_vignette_profile else NSControlStateValueOff
+            )
         for index, (layer_id, _label) in enumerate(LAYER_SPECS):
             button = self._buttons_by_layer_id.get(layer_id)
             if button is None:
@@ -310,4 +409,21 @@ class TintillaPanelController(NSObject):
 
     def selectWideBloomProfile_(self, sender) -> None:
         self._state.set_wide_bloom_profile(sender.representedObject())
+        self._refresh_controls()
+
+    def toggleVignetteCurveMode_(self, sender) -> None:
+        next_mode = (
+            ADDITIVE_CURVE_MODE_RATIONAL
+            if self._state.vignette_curve_mode() == ADDITIVE_CURVE_MODE_EXPONENTIAL
+            else ADDITIVE_CURVE_MODE_EXPONENTIAL
+        )
+        self._state.set_vignette_curve_mode(next_mode)
+        self._refresh_controls()
+
+    def selectVignetteMaskIntensity_(self, sender) -> None:
+        self._state.set_vignette_mask_intensity(sender.representedObject())
+        self._refresh_controls()
+
+    def selectVignetteProfile_(self, sender) -> None:
+        self._state.set_vignette_profile(sender.representedObject())
         self._refresh_controls()

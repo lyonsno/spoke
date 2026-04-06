@@ -61,6 +61,23 @@ _WIDE_BLOOM_PROFILE_SPECS = {
     WIDE_BLOOM_PROFILE_QUEST: {"falloff": 24.0, "power": 2.9},
     WIDE_BLOOM_PROFILE_MIST: {"falloff": 30.0, "power": 2.4},
 }
+_VIGNETTE_PROFILE_SPECS = {
+    WIDE_BLOOM_PROFILE_TIGHT: {
+        "core": {"falloff": 11.0, "power": 1.3},
+        "mid": {"falloff": 22.0, "power": 1.45},
+        "tail": {"falloff": 34.0, "power": 1.6},
+    },
+    WIDE_BLOOM_PROFILE_QUEST: {
+        "core": {"falloff": 14.0, "power": 1.15},
+        "mid": {"falloff": 28.0, "power": 1.3},
+        "tail": {"falloff": 42.0, "power": 1.45},
+    },
+    WIDE_BLOOM_PROFILE_MIST: {
+        "core": {"falloff": 18.0, "power": 1.0},
+        "mid": {"falloff": 36.0, "power": 1.15},
+        "tail": {"falloff": 54.0, "power": 1.3},
+    },
+}
 
 _METAL_WIDE_BLOOM_ENABLED = os.environ.get("SPOKE_METAL_WIDE_BLOOM", "0") == "1"
 _METAL_FRAME_INTERVAL_S = 1.0 / 60.0
@@ -679,6 +696,11 @@ def _scale_sdf_layer_alpha(alpha: float, intensity_multiplier: float) -> float:
     return min(alpha * intensity_multiplier, 1.0)
 
 
+def _scale_vignette_color_scale(color_scale: float, intensity_multiplier: float) -> float:
+    intensity_multiplier = max(float(intensity_multiplier), 0.001)
+    return color_scale / intensity_multiplier
+
+
 def _continuous_glow_pass_specs(
     wide_bloom_profile: str = WIDE_BLOOM_PROFILE_QUEST,
     intensity_multiplier: float = 1.0,
@@ -711,7 +733,7 @@ def _continuous_glow_pass_specs(
             "falloff": wide_bloom_spec["falloff"],
             "power": wide_bloom_spec["power"],
             "fill_role": "outer",
-            "fill_alpha": _scale_sdf_layer_alpha(0.48, intensity_multiplier),
+            "fill_alpha": _scale_sdf_layer_alpha(0.048, intensity_multiplier),
         },
     ]
     for spec in specs:
@@ -725,36 +747,43 @@ def _continuous_glow_pass_specs(
     return specs
 
 
-def _continuous_vignette_pass_specs():
+def _continuous_vignette_pass_specs(
+    profile: str = WIDE_BLOOM_PROFILE_QUEST,
+    intensity_multiplier: float = 1.0,
+):
     """Procedural subtractive passes driven from the same distance field."""
+    profile_spec = _VIGNETTE_PROFILE_SPECS.get(
+        profile,
+        _VIGNETTE_PROFILE_SPECS[WIDE_BLOOM_PROFILE_QUEST],
+    )
     return [
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 21.0,
-            "power": 0.95,
+            "falloff": profile_spec["core"]["falloff"],
+            "power": profile_spec["core"]["power"],
             "alpha": 1.0,
-            "color_scale": 0.0009375,
+            "color_scale": _scale_vignette_color_scale(0.0009375, intensity_multiplier),
             "floor_gain": 2.0,
             "peak_gain": 4.0,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 42.0,
-            "power": 1.05,
+            "falloff": profile_spec["mid"]["falloff"],
+            "power": profile_spec["mid"]["power"],
             "alpha": 1.0,
-            "color_scale": 0.00375,
+            "color_scale": _scale_vignette_color_scale(0.00375, intensity_multiplier),
             "floor_gain": 1.0,
             "peak_gain": 0.7,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 60.0,
-            "power": 1.15,
+            "falloff": profile_spec["tail"]["falloff"],
+            "power": profile_spec["tail"]["power"],
             "alpha": 0.9,
-            "color_scale": 0.015,
+            "color_scale": _scale_vignette_color_scale(0.015, intensity_multiplier),
             "floor_gain": 0.75,
             "peak_gain": 0.5,
         },
@@ -916,6 +945,10 @@ def _maybe_create_metal_wide_bloom_renderer(parent_layer, geometry: dict, frame_
 class GlowOverlay(NSObject):
     """Manages a screen-border glow window driven by audio amplitude."""
 
+    # Test suites intentionally re-import `spoke.glow`; a unique ObjC runtime
+    # name keeps PyObjC from treating that as an illegal class redefinition.
+    __objc_name__ = f"SpokeGlowOverlay_{time.monotonic_ns()}"
+
     def initWithScreen_(self, screen: NSScreen | None = None):
         self = objc.super(GlowOverlay, self).init()
         if self is None:
@@ -946,6 +979,8 @@ class GlowOverlay(NSObject):
         self._active_vignette_curve_mode = ADDITIVE_CURVE_MODE_EXPONENTIAL
         self._active_additive_mask_intensity = 1.0
         self._active_wide_bloom_profile = WIDE_BLOOM_PROFILE_QUEST
+        self._active_vignette_mask_intensity = 1.0
+        self._active_vignette_profile = WIDE_BLOOM_PROFILE_QUEST
         self._additive_renderer = None
         self._cpu_additive_fallback_active = False
         self._metal_frame_timer = None
@@ -1071,9 +1106,13 @@ class GlowOverlay(NSObject):
         self._vignette_mask_payloads = []
         self._mask_payloads = []
         curve_mode, intensity_multiplier, wide_bloom_profile = self._current_additive_tuning()
+        vignette_curve_mode, vignette_intensity, vignette_profile = self._current_vignette_tuning()
         self._active_additive_curve_mode = curve_mode
         self._active_additive_mask_intensity = intensity_multiplier
         self._active_wide_bloom_profile = wide_bloom_profile
+        self._active_vignette_curve_mode = vignette_curve_mode
+        self._active_vignette_mask_intensity = vignette_intensity
+        self._active_vignette_profile = vignette_profile
         for entry in _distance_field_masks_for_specs(
             geometry,
             _continuous_glow_pass_specs(
@@ -1108,8 +1147,11 @@ class GlowOverlay(NSObject):
         vignette_pass_layers = []
         for entry in _distance_field_masks_for_specs(
             geometry,
-            _continuous_vignette_pass_specs(),
-            curve_mode=curve_mode,
+            _continuous_vignette_pass_specs(
+                profile=vignette_profile,
+                intensity_multiplier=vignette_intensity,
+            ),
+            curve_mode=vignette_curve_mode,
             signed_distance=self._glow_signed_distance,
         ):
             spec = entry["spec"]
@@ -1159,15 +1201,43 @@ class GlowOverlay(NSObject):
         )
         return (curve_mode, intensity, profile)
 
+    def _current_vignette_tuning(self) -> tuple[str, float, str]:
+        state = getattr(self, "_visual_layer_state", None)
+        if state is None:
+            return (
+                ADDITIVE_CURVE_MODE_EXPONENTIAL,
+                1.0,
+                WIDE_BLOOM_PROFILE_QUEST,
+            )
+        curve_mode = (
+            state.vignette_curve_mode()
+            if hasattr(state, "vignette_curve_mode")
+            else ADDITIVE_CURVE_MODE_EXPONENTIAL
+        )
+        intensity = (
+            state.vignette_mask_intensity()
+            if hasattr(state, "vignette_mask_intensity")
+            else 1.0
+        )
+        profile = (
+            state.vignette_profile()
+            if hasattr(state, "vignette_profile")
+            else WIDE_BLOOM_PROFILE_QUEST
+        )
+        return (curve_mode, intensity, profile)
+
     def _refresh_glow_masks_if_needed(self) -> None:
         if not hasattr(self, "_glow_pass_layers") or getattr(self, "_glow_geometry", None) is None:
             return
         curve_mode, intensity_multiplier, wide_bloom_profile = self._current_additive_tuning()
+        vignette_curve_mode, vignette_intensity, vignette_profile = self._current_vignette_tuning()
         if (
             curve_mode == self._active_additive_curve_mode
-            and curve_mode == self._active_vignette_curve_mode
             and intensity_multiplier == self._active_additive_mask_intensity
             and wide_bloom_profile == self._active_wide_bloom_profile
+            and vignette_curve_mode == self._active_vignette_curve_mode
+            and vignette_intensity == self._active_vignette_mask_intensity
+            and vignette_profile == self._active_vignette_profile
         ):
             return
         curve_changed = curve_mode != self._active_additive_curve_mode
@@ -1202,13 +1272,23 @@ class GlowOverlay(NSObject):
             if new_payloads:
                 self._glow_mask_payloads = new_payloads
 
-        if curve_mode != self._active_vignette_curve_mode:
-            self._active_vignette_curve_mode = curve_mode
+        vignette_changed = (
+            vignette_curve_mode != self._active_vignette_curve_mode
+            or vignette_intensity != self._active_vignette_mask_intensity
+            or vignette_profile != self._active_vignette_profile
+        )
+        if vignette_changed:
+            self._active_vignette_curve_mode = vignette_curve_mode
+            self._active_vignette_mask_intensity = vignette_intensity
+            self._active_vignette_profile = vignette_profile
             new_vignette_payloads = []
             vignette_masks = _distance_field_masks_for_specs(
                 self._glow_geometry,
-                _continuous_vignette_pass_specs(),
-                curve_mode=curve_mode,
+                _continuous_vignette_pass_specs(
+                    profile=vignette_profile,
+                    intensity_multiplier=vignette_intensity,
+                ),
+                curve_mode=vignette_curve_mode,
                 signed_distance=self._glow_signed_distance,
             )
             for entry, layer_entry in zip(vignette_masks, self._vignette_pass_layers):

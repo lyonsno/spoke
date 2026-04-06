@@ -190,7 +190,7 @@ class TestGlowTuning:
             assert tight["falloff"] == pytest.approx(11.5)
             assert tight["power"] == pytest.approx(2.6)
             assert core["fill_alpha"] == pytest.approx(0.14)
-            assert wide["fill_alpha"] == pytest.approx(0.48)
+            assert wide["fill_alpha"] == pytest.approx(0.048)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -260,9 +260,9 @@ class TestGlowTuning:
             mid = next(spec for spec in specs if spec["name"] == "mid")
             tail = next(spec for spec in specs if spec["name"] == "tail")
             assert mod._VIGNETTE_OPACITY_SCALE == pytest.approx(0.78)
-            assert core["falloff"] == pytest.approx(21.0)
-            assert mid["falloff"] == pytest.approx(42.0)
-            assert tail["falloff"] == pytest.approx(60.0)
+            assert core["falloff"] == pytest.approx(14.0)
+            assert mid["falloff"] == pytest.approx(28.0)
+            assert tail["falloff"] == pytest.approx(42.0)
             assert core["alpha"] == pytest.approx(1.0)
             assert mid["alpha"] == pytest.approx(1.0)
             assert tail["alpha"] == pytest.approx(0.9)
@@ -272,12 +272,56 @@ class TestGlowTuning:
             assert mid["peak_gain"] == pytest.approx(0.7)
             assert tail["floor_gain"] == pytest.approx(0.75)
             assert tail["peak_gain"] == pytest.approx(0.5)
-            assert core["power"] == pytest.approx(0.95)
-            assert mid["power"] == pytest.approx(1.05)
-            assert tail["power"] == pytest.approx(1.15)
+            assert core["power"] == pytest.approx(1.15)
+            assert mid["power"] == pytest.approx(1.3)
+            assert tail["power"] == pytest.approx(1.45)
             assert core["color_scale"] == pytest.approx(0.0009375)
             assert mid["color_scale"] == pytest.approx(0.00375)
             assert tail["color_scale"] == pytest.approx(0.015)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_vignette_profile_presets_reshape_tail_energy(self, mock_pyobjc):
+        """Tintilla should be able to bend the vignette scoop independently of the additive glow."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            tight = mod._continuous_vignette_pass_specs(mod.WIDE_BLOOM_PROFILE_TIGHT)
+            quest = mod._continuous_vignette_pass_specs(mod.WIDE_BLOOM_PROFILE_QUEST)
+            mist = mod._continuous_vignette_pass_specs(mod.WIDE_BLOOM_PROFILE_MIST)
+
+            tight_tail = next(spec for spec in tight if spec["name"] == "tail")
+            quest_tail = next(spec for spec in quest if spec["name"] == "tail")
+            mist_tail = next(spec for spec in mist if spec["name"] == "tail")
+
+            assert tight_tail["falloff"] < quest_tail["falloff"] < mist_tail["falloff"]
+            assert tight_tail["power"] > quest_tail["power"] > mist_tail["power"]
+            assert tight_tail["falloff"] == pytest.approx(34.0)
+            assert quest_tail["falloff"] == pytest.approx(42.0)
+            assert mist_tail["falloff"] == pytest.approx(54.0)
+            assert tight_tail["power"] == pytest.approx(1.6)
+            assert quest_tail["power"] == pytest.approx(1.45)
+            assert mist_tail["power"] == pytest.approx(1.3)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_vignette_intensity_control_scales_darkness(self, mock_pyobjc):
+        """A stronger vignette intensity should darken the subtractive tint instead of sharing the additive multiplier."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            baseline = mod._continuous_vignette_pass_specs(
+                mod.WIDE_BLOOM_PROFILE_QUEST,
+                intensity_multiplier=1.0,
+            )
+            boosted = mod._continuous_vignette_pass_specs(
+                mod.WIDE_BLOOM_PROFILE_QUEST,
+                intensity_multiplier=2.0,
+            )
+            base_tail = next(spec for spec in baseline if spec["name"] == "tail")
+            boosted_tail = next(spec for spec in boosted if spec["name"] == "tail")
+
+            assert boosted_tail["color_scale"] == pytest.approx(base_tail["color_scale"] / 2.0)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -348,8 +392,8 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_vignette_masks_follow_the_live_curve_toggle(self, mock_pyobjc, monkeypatch):
-        """The live vignette stack should rebuild from the same curve family toggle as the additive glow."""
+    def test_vignette_masks_follow_the_live_vignette_controls(self, mock_pyobjc, monkeypatch):
+        """The live vignette stack should rebuild from its own curve, intensity, and profile controls."""
         import numpy as np
 
         sys.modules.pop("spoke.glow", None)
@@ -357,13 +401,22 @@ class TestGlowTuning:
         try:
             class _State:
                 def additive_curve_mode(self):
-                    return mod.ADDITIVE_CURVE_MODE_RATIONAL
+                    return mod.ADDITIVE_CURVE_MODE_EXPONENTIAL
 
                 def additive_mask_intensity(self):
                     return 1.0
 
                 def wide_bloom_profile(self):
                     return mod.WIDE_BLOOM_PROFILE_QUEST
+
+                def vignette_curve_mode(self):
+                    return mod.ADDITIVE_CURVE_MODE_RATIONAL
+
+                def vignette_mask_intensity(self):
+                    return 2.0
+
+                def vignette_profile(self):
+                    return mod.WIDE_BLOOM_PROFILE_MIST
 
             def _layer_entry():
                 layer = MagicMock()
@@ -386,6 +439,8 @@ class TestGlowTuning:
             glow._active_vignette_curve_mode = mod.ADDITIVE_CURVE_MODE_EXPONENTIAL
             glow._active_additive_mask_intensity = 1.0
             glow._active_wide_bloom_profile = mod.WIDE_BLOOM_PROFILE_QUEST
+            glow._active_vignette_mask_intensity = 1.0
+            glow._active_vignette_profile = mod.WIDE_BLOOM_PROFILE_QUEST
             glow._glow_pass_layers = [_layer_entry(), _layer_entry(), _layer_entry()]
             glow._vignette_pass_layers = [_layer_entry(), _layer_entry(), _layer_entry()]
             glow._glow_mask_payloads = []
@@ -399,6 +454,8 @@ class TestGlowTuning:
             glow._refresh_glow_masks_if_needed()
 
             assert glow._active_vignette_curve_mode == mod.ADDITIVE_CURVE_MODE_RATIONAL
+            assert glow._active_vignette_mask_intensity == pytest.approx(2.0)
+            assert glow._active_vignette_profile == mod.WIDE_BLOOM_PROFILE_MIST
             for entry in glow._vignette_pass_layers:
                 entry["layer"].mask.return_value.setContents_.assert_called_once()
         finally:

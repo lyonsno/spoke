@@ -27,6 +27,9 @@ class TestLayerVisibilityState:
         assert state.additive_curve_mode() == ADDITIVE_CURVE_MODE_EXPONENTIAL
         assert state.additive_mask_intensity() == ADDITIVE_MASK_INTENSITY_LEVELS[0]
         assert state.wide_bloom_profile() == WIDE_BLOOM_PROFILE_QUEST
+        assert state.vignette_curve_mode() == ADDITIVE_CURVE_MODE_EXPONENTIAL
+        assert state.vignette_mask_intensity() == ADDITIVE_MASK_INTENSITY_LEVELS[0]
+        assert state.vignette_profile() == WIDE_BLOOM_PROFILE_QUEST
 
         state.set_enabled(SCREEN_GLOW_WIDE_BLOOM_LAYER_ID, False)
 
@@ -65,20 +68,33 @@ class TestLayerVisibilityState:
         state.set_additive_curve_mode(ADDITIVE_CURVE_MODE_RATIONAL)
         state.set_additive_mask_intensity(1.5)
         state.set_wide_bloom_profile(WIDE_BLOOM_PROFILE_MIST)
+        state.set_vignette_curve_mode(ADDITIVE_CURVE_MODE_RATIONAL)
+        state.set_vignette_mask_intensity(2.0)
+        state.set_vignette_profile(WIDE_BLOOM_PROFILE_MIST)
         state.set_additive_curve_mode("bogus")
         state.set_additive_mask_intensity(9.0)
         state.set_wide_bloom_profile("bogus")
+        state.set_vignette_curve_mode("bogus")
+        state.set_vignette_mask_intensity(9.0)
+        state.set_vignette_profile("bogus")
 
         assert state.additive_curve_mode() == ADDITIVE_CURVE_MODE_RATIONAL
         assert state.additive_mask_intensity() == 1.5
         assert state.wide_bloom_profile() == WIDE_BLOOM_PROFILE_MIST
-        assert listener.call_count == 3
+        assert state.vignette_curve_mode() == ADDITIVE_CURVE_MODE_RATIONAL
+        assert state.vignette_mask_intensity() == 2.0
+        assert state.vignette_profile() == WIDE_BLOOM_PROFILE_MIST
+        assert listener.call_count == 6
 
         state.set_additive_curve_mode(ADDITIVE_CURVE_MODE_EXPONENTIAL)
         state.set_wide_bloom_profile(WIDE_BLOOM_PROFILE_QUEST)
+        state.set_vignette_curve_mode(ADDITIVE_CURVE_MODE_EXPONENTIAL)
+        state.set_vignette_profile(WIDE_BLOOM_PROFILE_QUEST)
 
         assert state.additive_curve_mode() == ADDITIVE_CURVE_MODE_EXPONENTIAL
         assert state.wide_bloom_profile() == WIDE_BLOOM_PROFILE_QUEST
+        assert state.vignette_curve_mode() == ADDITIVE_CURVE_MODE_EXPONENTIAL
+        assert state.vignette_profile() == WIDE_BLOOM_PROFILE_QUEST
 
 
 class TestTintillaPanelController:
@@ -117,10 +133,13 @@ class TestTintillaPanelController:
         state.set_additive_curve_mode(ADDITIVE_CURVE_MODE_RATIONAL)
         state.set_additive_mask_intensity(1.5)
         state.set_wide_bloom_profile(WIDE_BLOOM_PROFILE_MIST)
+        state.set_vignette_curve_mode(ADDITIVE_CURVE_MODE_RATIONAL)
+        state.set_vignette_mask_intensity(2.0)
+        state.set_vignette_profile(WIDE_BLOOM_PROFILE_MIST)
 
         controller = TintillaPanelController.alloc().initWithState_(state)
-        controller._curve_mode_button = MagicMock()
-        controller._mask_intensity_buttons_by_value = {
+        controller._additive_curve_mode_button = MagicMock()
+        controller._additive_mask_intensity_buttons_by_value = {
             1.0: MagicMock(),
             1.5: MagicMock(),
             2.0: MagicMock(),
@@ -130,11 +149,27 @@ class TestTintillaPanelController:
             "quest": MagicMock(),
             "mist": MagicMock(),
         }
+        controller._vignette_curve_mode_button = MagicMock()
+        controller._vignette_mask_intensity_buttons_by_value = {
+            1.0: MagicMock(),
+            1.5: MagicMock(),
+            2.0: MagicMock(),
+        }
+        controller._vignette_profile_buttons_by_value = {
+            "tight": MagicMock(),
+            "quest": MagicMock(),
+            "mist": MagicMock(),
+        }
 
         controller._refresh_controls()
 
-        controller._curve_mode_button.setTitle_.assert_called_once_with("Curve: Rational")
-        controller._mask_intensity_buttons_by_value[1.5].setState_.assert_called_once_with(1)
-        controller._mask_intensity_buttons_by_value[1.0].setState_.assert_called_once_with(0)
+        controller._additive_curve_mode_button.setTitle_.assert_called_once_with("Glow Curve: Rational")
+        controller._additive_mask_intensity_buttons_by_value[1.5].setState_.assert_called_once_with(1)
+        controller._additive_mask_intensity_buttons_by_value[1.0].setState_.assert_called_once_with(0)
         controller._wide_bloom_profile_buttons_by_value["mist"].setState_.assert_called_once_with(1)
         controller._wide_bloom_profile_buttons_by_value["quest"].setState_.assert_called_once_with(0)
+        controller._vignette_curve_mode_button.setTitle_.assert_called_once_with("Vignette Curve: Rational")
+        controller._vignette_mask_intensity_buttons_by_value[2.0].setState_.assert_called_once_with(1)
+        controller._vignette_mask_intensity_buttons_by_value[1.0].setState_.assert_called_once_with(0)
+        controller._vignette_profile_buttons_by_value["mist"].setState_.assert_called_once_with(1)
+        controller._vignette_profile_buttons_by_value["quest"].setState_.assert_called_once_with(0)
