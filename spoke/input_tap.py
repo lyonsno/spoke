@@ -51,7 +51,10 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
-ENTER_KEYCODE = 36
+RETURN_KEYCODE = 36
+ENTER_KEYCODE = RETURN_KEYCODE
+KEYPAD_ENTER_KEYCODE = 76
+ENTER_KEYCODES = frozenset({ENTER_KEYCODE, KEYPAD_ENTER_KEYCODE})
 # Modifiers that prevent recording when held during spacebar press.
 # Shift is intentionally excluded — shift+space starts recording normally,
 # and shift is detected at release to route to the tray.
@@ -64,6 +67,7 @@ _DEFAULT_HOLD_MS = 400
 _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
+_DOUBLE_TAP_WINDOW_S = 0.3  # 300ms window for double-tap detection
 
 
 class _State(Enum):
@@ -126,11 +130,9 @@ class SpacebarHoldDetector(NSObject):
         # forwarding a space character, and shift gestures route to
         # tray navigation callbacks.
         self.tray_active = False
-        # Command overlay suppression — set by the delegate when the
-        # command overlay is visible.  When True, Enter is suppressed.
+        # Tracks whether the command overlay is visible — used by the
+        # delegate for toggle logic but no longer drives event suppression.
         self.command_overlay_active = False
-        self._command_overlay_just_dismissed = False
-        self._on_command_overlay_dismiss: Callable[[], None] | None = None
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -144,6 +146,14 @@ class SpacebarHoldDetector(NSObject):
         self._tray_gesture_consumed = False  # True if a tray gesture already fired this hold
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
         self._tray_last_shift_space_up: float = 0.0
+
+        # Double-tap detection for Shift (toggle HUD)
+        self._on_double_tap_shift: Callable[[], None] | None = None
+        self._last_idle_shift_up: float = 0.0
+        self._shift_single_tap_timer: NSTimer | None = None
+
+        # Enter during WAITING = toggle command overlay (before hold threshold fires)
+        self._on_enter_during_waiting: Callable[[], None] | None = None
 
         return self
 
@@ -225,6 +235,7 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_safety_timer()
         self._cancel_forwarding_timer()
         self._cancel_release_decision_timer()
+        self._cancel_shift_single_tap_timer()
         self._forwarding = False
         self._enter_held = False
         self._enter_latched = False
@@ -327,22 +338,9 @@ class SpacebarHoldDetector(NSObject):
             enter_held = getattr(self, '_enter_held', False)
             self._shift_latched = False
             self._enter_latched = False
-            if (
-                getattr(self, '_command_overlay_just_dismissed', False)
-                and not shift_held
-                and not enter_held
-            ):
-                # A tap that just dismissed the assistant overlay must not
-                # immediately fall through into tray insertion.
-                pass
-            elif enter_held:
-                # Even with the tray visible, space released first while Enter
-                # remains down is the assistant-overlay toggle chord.
-                self._on_hold_end(
-                    shift_held=False,
-                    enter_held=False,
-                    toggle_command_overlay=True,
-                )
+            if enter_held:
+                # Space released while Enter held = assistant send path
+                self._on_hold_end(shift_held=False, enter_held=True)
             elif getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
@@ -365,9 +363,6 @@ class SpacebarHoldDetector(NSObject):
             elif shift_held:
                 # Shift + quick tap = signal for tray recall (no space)
                 self._on_hold_end(shift_held=True, enter_held=enter_held)
-            elif getattr(self, '_command_overlay_just_dismissed', False):
-                # This tap was an overlay dismiss — suppress the space character.
-                pass
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
@@ -387,11 +382,7 @@ class SpacebarHoldDetector(NSObject):
             self._shift_latched = False
             self._enter_latched = False
             if enter_held:
-                self._on_hold_end(
-                    shift_held=shift_held,
-                    enter_held=False,
-                    toggle_command_overlay=True,
-                )
+                self._on_hold_end(shift_held=shift_held, enter_held=True)
             elif getattr(self, 'tray_active', False):
                 # Tray-intercepted holds are tray gestures, not recording-release
                 # decisions. Keep them on the tray path even if shift came up
@@ -422,15 +413,7 @@ class SpacebarHoldDetector(NSObject):
                 else:
                     # Spacebar tap without shift inserts at cursor unless Enter
                     # joined the latched exit chord, in which case it routes as
-                    # the command/send gesture.
-                    if enter_held:
-                        self._on_hold_end(
-                            shift_held=False,
-                            enter_held=False,
-                            toggle_command_overlay=True,
-                        )
-                    else:
-                        self._on_hold_end(shift_held=False, enter_held=False)
+                    self._on_hold_end(shift_held=False, enter_held=enter_held)
                 return True
 
             # Swallow the original release that let the user go hands-free,
@@ -452,10 +435,6 @@ class SpacebarHoldDetector(NSObject):
         """Called when spacebar has been held past the threshold."""
         self._hold_timer = None
         if self._state != _State.WAITING:
-            return
-        # If the spacebar keyDown already triggered an overlay dismiss,
-        # skip the hold start — the user is toggling visibility, not dictating.
-        if getattr(self, '_command_overlay_just_dismissed', False):
             return
         self._state = _State.RECORDING
         self._start_safety_timer()
@@ -552,6 +531,18 @@ class SpacebarHoldDetector(NSObject):
             self._release_decision_timer.invalidate()
             self._release_decision_timer = None
 
+    def _cancel_shift_single_tap_timer(self) -> None:
+        if getattr(self, "_shift_single_tap_timer", None) is not None:
+            self._shift_single_tap_timer.invalidate()
+            self._shift_single_tap_timer = None
+
+    def _shiftSingleTapFired_(self, timer: NSTimer) -> None:
+        """Double-tap window expired — fire the deferred single-tap action."""
+        self._shift_single_tap_timer = None
+        on_shift_tap_idle = getattr(self, '_on_shift_tap_idle', None)
+        if on_shift_tap_idle is not None:
+            on_shift_tap_idle()
+
     def _finish_pending_release(self, enter_held: bool) -> None:
         if not getattr(self, "_pending_release_active", False):
             return
@@ -588,12 +579,26 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
         # Track enter key state for command fast path
-        if keycode == ENTER_KEYCODE:
+        if keycode in ENTER_KEYCODES:
             det._enter_held = True
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
-            if det._state in (_State.WAITING, _State.RECORDING):
+            if det._state == _State.WAITING:
+                if not getattr(det, 'tray_active', False):
+                    # Enter during WAITING (before hold threshold) = toggle
+                    # assistant overlay. Cancel the hold timer and return to
+                    # IDLE so no recording starts.
+                    det._cancel_hold_timer()
+                    det._state = _State.IDLE
+                    det._enter_held = False
+                    det._suppress_enter_keyup = True
+                    cb = getattr(det, '_on_enter_during_waiting', None)
+                    if cb is not None:
+                        logger.info("Enter during WAITING — toggling command overlay")
+                        cb()
+                return None  # suppress enter during WAITING regardless
+            if det._state == _State.RECORDING:
                 # Fire cancel spring callback if the command overlay is active
                 # (generation in progress and user is adding enter to the hold)
                 if getattr(det, 'command_overlay_active', False):
@@ -604,19 +609,11 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if det._state == _State.LATCHED and getattr(det, '_latched_space_down', False):
                 det._enter_latched = True
                 return None  # suppress enter while a latched exit chord is active
-            # Suppress Enter while the command overlay is visible so it
-            # doesn't leak through to the underlying app.
-            if getattr(det, 'command_overlay_active', False):
-                return None
-            # Bare Enter otherwise belongs to the foreground app, even if the
-            # tray is visible. Assistant send remains a space-rooted chord.
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
-            # Clear _just_dismissed so the recall path works for fresh gestures.
-            det._command_overlay_just_dismissed = False
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
@@ -625,7 +622,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     elif event_type == kCGEventKeyUp:
         flags = CGEventGetFlags(event)
         # Track enter key release
-        if keycode == ENTER_KEYCODE:
+        if keycode in ENTER_KEYCODES:
             # Cancel spring capture: either key releasing evaluates the spring
             if getattr(det, 'cancel_spring_active', False):
                 det._enter_held = False
@@ -717,9 +714,27 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             elif not shift_now and getattr(det, '_idle_shift_down', False):
                 det._idle_shift_down = False
                 if not getattr(det, '_idle_shift_interrupted', False):
-                    on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
-                    if on_shift_tap_idle is not None:
-                        on_shift_tap_idle()
+                    # Double-tap Shift detection (not during tray)
+                    now = time.monotonic()
+                    last = getattr(det, '_last_idle_shift_up', 0.0)
+                    if (now - last) < _DOUBLE_TAP_WINDOW_S:
+                        det._last_idle_shift_up = 0.0  # reset
+                        # Cancel the deferred single-tap from the first tap
+                        det._cancel_shift_single_tap_timer()
+                        cb = getattr(det, '_on_double_tap_shift', None)
+                        if cb is not None:
+                            logger.info("Double-tap Shift — toggling HUD")
+                            cb()
+                    else:
+                        det._last_idle_shift_up = now
+                        # Defer single-tap action until double-tap window expires.
+                        # If a second tap arrives, the timer is cancelled.
+                        det._cancel_shift_single_tap_timer()
+                        det._shift_single_tap_timer = (
+                            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                                _DOUBLE_TAP_WINDOW_S, det, "_shiftSingleTapFired:", None, False
+                            )
+                        )
                 det._idle_shift_interrupted = False
 
     return event

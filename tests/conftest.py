@@ -128,6 +128,9 @@ def _make_fake_appkit():
     a.NSTextField = MagicMock()
     a.NSPanel = MagicMock()
     a.NSWorkspace = MagicMock()
+    a.NSEvent = MagicMock()
+    a.NSEvent.addLocalMonitorForEventsMatchingMask_handler_ = MagicMock(return_value=MagicMock())
+    a.NSEvent.removeMonitor_ = MagicMock()
     a.NSWindowStyleMaskNonactivatingPanel = 128
     a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
     a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8

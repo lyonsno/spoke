@@ -87,6 +87,7 @@ class MenuBarIcon(NSObject):
             return None
         self._on_quit = on_quit
         self._on_select_model = on_select_model
+        self._on_toggle_terraform = None
         self._status_item = None
         self._status_text = "Idle"
         self._branch_label = _branch_menu_label()
@@ -285,7 +286,7 @@ class MenuBarIcon(NSObject):
                     if tts_voice.get("type") == "choice":
                         menu.addItem_(
                             self._build_choice_submenu_item(
-                                "TTS Voice",
+                                tts_voice.get("title", "TTS Voice"),
                                 "tts_voice",
                                 tts_voice["selected"],
                                 tts_voice["models"],
@@ -328,6 +329,14 @@ class MenuBarIcon(NSObject):
                     added_menu_section = True
 
         if added_menu_section:
+            menu.addItem_(NSMenuItem.separatorItem())
+
+        if getattr(self, "_on_toggle_terraform", None) is not None:
+            terraform_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Terror Form", "toggleTerraform:", "t"
+            )
+            terraform_item.setTarget_(self)
+            menu.addItem_(terraform_item)
             menu.addItem_(NSMenuItem.separatorItem())
 
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -401,6 +410,10 @@ class MenuBarIcon(NSObject):
         if self._status_item is not None:
             NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
             self._status_item = None
+
+    def toggleTerraform_(self, sender) -> None:
+        if self._on_toggle_terraform is not None:
+            self._on_toggle_terraform()
 
     def quitApp_(self, sender) -> None:
         self._on_quit()

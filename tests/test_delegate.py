@@ -21,7 +21,6 @@ def _make_delegate(main_module, monkeypatch):
     delegate._client = MagicMock(supports_streaming=False)
     delegate._detector = MagicMock()
     delegate._detector.command_overlay_active = False
-    delegate._detector._command_overlay_just_dismissed = False
     delegate._menubar = MagicMock()
     delegate._glow = MagicMock()
     delegate._overlay = MagicMock()
@@ -958,6 +957,7 @@ class TestDualModelConfiguration:
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._tts_client = MagicMock()
+        d._tts_client._model_id = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
         d._tts_backend = "local"
         d._tts_sidecar_url = ""
         monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
@@ -967,15 +967,197 @@ class TestDualModelConfiguration:
         assert model_state["tts_backend"] == {
             "title": "TTS Backend: Local",
             "items": [
-                ("local", "Local (Voxtral MLX)", True),
+                ("local", "Local runtime", True),
                 ("sidecar", "Sidecar (not configured)", False, False),
                 ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
             ],
         }
         assert model_state["tts_endpoint"] == {
-            "title": "TTS Endpoint: local MLX",
-            "note": "Routing source: local MLX",
+            "title": "TTS Endpoint: local runtime",
+            "note": "Routing source: local runtime",
         }
+        assert any(
+            model_id == "k2-fsa/OmniVoice"
+            for model_id, _label, _enabled in model_state["tts"]["models"]
+        )
+
+    def test_handle_model_menu_none_keeps_tts_controls_for_saved_model_without_live_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._tts_client = None
+        saved = {"tts_model": "k2-fsa/OmniVoice"}
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_backend"]["title"] == "TTS Backend: Local"
+        assert model_state["tts"]["selected"] == "k2-fsa/OmniVoice"
+        assert model_state["tts_voice"] == {
+            "type": "choice",
+            "title": "TTS Prompt: Auto voice",
+            "selected": "",
+            "models": [
+                ("", "Auto voice", True),
+                ("female, child", "Female, child", True),
+                ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
+                ("female, elderly, british accent", "Female, elderly, British", True),
+                ("female, young adult, whisper", "Female, young adult, whisper", True),
+                ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch", True),
+                ("female, low pitch, british accent", "Female, low pitch, British", True),
+                ("male, british accent", "Male, British", True),
+                ("female, whisper, british accent", "Female whisper, British", True),
+                ("female, high pitch, american accent", "Female, high pitch, American", True),
+                ("male, low pitch, american accent", "Male, low pitch, American", True),
+                ("configure_voice", "Set Custom TTS Prompt…", True),
+            ],
+        }
+
+    def test_handle_model_menu_none_labels_saved_omnivoice_prompt_value_as_prompt(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._tts_client = None
+        saved = {
+            "tts_model": "k2-fsa/OmniVoice",
+            "tts_voice": "female, british accent",
+        }
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_voice"] == {
+            "type": "choice",
+            "title": "TTS Prompt: female, british accent",
+            "selected": "female, british accent",
+            "models": [
+                ("", "Auto voice", True),
+                ("female, british accent", "Custom: female, british accent", True),
+                ("female, child", "Female, child", True),
+                ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
+                ("female, elderly, british accent", "Female, elderly, British", True),
+                ("female, young adult, whisper", "Female, young adult, whisper", True),
+                ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch", True),
+                ("female, low pitch, british accent", "Female, low pitch, British", True),
+                ("male, british accent", "Male, British", True),
+                ("female, whisper, british accent", "Female whisper, British", True),
+                ("female, high pitch, american accent", "Female, high pitch, American", True),
+                ("male, low pitch, american accent", "Male, low pitch, American", True),
+                ("configure_voice", "Set Custom TTS Prompt…", True),
+            ],
+        }
+
+    def test_handle_model_menu_none_surfaces_local_omnivoice_prompt_presets(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._tts_client = None
+        saved = {"tts_model": "k2-fsa/OmniVoice"}
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_voice"] == {
+            "type": "choice",
+            "title": "TTS Prompt: Auto voice",
+            "selected": "",
+            "models": [
+                ("", "Auto voice", True),
+                ("female, child", "Female, child", True),
+                ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
+                ("female, elderly, british accent", "Female, elderly, British", True),
+                ("female, young adult, whisper", "Female, young adult, whisper", True),
+                ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch", True),
+                ("female, low pitch, british accent", "Female, low pitch, British", True),
+                ("male, british accent", "Male, British", True),
+                ("female, whisper, british accent", "Female whisper, British", True),
+                ("female, high pitch, american accent", "Female, high pitch, American", True),
+                ("male, low pitch, american accent", "Male, low pitch, American", True),
+                ("configure_voice", "Set Custom TTS Prompt…", True),
+            ],
+        }
+
+    def test_handle_model_menu_none_marks_missing_sidecar_voice_discovery(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_client._model_id = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+        d._tts_client._voice = "casual_female"
+        d._tts_backend = "sidecar"
+        d._tts_sidecar_url = "http://other-box:9001"
+        d._discover_tts_sidecar_models = MagicMock(
+            return_value=[
+                ("mlx-community/Voxtral-4B-TTS-2603-mlx-4bit", "Voxtral 4B (4-bit)", True)
+            ]
+        )
+        d._discover_tts_sidecar_voices = MagicMock(return_value=[])
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_voice"] == {
+            "type": "toggle",
+            "title": "TTS Voice: casual_female [sidecar /v1/voices needed]",
+            "items": [
+                ("voice_discovery_unavailable", "Voice discovery unavailable on this sidecar", False, False),
+                ("configure_voice", "Set TTS Voice…", False, True),
+            ],
+        }
+
+    def test_build_tts_client_local_uses_saved_preferences_without_env(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._local_inference_lock = object()
+        saved = {
+            "tts_voice": "calm_female",
+            "tts_model": "mlx-community/Kokoro-82M-bf16",
+        }
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        with patch.object(main_module, "TTSClient") as MockTTS:
+            result = d._build_tts_client()
+
+        MockTTS.assert_called_once_with(
+            model_id="mlx-community/Kokoro-82M-bf16",
+            voice="calm_female",
+            gpu_lock=d._local_inference_lock,
+        )
+        assert result is MockTTS.return_value
+
+    def test_build_tts_client_local_omnivoice_without_voice_skips_startup_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._local_inference_lock = object()
+        saved = {"tts_model": "k2-fsa/OmniVoice"}
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        with patch.object(main_module, "TTSClient") as MockTTS:
+            result = d._build_tts_client()
+
+        MockTTS.assert_not_called()
+        assert result is None
 
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
@@ -1594,6 +1776,46 @@ class TestDualModelConfiguration:
         d._menubar.set_status_text.assert_called_with("Assistant sidecar URL saved")
         d._relaunch.assert_not_called()
 
+    def test_selecting_tts_voice_auto_clears_local_omnivoice_prompt(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_client._voice = "female, british accent"
+        d._save_preference = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        d._handle_model_menu_action(("tts_voice", ""))
+
+        d._save_preference.assert_called_once_with("tts_voice", "")
+        d._relaunch.assert_called_once_with()
+
+    def test_configuring_local_omnivoice_prompt_surfaces_upstream_lexicon_help(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+        d._tts_backend = "local"
+        d._load_preference = lambda key: {"tts_model": "k2-fsa/OmniVoice"}.get(key)
+
+        alert = MagicMock()
+        alert.runModal.return_value = 1001
+        field = MagicMock()
+        field.stringValue.return_value = ""
+        main_module.NSAlert.new.return_value = alert
+        main_module.NSTextField.alloc.return_value.initWithFrame_.return_value = field
+
+        d._configure_tts_voice()
+
+        alert.setMessageText_.assert_called_once_with("TTS Prompt")
+        informative_text = alert.setInformativeText_.call_args.args[0]
+        assert "Gender: female, male" in informative_text
+        assert "Age: child, young adult, middle-aged, elderly" in informative_text
+        assert "Pitch: very low pitch, low pitch, high pitch, very high pitch" in informative_text
+        assert "Style: whisper" in informative_text
+        assert "English accent: american accent, british accent, indian accent" in informative_text
+        assert "female, low pitch, british accent" in informative_text
+
     def test_init_prefers_persisted_sidecar_backend_over_launcher_default_local_url(
         self, main_module, monkeypatch
     ):
@@ -1968,6 +2190,18 @@ class TestWarmupContract:
         d._overlay.hide.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         mock_phase.assert_called_with("app.ready")
+
+    def test_warmup_success_does_not_start_tts_warmup(
+        self, main_module, monkeypatch
+    ):
+        """Startup must not warm TTS, because that can starve transcription on local MLX."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            d.clientWarmupSucceeded_(None)
+
+        mock_thread_cls.assert_not_called()
 
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""
@@ -2744,6 +2978,24 @@ class TestCommandCallbacks:
         assert d._command_tool_used_tts is True
         d._tts_client.speak.assert_called_once_with("hello world")
 
+    def test_tool_executor_lazily_builds_tts_client_for_read_aloud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._tts_client = None
+        built_tts = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=built_tts)
+
+        executor = d._make_tool_executor()
+        result = executor("read_aloud", {"source_ref": "literal:hello world"})
+
+        d._ensure_tts_client.assert_called_once_with(allow_default_voice=True)
+        built_tts.speak.assert_called_once_with("hello world")
+        assert result == "Speaking: hello world"
+        assert d._command_tool_used_tts is True
+
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
@@ -2805,24 +3057,6 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called_with("first")
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
-
-    def test_command_complete_finish_failure_hides_glow(
-        self, main_module, monkeypatch, caplog
-    ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_overlay = MagicMock()
-        d._command_overlay.finish.side_effect = RuntimeError("finish")
-        d._transcription_token = 1
-        d._transcribing = True
-        d._tts_client = MagicMock()
-
-        with caplog.at_level(logging.ERROR):
-            d.commandComplete_({"token": 1, "response": "Hello there"})
-
-        assert d._transcribing is False
-        d._tts_client.speak_async.assert_not_called()
-        d._glow.hide.assert_called()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         assert "Command overlay finish failed" in caplog.text
 
     def test_tts_amplitude_update_failure_is_suppressed(
@@ -3027,29 +3261,6 @@ class TestShortShiftHold:
         d._command_overlay.finish.assert_not_called()
         d._overlay.show_tray.assert_called_once()
 
-    def test_tray_toggle_command_overlay_bypasses_tray_insert(
-        self, main_module, monkeypatch
-    ):
-        """A tray-visible space-first Enter chord should toggle assistant UI, not insert tray text."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._capture.stop.return_value = b""
-        d._tray_active = True
-        d._detector.tray_active = True
-        d._tray_stack = ["previous text"]
-        d._command_client = MagicMock()
-        d._command_client.history = [("hello", "world")]
-        d._command_overlay = MagicMock(_visible=False)
-
-        d._on_hold_end(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
-
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        d._overlay.show_tray.assert_not_called()
-
     def test_tray_enter_first_release_sends_current_entry_to_assistant(
         self, main_module, monkeypatch
     ):
@@ -3070,33 +3281,6 @@ class TestShortShiftHold:
 
         d._send_text_as_command.assert_called_once_with("previous text")
         d._overlay.show_tray.assert_not_called()
-
-    def test_tray_toggle_command_overlay_preserves_existing_tray_entry(
-        self, main_module, monkeypatch
-    ):
-        """Toggling assistant UI from tray must not consume or delete the tray entry."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._tray_active = True
-        d._detector.tray_active = True
-        d._tray_stack = ["previous text"]
-        d._tray_index = 0
-        d._recovery_text = "previous text"
-        d._detector._shift_at_press = False
-        d._detector._shift_latched = False
-        d._command_client = MagicMock()
-        d._command_client.history = [("hello", "world")]
-        d._command_overlay = MagicMock(_visible=False)
-        d._capture.stop.return_value = b""
-
-        d._on_hold_start()
-        d._on_hold_end(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
-
-        assert d._tray_stack == ["previous text"]
-        assert d._tray_index == 0
 
     def test_short_shift_enter_hold_dismisses_visible_command_overlay(
         self, main_module, monkeypatch
@@ -3119,8 +3303,11 @@ class TestShortShiftHold:
         d._overlay.show_tray.assert_called_once()
 
 
-class TestCommandOverlayDismissRecallCycle:
-    """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
+class _RemovedCommandOverlayDismissRecallCycle:
+    """REMOVED: Old Space+Enter chord toggle tests. Replaced by double-tap Enter.
+
+    Kept as a dead class marker so git blame shows what was here.
+    Tests in TestDoubleTapGestures (test_input_tap.py) cover the new behavior."""
 
     def test_enter_empty_tap_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
         """An earlier Enter tap should not recall when the overlay is hidden."""
