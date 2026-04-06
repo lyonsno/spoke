@@ -82,34 +82,51 @@ class ToposRowView(NSView):
         view.setWantsLayer_(True)
 
         layer = view.layer()
-        layer.setCornerRadius_(10.0)
-        layer.setMasksToBounds_(True)
+        # No masksToBounds — let frost bleed, the mask handles the shape
+        layer.setMasksToBounds_(False)
 
-        # Frosted glass effect — NSVisualEffectView gives the milky,
-        # behind-window blur that makes the overlay bubbles look luminous.
+        # Frosted glass — oversized so the fade zone extends beyond the
+        # nominal card bounds. Adjacent cards' frost zones overlap and
+        # composite additively (more intense where they meet).
+        _BLEED = 12  # px of frost beyond card bounds on each side
         frost = NSVisualEffectView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, width, _ROW_HEIGHT)
+            NSMakeRect(-_BLEED, -_BLEED, width + _BLEED * 2, _ROW_HEIGHT + _BLEED * 2)
         )
-        frost.setMaterial_(4)  # NSVisualEffectMaterialDark (behind-window dark)
+        frost.setMaterial_(4)  # NSVisualEffectMaterialDark
         frost.setBlendingMode_(1)  # NSVisualEffectBlendingModeBehindWindow
-        frost.setState_(1)  # NSVisualEffectStateActive — always frosted
+        frost.setState_(1)  # NSVisualEffectStateActive
         frost.setWantsLayer_(True)
-        frost.layer().setCornerRadius_(10.0)
-        frost.layer().setMasksToBounds_(True)
 
-        # Soft edge falloff — linear vertical gradient mask fades the frost
-        # at top and bottom edges. Left/right stay sharp (text needs to read).
-        # This avoids the radial mask inversion issue and clips cleanly.
-        _CARD_FADE = 0.12  # 12% fade at top and bottom
-        edge_mask = Quartz.CAGradientLayer.layer()
-        edge_mask.setFrame_(((0, 0), (width, _ROW_HEIGHT)))
+        # Four-sided soft falloff — render a mask image with alpha falloff
+        # on all edges using two composited linear gradients.
+        fw = width + _BLEED * 2
+        fh = _ROW_HEIGHT + _BLEED * 2
+        _FADE_PX = 14.0  # fade distance in pixels
+        hfrac = _FADE_PX / fw  # horizontal fade fraction
+        vfrac = _FADE_PX / fh  # vertical fade fraction
+
+        # Horizontal mask
+        h_mask = Quartz.CAGradientLayer.layer()
+        h_mask.setFrame_(((0, 0), (fw, fh)))
         opaque = Quartz.CGColorCreateGenericRGB(0, 0, 0, 1)
         clear = Quartz.CGColorCreateGenericRGB(0, 0, 0, 0)
-        edge_mask.setColors_([clear, opaque, opaque, clear])
-        edge_mask.setLocations_([0.0, _CARD_FADE, 1.0 - _CARD_FADE, 1.0])
-        edge_mask.setStartPoint_((0.5, 0.0))
-        edge_mask.setEndPoint_((0.5, 1.0))
-        frost.layer().setMask_(edge_mask)
+        h_mask.setColors_([clear, opaque, opaque, clear])
+        h_mask.setLocations_([0.0, hfrac, 1.0 - hfrac, 1.0])
+        h_mask.setStartPoint_((0.0, 0.5))
+        h_mask.setEndPoint_((1.0, 0.5))
+
+        # Vertical mask (as sublayer of h_mask to multiply)
+        v_mask = Quartz.CAGradientLayer.layer()
+        v_mask.setFrame_(((0, 0), (fw, fh)))
+        v_mask.setColors_([clear, opaque, opaque, clear])
+        v_mask.setLocations_([0.0, vfrac, 1.0 - vfrac, 1.0])
+        v_mask.setStartPoint_((0.5, 0.0))
+        v_mask.setEndPoint_((0.5, 1.0))
+
+        # Compose: use h_mask as the frost mask, and v_mask as h_mask's own mask.
+        # This multiplies the two gradients → four-sided falloff.
+        h_mask.setMask_(v_mask)
+        frost.layer().setMask_(h_mask)
 
         view.addSubview_(frost)
 
@@ -546,7 +563,7 @@ class TerraformHUD(NSObject):
 
         scroll_bounds = self._scroll_view.bounds()
         width = scroll_bounds.size.width - 8  # edge padding
-        row_stride = _ROW_HEIGHT - 4  # overlap slightly so fade zones blend
+        row_stride = _ROW_HEIGHT + 2  # slight gap — frost bleed fills it
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
             scroll_bounds.size.height,
