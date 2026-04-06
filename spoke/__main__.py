@@ -1059,6 +1059,17 @@ class SpokeAppDelegate(NSObject):
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
 
+        # Warn if cloud preview is active — each partial is a paid API call.
+        if getattr(self, "_preview_backend", "local") == "cloud":
+            overlay = getattr(self, "_overlay", None)
+            if overlay is not None:
+                overlay.flash_notice(
+                    "Cloud preview active\n"
+                    "Partials sent every 3 seconds — each is a charged API call.",
+                    hold=4.0,
+                    fade=2.0,
+                )
+
         # Register loaded models with the heartbeat manager.
         self._register_loaded_models()
         self._start_heartbeat_timer()

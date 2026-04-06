@@ -1118,6 +1118,33 @@ class TranscriptionOverlay(NSObject):
             text[:50] if text else "",
         )
 
+    def flash_notice(self, text: str, hold: float = 3.0, fade: float = 1.5) -> None:
+        """Show a transient notice on the overlay, then auto-fade.
+
+        The overlay appears with the given text, holds for *hold* seconds,
+        then fades out over *fade* seconds. No click required to dismiss.
+        """
+        if self._window is None:
+            return
+        self.show()
+        self.set_text(text)
+        self._cancel_notice_timer()
+        self._notice_fade = fade
+
+        self._notice_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            hold, self, "noticeTimerDone:", None, False,
+        )
+
+    def noticeTimerDone_(self, timer) -> None:
+        self._notice_timer = None
+        fade = getattr(self, "_notice_fade", 1.5)
+        self.hide(fade_duration=fade)
+
+    def _cancel_notice_timer(self) -> None:
+        if getattr(self, "_notice_timer", None) is not None:
+            self._notice_timer.invalidate()
+            self._notice_timer = None
+
     def flash_tray_capture(self, text: str, *, owner: str = "user") -> None:
         """Briefly acknowledge a silent tray save, then vanish."""
         if self._window is None:
