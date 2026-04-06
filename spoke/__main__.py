@@ -156,7 +156,122 @@ _TTS_MODELS = [
     ("k2-fsa/OmniVoice", "OmniVoice"),
 ]
 
-_OMNIVOICE_PROMPT_PRESETS = [
+# ── Per-model voice presets ──────────────────────────────────────
+# Each entry maps a model ID (lowercased) to a list of (voice_value, label)
+# tuples.  The menu shows these as a choice picker.  Models not listed here
+# fall back to the manual "Set TTS Voice…" text field.
+
+_VOXTRAL_VOICES: list[tuple[str, str]] = [
+    ("casual_female", "Casual Female"),
+    ("casual_male", "Casual Male"),
+    ("cheerful_female", "Cheerful Female"),
+    ("neutral_female", "Neutral Female"),
+    ("neutral_male", "Neutral Male"),
+    ("fr_female", "French Female"),
+    ("fr_male", "French Male"),
+    ("es_female", "Spanish Female"),
+    ("es_male", "Spanish Male"),
+    ("de_female", "German Female"),
+    ("de_male", "German Male"),
+    ("it_female", "Italian Female"),
+    ("it_male", "Italian Male"),
+    ("pt_female", "Portuguese Female"),
+    ("pt_male", "Portuguese Male"),
+    ("nl_female", "Dutch Female"),
+    ("nl_male", "Dutch Male"),
+    ("ar_male", "Arabic Male"),
+    ("hi_female", "Hindi Female"),
+    ("hi_male", "Hindi Male"),
+]
+
+_KOKORO_VOICES: list[tuple[str, str]] = [
+    ("af_heart", "Heart (American F)"),
+    ("af_alloy", "Alloy (American F)"),
+    ("af_aoede", "Aoede (American F)"),
+    ("af_bella", "Bella (American F)"),
+    ("af_jessica", "Jessica (American F)"),
+    ("af_kore", "Kore (American F)"),
+    ("af_nicole", "Nicole (American F)"),
+    ("af_nova", "Nova (American F)"),
+    ("af_river", "River (American F)"),
+    ("af_sarah", "Sarah (American F)"),
+    ("af_sky", "Sky (American F)"),
+    ("am_adam", "Adam (American M)"),
+    ("am_echo", "Echo (American M)"),
+    ("am_eric", "Eric (American M)"),
+    ("am_fenrir", "Fenrir (American M)"),
+    ("am_liam", "Liam (American M)"),
+    ("am_michael", "Michael (American M)"),
+    ("am_onyx", "Onyx (American M)"),
+    ("am_puck", "Puck (American M)"),
+    ("bf_alice", "Alice (British F)"),
+    ("bf_emma", "Emma (British F)"),
+    ("bf_isabella", "Isabella (British F)"),
+    ("bf_lily", "Lily (British F)"),
+    ("bm_daniel", "Daniel (British M)"),
+    ("bm_fable", "Fable (British M)"),
+    ("bm_george", "George (British M)"),
+    ("bm_lewis", "Lewis (British M)"),
+    ("ff_siwis", "Siwis (French F)"),
+    ("ef_dora", "Dora (Spanish F)"),
+    ("em_alex", "Alex (Spanish M)"),
+    ("hf_alpha", "Alpha (Hindi F)"),
+    ("hf_beta", "Beta (Hindi F)"),
+    ("hm_omega", "Omega (Hindi M)"),
+    ("hm_psi", "Psi (Hindi M)"),
+    ("if_sara", "Sara (Italian F)"),
+    ("im_nicola", "Nicola (Italian M)"),
+    ("jf_alpha", "Alpha (Japanese F)"),
+    ("jm_kumo", "Kumo (Japanese M)"),
+    ("pf_dora", "Dora (Portuguese F)"),
+    ("pm_alex", "Alex (Portuguese M)"),
+    ("zf_xiaobei", "Xiaobei (Chinese F)"),
+    ("zf_xiaoni", "Xiaoni (Chinese F)"),
+    ("zm_yunjian", "Yunjian (Chinese M)"),
+    ("zm_yunxi", "Yunxi (Chinese M)"),
+]
+
+_VIBEVOICE_VOICES: list[tuple[str, str]] = [
+    ("en-Emma_woman", "Emma (English F)"),
+    ("en-Grace_woman", "Grace (English F)"),
+    ("en-Carter_man", "Carter (English M)"),
+    ("en-Davis_man", "Davis (English M)"),
+    ("en-Frank_man", "Frank (English M)"),
+    ("en-Mike_man", "Mike (English M)"),
+    ("fr-Spk1_woman", "French F"),
+    ("fr-Spk0_man", "French M"),
+    ("de-Spk1_woman", "German F"),
+    ("de-Spk0_man", "German M"),
+    ("it-Spk0_woman", "Italian F"),
+    ("it-Spk1_man", "Italian M"),
+    ("sp-Spk0_woman", "Spanish F"),
+    ("sp-Spk1_man", "Spanish M"),
+    ("pt-Spk0_woman", "Portuguese F"),
+    ("pt-Spk1_man", "Portuguese M"),
+    ("nl-Spk1_woman", "Dutch F"),
+    ("nl-Spk0_man", "Dutch M"),
+    ("jp-Spk1_woman", "Japanese F"),
+    ("jp-Spk0_man", "Japanese M"),
+    ("kr-Spk0_woman", "Korean F"),
+    ("kr-Spk1_man", "Korean M"),
+    ("pl-Spk1_woman", "Polish F"),
+    ("pl-Spk0_man", "Polish M"),
+    ("in-Samuel_man", "Samuel (Hindi M)"),
+]
+
+_QWEN3_TTS_VOICES: list[tuple[str, str]] = [
+    ("serena", "Serena"),
+    ("vivian", "Vivian"),
+    ("ryan", "Ryan"),
+    ("aiden", "Aiden"),
+    ("eric", "Eric"),
+    ("dylan", "Dylan"),
+    ("ono_anna", "Ono Anna"),
+    ("sohee", "Sohee"),
+    ("uncle_fu", "Uncle Fu"),
+]
+
+_OMNIVOICE_PROMPT_PRESETS: list[tuple[str, str]] = [
     ("", "Auto voice"),
     ("female, child", "Female, child"),
     ("male, high pitch, indian accent", "Male, high pitch, Indian"),
@@ -168,6 +283,16 @@ _OMNIVOICE_PROMPT_PRESETS = [
     ("female, whisper, british accent", "Female whisper, British"),
     ("female, high pitch, american accent", "Female, high pitch, American"),
     ("male, low pitch, american accent", "Male, low pitch, American"),
+]
+
+# Model ID (lowercased) → voice presets.  Checked with str.contains so
+# partial model IDs work (e.g. "voxtral" matches all Voxtral quants).
+_MODEL_VOICE_PRESETS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("voxtral", _VOXTRAL_VOICES),
+    ("kokoro", _KOKORO_VOICES),
+    ("vibevoice", _VIBEVOICE_VOICES),
+    ("qwen3-tts", _QWEN3_TTS_VOICES),
+    ("omnivoice", _OMNIVOICE_PROMPT_PRESETS),
 ]
 
 _OMNIVOICE_PROMPT_LEXICON = {
@@ -184,23 +309,40 @@ def _is_omnivoice_tts_model(model_id: str | None) -> bool:
     return isinstance(model_id, str) and model_id.strip().lower() == "k2-fsa/omnivoice"
 
 
-def _omnivoice_prompt_label(prompt: str) -> str:
-    for preset_prompt, label in _OMNIVOICE_PROMPT_PRESETS:
-        if prompt == preset_prompt:
-            return label
-    return prompt or "Auto voice"
+def _voice_presets_for_model(model_id: str | None) -> list[tuple[str, str]] | None:
+    """Return the voice presets for a model, or None if no presets exist."""
+    if not model_id:
+        return None
+    lowered = model_id.lower()
+    for key, presets in _MODEL_VOICE_PRESETS:
+        if key in lowered:
+            return presets
+    return None
 
 
-def _omnivoice_prompt_choices(current_prompt: str) -> list[tuple[str, str, bool]]:
-    choices = [
-        (prompt, label, True) for prompt, label in _OMNIVOICE_PROMPT_PRESETS
-    ]
-    if current_prompt and all(
-        prompt != current_prompt for prompt, _label in _OMNIVOICE_PROMPT_PRESETS
-    ):
-        choices.insert(1, (current_prompt, f"Custom: {current_prompt}", True))
-    choices.append(("configure_voice", "Set Custom TTS Prompt…", True))
+def _voice_choices_for_model(
+    model_id: str | None, current_voice: str
+) -> list[tuple[str, str, bool]] | None:
+    """Build a choice list for the voice menu, or None if no presets exist."""
+    presets = _voice_presets_for_model(model_id)
+    if presets is None:
+        return None
+    choices = [(voice, label, True) for voice, label in presets]
+    # If current voice isn't in presets, insert it as a custom entry
+    if current_voice and all(voice != current_voice for voice, _label in presets):
+        choices.insert(0, (current_voice, f"Custom: {current_voice}", True))
+    choices.append(("configure_voice", "Set Custom Voice…", True))
     return choices
+
+
+def _voice_preset_label(model_id: str | None, voice: str) -> str:
+    """Return a human label for the current voice, falling back to the raw value."""
+    presets = _voice_presets_for_model(model_id)
+    if presets:
+        for preset_voice, label in presets:
+            if voice == preset_voice:
+                return label
+    return voice or "(not set)"
 
 
 def _omnivoice_prompt_lexicon_text() -> str:
@@ -2739,11 +2881,16 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
-                prompt_mode = tts_backend != "sidecar" and _is_omnivoice_tts_model(current_tts_model)
+                # Try sidecar discovery first, then local presets
                 if tts_backend == "sidecar":
                     sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
                 else:
                     sidecar_voices = []
+                local_choices = (
+                    _voice_choices_for_model(current_tts_model, current_voice)
+                    if not sidecar_voices
+                    else None
+                )
                 if sidecar_voices:
                     voice_models = [
                         (v, v, v == current_voice) for v in sidecar_voices
@@ -2753,12 +2900,13 @@ class SpokeAppDelegate(NSObject):
                         "selected": current_voice,
                         "models": voice_models,
                     }
-                elif prompt_mode:
+                elif local_choices is not None:
+                    voice_label = _voice_preset_label(current_tts_model, current_voice)
                     state["tts_voice"] = {
                         "type": "choice",
-                        "title": f"TTS Prompt: {_omnivoice_prompt_label(current_voice)}",
+                        "title": f"TTS Voice: {voice_label}",
                         "selected": current_voice,
-                        "models": _omnivoice_prompt_choices(current_voice),
+                        "models": local_choices,
                     }
                 else:
                     title = f"TTS Voice: {current_voice or '(not set)'}"
@@ -3781,20 +3929,21 @@ class SpokeAppDelegate(NSObject):
             # Reset voice when switching between incompatible model families
             # (e.g. OmniVoice prompts are not valid Voxtral voice names and
             # vice versa).
-            was_omnivoice = _is_omnivoice_tts_model(current_model)
-            now_omnivoice = _is_omnivoice_tts_model(model_id)
-            if was_omnivoice != now_omnivoice:
-                from spoke.tts import _default_voice_for_model
-                default_voice = _default_voice_for_model(model_id)
-                if default_voice:
-                    payload["tts_voice"] = default_voice
+            # Reset voice when switching between models with different
+            # voice presets (e.g. Voxtral voices ≠ Kokoro voices ≠ OmniVoice
+            # prompts).  Set to the first preset of the new model.
+            old_presets = _voice_presets_for_model(current_model)
+            new_presets = _voice_presets_for_model(model_id)
+            if old_presets is not new_presets:
+                if new_presets:
+                    payload["tts_voice"] = new_presets[0][0]
                 else:
                     payload.pop("tts_voice", None)
                 logger.info(
-                    "Reset tts_voice to %r on model family switch (%s -> %s)",
-                    default_voice,
-                    "omnivoice" if was_omnivoice else "standard",
-                    "omnivoice" if now_omnivoice else "standard",
+                    "Reset tts_voice to %r on model switch (%s -> %s)",
+                    payload.get("tts_voice"),
+                    current_model,
+                    model_id,
                 )
         if not self._save_preferences(payload):
             logger.warning(
@@ -3837,12 +3986,12 @@ class SpokeAppDelegate(NSObject):
                 self._load_preference("tts_model")
                 or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
             )
-        prompt_mode = getattr(self, "_tts_backend", "local") != "sidecar" and _is_omnivoice_tts_model(current_model)
+        is_omnivoice = _is_omnivoice_tts_model(current_model) and getattr(self, "_tts_backend", "local") != "sidecar"
         alert = NSAlert.new()
-        alert.setMessageText_("TTS Prompt" if prompt_mode else "TTS Voice")
+        alert.setMessageText_("TTS Prompt" if is_omnivoice else "TTS Voice")
         alert.setInformativeText_(
             _omnivoice_prompt_lexicon_text()
-            if prompt_mode
+            if is_omnivoice
             else "Enter the voice name to use for TTS synthesis."
         )
         field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
