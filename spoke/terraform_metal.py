@@ -273,7 +273,7 @@ class TerraformCardRenderer:
         self._scroll_offset_y: float = 0.0
         self._corner_radius: float = 10.0
         self._fill_width: float = 2.5
-        self._interior_floor: float = 0.65
+        self._interior_floor: float = 0.45
         self._pixel_width: int = 1
         self._pixel_height: int = 1
 

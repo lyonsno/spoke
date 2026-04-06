@@ -53,10 +53,11 @@ logger = logging.getLogger(__name__)
 _PREFS_PATH = Path.home() / "Library" / "Application Support" / "Spoke" / "terraform_hud.json"
 
 # Refresh interval in seconds
-_REFRESH_INTERVAL = 2.0  # fast enough to re-assert window ordering after glow
+_REFRESH_INTERVAL = 5.0  # data check + Metal redraw only; view rebuild only on change
 
 # Visual constants
-_PANEL_WIDTH = 320
+_GLOW_MARGIN = 60  # extra margin on each side for outer glow spill
+_PANEL_WIDTH = 320 + _GLOW_MARGIN * 2
 _PANEL_HEIGHT = 900
 _ROW_HEIGHT = 60
 _PADDING = 8
@@ -74,7 +75,7 @@ _TEMP_COLORS = {
 _SDF_BASE_RGB = (0.50 * 0.6 + 0.5 * 0.4,
                  0.59 * 0.6 + 0.5 * 0.4,
                  0.84 * 0.6 + 0.5 * 0.4)  # ~40% saturation of (0.50, 0.59, 0.84)
-_SDF_CARD_ALPHA = 0.75  # per-card opacity
+_SDF_CARD_ALPHA = 0.55  # per-card opacity — translucent, not flat
 
 
 def _temp_fill_color(temperature: str | None) -> tuple[float, float, float]:
@@ -348,17 +349,21 @@ class TerraformHUD(NSObject):
         self._panel.contentView().setWantsLayer_(True)
         content_frame = self._panel.contentView().bounds()
 
+        # When Metal is active, the panel is wider for glow margin;
+        # inset the content area so text stays within the card bounds
+        inset = _GLOW_MARGIN if _METAL_OK else 0
+
         # Stats label at the top of the panel
         _STATS_HEIGHT = 20
-        stats_frame = NSMakeRect(8, content_frame.size.height - _STATS_HEIGHT,
-                                  content_frame.size.width - 16, _STATS_HEIGHT)
+        stats_frame = NSMakeRect(inset + 8, content_frame.size.height - _STATS_HEIGHT,
+                                  content_frame.size.width - inset * 2 - 16, _STATS_HEIGHT)
         self._stats_label = _make_label(
             "", stats_frame, size=10.0, bold=False,
             color=NSColor.colorWithWhite_alpha_(0.45, 1.0),
         )
         self._panel.contentView().addSubview_(self._stats_label)
 
-        # Scroll area below stats
+        # Scroll area — full width so Metal layer can extend into glow margins
         scroll_frame = NSMakeRect(0, 0, content_frame.size.width,
                                    content_frame.size.height - _STATS_HEIGHT)
         self._scroll_view = _ManualScrollView.alloc().initWithFrame_(scroll_frame)
@@ -563,8 +568,19 @@ class TerraformHUD(NSObject):
         if self._scroll_view is None:
             return
 
+        # Skip full view rebuild if topos data hasn't changed
+        topos_keys = [(t.id, t.temperature, t.status, t.tool) for t in self._topoi]
+        if topos_keys == getattr(self, '_last_topos_keys', None):
+            # Data unchanged — just redraw Metal if active
+            if self._metal_renderer is not None:
+                self._metal_renderer.draw_frame()
+            return
+        self._last_topos_keys = topos_keys
+
         scroll_bounds = self._scroll_view.bounds()
-        width = scroll_bounds.size.width - 8  # edge padding
+        inset = _GLOW_MARGIN if self._metal_renderer is not None else 0
+        # Card width: panel content minus glow margins and edge padding
+        card_width = scroll_bounds.size.width - inset * 2 - 8
         row_stride = _ROW_HEIGHT + 6
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
@@ -577,21 +593,21 @@ class TerraformHUD(NSObject):
         )
 
         if self._metal_renderer is not None:
-            # Metal SDF card surfaces — resize layer to match content
+            # Metal SDF card surfaces — layer covers full scroll area
             scale = getattr(self._scroll_view, '_backing_scale', 2.0)
             self._metal_renderer.set_geometry(
                 scroll_bounds.size.width, scroll_bounds.size.height, scale,
             )
 
-            # Build card info list with positions in pixel coordinates
+            # Build card info list — inset by glow margin
             cards = []
             for i, topos in enumerate(self._topoi):
                 y = total_height - (i + 1) * row_stride
                 cr, cg, cb = _temp_fill_color(topos.temperature)
                 cards.append(CardInfo(
-                    x=4.0 * scale,
+                    x=(inset + 4.0) * scale,
                     y=y * scale,
-                    width=width * scale,
+                    width=card_width * scale,
                     height=_ROW_HEIGHT * scale,
                     r=cr, g=cg, b=cb,
                     alpha=_SDF_CARD_ALPHA,
@@ -613,8 +629,8 @@ class TerraformHUD(NSObject):
 
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
-            row = ToposRowView.createWithTopos_width_(topos, width)
-            row.setFrameOrigin_((4, y))
+            row = ToposRowView.createWithTopos_width_(topos, card_width)
+            row.setFrameOrigin_((inset + 4, y))
             new_content.addSubview_(row)
 
         # Swap content — old view is fully removed and deallocated
