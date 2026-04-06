@@ -27,9 +27,8 @@ class TestOverlayTiming:
 
             overlay.update_text_amplitude(10.0)
 
-            _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
-            # Text is anchored at a fixed high alpha, not driven by amplitude
-            assert applied_alpha == pytest.approx(0.88)
+            layer_opacity = overlay._text_view.layer.return_value.setOpacity_.call_args.args[0]
+            assert layer_opacity == pytest.approx(0.88)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -96,9 +95,36 @@ class TestOverlayTiming:
             overlay.set_text("abc")
 
             assert any(
-                call.args == (0.0, 0.0, 0.0, 0.88)
+                call.args == (0.0, 0.0, 0.0, 1.0)
                 for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
             )
+            assert overlay._text_view.layer.return_value.setOpacity_.call_args.args[0] == pytest.approx(0.88)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_text_breathing_updates_layer_opacity_without_rebuilding_content(self, mock_pyobjc):
+        """Live breathing should modulate layer opacity, not rewrite the whole preview text every tick."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._visible = True
+            overlay._text_view = MagicMock()
+            overlay._typewriter_displayed = "hello"
+            overlay._brightness = 1.0
+            overlay._brightness_target = 1.0
+            overlay._text_amplitude = 0.0
+            overlay._set_text_view_content = MagicMock()
+            overlay._fill_layer = MagicMock()
+
+            overlay.update_text_amplitude(0.01)
+            overlay._set_text_view_content.reset_mock()
+            overlay._text_view.layer.return_value.setOpacity_.reset_mock()
+
+            overlay.update_text_amplitude(0.02)
+
+            overlay._set_text_view_content.assert_not_called()
+            overlay._text_view.layer.return_value.setOpacity_.assert_called()
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -336,8 +362,9 @@ class TestAdaptiveOverlayCompositing:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(0.0, immediate=True)
 
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._preview_text_colors(snap_polarity=True)
 
             # Text should be dark (dark text on light fill for dark backgrounds)
             color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
@@ -406,13 +433,14 @@ class TestAdaptiveOverlayCompositing:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
 
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._preview_text_colors(snap_polarity=True)
 
             text_r, text_g, text_b, text_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
             # White text on dark fill for light backgrounds
             assert text_r > 0.7 and text_g > 0.7 and text_b > 0.7
-            assert text_alpha > 0.5
+            assert text_alpha == pytest.approx(1.0)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -440,8 +468,9 @@ class TestAdaptiveOverlayCompositing:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
 
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._preview_text_colors(snap_polarity=True)
 
             text_r, text_g, text_b, _ = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
             assert text_r == pytest.approx(1.0)
@@ -489,16 +518,18 @@ class TestAdaptiveOverlayCompositing:
             # Dark background → light fill → dark text
             overlay = self._make_overlay(mod)
             overlay.set_brightness(0.0, immediate=True)
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._preview_text_colors(snap_polarity=True)
             text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
             assert text_r < 0.1  # dark text
 
             # Light background → dark fill → white text (ease-out snap converges)
             overlay.set_brightness(1.0, immediate=True)
             for _ in range(20):
-                mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
                 overlay.update_text_amplitude(10.0)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._preview_text_colors(snap_polarity=True)
             text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
             assert text_r > 0.9  # white text
         finally:

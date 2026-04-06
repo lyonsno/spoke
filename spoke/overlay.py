@@ -1146,15 +1146,56 @@ class TranscriptionOverlay(NSObject):
 
         self._text_lum = current_text_lum
         tr = tg = tb = current_text_lum
-        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, 1.0)
         ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
         ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             ontology_r,
             ontology_g,
             ontology_b,
-            text_alpha,
+            1.0,
         )
         return base_color, ontology_color
+
+    def _preview_text_style_signature(
+        self, text: str, *, snap_polarity: bool = False
+    ) -> tuple[tuple[float, ...], tuple[float, ...], str, bool]:
+        t = getattr(self, "_brightness", 0.0)
+
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+
+        if snap_polarity or not hasattr(self, "_text_lum"):
+            current_text_lum = target_text_lum
+        else:
+            current_text_lum = getattr(self, "_text_lum", target_text_lum)
+            _TEXT_SNAP_SPEED = 0.35
+            current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
+
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
+        filter_name = _DARK_TEXT_CUTOUT_FILTER if t <= 0.15 else None
+        return (
+            (round(current_text_lum, 4),),
+            (round(ontology_r, 4), round(ontology_g, 4), round(ontology_b, 4)),
+            text,
+            filter_name is not None,
+        )
+
+    def _set_text_layer_opacity(self, opacity: float) -> None:
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return
+        if hasattr(text_view, "setWantsLayer_"):
+            text_view.setWantsLayer_(True)
+        layer = text_view.layer() if hasattr(text_view, "layer") else None
+        if layer is None or not hasattr(layer, "setOpacity_"):
+            return
+        target = min(max(float(opacity), 0.0), 1.0)
+        last = getattr(self, "_text_layer_opacity", None)
+        if last is not None and abs(last - target) < 1e-4:
+            return
+        self._text_layer_opacity = target
+        layer.setOpacity_(target)
 
     def _apply_text_compositing_mode(self, brightness: float) -> None:
         """Punch preview text through dark fills and use normal text on bright fills."""
@@ -1177,9 +1218,17 @@ class TranscriptionOverlay(NSObject):
         if text is None:
             text = getattr(self, "_typewriter_displayed", "")
         self._apply_text_compositing_mode(getattr(self, "_brightness", 0.0))
+        scaled = min(getattr(self, "_text_amplitude", 0.0) / _TEXT_AMP_SATURATION, 1.0)
+        t = getattr(self, "_brightness", 0.0)
+        text_alpha = _lerp(0.80, 1.0, scaled) if t > 0.15 else 0.88
+        self._set_text_layer_opacity(text_alpha)
+        signature = self._preview_text_style_signature(text, snap_polarity=snap_polarity)
+        if getattr(self, "_preview_text_style_sig", None) == signature:
+            return
         base_color, ontology_color = self._preview_text_colors(
             snap_polarity=snap_polarity
         )
+        self._preview_text_style_sig = signature
         self._set_text_view_content(
             text,
             base_color=base_color,
