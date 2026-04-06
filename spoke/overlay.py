@@ -165,7 +165,6 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 _OVERLAY_WIDTH = 600.0
-_OVERLAY_MIN_WIDTH = 320.0
 _OVERLAY_HEIGHT = 80.0
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_PREVIEW_OVERLAY_BOTTOM_MARGIN", 80.0)
 _OVERLAY_CORNER_RADIUS = 16.0
@@ -387,14 +386,6 @@ def _max_overlay_height(screen_height: float) -> float:
     assistant_gap_cap = _COMMAND_OVERLAY_BOTTOM_MARGIN - _OVERLAY_BOTTOM_MARGIN
     capped_height = min(_OVERLAY_MAX_HEIGHT, assistant_gap_cap)
     return max(_OVERLAY_HEIGHT, capped_height)
-
-
-def _overlay_content_width_for_text_bounds(text_width: float) -> float:
-    """Return a content width that fits short preview text without shrinking to nothing."""
-    if text_width <= 0.0:
-        return _OVERLAY_WIDTH
-    desired = float(text_width) + 48.0
-    return min(max(desired, _OVERLAY_MIN_WIDTH), _OVERLAY_WIDTH)
 
 
 # ── distance-field ridge ────────────────────────────────────
@@ -1769,7 +1760,7 @@ class TranscriptionOverlay(NSObject):
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
-            new_width = _overlay_content_width_for_text_bounds(text_rect.size.width)
+            new_width = _OVERLAY_WIDTH
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()
