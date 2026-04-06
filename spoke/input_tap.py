@@ -584,6 +584,14 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
+            # Grace-window intercept: Enter during idle grace period cancels
+            # the pending insert and toggles the overlay instead.
+            grace_cb = getattr(det, '_on_enter_cancel_grace', None)
+            if grace_cb is not None and det._state == _State.IDLE:
+                det._enter_held = False
+                logger.info("Enter during grace window — cancelling insert")
+                grace_cb()
+                return None
             if det._state == _State.WAITING:
                 if not getattr(det, 'tray_active', False):
                     # Enter during WAITING (before hold threshold) = toggle

@@ -157,14 +157,15 @@ class TestTranscriptionToken:
         assert d._transcribing is True
 
     def test_current_token_is_accepted(self, main_module, monkeypatch):
-        """Result with matching token should be injected."""
+        """Result with matching token should be injected after grace window."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcription_token = 5
         d._transcribing = True
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
-            # Fire the deferred inject timer callback
+            # Fire the grace window timer, then the deferred inject timer
+            d.graceTimerFired_(None)
             d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()

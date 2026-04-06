@@ -1481,8 +1481,10 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
+    _INSERT_GRACE_S = 0.35  # grace window before auto-insert after transcription
+
     def transcriptionComplete_(self, payload: dict) -> None:
-        """Main thread: inject transcribed text at cursor."""
+        """Main thread: inject transcribed text at cursor (with grace window)."""
         if payload["token"] != self._transcription_token:
             logger.info("Discarding stale transcription (token %d)", payload["token"])
             return
@@ -1490,13 +1492,49 @@ class SpokeAppDelegate(NSObject):
         text = payload["text"]
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
-            logger.info("Injected: %r (%.0fms)", text, elapsed_ms)
-            self._inject_result_text(text, "Pasted!")
+            logger.info("Transcribed: %r (%.0fms) — starting insert grace window", text, elapsed_ms)
+            self._grace_pending_text = text
+            # Arm the Enter-cancels-insert callback on the detector
+            self._detector._on_enter_cancel_grace = self._cancel_grace_insert
+            # Start shrink wind-up animation
+            if self._overlay is not None:
+                self._overlay.start_insert_windup()
+            # Start grace timer — Enter during this window cancels the insert
+            from Foundation import NSTimer
+            self._grace_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                self._INSERT_GRACE_S, self, "graceTimerFired:", None, False
+            )
             return
         if self._overlay is not None:
             self._overlay.hide()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def graceTimerFired_(self, timer) -> None:
+        """Grace window expired — proceed with insert."""
+        self._grace_timer = None
+        self._detector._on_enter_cancel_grace = None
+        text = getattr(self, "_grace_pending_text", None)
+        self._grace_pending_text = None
+        if text:
+            logger.info("Grace window expired — injecting: %r", text)
+            self._inject_result_text(text, "Pasted!")
+
+    def _cancel_grace_insert(self) -> None:
+        """Cancel a pending grace-window insert (Enter arrived during window)."""
+        if getattr(self, "_grace_timer", None) is not None:
+            self._grace_timer.invalidate()
+            self._grace_timer = None
+        self._detector._on_enter_cancel_grace = None
+        text = getattr(self, "_grace_pending_text", None)
+        self._grace_pending_text = None
+        if text:
+            logger.info("Grace insert cancelled — redirecting to overlay toggle")
+            # Add to tray so the transcription isn't lost
+            self._add_tray_entry(text, owner="user", activate=False)
+        if self._overlay is not None:
+            self._overlay.cancel_insert_windup()
+        self._toggle_command_overlay()
 
     def transcriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle transcription error."""
