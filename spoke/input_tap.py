@@ -127,11 +127,9 @@ class SpacebarHoldDetector(NSObject):
         # forwarding a space character, and shift gestures route to
         # tray navigation callbacks.
         self.tray_active = False
-        # Command overlay suppression — set by the delegate when the
-        # command overlay is visible.  When True, Enter is suppressed.
+        # Tracks whether the command overlay is visible — used by the
+        # delegate for toggle logic but no longer drives event suppression.
         self.command_overlay_active = False
-        self._command_overlay_just_dismissed = False
-        self._on_command_overlay_dismiss: Callable[[], None] | None = None
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -334,22 +332,9 @@ class SpacebarHoldDetector(NSObject):
             enter_held = getattr(self, '_enter_held', False)
             self._shift_latched = False
             self._enter_latched = False
-            if (
-                getattr(self, '_command_overlay_just_dismissed', False)
-                and not shift_held
-                and not enter_held
-            ):
-                # A tap that just dismissed the assistant overlay must not
-                # immediately fall through into tray insertion.
-                pass
-            elif enter_held:
-                # Even with the tray visible, space released first while Enter
-                # remains down is the assistant-overlay toggle chord.
-                self._on_hold_end(
-                    shift_held=False,
-                    enter_held=False,
-                    toggle_command_overlay=True,
-                )
+            if enter_held:
+                # Space released while Enter held = assistant send path
+                self._on_hold_end(shift_held=False, enter_held=True)
             elif getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
@@ -372,9 +357,6 @@ class SpacebarHoldDetector(NSObject):
             elif shift_held:
                 # Shift + quick tap = signal for tray recall (no space)
                 self._on_hold_end(shift_held=True, enter_held=enter_held)
-            elif getattr(self, '_command_overlay_just_dismissed', False):
-                # This tap was an overlay dismiss — suppress the space character.
-                pass
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
@@ -394,11 +376,7 @@ class SpacebarHoldDetector(NSObject):
             self._shift_latched = False
             self._enter_latched = False
             if enter_held:
-                self._on_hold_end(
-                    shift_held=shift_held,
-                    enter_held=False,
-                    toggle_command_overlay=True,
-                )
+                self._on_hold_end(shift_held=shift_held, enter_held=True)
             elif getattr(self, 'tray_active', False):
                 # Tray-intercepted holds are tray gestures, not recording-release
                 # decisions. Keep them on the tray path even if shift came up
@@ -429,15 +407,7 @@ class SpacebarHoldDetector(NSObject):
                 else:
                     # Spacebar tap without shift inserts at cursor unless Enter
                     # joined the latched exit chord, in which case it routes as
-                    # the command/send gesture.
-                    if enter_held:
-                        self._on_hold_end(
-                            shift_held=False,
-                            enter_held=False,
-                            toggle_command_overlay=True,
-                        )
-                    else:
-                        self._on_hold_end(shift_held=False, enter_held=False)
+                    self._on_hold_end(shift_held=False, enter_held=enter_held)
                 return True
 
             # Swallow the original release that let the user go hands-free,
@@ -459,10 +429,6 @@ class SpacebarHoldDetector(NSObject):
         """Called when spacebar has been held past the threshold."""
         self._hold_timer = None
         if self._state != _State.WAITING:
-            return
-        # If the spacebar keyDown already triggered an overlay dismiss,
-        # skip the hold start — the user is toggling visibility, not dictating.
-        if getattr(self, '_command_overlay_just_dismissed', False):
             return
         self._state = _State.RECORDING
         self._start_safety_timer()
@@ -611,19 +577,11 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if det._state == _State.LATCHED and getattr(det, '_latched_space_down', False):
                 det._enter_latched = True
                 return None  # suppress enter while a latched exit chord is active
-            # Suppress Enter while the command overlay is visible so it
-            # doesn't leak through to the underlying app.
-            if getattr(det, 'command_overlay_active', False):
-                return None
-            # Bare Enter otherwise belongs to the foreground app, even if the
-            # tray is visible. Assistant send remains a space-rooted chord.
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
-            # Clear _just_dismissed so the recall path works for fresh gestures.
-            det._command_overlay_just_dismissed = False
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True

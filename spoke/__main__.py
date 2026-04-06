@@ -348,7 +348,6 @@ class SpokeAppDelegate(NSObject):
         # on explicit space-rooted gestures instead of ambient key capture.
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
-        self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_double_tap_enter = self._toggle_command_overlay
@@ -886,18 +885,8 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay is not None
             and getattr(self._command_overlay, "_visible", False)
         )
-        self._detector.command_overlay_active = (
-            overlay_visible and not self._detector._command_overlay_just_dismissed
-        )
-        # Do NOT clear _just_dismissed here — it must survive until
-        # _on_hold_end so the empty-recording path can see it.
-        # Otherwise a slow dismiss tap (>400ms) would recall immediately.
-        logger.info(
-            "command_overlay_active -> %s (hold start, overlay_visible=%s), _just_dismissed=%s (preserved)",
-            self._detector.command_overlay_active,
-            overlay_visible,
-            self._detector._command_overlay_just_dismissed,
-        )
+        self._detector.command_overlay_active = overlay_visible
+        logger.info("command_overlay_active -> %s (hold start)", overlay_visible)
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -1217,7 +1206,7 @@ class SpokeAppDelegate(NSObject):
         self,
         shift_held: bool = False,
         enter_held: bool = False,
-        toggle_command_overlay: bool = False,
+        **_kwargs,  # absorb legacy toggle_command_overlay from any remaining callers
     ) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
             self._hold_rejected_during_warmup = False
@@ -1232,9 +1221,7 @@ class SpokeAppDelegate(NSObject):
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
-        if toggle_command_overlay:
-            pass
-        elif tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
+        if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
                 # Shift held + release spacebar from tray = navigate down (older)
@@ -1254,12 +1241,7 @@ class SpokeAppDelegate(NSObject):
             return
 
         # ── Normal recording end ──
-        logger.info(
-            "Hold ended — shift=%s enter=%s toggle_overlay=%s",
-            shift_held,
-            enter_held,
-            toggle_command_overlay,
-        )
+        logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
         self._preview_active = False
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
@@ -1269,15 +1251,9 @@ class SpokeAppDelegate(NSObject):
         if shift_held and elapsed < 0.8:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
-        elif toggle_command_overlay:
-            logger.info(
-                "Space-first enter chord — discarding %d bytes and toggling assistant overlay",
-                len(wav_bytes),
-            )
-            wav_bytes = b""
 
         # Glow/dimmer: hide immediately for text insertion
-        if not shift_held and not enter_held and not toggle_command_overlay and self._glow is not None:
+        if not shift_held and not enter_held and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_vad_state(False, False)
@@ -1285,19 +1261,15 @@ class SpokeAppDelegate(NSObject):
 
         if not wav_bytes:
             logger.info(
-                "No audio — instant path (shift=%s, enter=%s, toggle_overlay=%s, overlay_active=%s)",
+                "No audio — instant path (shift=%s, enter=%s)",
                 shift_held,
                 enter_held,
-                toggle_command_overlay,
-                self._detector.command_overlay_active,
             )
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
             if shift_held:
-                # Shift owns the empty-audio review path. Combined Shift+Enter
-                # should not toggle assistant overlay visibility.
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
                     self._tray_active = True
@@ -1307,57 +1279,11 @@ class SpokeAppDelegate(NSObject):
                     return
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
-            elif toggle_command_overlay and self._command_client is not None:
-                # Use command_overlay_active (our flag) not _visible (animation
-                # state) to avoid re-dismissing during the dismiss animation.
-                self._detector._command_overlay_just_dismissed = False
-                if self._detector.command_overlay_active:
-                    # Already showing — dismiss it
-                    logger.info("Space-first enter chord — dismissing command overlay")
-                    if self._command_overlay is not None:
-                        self._command_overlay.cancel_dismiss()
-                    self._detector.command_overlay_active = False
-                    logger.info("command_overlay_active -> False (space-first toggle dismiss)")
-                else:
-                    snapshot = self._last_command_overlay_snapshot()
-                    if snapshot is not None:
-                        last_utterance, last_response = snapshot
-                        logger.info("Space-first enter chord — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._sync_command_overlay_brightness(immediate=True)
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                                self._detector.command_overlay_active = True
-                                logger.info("command_overlay_active -> True (space-first toggle recall)")
-                            except Exception:
-                                logger.exception("Recall overlay failed")
-                    else:
-                        logger.info("Space-first enter chord — no assistant overlay snapshot to recall")
             elif enter_held and self._command_client is not None:
-                logger.info("Enter-first empty chord — assistant path with no utterance")
+                logger.info("Enter held on empty — assistant path with no utterance")
             else:
-                # Only dismiss if the overlay wasn't already dismissed by the
-                # instant-press handler (which clears command_overlay_active).
-                if self._detector.command_overlay_active:
-                    command_visible = (
-                        self._command_overlay is not None
-                        and getattr(self._command_overlay, '_visible', False)
-                    )
-                    if command_visible:
-                        logger.info("Empty recording — dismissing command overlay")
-                        self._command_overlay.cancel_dismiss()
-                        self._detector.command_overlay_active = False
-                        logger.info("command_overlay_active -> False (empty dismiss)")
-                else:
-                    logger.info("Empty tap — overlay hidden; leaving it hidden")
+                logger.info("Empty tap — no action")
 
-            # Clear _just_dismissed now that the decision has been made.
-            # This flag only needs to survive from instant-dismiss through
-            # the current hold's _on_hold_end.
-            self._detector._command_overlay_just_dismissed = False
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
@@ -1760,36 +1686,6 @@ class SpokeAppDelegate(NSObject):
             logger.info("Shift tap during tray — dismiss")
             self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
-
-    def _dismiss_command_overlay(self) -> None:
-        """Instant-dismiss the command overlay.
-
-        Called from the event tap callback, which runs on the main runloop.
-        We call dismissCommandOverlay_ directly instead of deferring via
-        performSelectorOnMainThread, so that the flag writes happen before
-        handle_key_down and _on_hold_end see them in the same runloop pass.
-        """
-        self.dismissCommandOverlay_(None)
-
-    def dismissCommandOverlay_(self, _) -> None:
-        """Main thread: dismiss the command overlay and cancel TTS.
-
-        All flag writes happen here on the main thread, not in the event
-        tap callback.  This prevents interleaving with _on_hold_start and
-        _on_hold_end which also run on the main thread.
-        """
-        # Don't cancel TTS — audio keeps playing after overlay dismiss.
-        # TTS is only cancelled when a new command response supersedes the old one.
-        overlay_visible = self._command_overlay is not None and getattr(self._command_overlay, '_visible', False)
-        logger.info("dismissCommandOverlay_: overlay_visible=%s command_overlay_active=%s",
-                     overlay_visible, self._detector.command_overlay_active)
-        self._detector.command_overlay_active = False
-        self._detector._command_overlay_just_dismissed = True
-        logger.info("command_overlay_active -> False, _just_dismissed -> True (instant dismiss, main thread)")
-        if overlay_visible:
-            self._command_overlay.cancel_dismiss()
-        if self._menubar is not None:
-            self._menubar.set_status_text("Ready — hold spacebar")
 
     def _toggle_command_overlay(self) -> None:
         """Toggle command overlay visibility — called from double-tap Enter."""

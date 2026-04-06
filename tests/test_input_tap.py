@@ -730,13 +730,9 @@ class TestLatchedRecording:
         result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
         assert result_down is None
 
-        # Space release should route as overlay toggle.
+        # Space release should route as assistant send (enter_held=True).
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
         # Trailing Enter release must still be swallowed.
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
@@ -795,21 +791,6 @@ class TestTrayAwareness:
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
         assert det._forwarding is False
 
-    def test_tray_spacebar_tap_after_overlay_dismiss_is_swallowed(
-        self, input_tap_module
-    ):
-        """A tray-visible overlay dismiss tap must not fall through into tray insert."""
-        mod = input_tap_module
-        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
-        det.tray_active = True
-        det._command_overlay_just_dismissed = True
-
-        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
-        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-
-        on_end.assert_not_called()
-        assert det._forwarding is False
-
     def test_tray_space_enter_space_release_routes_overlay_toggle(
         self, input_tap_module
     ):
@@ -829,11 +810,7 @@ class TestTrayAwareness:
 
         assert result_down is None
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
     def test_tray_space_enter_enter_release_routes_assistant_path(
         self, input_tap_module
@@ -1048,11 +1025,7 @@ class TestTrayAwareness:
         assert result_down is None
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
-        on_end.assert_called_once_with(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert result_up is None
@@ -1259,23 +1232,6 @@ class TestCommandOverlayFlags:
         det._on_enter_pressed = None
         det._on_tray_delete = None
         return det, on_start, on_end, on_dismiss
-
-    def test_enter_suppressed_when_overlay_active(self, input_tap_module):
-        """Enter keyDown should be suppressed (return None) when command_overlay_active=True."""
-        mod = input_tap_module
-        Quartz = __import__("Quartz")
-
-        det, _, _, _ = self._make_detector(input_tap_module)
-        det.command_overlay_active = True
-        mod._active_detector = det
-
-        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
-        Quartz.CGEventGetFlags.return_value = 0
-        event = MagicMock()
-        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-
-        assert result is None  # suppressed
-        assert det._enter_held is True  # still tracked
 
     def test_enter_passes_through_when_overlay_not_active(self, input_tap_module):
         """Enter keyDown should pass through when command_overlay_active=False."""

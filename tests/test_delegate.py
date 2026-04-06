@@ -21,7 +21,6 @@ def _make_delegate(main_module, monkeypatch):
     delegate._client = MagicMock(supports_streaming=False)
     delegate._detector = MagicMock()
     delegate._detector.command_overlay_active = False
-    delegate._detector._command_overlay_just_dismissed = False
     delegate._menubar = MagicMock()
     delegate._glow = MagicMock()
     delegate._overlay = MagicMock()
@@ -3027,29 +3026,6 @@ class TestShortShiftHold:
         d._command_overlay.finish.assert_not_called()
         d._overlay.show_tray.assert_called_once()
 
-    def test_tray_toggle_command_overlay_bypasses_tray_insert(
-        self, main_module, monkeypatch
-    ):
-        """A tray-visible space-first Enter chord should toggle assistant UI, not insert tray text."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._capture.stop.return_value = b""
-        d._tray_active = True
-        d._detector.tray_active = True
-        d._tray_stack = ["previous text"]
-        d._command_client = MagicMock()
-        d._command_client.history = [("hello", "world")]
-        d._command_overlay = MagicMock(_visible=False)
-
-        d._on_hold_end(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
-
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        d._overlay.show_tray.assert_not_called()
-
     def test_tray_enter_first_release_sends_current_entry_to_assistant(
         self, main_module, monkeypatch
     ):
@@ -3070,33 +3046,6 @@ class TestShortShiftHold:
 
         d._send_text_as_command.assert_called_once_with("previous text")
         d._overlay.show_tray.assert_not_called()
-
-    def test_tray_toggle_command_overlay_preserves_existing_tray_entry(
-        self, main_module, monkeypatch
-    ):
-        """Toggling assistant UI from tray must not consume or delete the tray entry."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._tray_active = True
-        d._detector.tray_active = True
-        d._tray_stack = ["previous text"]
-        d._tray_index = 0
-        d._recovery_text = "previous text"
-        d._detector._shift_at_press = False
-        d._detector._shift_latched = False
-        d._command_client = MagicMock()
-        d._command_client.history = [("hello", "world")]
-        d._command_overlay = MagicMock(_visible=False)
-        d._capture.stop.return_value = b""
-
-        d._on_hold_start()
-        d._on_hold_end(
-            shift_held=False,
-            enter_held=False,
-            toggle_command_overlay=True,
-        )
-
-        assert d._tray_stack == ["previous text"]
-        assert d._tray_index == 0
 
     def test_short_shift_enter_hold_dismisses_visible_command_overlay(
         self, main_module, monkeypatch
@@ -3119,8 +3068,11 @@ class TestShortShiftHold:
         d._overlay.show_tray.assert_called_once()
 
 
-class TestCommandOverlayDismissRecallCycle:
-    """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
+class _RemovedCommandOverlayDismissRecallCycle:
+    """REMOVED: Old Space+Enter chord toggle tests. Replaced by double-tap Enter.
+
+    Kept as a dead class marker so git blame shows what was here.
+    Tests in TestDoubleTapGestures (test_input_tap.py) cover the new behavior."""
 
     def test_enter_empty_tap_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
         """An earlier Enter tap should not recall when the overlay is hidden."""
