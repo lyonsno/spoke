@@ -415,12 +415,16 @@ class TerraformHUD(NSObject):
                 )
                 self._scroll_view._metal_renderer = self._metal_renderer
                 self._scroll_view._backing_scale = scale
-                # Insert Metal layer at bottom of scroll view's layer stack
-                metal_layer = self._metal_renderer.layer()
-                self._scroll_view.layer().insertSublayer_atIndex_(metal_layer, 0)
-                # Additive blending — same visual language as the overlay
-                if hasattr(metal_layer, "setCompositingFilter_"):
-                    metal_layer.setCompositingFilter_("plusL")
+                # Insert all three Metal layers: rings behind, fill in front
+                gold, blue, fill = self._metal_renderer.layers()
+                scroll_layer = self._scroll_view.layer()
+                scroll_layer.insertSublayer_atIndex_(gold, 0)
+                scroll_layer.insertSublayer_atIndex_(blue, 1)
+                scroll_layer.insertSublayer_atIndex_(fill, 2)
+                # Additive blending on all layers
+                for ml in (gold, blue, fill):
+                    if hasattr(ml, "setCompositingFilter_"):
+                        ml.setCompositingFilter_("plusL")
             except Exception:
                 logger.debug("Metal card renderer init failed, using frost fallback", exc_info=True)
                 self._metal_renderer = None
@@ -514,13 +518,10 @@ class TerraformHUD(NSObject):
         self._brightness = min(max(brightness, 0.0), 1.0)
         if self._metal_renderer is None:
             return
-        metal_layer = self._metal_renderer.layer()
-        if not hasattr(metal_layer, "setCompositingFilter_"):
-            return
-        if self._brightness < 0.15:
-            metal_layer.setCompositingFilter_("plusL")
-        else:
-            metal_layer.setCompositingFilter_(None)
+        filter_name = "plusL" if self._brightness < 0.15 else None
+        for ml in self._metal_renderer.layers():
+            if hasattr(ml, "setCompositingFilter_"):
+                ml.setCompositingFilter_(filter_name)
 
     def restore_visibility(self) -> None:
         """Restore last saved visibility state (default: visible)."""
