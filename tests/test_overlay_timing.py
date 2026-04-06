@@ -31,7 +31,7 @@ class TestOverlayTiming:
             overlay._text_view.setAlphaValue_.assert_called_once()
             applied_alpha = overlay._text_view.setAlphaValue_.call_args[0][0]
             # Text alpha now rides the view/layer seam rather than forcing a payload rebuild.
-            assert applied_alpha == pytest.approx(0.88)
+            assert applied_alpha == pytest.approx(0.94)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -98,9 +98,10 @@ class TestOverlayTiming:
             overlay.set_text("abc")
 
             assert any(
-                call.args == (0.0, 0.0, 0.0, 0.88)
+                call.args == (0.0, 0.0, 0.0, 1.0)
                 for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
             )
+            overlay._text_view.setAlphaValue_.assert_called_with(0.94)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -208,12 +209,40 @@ class TestAdaptiveOverlayCompositing:
         overlay._visible = True
         overlay._text_view = MagicMock()
         overlay._text_view.layer.return_value = MagicMock()
+        overlay._scroll_view = MagicMock()
+        scroll_frame = MagicMock()
+        scroll_origin = MagicMock()
+        scroll_origin.x = 12.0
+        scroll_origin.y = 8.0
+        scroll_size = MagicMock()
+        scroll_size.width = 616.0
+        scroll_size.height = 144.0
+        scroll_frame.origin = scroll_origin
+        scroll_frame.size = scroll_size
+        overlay._scroll_view.frame.return_value = scroll_frame
+        overlay._preview_cutout_layer = MagicMock()
+        overlay._preview_backdrop_view = MagicMock()
+        overlay._preview_legibility_layer = MagicMock()
+        overlay._preview_border_punch_layer = MagicMock()
+        overlay._preview_cutout_active = False
+        overlay._preview_surface_alpha = 1.0
+        overlay._screen = MagicMock()
+        overlay._screen.backingScaleFactor.return_value = 2.0
         overlay._text_amplitude = 0.0
         overlay._content_view = MagicMock()
+        content_frame = MagicMock()
+        content_origin = MagicMock()
+        content_origin.x = 18.0
+        content_origin.y = 24.0
+        content_size = MagicMock()
+        content_size.width = mod._OVERLAY_WIDTH
+        content_size.height = mod._OVERLAY_HEIGHT
+        content_frame.origin = content_origin
+        content_frame.size = content_size
+        overlay._content_view.frame.return_value = content_frame
         overlay._fill_layer = MagicMock()
         overlay._brightness = 0.0
         overlay._brightness_target = 0.0
-        overlay._preview_cutout_layer = MagicMock()
         return overlay
 
     def test_set_brightness_immediate_snaps(self, mock_pyobjc):
@@ -263,6 +292,18 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_bright_scene_fill_profile_stays_flatter_and_less_solid(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
+            assert width == pytest.approx(9.2)
+            assert interior_floor == pytest.approx(0.94)
+            assert opacity_min == pytest.approx(0.34)
+            assert opacity_max == pytest.approx(0.92)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -279,6 +320,25 @@ class TestAdaptiveOverlayCompositing:
             for _ in range(100):
                 overlay.update_text_amplitude(0.0)
             assert overlay._brightness == pytest.approx(0.8, abs=0.01)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_set_brightness_without_immediate_keeps_preview_updates_lazy(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._refresh_preview_text_style = MagicMock()
+            overlay._sync_preview_surface = MagicMock()
+
+            overlay.set_brightness(1.0)
+
+            assert overlay._brightness_target == pytest.approx(1.0)
+            assert overlay._preview_cutout_active is False
+            overlay._refresh_preview_text_style.assert_not_called()
+            overlay._sync_preview_surface.assert_not_called()
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -351,6 +411,8 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with(None)
+            overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with(None)
+            assert overlay._preview_cutout_active is False
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -365,6 +427,7 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with("destinationOut")
+            assert overlay._preview_cutout_active is True
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -380,6 +443,7 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(0.0)
 
             overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with("destinationOut")
+            assert overlay._preview_cutout_active is True
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -422,7 +486,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be high on light backgrounds
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.95 < fill_opacity < 0.995
+            assert 0.89 < fill_opacity < 0.93
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -451,7 +515,7 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(0.0)
 
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.4 < fill_opacity < 0.6
+            assert 0.3 < fill_opacity < 0.38
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -485,10 +549,10 @@ class TestAdaptiveOverlayCompositing:
         try:
             width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
 
-            assert width == pytest.approx(14.5)
-            assert interior_floor == pytest.approx(0.9997)
-            assert opacity_min == pytest.approx(0.48)
-            assert opacity_max == pytest.approx(0.98)
+            assert width == pytest.approx(9.2)
+            assert interior_floor == pytest.approx(0.94)
+            assert opacity_min == pytest.approx(0.34)
+            assert opacity_max == pytest.approx(0.92)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -660,9 +724,10 @@ class TestMetalPreviewSurfaceSync:
         overlay._set_text_view_content = MagicMock()
         overlay._sync_preview_surface = MagicMock()
         overlay._metal_preview_renderer = MagicMock()
+        overlay._preview_cutout_layer = MagicMock()
         overlay._metal_preview_active = True
         overlay._metal_preview_ready = True
-        overlay._preview_cutout_layer = MagicMock()
+        overlay._preview_cutout_active = False
         return overlay
 
     def test_animation_ticks_do_not_resnapshot_metal_preview_when_payload_is_stable(self, mock_pyobjc):
@@ -689,6 +754,75 @@ class TestMetalPreviewSurfaceSync:
             overlay.update_text_amplitude(0.0)
 
             assert overlay._sync_preview_surface.call_count == 2
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_return_to_dark_background_resnapshots_metal_preview(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+
+            overlay.update_text_amplitude(0.0)
+            overlay.set_brightness(1.0, immediate=True)
+            overlay.update_text_amplitude(0.0)
+            overlay._metal_preview_ready = False
+            overlay.set_brightness(0.0, immediate=True)
+            overlay.update_text_amplitude(0.0)
+
+            assert overlay._sync_preview_surface.call_count == 3
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_sets_metal_preview_cutout_filter(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._metal_preview_active = True
+            overlay._metal_preview_ready = True
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay.update_text_amplitude(0.0)
+
+            overlay._scroll_view.setAlphaValue_.assert_called_with(0.0)
+            overlay._metal_preview_renderer.set_opacity.assert_called_with(0.0)
+            overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with("destinationOut")
+            assert overlay._preview_cutout_active is True
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_dark_background_clears_metal_preview_cutout_filter(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._metal_preview_ready = True
+            overlay.set_brightness(0.0, immediate=True)
+
+            overlay.update_text_amplitude(0.0)
+
+            overlay._metal_preview_renderer.set_compositing_filter.assert_called_with(None)
+            overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with(None)
+            assert overlay._preview_cutout_active is False
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_prefers_appkit_cutout_even_when_metal_exists(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._metal_preview_active = True
+            overlay._metal_preview_ready = True
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay.update_text_amplitude(0.0)
+
+            assert overlay._metal_preview_active is False
+            assert overlay._metal_preview_ready is False
+            overlay._sync_preview_surface.assert_called_once_with(force=True)
+            overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with("destinationOut")
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -742,6 +876,7 @@ class TestMetalPreviewSurfaceSync:
             overlay._metal_preview_active = True
             overlay._metal_preview_ready = False
             overlay._brightness = 0.0
+            overlay._text_view.alphaValue.return_value = 0.88
 
             bounds = MagicMock()
             frame = MagicMock()
@@ -761,8 +896,102 @@ class TestMetalPreviewSurfaceSync:
             assert overlay._metal_preview_ready is True
             assert overlay._scroll_view.setAlphaValue_.call_args_list[0][0][0] == 1.0
             assert overlay._scroll_view.setAlphaValue_.call_args_list[-1][0][0] == 0.0
+            assert overlay._text_view.setAlphaValue_.call_args_list[0][0][0] == 1.0
+            assert overlay._text_view.setAlphaValue_.call_args_list[-1][0][0] == 0.88
             overlay._metal_preview_renderer.set_hidden.assert_called_with(False)
             overlay._metal_preview_renderer.set_opacity.assert_called_with(0.88)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_cutout_snapshot_refreshes_fill_image_instead_of_showing_cutout_layer(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._screen = MagicMock()
+            overlay._screen.backingScaleFactor.return_value = 2.0
+            overlay._scroll_view = MagicMock()
+            overlay._text_view = MagicMock()
+            overlay._content_view = MagicMock()
+            overlay._preview_cutout_layer = MagicMock()
+            overlay._preview_cutout_active = True
+            overlay._preview_surface_alpha = 1.0
+            overlay._text_payload_signature = ("Epistaxis", "dark-text", None)
+            overlay._preview_surface_signature = None
+            overlay._brightness = 1.0
+            overlay._metal_preview_renderer = MagicMock()
+            overlay._metal_preview_active = False
+            overlay._metal_preview_ready = False
+            overlay._update_fill_image = MagicMock()
+
+            bounds = MagicMock()
+            frame = MagicMock()
+            frame_size = MagicMock()
+            frame_size.width = 200.0
+            frame_size.height = 60.0
+            frame.size = frame_size
+            overlay._scroll_view.bounds.return_value = bounds
+            overlay._scroll_view.frame.return_value = frame
+            overlay._scroll_view.alphaValue.return_value = 0.0
+            content_frame = MagicMock()
+            content_size = MagicMock()
+            content_size.width = mod._OVERLAY_WIDTH
+            content_size.height = mod._OVERLAY_HEIGHT
+            content_frame.size = content_size
+            overlay._content_view.frame.return_value = content_frame
+            rep = MagicMock()
+            rep.CGImage.return_value = "cgimage"
+            overlay._scroll_view.bitmapImageRepForCachingDisplayInRect_.return_value = rep
+
+            assert overlay._sync_preview_surface(force=True) is True
+
+            assert overlay._preview_cutout_image == "cgimage"
+            overlay._update_fill_image.assert_called_once()
+            overlay._preview_cutout_layer.setHidden_.assert_called_with(True)
+            overlay._preview_cutout_layer.setOpacity_.assert_called_with(0.0)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_cutout_surface_uses_wrapper_coordinates_instead_of_content_local_frame(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            monkeypatch.setattr(mod, "NSMakeRect", lambda x, y, width, height: ((x, y), (width, height)))
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._content_view = MagicMock()
+            overlay._scroll_view = MagicMock()
+
+            content_frame = MagicMock()
+            content_origin = MagicMock()
+            content_origin.x = 18.0
+            content_origin.y = 24.0
+            content_size = MagicMock()
+            content_size.width = 640.0
+            content_size.height = 160.0
+            content_frame.origin = content_origin
+            content_frame.size = content_size
+            overlay._content_view.frame.return_value = content_frame
+
+            scroll_frame = MagicMock()
+            scroll_origin = MagicMock()
+            scroll_origin.x = 12.0
+            scroll_origin.y = 8.0
+            scroll_size = MagicMock()
+            scroll_size.width = 616.0
+            scroll_size.height = 144.0
+            scroll_frame.origin = scroll_origin
+            scroll_frame.size = scroll_size
+            overlay._scroll_view.frame.return_value = scroll_frame
+
+            host_frame = overlay._preview_surface_host_frame()
+            x, y, width, height = mod._rect_components(host_frame)
+
+            assert x == pytest.approx(30.0)
+            assert y == pytest.approx(32.0)
+            assert width == pytest.approx(616.0)
+            assert height == pytest.approx(144.0)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

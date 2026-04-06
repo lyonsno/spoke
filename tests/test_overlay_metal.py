@@ -112,7 +112,7 @@ def test_bright_scene_metal_fill_uses_crushed_dark_endpoint_and_deep_floor(
         overlay._fill_renderer.set_fill_state.assert_called_once()
         rgb, opacity, floor = overlay._fill_renderer.set_fill_state.call_args[0]
         assert rgb == pytest.approx((0.02, 0.02, 0.03))
-        assert floor == pytest.approx(0.9997)
+        assert floor == pytest.approx(0.94)
         assert opacity == mod._BG_ALPHA_MIN
     finally:
         sys.modules.pop("spoke.overlay", None)
@@ -134,6 +134,33 @@ def test_update_fill_image_falls_back_to_baked_fill_when_metal_draw_fails(
             680.0, 160.0, overlay._fill_sdf, overlay._fill_scale
         )
         overlay._fill_renderer.draw_frame.assert_called_once_with()
+        overlay._fill_layer.setContents_.assert_called_once_with("fill-image")
+    finally:
+        sys.modules.pop("spoke.overlay", None)
+
+
+def test_bright_scene_cutout_bakes_text_holes_into_fill_instead_of_using_metal_fill(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._preview_cutout_active = True
+        overlay._preview_cutout_image = "cutout-image"
+        overlay._preview_surface_host_frame = MagicMock(return_value=((12.0, 8.0), (616.0, 144.0)))
+
+        monkeypatch.setattr(mod, "_glow_fill_alpha", lambda *args, **kwargs: "fill-alpha")
+        monkeypatch.setattr(mod, "_cgimage_alpha_field", lambda image: "cutout-alpha")
+        monkeypatch.setattr(
+            mod,
+            "_apply_cutout_alpha_to_fill",
+            lambda fill_alpha, cutout_alpha, **kwargs: "cutout-fill-alpha",
+        )
+        monkeypatch.setattr(mod, "_fill_field_to_image", lambda *args, **kwargs: ("fill-image", "payload"))
+
+        overlay._update_fill_image(680.0, 160.0)
+
+        overlay._fill_renderer.draw_frame.assert_not_called()
         overlay._fill_layer.setContents_.assert_called_once_with("fill-image")
     finally:
         sys.modules.pop("spoke.overlay", None)

@@ -198,10 +198,10 @@ _TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
 def _fill_profile_for_brightness(brightness: float) -> tuple[float, float, float, float]:
     """Return source-shape and opacity controls for the preview dark-language fill."""
     t = min(max(brightness, 0.0), 1.0)
-    width = _lerp(3.6, 14.5, t)
-    interior_floor = _lerp(0.72, 0.9997, t)
-    opacity_min = _lerp(0.06, 0.48, t)
-    opacity_max = _lerp(0.98, 0.98, t)
+    width = _lerp(3.6, 9.2, t)
+    interior_floor = _lerp(0.72, 0.94, t)
+    opacity_min = _lerp(0.06, 0.34, t)
+    opacity_max = _lerp(0.98, 0.92, t)
     return width, interior_floor, opacity_min, opacity_max
 
 
@@ -394,6 +394,68 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     return image, payload
 
 
+def _cgimage_alpha_field(image):
+    """Best-effort alpha extraction for cached preview snapshots."""
+    import numpy as np
+    from Quartz import (
+        CGDataProviderCopyData,
+        CGImageGetDataProvider,
+        CGImageGetHeight,
+        CGImageGetWidth,
+    )
+
+    if image is None:
+        return None
+    width = int(CGImageGetWidth(image))
+    height = int(CGImageGetHeight(image))
+    if width <= 0 or height <= 0:
+        return None
+    data = CGDataProviderCopyData(CGImageGetDataProvider(image))
+    if data is None or len(data) == 0:
+        return None
+    bytes_per_pixel = len(data) // (width * height)
+    if bytes_per_pixel <= 0:
+        return None
+    rgba = np.frombuffer(data, dtype=np.uint8).reshape(height, width, bytes_per_pixel)
+    rgb_alpha = rgba[..., : min(3, bytes_per_pixel)].max(axis=2).astype(np.float32) / 255.0
+    if bytes_per_pixel >= 4:
+        channel_alpha = rgba[..., 3].astype(np.float32) / 255.0
+        return np.maximum(rgb_alpha, channel_alpha)
+    return rgb_alpha
+
+
+def _apply_cutout_alpha_to_fill(
+    fill_alpha,
+    cutout_alpha,
+    *,
+    total_w: float,
+    total_h: float,
+    host_frame,
+    scale: float,
+):
+    """Punch the preview text alpha out of the fill alpha within the host frame."""
+    import numpy as np
+
+    if cutout_alpha is None:
+        return fill_alpha
+    composed = fill_alpha.copy()
+    host_x, host_y, host_w, host_h = _rect_components(host_frame)
+    start_x = int(round(host_x * scale))
+    start_y = int(round((total_h - host_y - host_h) * scale))
+    cutout_h, cutout_w = cutout_alpha.shape[:2]
+    end_x = min(start_x + cutout_w, composed.shape[1])
+    end_y = min(start_y + cutout_h, composed.shape[0])
+    src_x = max(0, -start_x)
+    src_y = max(0, -start_y)
+    dst_x = max(start_x, 0)
+    dst_y = max(start_y, 0)
+    if end_x <= dst_x or end_y <= dst_y:
+        return composed
+    cutout = cutout_alpha[src_y : src_y + (end_y - dst_y), src_x : src_x + (end_x - dst_x)]
+    composed[dst_y:end_y, dst_x:end_x] *= (1.0 - np.clip(cutout, 0.0, 1.0))
+    return composed
+
+
 def _build_preview_fill_metal_pipeline(device):
     from . import glow as glow_module
 
@@ -549,6 +611,22 @@ def _window_origin_y(visible_height: float) -> float:
     return base_y - (visible_height - _OVERLAY_HEIGHT)
 
 
+def _rect_components(rect) -> tuple[float, float, float, float]:
+    if hasattr(rect, "origin") and hasattr(rect, "size"):
+        origin = rect.origin
+        size = rect.size
+        return (
+            float(getattr(origin, "x", 0.0)),
+            float(getattr(origin, "y", 0.0)),
+            float(getattr(size, "width", 0.0)),
+            float(getattr(size, "height", 0.0)),
+        )
+    origin, size = rect
+    x, y = origin
+    width, height = size
+    return float(x), float(y), float(width), float(height)
+
+
 def _ontology_text_rgb(text_lum: float) -> tuple[float, float, float]:
     """Return a glow-blue text tint that stays legible against both fill modes."""
     if text_lum >= 0.5:
@@ -590,6 +668,7 @@ class TranscriptionOverlay(NSObject):
         self._metal_preview_ready = False
         self._preview_cutout_layer = None
         self._preview_cutout_active = False
+        self._preview_cutout_image = None
         self._preview_surface_alpha = _TEXT_ALPHA_MIN
 
         # Adaptive compositing defaults dark until we get a brightness sample.
@@ -678,7 +757,6 @@ class TranscriptionOverlay(NSObject):
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
 
-        # Wrapper view — unclipped, holds both the dark box and the outer feather
         wrapper_frame = NSMakeRect(0, 0, win_w, win_h)
         wrapper = NSView.alloc().initWithFrame_(wrapper_frame)
         wrapper.setWantsLayer_(True)
@@ -725,6 +803,7 @@ class TranscriptionOverlay(NSObject):
             wrapper.layer().insertSublayer_below_(self._fill_metal_layer, content.layer())
 
         wrapper.addSubview_(content)
+        self._wrapper_view = wrapper
         self._content_view = content
 
         # Scroll view with text view for scrollable transcription text
@@ -772,13 +851,13 @@ class TranscriptionOverlay(NSObject):
         self._window.setContentView_(wrapper)
 
         self._preview_cutout_layer = CALayer.alloc().init()
-        self._preview_cutout_layer.setFrame_(scroll_frame)
+        self._preview_cutout_layer.setFrame_(self._preview_surface_host_frame())
         self._preview_cutout_layer.setContentsGravity_("resize")
         self._preview_cutout_layer.setHidden_(True)
         self._preview_cutout_layer.setOpacity_(0.0)
         if hasattr(self._preview_cutout_layer, "setCompositingFilter_"):
             self._preview_cutout_layer.setCompositingFilter_(_LIGHT_TEXT_CUTOUT_FILTER)
-        content.layer().addSublayer_(self._preview_cutout_layer)
+        wrapper.layer().addSublayer_(self._preview_cutout_layer)
 
         if _PREVIEW_TEXT_METAL_ENABLED:
             try:
@@ -875,6 +954,7 @@ class TranscriptionOverlay(NSObject):
             self._brightness = self._brightness_target
             if self._visible and self._text_view is not None:
                 self._refresh_preview_text_style(snap_polarity=True)
+            return
 
     def hide(self, *, fade_duration: float | None = None) -> None:
         """Fade the overlay out smoothly."""
@@ -1008,6 +1088,8 @@ class TranscriptionOverlay(NSObject):
             return
         self._preview_cutout_active = active
         self._preview_surface_signature = None
+        if not active:
+            self._preview_cutout_image = None
         if layer is not None:
             layer.setHidden_(not active)
             if not active:
@@ -1064,6 +1146,17 @@ class TranscriptionOverlay(NSObject):
             getattr(self, "_text_payload_signature", None),
             self._preview_surface_bounds_key(),
         )
+
+    def _preview_surface_host_frame(self):
+        scroll_view = getattr(self, "_scroll_view", None)
+        if scroll_view is None or not hasattr(scroll_view, "frame"):
+            return NSMakeRect(0.0, 0.0, 0.0, 0.0)
+        scroll_x, scroll_y, scroll_w, scroll_h = _rect_components(scroll_view.frame())
+        content_view = getattr(self, "_content_view", None)
+        if content_view is None or not hasattr(content_view, "frame"):
+            return NSMakeRect(scroll_x, scroll_y, scroll_w, scroll_h)
+        content_x, content_y, _content_w, _content_h = _rect_components(content_view.frame())
+        return NSMakeRect(content_x + scroll_x, content_y + scroll_y, scroll_w, scroll_h)
 
     def _snapshot_preview_surface_image(self):
         scroll_view = getattr(self, "_scroll_view", None)
@@ -1136,9 +1229,10 @@ class TranscriptionOverlay(NSObject):
         if self._preview_surface_wants_metal() and renderer is not None:
             renderer.set_frame(scroll_view.frame(), contents_scale)
         if self._preview_surface_uses_cutout() and cutout_layer is not None:
-            cutout_layer.setFrame_(scroll_view.frame())
+            cutout_layer.setFrame_(self._preview_surface_host_frame())
         image = self._snapshot_preview_surface_image()
         if image is None:
+            self._preview_cutout_image = None
             self._metal_preview_ready = False
             if renderer is not None:
                 renderer.set_hidden(True)
@@ -1161,9 +1255,17 @@ class TranscriptionOverlay(NSObject):
             renderer.set_hidden(False)
             renderer.set_opacity(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
         if self._preview_surface_uses_cutout() and cutout_layer is not None:
-            cutout_layer.setContents_(image)
-            cutout_layer.setHidden_(False)
-            cutout_layer.setOpacity_(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
+            self._preview_cutout_image = image
+            cutout_layer.setContents_(None)
+            cutout_layer.setHidden_(True)
+            cutout_layer.setOpacity_(0.0)
+            content_view = getattr(self, "_content_view", None)
+            if content_view is not None:
+                content_frame = content_view.frame()
+                self._update_fill_image(
+                    content_frame.size.width + 2 * _OUTER_FEATHER,
+                    content_frame.size.height + 2 * _OUTER_FEATHER,
+                )
         self._set_view_alpha(scroll_view, 0.0)
         if self._preview_surface_uses_cutout():
             self._apply_text_view_alpha(0.0)
@@ -1240,13 +1342,7 @@ class TranscriptionOverlay(NSObject):
     def _preview_text_colors(
         self, *, snap_polarity: bool = False
     ) -> tuple[NSColor, NSColor]:
-        scaled = min(getattr(self, "_text_amplitude", 0.0) / _TEXT_AMP_SATURATION, 1.0)
         t = getattr(self, "_brightness_target", getattr(self, "_brightness", 0.0))
-
-        if t > 0.15:
-            text_alpha = 1.0
-        else:
-            text_alpha = 0.88
 
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
@@ -1260,15 +1356,19 @@ class TranscriptionOverlay(NSObject):
 
         self._text_lum = current_text_lum
         tr = tg = tb = current_text_lum
-        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, 1.0)
         ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
         ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             ontology_r,
             ontology_g,
             ontology_b,
-            text_alpha,
+            1.0,
         )
         return base_color, ontology_color
+
+    def _preview_text_display_alpha(self) -> float:
+        t = getattr(self, "_brightness_target", getattr(self, "_brightness", 0.0))
+        return 1.0 if t > 0.15 else 0.94
 
     def _refresh_preview_text_style(
         self, *, text: str | None = None, snap_polarity: bool = False
@@ -1277,6 +1377,7 @@ class TranscriptionOverlay(NSObject):
             return
         if text is None:
             text = getattr(self, "_typewriter_displayed", "")
+        self._apply_preview_surface_alpha(self._preview_text_display_alpha())
         base_color, ontology_color = self._preview_text_colors(
             snap_polarity=snap_polarity
         )
@@ -1285,6 +1386,8 @@ class TranscriptionOverlay(NSObject):
             base_color=base_color,
             ontology_color=ontology_color,
         )
+        self._text_payload_signature = self._text_payload_signature_for(text)
+        self._text_payload_dirty = False
 
     def _set_text_view_content(
         self,
@@ -1495,12 +1598,9 @@ class TranscriptionOverlay(NSObject):
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
-        # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
+        # Text alpha: on dark backgrounds, anchored just below full white.
         # On light backgrounds, keep the preview fully legible for smoking.
-        if mode_t > 0.15:
-            _TEXT_ANCHOR_ALPHA = 1.0
-        else:
-            _TEXT_ANCHOR_ALPHA = 0.88
+        _TEXT_ANCHOR_ALPHA = self._preview_text_display_alpha()
         # Text contrasts against the fill: light fill (dark bg) → dark text,
         # dark fill (light bg) → white text.
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, mode_t)
@@ -1684,7 +1784,9 @@ class TranscriptionOverlay(NSObject):
                 else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
             )
             renderer = getattr(self, "_fill_renderer", None)
-            if renderer is not None:
+            cutout_active = getattr(self, "_preview_cutout_active", False)
+            cutout_image = getattr(self, "_preview_cutout_image", None) if cutout_active else None
+            if renderer is not None and cutout_image is None:
                 renderer.set_geometry(total_w, total_h, self._fill_sdf, scale)
                 renderer.set_fill_state(
                     (bg_r, bg_g, bg_b),
@@ -1700,6 +1802,16 @@ class TranscriptionOverlay(NSObject):
                     return
                 self._set_fill_render_mode(False)
             fill_alpha = _glow_fill_alpha(self._fill_sdf, width=width * scale, interior_floor=floor)
+            if cutout_image is not None:
+                cutout_alpha = _cgimage_alpha_field(cutout_image)
+                fill_alpha = _apply_cutout_alpha_to_fill(
+                    fill_alpha,
+                    cutout_alpha,
+                    total_w=total_w,
+                    total_h=total_h,
+                    host_frame=self._preview_surface_host_frame(),
+                    scale=scale,
+                )
             # Scale color to 0-255
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,
