@@ -135,16 +135,26 @@ inline float card_sdf(float2 pixel, float4 rect, float corner_radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - corner_radius;
 }
 
-// Stretched-exponential fill — matches _glow_fill_alpha in overlay.py
+// Card fill: crisp edge with fast outer scoop, floored interior.
+// Inside: smoothstep ramp to floor — uniform material interior.
+// Outside: Gaussian-like exp(-(d/w)^2) — drops to near-zero fast,
+// no murky haze between adjacent cards.
 inline float fill_alpha(float sd, float width, float floor_val) {
-    float raw = exp(-sqrt(abs(sd) / max(width, 1e-6)));
-    return (sd <= 0.0) ? floor_val + (1.0 - floor_val) * raw : raw;
+    if (sd <= 0.0) {
+        // Interior: smooth ramp from 1.0 at boundary toward floor
+        float t = clamp(-sd / max(width * 3.0, 1e-6), 0.0, 1.0);
+        return mix(1.0, floor_val, t * t);
+    }
+    // Outside: fast Gaussian scoop
+    float normalized = sd / max(width, 1e-6);
+    return exp(-normalized * normalized);
 }
 
-// Outer glow: soft exponential falloff outside the card boundary
+// Outer glow: slightly wider Gaussian tail for subtle aura
 inline float outer_glow_alpha(float sd, float glow_width) {
-    if (sd <= 0.0) return 0.0;  // inside the card — no glow contribution
-    return exp(-sqrt(sd / max(glow_width, 1e-6)));
+    if (sd <= 0.0) return 0.0;
+    float normalized = sd / max(glow_width, 1e-6);
+    return exp(-normalized * normalized * 0.5);
 }
 
 fragment float4 fs_main(
@@ -156,9 +166,9 @@ fragment float4 fs_main(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
-    // Outer glow parameters
-    float glow_width = u.fill_width * 8.0;   // wide soft tail
-    float glow_peak  = 0.18;                  // subtle outer aura
+    // Outer glow parameters — tight aura, not murky haze
+    float glow_width = u.fill_width * 3.0;
+    float glow_peak  = 0.12;
 
     // Accumulate: max-alpha compositing to avoid doubling
     float best_alpha = 0.0;
