@@ -56,10 +56,11 @@ _PREFS_PATH = Path.home() / "Library" / "Application Support" / "Spoke" / "terra
 _REFRESH_INTERVAL = 5.0  # data check + Metal redraw only; view rebuild only on change
 
 # Visual constants
-_GLOW_MARGIN = 60  # extra margin on each side for outer glow spill
+_GLOW_MARGIN = 120  # extra margin on each side for outer glow spill
 _PANEL_WIDTH = 320 + _GLOW_MARGIN * 2
 _PANEL_HEIGHT = 900
 _ROW_HEIGHT = 60
+_ROW_GAP = 16  # breathing room between cards
 _PADDING = 8
 
 # Temperature colors (background tint)
@@ -100,18 +101,18 @@ class ToposRowView(NSView):
 
     @classmethod
     def createWithTopos_width_(cls, topos: Topos, width: float) -> ToposRowView:
-        # Cards are just text — the frost is a single shared layer behind all cards.
         view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_HEIGHT))
         view._topos = topos
+        view.setWantsLayer_(True)
 
-        # Text — primary matches overlay _TEXT_COLOR_DARK, secondary tinted by temperature
-        _text_color = NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.85)
         rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
         r, g, b, _a = rgba
-        # Temperature-tinted secondary text — saturated enough to read as color
+        # Temperature-tinted text — saturated, reads as color against milky fill
         _sub_color = NSColor.colorWithRed_green_blue_alpha_(
-            r * 0.7, g * 0.7, b * 0.7, 0.9
+            r * 0.85, g * 0.85, b * 0.85, 0.95
         )
+        # Name: white, punched through as cutout when Metal is active
+        _text_color = NSColor.colorWithWhite_alpha_(1.0, 0.92)
 
         name = disambiguated_name(topos)
         name_label = _make_label(
@@ -121,6 +122,10 @@ class ToposRowView(NSView):
             bold=True,
             color=_text_color,
         )
+        # Transparent cutout: text punches through the SDF fill
+        if _METAL_OK:
+            name_label.setWantsLayer_(True)
+            name_label.layer().setCompositingFilter_("destinationOut")
         view.addSubview_(name_label)
 
         badge_parts = []
@@ -597,7 +602,7 @@ class TerraformHUD(NSObject):
         inset = _GLOW_MARGIN if self._metal_renderer is not None else 0
         # Card width: panel content minus glow margins and edge padding
         card_width = scroll_bounds.size.width - inset * 2 - 8
-        row_stride = _ROW_HEIGHT + 6
+        row_stride = _ROW_HEIGHT + _ROW_GAP
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
             scroll_bounds.size.height,
