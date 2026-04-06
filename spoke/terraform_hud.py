@@ -538,17 +538,28 @@ class TerraformHUD(NSObject):
     def set_brightness(self, brightness: float) -> None:
         """Update screen brightness for adaptive compositing.
 
-        On dark backgrounds (< 0.15): additive blending ("plusL"),
-        light fill color — cards glow.
-        On light backgrounds: normal blending, dark fill — cards read
-        as material cutouts.
+        Adapts three things (matching overlay.py):
+        1. Compositing filter: plusL (additive) on dark, None on light
+        2. Fill color: desaturated blue-white on dark, near-black on light
+        3. Interior floor: 0.55 on dark (more transparent), 0.775 on light (more material)
+
+        Triggers a Metal redraw with updated card colors.
         """
-        self._brightness = min(max(brightness, 0.0), 1.0)
+        new_brightness = min(max(brightness, 0.0), 1.0)
+        if new_brightness == getattr(self, '_brightness', -1.0):
+            return
+        self._brightness = new_brightness
         if self._metal_renderer is None:
             return
+
+        # 1. Compositing filter
         metal_layer = self._metal_renderer.layer()
         if hasattr(metal_layer, "setCompositingFilter_"):
             metal_layer.setCompositingFilter_("plusL" if self._brightness < 0.15 else None)
+
+        # 2+3. Update fill color, floor, and redraw Metal (no NSView rebuild)
+        self._metal_renderer._interior_floor = _lerp(0.55, 0.775, self._brightness)
+        self._redraw_metal_cards()
 
     def restore_visibility(self) -> None:
         """Restore last saved visibility state (default: visible)."""
@@ -557,6 +568,34 @@ class TerraformHUD(NSObject):
             logger.info("Terror Form HUD: restoring hidden state")
         else:
             self.show()
+
+    def _redraw_metal_cards(self) -> None:
+        """Redraw Metal cards with current brightness — no NSView rebuild."""
+        if self._metal_renderer is None or not self._topoi:
+            return
+        scroll_bounds = self._scroll_view.bounds()
+        inset = _GLOW_MARGIN
+        card_width = scroll_bounds.size.width - inset * 2 - 8
+        row_stride = _ROW_HEIGHT + _ROW_GAP
+        total_height = max(
+            len(self._topoi) * row_stride + _PADDING,
+            scroll_bounds.size.height,
+        )
+        scale = getattr(self._scroll_view, '_backing_scale', 2.0)
+        cards = []
+        for i, topos in enumerate(self._topoi):
+            y = total_height - (i + 1) * row_stride
+            cr, cg, cb = _temp_fill_color(topos.temperature, self._brightness)
+            cards.append(CardInfo(
+                x=(inset + 4.0) * scale,
+                y=y * scale,
+                width=card_width * scale,
+                height=_ROW_HEIGHT * scale,
+                r=cr, g=cg, b=cb,
+                alpha=_SDF_CARD_ALPHA,
+            ))
+        self._metal_renderer.set_cards(cards)
+        self._metal_renderer.draw_frame()
 
     def cleanup(self) -> None:
         """Clean up resources."""
