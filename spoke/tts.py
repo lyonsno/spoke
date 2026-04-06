@@ -62,6 +62,28 @@ class _PlaybackResult:
     sample_rate: int
 
 
+def _resolve_output_device() -> int | None:
+    """Return the current system default output device index.
+
+    Queries PortAudio each time so the stream follows device changes
+    (e.g. Bluetooth connect/disconnect).  Returns None on failure,
+    which lets sounddevice fall back to its own default.
+    """
+    try:
+        default_device = getattr(sd.default, "device", None)
+        if isinstance(default_device, (list, tuple)) and len(default_device) > 1:
+            return int(default_device[1])
+        if isinstance(default_device, int):
+            return default_device
+        # Ask PortAudio directly
+        info = sd.query_devices(kind="output")
+        if isinstance(info, dict):
+            return info.get("index")
+    except Exception:
+        pass
+    return None
+
+
 def _playback_device_summary() -> str:
     """Return a compact description of the active playback device context."""
     try:
@@ -707,20 +729,24 @@ class TTSClient:
                         audio = audio.reshape(-1, 1)
                     sr = item.sample_rate
 
-                    # Open stream lazily on first chunk (sample rate may vary)
+                    # Open stream lazily on first chunk (sample rate may vary).
+                    # Explicitly resolve the current default output device so
+                    # the stream follows Bluetooth/headphone changes.
                     if stream is None:
                         write_chunk_size = int(sr * 0.064)
+                        output_device = _resolve_output_device()
                         stream = sd.OutputStream(
                             samplerate=sr,
                             channels=audio.shape[1],
                             dtype="float32",
+                            device=output_device,
                         )
                         self._stream = stream
                         self._last_chunk = None
                         stream.start()
                         logger.info(
-                            "TTS playback stream opened: sample_rate=%d channels=%d device=%s",
-                            sr, audio.shape[1], _playback_device_summary(),
+                            "TTS playback stream opened: sample_rate=%d channels=%d device=%r (%s)",
+                            sr, audio.shape[1], output_device, _playback_device_summary(),
                         )
 
                     chunk_count += 1
