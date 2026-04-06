@@ -273,6 +273,12 @@ def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkey
 
     overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
     overlay._window = _FakeWindow()
+    overlay._window._frame = _make_rect(
+        0.0,
+        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+    )
     overlay._content_view = _FakeView(
         _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
     )
@@ -300,6 +306,12 @@ def test_show_clears_stale_tray_background_and_fill_override(mock_pyobjc, monkey
 
     overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
     overlay._window = _FakeWindow()
+    overlay._window._frame = _make_rect(
+        0.0,
+        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+    )
     overlay._content_view = _FakeView(
         _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
     )
@@ -391,3 +403,41 @@ def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, 
     assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)
 
+
+def test_update_layout_refreshes_short_preview_chrome_once_before_growth(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._window._frame = _make_rect(
+        0.0,
+        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+    )
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "short preview text",
+    )
+    overlay._text_view.set_layout_height(overlay_module._OVERLAY_HEIGHT - 28.0)
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    calls = []
+
+    def _record_refresh(width, height):
+        calls.append((width, height))
+
+    overlay._reset_overlay_chrome_geometry = _record_refresh
+    overlay._needs_post_text_chrome_refresh = True
+
+    overlay._update_layout()
+
+    assert calls == [(overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)]
+    assert overlay._needs_post_text_chrome_refresh is False

@@ -1079,6 +1079,7 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_target = ""
         self._typewriter_displayed = ""
         self._typewriter_hwm = 0  # furthest position typewriter has reached
+        self._needs_post_text_chrome_refresh = True
         self._refresh_preview_text_style(text="", snap_polarity=True)
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
@@ -1784,6 +1785,10 @@ class TranscriptionOverlay(NSObject):
                 )
                 self._scroll_view.setFrame_(NSMakeRect(12, 8, new_width - 24, new_height - 16))
                 self._reset_overlay_chrome_geometry(new_width, new_height)
+                self._needs_post_text_chrome_refresh = False
+            elif getattr(self, "_needs_post_text_chrome_refresh", False):
+                self._reset_overlay_chrome_geometry(new_width, new_height)
+                self._needs_post_text_chrome_refresh = False
 
             self._reset_text_geometry(new_width, max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
