@@ -751,17 +751,50 @@ class TerraformHUD(NSObject):
 
     def _start_timer(self) -> None:
         self._stop_timer()
+        # Data refresh: every 5s (file I/O, view rebuild if changed)
         self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _REFRESH_INTERVAL, self, "_timerFired:", None, True
         )
+        # Brightness chase: sample every 1s, smooth toward target
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0, self, "_brightnessTick:", None, True
+        )
+        self._brightness_target = getattr(self, '_brightness', 0.0)
 
     def _stop_timer(self) -> None:
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
+        bt = getattr(self, '_brightness_timer', None)
+        if bt is not None:
+            bt.invalidate()
+            self._brightness_timer = None
 
     def _timerFired_(self, timer) -> None:
         self._refresh()
+
+    def _brightnessTick_(self, timer) -> None:
+        """Sample screen brightness and smooth-chase toward it."""
+        try:
+            from .glow import _sample_screen_brightness
+            screen = NSScreen.mainScreen()
+            if screen is None:
+                return
+            self._brightness_target = _sample_screen_brightness(screen)
+        except Exception:
+            return
+
+        current = getattr(self, '_brightness', 0.0)
+        target = self._brightness_target
+        diff = target - current
+
+        if abs(diff) < 0.005:
+            return  # close enough, no redraw
+
+        # Exponential chase: fast attack (0.3), slow decay (0.1)
+        alpha = 0.3 if abs(diff) > 0.05 else 0.1
+        new_val = current + diff * alpha
+        self.set_brightness(new_val)
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
@@ -775,16 +808,6 @@ class TerraformHUD(NSObject):
         )
         self._topoi = sort_topoi(filtered, key=self._sort_key)
         self._rebuild_content()
-
-        # Sample screen brightness AFTER topoi are loaded so
-        # _redraw_metal_cards has cards to work with
-        try:
-            from .glow import _sample_screen_brightness
-            screen = NSScreen.mainScreen()
-            if screen is not None:
-                self.set_brightness(_sample_screen_brightness(screen))
-        except Exception:
-            pass
 
     def _update_stats(self, topoi: list[Topos]) -> None:
         """Update the stats label with topos + attractor counts."""
