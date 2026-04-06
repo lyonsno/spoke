@@ -317,11 +317,15 @@ class TerraformHUD(NSObject):
             y = screen_frame.origin.y + screen_frame.size.height - _PANEL_HEIGHT - 40
         frame = NSMakeRect(x, y, _PANEL_WIDTH, _PANEL_HEIGHT)
 
-        style = (
-            _NSWindowStyleMaskResizable
-            | _NSWindowStyleMaskUtilityWindow
-            | NSWindowStyleMaskNonactivatingPanel
-        )
+        if _METAL_OK:
+            # Borderless: SDF glow provides visual framing, no title bar needed
+            style = NSWindowStyleMaskNonactivatingPanel
+        else:
+            style = (
+                _NSWindowStyleMaskResizable
+                | _NSWindowStyleMaskUtilityWindow
+                | NSWindowStyleMaskNonactivatingPanel
+            )
 
         self._panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False

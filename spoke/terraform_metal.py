@@ -141,6 +141,12 @@ inline float fill_alpha(float sd, float width, float floor_val) {
     return (sd <= 0.0) ? floor_val + (1.0 - floor_val) * raw : raw;
 }
 
+// Outer glow: soft exponential falloff outside the card boundary
+inline float outer_glow_alpha(float sd, float glow_width) {
+    if (sd <= 0.0) return 0.0;  // inside the card — no glow contribution
+    return exp(-sqrt(sd / max(glow_width, 1e-6)));
+}
+
 fragment float4 fs_main(
     VSOut in [[stage_in]],
     constant Uniforms& u [[buffer(0)]]
@@ -150,9 +156,15 @@ fragment float4 fs_main(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
+    // Outer glow parameters
+    float glow_width = u.fill_width * 8.0;   // wide soft tail
+    float glow_peak  = 0.18;                  // subtle outer aura
+
     // Accumulate: max-alpha compositing to avoid doubling
     float best_alpha = 0.0;
     float3 best_rgb = float3(0.0);
+    float best_glow = 0.0;
+    float3 best_glow_rgb = float3(0.0);
 
     for (uint i = 0; i < count; i++) {
         // Apply scroll offset to card Y position
@@ -160,22 +172,36 @@ fragment float4 fs_main(
         rect.y -= u.scroll_offset_y;
 
         float sd = card_sdf(pixel, rect, u.corner_radius);
+
+        // Interior fill
         float a = fill_alpha(sd, u.fill_width, u.interior_floor)
                   * u.cards[i].color.a;
 
         if (a > best_alpha) {
-            // In overlap: blend colors proportionally
             float t = best_alpha / (best_alpha + a + 1e-6);
             best_rgb = mix(u.cards[i].color.rgb, best_rgb, t);
             best_alpha = a;
         } else if (a > best_alpha * 0.05) {
-            // Minor overlap: tint toward this card
             float t = a / (best_alpha + a + 1e-6);
             best_rgb = mix(best_rgb, u.cards[i].color.rgb, t);
         }
+
+        // Outer glow (only outside cards)
+        float g = outer_glow_alpha(sd, glow_width) * glow_peak;
+        if (g > best_glow) {
+            best_glow_rgb = u.cards[i].color.rgb;
+            best_glow = g;
+        }
     }
 
-    return float4(best_rgb * best_alpha, best_alpha);
+    // Composite: fill on top of glow
+    // Glow only contributes where fill is transparent
+    float glow_contrib = best_glow * (1.0 - best_alpha);
+    float final_alpha = best_alpha + glow_contrib;
+    float3 final_rgb = (best_rgb * best_alpha + best_glow_rgb * glow_contrib)
+                       / max(final_alpha, 1e-6);
+
+    return float4(final_rgb * final_alpha, final_alpha);
 }
 """
 
