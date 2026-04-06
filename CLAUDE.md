@@ -66,6 +66,20 @@ After updating the registry, **ask the user if the spacebar is working**
 before doing anything else. There is no way to verify event tap functionality
 from logs or process state.
 
+## Launch target registry policy
+
+When the launch-target menu feature is in play:
+
+- for `spoke`, a surface is not smoke-ready unless it is present in `~/.config/spoke/launch_targets.json` and launchable from the visible launcher UI on that machine
+- treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
+- agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
+- there is no dedicated `smoke_branch` slot; additional prepared surfaces should appear as their own explicit registry entries
+- prefer stable ids and short human labels; the entry should identify a purposeful surface, not a temporary hunk of local reasoning
+- when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
+- do not silently assume the selected target also carries the launch-target affordance; if the target branch lacks the feature, say so when preparing the surface
+- smoke-worthy surfaces must carry the launcher/menu commits that make the target selectable and legible in the menubar; registry prep alone is not enough
+- record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently
+
 ## Building the .app bundle
 
 For .app distribution testing (not normal dev smoke testing):
