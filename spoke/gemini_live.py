@@ -29,7 +29,7 @@ _WS_URL = (
 _INPUT_SAMPLE_RATE = 16_000
 _OUTPUT_SAMPLE_RATE = 24_000
 
-_DEFAULT_MODEL = "gemini-2.0-flash-live"
+_DEFAULT_MODEL = "gemini-3.1-flash-live-preview"
 _DEFAULT_VOICE = "Puck"
 _DEFAULT_SYSTEM_INSTRUCTION = (
     "You are a voice assistant having a live conversation. "
@@ -298,12 +298,10 @@ class GeminiLiveClient:
             encoded = base64.b64encode(data).decode("ascii")
             msg = {
                 "realtimeInput": {
-                    "mediaChunks": [
-                        {
-                            "mimeType": "audio/pcm;rate=16000",
-                            "data": encoded,
-                        }
-                    ]
+                    "audio": {
+                        "mimeType": "audio/pcm;rate=16000",
+                        "data": encoded,
+                    }
                 }
             }
             try:

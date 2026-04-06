@@ -1452,7 +1452,7 @@ class SpokeAppDelegate(NSObject):
 
         live_model = (
             self._load_preferences().get("live_model")
-            or os.environ.get("SPOKE_LIVE_MODEL", "gemini-2.0-flash-live")
+            or os.environ.get("SPOKE_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         )
         live_voice = (
             self._load_preferences().get("live_voice")
@@ -1482,19 +1482,42 @@ class SpokeAppDelegate(NSObject):
 
     def _live_connect_worker(self) -> None:
         try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                f.write(f"connect_worker: starting, model={getattr(self._live_client, '_model', '?')}, key={getattr(self._live_client, '_api_key', '?')[:10]}...\n")
+        except Exception:
+            pass
+        try:
             self._live_client.connect()
         except Exception as exc:
+            try:
+                with open("/tmp/spoke-chord-diag.log", "a") as f:
+                    import traceback
+                    f.write(f"connect_worker FAILED: {exc}\n")
+                    traceback.print_exc(file=f)
+            except Exception:
+                pass
             logger.error("Gemini Live connect failed: %s", exc)
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "_liveConnectFailed:", str(exc), False
             )
             return
+        try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                f.write("connect_worker: SUCCESS\n")
+        except Exception:
+            pass
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "_liveConnected:", None, False
         )
 
     def _liveConnected_(self, _) -> None:
         """Main thread: WebSocket connected — start streaming audio."""
+        try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                import time as _t
+                f.write(f"_liveConnected_: live_mode={self._live_mode} at {_t.time()}\n")
+        except Exception:
+            pass
         if not self._live_mode:
             return  # user already exited
         logger.info("Gemini Live connected — starting audio stream")
@@ -1503,7 +1526,14 @@ class SpokeAppDelegate(NSObject):
                 amplitude_callback=self._on_amplitude,
                 raw_chunk_callback=self._live_client.send_audio,
             )
-        except Exception:
+        except Exception as exc:
+            try:
+                with open("/tmp/spoke-chord-diag.log", "a") as f:
+                    import traceback
+                    f.write(f"capture.start FAILED in liveConnected: {exc}\n")
+                    traceback.print_exc(file=f)
+            except Exception:
+                pass
             logger.exception("Failed to start audio capture for live mode")
             self._exit_live_mode()
             return
@@ -1590,6 +1620,12 @@ class SpokeAppDelegate(NSObject):
             self._live_player.flush()
 
     def _on_live_error(self, error_msg: str) -> None:
+        try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                import time as _t
+                f.write(f"ON_LIVE_ERROR: {error_msg} at {_t.time()}\n")
+        except Exception:
+            pass
         logger.error("Gemini Live error: %s", error_msg)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "_liveErrorOnMain:", error_msg, False
