@@ -433,16 +433,11 @@ class TerraformHUD(NSObject):
                 )
                 self._scroll_view._metal_renderer = self._metal_renderer
                 self._scroll_view._backing_scale = scale
-                # Insert all three Metal layers: rings behind, fill in front
-                gold, blue, fill = self._metal_renderer.layers()
-                scroll_layer = self._scroll_view.layer()
-                scroll_layer.insertSublayer_atIndex_(gold, 0)
-                scroll_layer.insertSublayer_atIndex_(blue, 1)
-                scroll_layer.insertSublayer_atIndex_(fill, 2)
-                # Additive blending on all layers
-                for ml in (gold, blue, fill):
-                    if hasattr(ml, "setCompositingFilter_"):
-                        ml.setCompositingFilter_("plusL")
+                # Single Metal layer — fill + chromatic rings in one pass
+                metal_layer = self._metal_renderer.layer()
+                self._scroll_view.layer().insertSublayer_atIndex_(metal_layer, 0)
+                if hasattr(metal_layer, "setCompositingFilter_"):
+                    metal_layer.setCompositingFilter_("plusL")
             except Exception:
                 logger.debug("Metal card renderer init failed, using frost fallback", exc_info=True)
                 self._metal_renderer = None
@@ -536,10 +531,9 @@ class TerraformHUD(NSObject):
         self._brightness = min(max(brightness, 0.0), 1.0)
         if self._metal_renderer is None:
             return
-        filter_name = "plusL" if self._brightness < 0.15 else None
-        for ml in self._metal_renderer.layers():
-            if hasattr(ml, "setCompositingFilter_"):
-                ml.setCompositingFilter_(filter_name)
+        metal_layer = self._metal_renderer.layer()
+        if hasattr(metal_layer, "setCompositingFilter_"):
+            metal_layer.setCompositingFilter_("plusL" if self._brightness < 0.15 else None)
 
     def restore_visibility(self) -> None:
         """Restore last saved visibility state (default: visible)."""
@@ -579,8 +573,12 @@ class TerraformHUD(NSObject):
             scroll_bounds.size.height,
         )
 
-        # Convert click y to content coordinates (accounting for scroll)
-        content_y = y + scroll_offset
+        # Convert click y (in scroll view coords) to content coordinates.
+        # The content view's origin.y = -(content_h - visible_h) + scroll_offset
+        # so content_y = click_y - origin_y
+        visible_h = scroll_bounds.size.height
+        content_origin_y = -(total_height - visible_h) + scroll_offset
+        content_y = y - content_origin_y
 
         for i in range(len(self._topoi)):
             card_y = total_height - (i + 1) * row_stride
