@@ -142,6 +142,42 @@ def _url_host(url: str) -> str:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     return parsed.netloc or url
+
+
+def _ensure_edit_menu() -> None:
+    """Install a minimal Edit menu so Cmd+V/C/X/A work in NSAlert text fields.
+
+    Agent-style apps (NSApplicationActivationPolicyAccessory) have no menu bar,
+    so the standard key equivalents never reach NSTextField.  This installs an
+    Edit menu once; subsequent calls are no-ops.
+    """
+    from AppKit import NSApp, NSMenu, NSMenuItem
+    app = NSApp()
+    if app is None:
+        return
+    main_menu = app.mainMenu()
+    if main_menu is None:
+        main_menu = NSMenu.new()
+        app.setMainMenu_(main_menu)
+    # Check if Edit menu already exists.
+    for i in range(main_menu.numberOfItems()):
+        if main_menu.itemAtIndex_(i).title() == "Edit":
+            return
+    edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+    for title, action, key in [
+        ("Cut", "cut:", "x"),
+        ("Copy", "copy:", "c"),
+        ("Paste", "paste:", "v"),
+        ("Select All", "selectAll:", "a"),
+    ]:
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, action, key,
+        )
+        edit_menu.addItem_(item)
+    edit_item = NSMenuItem.new()
+    edit_item.setTitle_("Edit")
+    edit_item.setSubmenu_(edit_menu)
+    main_menu.addItem_(edit_item)
 _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
     "mlx-community/Qwen3-4B-Thinking-2507-8bit",
@@ -798,6 +834,7 @@ class SpokeAppDelegate(NSObject):
             command_model=self._command_model_id,
             tts_enabled=self._tts_client is not None,
         )
+        _ensure_edit_menu()
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
             self._quit, self._handle_model_menu_action
         )
