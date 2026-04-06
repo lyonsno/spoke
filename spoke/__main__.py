@@ -3784,9 +3784,15 @@ class SpokeAppDelegate(NSObject):
             was_omnivoice = _is_omnivoice_tts_model(current_model)
             now_omnivoice = _is_omnivoice_tts_model(model_id)
             if was_omnivoice != now_omnivoice:
-                payload.pop("tts_voice", None)
+                from spoke.tts import _default_voice_for_model
+                default_voice = _default_voice_for_model(model_id)
+                if default_voice:
+                    payload["tts_voice"] = default_voice
+                else:
+                    payload.pop("tts_voice", None)
                 logger.info(
-                    "Cleared tts_voice on model family switch (%s -> %s)",
+                    "Reset tts_voice to %r on model family switch (%s -> %s)",
+                    default_voice,
                     "omnivoice" if was_omnivoice else "standard",
                     "omnivoice" if now_omnivoice else "standard",
                 )
