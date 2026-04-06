@@ -276,7 +276,7 @@ class TestExecuteTool:
         assert "error" in parsed
 
     def test_execute_read_aloud_literal(self):
-        """Test that execute_tool resolves a literal ref and speaks it."""
+        """Test that execute_tool resolves a literal ref and launches async speech."""
         mod = _import_tools()
         tts_client = MagicMock()
         result = mod.execute_tool(
@@ -285,10 +285,10 @@ class TestExecuteTool:
             tts_client=tts_client,
         )
         assert result == "Speaking: hello world"
-        tts_client.speak.assert_called_once_with("hello world")
+        tts_client.speak_async.assert_called_once_with("hello world")
 
-    def test_execute_read_aloud_uses_blocking_speak(self):
-        """read_aloud should block until TTS finishes so multi-call turns play sequentially."""
+    def test_execute_read_aloud_is_non_blocking(self):
+        """read_aloud should launch speak_async and return immediately."""
         mod = _import_tools()
         tts_client = MagicMock()
 
@@ -298,14 +298,15 @@ class TestExecuteTool:
             tts_client=tts_client,
         )
 
-        tts_client.speak.assert_called_once_with("hello world")
+        tts_client.speak_async.assert_called_once_with("hello world")
+        tts_client.speak.assert_not_called()
         assert result == "Speaking: hello world"
 
     def test_execute_read_aloud_tts_failure_returns_error(self):
         """Immediate TTS launch failures should surface as tool errors."""
         mod = _import_tools()
         tts_client = MagicMock()
-        tts_client.speak.side_effect = RuntimeError("audio device unavailable")
+        tts_client.speak_async.side_effect = RuntimeError("audio device unavailable")
 
         result = mod.execute_tool(
             name="read_aloud",
@@ -361,7 +362,7 @@ class TestExecuteTool:
 
         tts_client.warm.assert_called_once_with()
         tts_client.wait_until_ready.assert_called_once_with(timeout=5.0)
-        tts_client.speak.assert_called_once_with("hello world")
+        tts_client.speak_async.assert_called_once_with("hello world")
         assert result == "Speaking: hello world"
 
     def test_execute_read_aloud_local_omnivoice_waits_for_inflight_warmup(self):
@@ -386,7 +387,7 @@ class TestExecuteTool:
         )
 
         tts_client.wait_until_ready.assert_called_once_with(timeout=15.0)
-        tts_client.speak.assert_called_once_with("hello world")
+        tts_client.speak_async.assert_called_once_with("hello world")
         assert result == "Speaking: hello world"
 
     def test_execute_read_aloud_invalid_ref(self):

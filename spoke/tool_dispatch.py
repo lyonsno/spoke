@@ -380,9 +380,9 @@ def _execute_read_aloud(
                         "Try read_aloud again in a moment."
                     )
         try:
-            logger.info("read_aloud: calling speak (blocking)")
-            tts_client.speak(text)
-            logger.info("read_aloud: speak finished")
+            logger.info("read_aloud: launching speak_async (non-blocking)")
+            tts_client.speak_async(text)
+            logger.info("read_aloud: speak_async launched")
             return f"Speaking: {text}"
         except Exception as exc:
             detail = str(exc)

@@ -16,6 +16,7 @@ import inspect
 import logging
 import os
 import platform
+import queue
 import sys
 import threading
 import time
@@ -34,6 +35,7 @@ _DEFAULT_TEMPERATURE = 0.5
 _DEFAULT_TOP_K = 50
 _DEFAULT_TOP_P = 0.95
 _AUDIO_TOGGLE_FADE_S = 0.5
+_SENTENCE_FADE_S = 0.015  # 15ms fade-in/fade-out at sentence boundaries
 _OMNIVOICE_SAMPLE_RATE = 24000
 _ABBREVIATION_SUFFIXES = (
     "dr.",
@@ -299,6 +301,26 @@ def _iter_playback_results(results, sample_rate_hint: int | None):
         iterable = results
     for result in iterable:
         yield _materialize_generation_result(result, sample_rate_hint)
+
+
+def _apply_sentence_fades(audio: np.ndarray, sample_rate: int,
+                          fade_in: bool = True, fade_out: bool = True) -> np.ndarray:
+    """Apply short fade-in/fade-out ramps to smooth sentence boundaries."""
+    fade_samples = int(sample_rate * _SENTENCE_FADE_S)
+    if fade_samples < 2 or len(audio) < fade_samples * 2:
+        return audio
+    audio = audio.copy()
+    if fade_in:
+        ramp = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        if audio.ndim == 2:
+            ramp = ramp.reshape(-1, 1)
+        audio[:fade_samples] *= ramp
+    if fade_out:
+        ramp = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+        if audio.ndim == 2:
+            ramp = ramp.reshape(-1, 1)
+        audio[-fade_samples:] *= ramp
+    return audio
 
 
 class TTSClient:
@@ -575,10 +597,13 @@ class TTSClient:
     ) -> None:
         """Generate speech and play it synchronously.  Blocks until done.
 
-        Pipelines sentence generation: while sentence N plays, sentence N+1's
-        generate() call runs on a background thread so iteration can begin
-        immediately when N finishes.  Within each sentence, chunks are still
-        streamed one-at-a-time for low first-chunk latency.
+        Uses a producer/consumer pipeline: a generation thread produces
+        _PlaybackResults into a queue while a playback thread (this thread)
+        drains and plays them.  Generation runs ahead of playback so the
+        next sentence is ready when the current one finishes.
+
+        Short fade-in/fade-out ramps are applied at sentence boundaries to
+        smooth the transition between sentences.
 
         Holds gpu_lock during model.generate() to prevent concurrent MLX
         inference (which crashes Metal).  Releases the lock before audio
@@ -603,61 +628,74 @@ class TTSClient:
             self._cancelled = False
             with self._audio_fade_lock:
                 self._playback_active = True
-            try:
-                prefetch_thread: threading.Thread | None = None
-                prefetch_iter = [None]  # mutable container for thread result
 
-                def _prefetch(sentence: str) -> None:
-                    prefetch_iter[0] = self._start_generation(sentence)
+            # Queue connects generation → playback.  None sentinel = done.
+            playback_queue: queue.Queue[_PlaybackResult | None] = queue.Queue(maxsize=4)
 
-                # Start first sentence synchronously
-                current_iter = self._start_generation(sentences[0])
+            def _generate_all() -> None:
+                """Generate all sentences, pushing results into the queue.
 
-                for idx in range(len(sentences)):
-                    if self._cancelled:
-                        return
-
-                    if idx > 0:
-                        # Collect prefetched iterator from background thread
-                        if prefetch_thread is not None:
-                            prefetch_thread.join()
-                            prefetch_thread = None
-                        current_iter = prefetch_iter[0]
-                        prefetch_iter[0] = None
-
-                    if current_iter is None:
-                        continue
-
-                    # Kick off next sentence's generate() while we play this one
-                    if idx + 1 < len(sentences):
-                        prefetch_iter[0] = None
-                        prefetch_thread = threading.Thread(
-                            target=_prefetch,
-                            args=(sentences[idx + 1],),
-                            daemon=True,
-                        )
-                        prefetch_thread.start()
-
-                    # Stream and play chunks for the current sentence
-                    chunk_count = 0
-                    for materialized in current_iter:
+                Streams chunks as they arrive — each chunk is enqueued
+                immediately so playback can start before the full sentence
+                is generated.  Sentence-boundary fades are applied to the
+                first chunk of each sentence (fade-in) and a deferred
+                fade-out is applied to the last chunk once we know it's
+                the last.
+                """
+                try:
+                    for idx, sentence in enumerate(sentences):
                         if self._cancelled:
-                            logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
-                            if prefetch_thread is not None:
-                                prefetch_thread.join()
                             return
-                        chunk_count += 1
-                        if chunk_count == 1:
-                            logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
-                                       len(materialized.audio), materialized.sample_rate)
-                        self._play_result(materialized, amplitude_callback=amplitude_callback)
-                    logger.info("TTS speak: finished sentence %d/%d (%d chunks played)",
-                               idx + 1, len(sentences), chunk_count)
+                        results_iter = self._start_generation(sentence)
+                        if results_iter is None:
+                            continue
+                        chunk_count = 0
+                        for materialized in results_iter:
+                            if self._cancelled:
+                                return
+                            # Apply fade-in to first chunk of each sentence
+                            if chunk_count == 0:
+                                materialized.audio = _apply_sentence_fades(
+                                    materialized.audio, materialized.sample_rate,
+                                    fade_in=True, fade_out=False,
+                                )
+                            playback_queue.put(materialized)
+                            chunk_count += 1
+                        if chunk_count > 0:
+                            logger.info("TTS speak: generated sentence %d/%d (%d chunks)",
+                                       idx + 1, len(sentences), chunk_count)
+                finally:
+                    playback_queue.put(None)  # sentinel
 
-                # Wait for any trailing prefetch
-                if prefetch_thread is not None:
-                    prefetch_thread.join()
+            gen_thread = threading.Thread(target=_generate_all, daemon=True)
+            gen_thread.start()
+
+            try:
+                chunk_count = 0
+                while True:
+                    if self._cancelled:
+                        break
+                    try:
+                        item = playback_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if item is None:
+                        break
+                    chunk_count += 1
+                    if chunk_count == 1:
+                        logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
+                                   len(item.audio), item.sample_rate)
+                    self._play_result(item, amplitude_callback=amplitude_callback)
+                logger.info("TTS speak: finished (%d chunks played)", chunk_count)
             finally:
+                # Drain queue so gen thread doesn't block on put()
+                self._cancelled = True
+                while True:
+                    try:
+                        playback_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                gen_thread.join(timeout=5)
                 with self._audio_fade_lock:
                     self._playback_active = False
 
