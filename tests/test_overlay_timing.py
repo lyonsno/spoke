@@ -5,6 +5,7 @@ import importlib
 import sys
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 
@@ -333,6 +334,36 @@ class TestAdaptiveOverlayCompositing:
             assert edge > scoop
             assert body > scoop
             assert scoop < 0.30
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_corner_peak_attenuation_stays_corner_local(self, mock_pyobjc):
+        """Corner peak attenuation should calm only the rounded corners, not the straight runs or center."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            mask = mod._overlay_corner_peak_attenuation_mask(
+                mod._OVERLAY_WIDTH + (2 * mod._OUTER_FEATHER),
+                mod._OVERLAY_HEIGHT + (2 * mod._OUTER_FEATHER),
+                mod._OVERLAY_WIDTH,
+                mod._OVERLAY_HEIGHT,
+                mod._OVERLAY_CORNER_RADIUS,
+                2.0,
+            )
+
+            assert float(mask.min()) < 1.0
+            center_col = mask.shape[1] // 2
+            assert np.all(mask[:, center_col - 8:center_col + 8] == pytest.approx(1.0))
+            r = mod._OVERLAY_CORNER_RADIUS * 2.0
+            x_anchor = ((mod._OVERLAY_WIDTH * 2.0) * 0.5) - r
+            y_anchor = ((mod._OVERLAY_HEIGHT * 2.0) * 0.5) - r
+            top_left_x = int(round((mask.shape[1] * 0.5) - x_anchor))
+            top_left_y = int(round((mask.shape[0] * 0.5) - y_anchor))
+            top_left_box = mask[
+                max(top_left_y - 24, 0):top_left_y + 24,
+                max(top_left_x - 24, 0):top_left_x + 24,
+            ]
+            assert float(top_left_box.min()) < 0.8
         finally:
             sys.modules.pop("spoke.overlay", None)
 

@@ -34,6 +34,7 @@ def _make_overlay(mod):
         size=SimpleNamespace(width=mod._OVERLAY_WIDTH, height=mod._OVERLAY_HEIGHT)
     )
     overlay._fill_sdf = object()
+    overlay._fill_corner_peak_attenuation = object()
     overlay._fill_scale = 2.0
     return overlay
 
@@ -52,7 +53,11 @@ def test_update_fill_image_routes_preview_surface_to_metal_renderer(mock_pyobjc,
         overlay._update_fill_image(680.0, 160.0)
 
         overlay._fill_renderer.set_geometry.assert_called_once_with(
-            680.0, 160.0, overlay._fill_sdf, overlay._fill_scale
+            680.0,
+            160.0,
+            overlay._fill_sdf,
+            overlay._fill_scale,
+            overlay._fill_corner_peak_attenuation,
         )
         overlay._fill_renderer.set_fill_state.assert_called_once()
         overlay._fill_renderer.draw_frame.assert_called_once_with()
@@ -193,5 +198,20 @@ def test_dark_scene_metal_fill_receives_interior_scoop_profile(
         kwargs = overlay._fill_renderer.set_fill_state.call_args.kwargs
         assert kwargs["scoop_strength"] > 0.0
         assert kwargs["body_strength"] > 0.0
+    finally:
+        sys.modules.pop("spoke.overlay", None)
+
+
+def test_metal_fill_routes_corner_peak_attenuation_field_to_renderer(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._brightness = 0.0
+
+        overlay._update_fill_image(680.0, 160.0)
+
+        assert overlay._fill_renderer.set_geometry.call_args.args[4] is overlay._fill_corner_peak_attenuation
     finally:
         sys.modules.pop("spoke.overlay", None)

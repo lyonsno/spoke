@@ -110,12 +110,13 @@ inline float interior_curve_weight(float inside_distance, float center, float wi
 fragment float4 fs_main(
     VSOut in [[stage_in]],
     constant Uniforms& u [[buffer(0)]],
-    constant float* signed_field [[buffer(1)]]
+    constant float* signed_field [[buffer(1)]],
+    constant float* corner_peak_attenuation [[buffer(2)]]
 ) {
     uint width = max(uint(u.viewport_fill.x), 1u);
     uint height = max(uint(u.viewport_fill.y), 1u);
-    uint x = min(uint(in.uv.x * float(width - 1u)), width - 1u);
-    uint y = min(uint(in.uv.y * float(height - 1u)), height - 1u);
+    uint x = min(uint(in.uv.x * float(width)), width - 1u);
+    uint y = min(uint(in.uv.y * float(height)), height - 1u);
     float signed_distance = signed_field[y * width + x];
     float base_alpha = fill_alpha(signed_distance, u.viewport_fill.w, u.color_floor.w) *
         clamp(u.viewport_fill.z, 0.0, 1.0);
@@ -140,6 +141,7 @@ fragment float4 fs_main(
         u.peak_shape.x,
         max(u.peak_shape.y, 1.0)
     ) * clamp(u.peak_rgb_alpha.a, 0.0, 1.0);
+    peak_mix *= clamp(corner_peak_attenuation[y * width + x], 0.0, 1.0);
     float alpha = mix(base_alpha, 1.0, peak_mix);
     float3 base_rgb = u.color_floor.rgb;
     float3 peak_rgb = u.peak_rgb_alpha.rgb;
@@ -219,6 +221,9 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
+_CORNER_PEAK_X_BAND = 7.0
+_CORNER_PEAK_Y_BAND = 7.0
+_CORNER_PEAK_ATTENUATION = 0.42
 
 
 # Recovery mode constants
@@ -435,6 +440,49 @@ def _overlay_rounded_rect_sdf(
     return (outside + inside - r).astype(np.float32)
 
 
+def _overlay_corner_peak_attenuation_mask(
+    field_width: float,
+    field_height: float,
+    rect_width: float,
+    rect_height: float,
+    corner_radius: float,
+    scale: float,
+    *,
+    x_band: float | None = None,
+    y_band: float | None = None,
+    attenuation: float | None = None,
+):
+    """Return a corner-local multiplier that calms boundary peaks near rounded corners."""
+    import numpy as np
+
+    pw, ph = int(field_width * scale), int(field_height * scale)
+    rw, rh = rect_width * scale, rect_height * scale
+    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
+    cx = x - pw * 0.5
+    cy = y - ph * 0.5
+    r = corner_radius * scale
+    x_anchor = max((rw * 0.5) - r, 0.0)
+    y_anchor = max((rh * 0.5) - r, 0.0)
+    x_band = (_CORNER_PEAK_X_BAND * scale) if x_band is None else float(x_band)
+    y_band = (_CORNER_PEAK_Y_BAND * scale) if y_band is None else float(y_band)
+    attenuation = (
+        _CORNER_PEAK_ATTENUATION if attenuation is None else float(attenuation)
+    )
+    x_proximity = np.maximum(
+        x_band - np.abs(np.abs(cx) - x_anchor),
+        0.0,
+    ) / max(x_band, 1e-6)
+    y_proximity = np.maximum(
+        y_band - np.abs(np.abs(cy) - y_anchor),
+        0.0,
+    ) / max(y_band, 1e-6)
+    x_proximity = x_proximity * x_proximity * (3.0 - (2.0 * x_proximity))
+    y_proximity = y_proximity * y_proximity * (3.0 - (2.0 * y_proximity))
+    attenuation_mask = 1.0 - (x_proximity * y_proximity * attenuation)
+    return np.clip(attenuation_mask, 1e-4, 1.0).astype(np.float32, copy=False)
+
+
 def _ridge_alpha(signed_distance, falloff: float, power: float):
     """Exponential ridge: peaks at boundary (d=0), falls off symmetrically."""
     import numpy as np
@@ -541,6 +589,7 @@ def _fill_field_to_image_with_boundary_peak(
     body_center: float,
     body_width: float,
     body_strength: float,
+    corner_peak_attenuation=None,
 ):
     """Convert a fill field into a premultiplied image with a hard border peak."""
     import numpy as np
@@ -573,6 +622,10 @@ def _fill_field_to_image_with_boundary_peak(
     peak_mix = np.exp(
         -np.power(normalized, peak_power, dtype=np.float32)
     ).astype(np.float32) * np.clip(peak_alpha, 0.0, 1.0)
+    if corner_peak_attenuation is not None:
+        peak_mix = peak_mix * np.clip(corner_peak_attenuation, 0.0, 1.0).astype(
+            np.float32, copy=False
+        )
     final_alpha = base_alpha + (1.0 - base_alpha) * peak_mix
 
     base_rgb = np.array((r / 255.0, g / 255.0, b / 255.0), dtype=np.float32)
@@ -634,6 +687,8 @@ class _MetalPreviewFillRenderer:
         self._uniform_buffer = device.newBufferWithLength_options_(_PREVIEW_FILL_MTL_BUFFER_SIZE, 0)
         self._field_buffer = None
         self._field_buffer_size = 0
+        self._corner_buffer = None
+        self._corner_buffer_size = 0
         self._pixel_width = 0
         self._pixel_height = 0
         self._fill_width = 1.0
@@ -668,7 +723,14 @@ class _MetalPreviewFillRenderer:
         self._pixel_height = max(int(round(height_pt * scale)), 1)
         self._layer.setDrawableSize_((float(self._pixel_width), float(self._pixel_height)))
 
-    def set_geometry(self, total_w: float, total_h: float, sdf, scale: float) -> None:
+    def set_geometry(
+        self,
+        total_w: float,
+        total_h: float,
+        sdf,
+        scale: float,
+        corner_peak_attenuation=None,
+    ) -> None:
         from . import glow as glow_module
 
         self._set_layer_geometry((total_w, total_h), scale)
@@ -678,6 +740,13 @@ class _MetalPreviewFillRenderer:
             self._field_buffer = self._device.newBufferWithLength_options_(required, 0)
             self._field_buffer_size = required
         glow_module._copy_bytes_to_metal_buffer(self._field_buffer, payload)
+        if corner_peak_attenuation is not None:
+            corner_payload = corner_peak_attenuation.tobytes()
+            corner_required = len(corner_payload)
+            if self._corner_buffer is None or corner_required != self._corner_buffer_size:
+                self._corner_buffer = self._device.newBufferWithLength_options_(corner_required, 0)
+                self._corner_buffer_size = corner_required
+            glow_module._copy_bytes_to_metal_buffer(self._corner_buffer, corner_payload)
         self._fill_width = 2.5 * scale
 
     def set_fill_state(
@@ -772,6 +841,7 @@ class _MetalPreviewFillRenderer:
         encoder.setRenderPipelineState_(self._pipeline)
         encoder.setFragmentBuffer_offset_atIndex_(self._uniform_buffer, 0, 0)
         encoder.setFragmentBuffer_offset_atIndex_(self._field_buffer, 0, 1)
+        encoder.setFragmentBuffer_offset_atIndex_(self._corner_buffer, 0, 2)
         encoder.drawPrimitives_vertexStart_vertexCount_(_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP, 0, 4)
         encoder.endEncoding()
         command_buffer.presentDrawable_(drawable)
@@ -1494,10 +1564,19 @@ class TranscriptionOverlay(NSObject):
                 total_w, total_h, width, height,
                 _OVERLAY_CORNER_RADIUS, scale,
             )
+            corner_peak_attenuation = _overlay_corner_peak_attenuation_mask(
+                total_w,
+                total_h,
+                width,
+                height,
+                _OVERLAY_CORNER_RADIUS,
+                scale,
+            )
 
             _FILL_EDGE_SOFTNESS = 6.0
             self._fill_sdf = sdf
             self._fill_scale = scale
+            self._fill_corner_peak_attenuation = corner_peak_attenuation
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
 
@@ -1558,7 +1637,13 @@ class TranscriptionOverlay(NSObject):
             fill_opacity = self._current_fill_surface_opacity()
             renderer = getattr(self, "_fill_renderer", None)
             if renderer is not None:
-                renderer.set_geometry(total_w, total_h, self._fill_sdf, scale)
+                renderer.set_geometry(
+                    total_w,
+                    total_h,
+                    self._fill_sdf,
+                    scale,
+                    getattr(self, "_fill_corner_peak_attenuation", None),
+                )
                 renderer.set_fill_state(
                     (bg_r, bg_g, bg_b),
                     float(fill_opacity),
@@ -1608,6 +1693,7 @@ class TranscriptionOverlay(NSObject):
                 body_center=body_center * scale,
                 body_width=body_width * scale,
                 body_strength=body_strength,
+                corner_peak_attenuation=getattr(self, "_fill_corner_peak_attenuation", None),
             )
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
