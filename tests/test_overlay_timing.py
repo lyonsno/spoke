@@ -279,6 +279,34 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_light_background_fill_profile_pushes_more_signal_into_the_sdf(self, mock_pyobjc):
+        """Bright-screen dark fill should get its darkness from the source shape, not just opacity."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
+
+            assert width == pytest.approx(14.5)
+            assert interior_floor == pytest.approx(0.9997)
+            assert opacity_min == pytest.approx(0.48)
+            assert opacity_max == pytest.approx(0.98)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_dark_background_fill_profile_gets_more_signal_too(self, mock_pyobjc):
+        """Dark-background white fill should also come from a stronger source profile."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(0.0)
+
+            assert width == pytest.approx(3.6)
+            assert interior_floor == pytest.approx(0.72)
+            assert opacity_min == pytest.approx(0.06)
+            assert opacity_max == pytest.approx(0.98)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_light_background_preview_text_reaches_true_white(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")

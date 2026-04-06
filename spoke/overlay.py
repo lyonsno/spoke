@@ -92,7 +92,7 @@ _DARK_FILL_ADDITIVE_FILTER = "plusL"
 # Match the edge glow color on dark backgrounds — desaturated blue-white
 _BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.40)
 _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
-_BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
+_BG_COLOR_LIGHT = (0.02, 0.02, 0.03)   # darker bright-scene body for readable partials
 _TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
 
 # Inner glow — matches screen border glow, scaled to overlay size
@@ -133,6 +133,16 @@ def _truncate_preview(text: str | None) -> str:
     if len(text) > _RECOVERY_PREVIEW_MAX_CHARS:
         return text[:_RECOVERY_PREVIEW_MAX_CHARS] + "…"
     return text
+
+
+def _fill_profile_for_brightness(brightness: float) -> tuple[float, float, float, float]:
+    """Return source-shape and opacity controls for the preview fill."""
+    t = min(max(brightness, 0.0), 1.0)
+    width = _lerp(3.6, 14.5, t)
+    interior_floor = _lerp(0.72, 0.9997, t)
+    opacity_min = _lerp(0.06, 0.48, t)
+    opacity_max = _lerp(0.98, 0.98, t)
+    return width, interior_floor, opacity_min, opacity_max
 
 
 def _lerp(start: float, end: float, t: float) -> float:
@@ -816,17 +826,8 @@ class TranscriptionOverlay(NSObject):
             ontology_color=ontology_color,
         )
 
-        # SDF fill breathes with amplitude.  On light backgrounds the fill
-        # is relatively MORE assertive (because the glow is dimming the same
-        # area).  On dark backgrounds the fill is subtle (the glow carries
-        # the visual).  Phase shift: fill uses squared response so it leads
-        # the glow — visible before the glow builds up, and at low RMS the
-        # fill is already present against the undimmed background.
-        # On dark backgrounds use linear response so soft sounds register.
-        # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
-        fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
-        fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
+        _fill_width, _fill_floor, fill_min, fill_max = _fill_profile_for_brightness(t)
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
@@ -940,14 +941,13 @@ class TranscriptionOverlay(NSObject):
             return
         try:
             scale = getattr(self, '_fill_scale', 2.0)
-            # Stretched-exponential fill: knife-edge cusp, heavy tails.
-            # Width 2.5 = very aggressive initial drop from peak.
-            # Interior floor varies with brightness: low on dark backgrounds
-            # (more contrast between peak and interior), high on light
-            # backgrounds (more uniform/material).
             t = getattr(self, '_brightness', 0.0)
-            floor = _lerp(0.55, 0.775, t)
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
+            width, floor, _opacity_min, _opacity_max = _fill_profile_for_brightness(t)
+            fill_alpha = _glow_fill_alpha(
+                self._fill_sdf,
+                width=width * scale,
+                interior_floor=floor,
+            )
 
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
