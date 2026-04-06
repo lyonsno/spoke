@@ -50,7 +50,9 @@ _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
 _OVERLAY_CORNER_RADIUS = 16.0
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.5
+_FADE_IN_S = 0.7
+_ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
+_ENTRANCE_POP_S = 0.15
 _FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
 _FADE_STEPS = 15
 _DISMISS_DURATION_S = 0.2
@@ -465,6 +467,15 @@ class CommandOverlay(NSObject):
 
         self._window.orderFrontRegardless()
 
+        # Entrance pop — start slightly oversized, ease back to 1.0.
+        # Runs concurrently with the fade-in for a subtle "I just arrived" feel.
+        self._set_overlay_scale(_ENTRANCE_POP_SCALE)
+        self._pop_step = 0
+        self._pop_steps = max(1, int(_ENTRANCE_POP_S * _DISMISS_ANIM_FPS))
+        self._pop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _DISMISS_ANIM_FPS, self, "_entrancePopStep:", None, True
+        )
+
         # Fade in
         self._fade_step = 0
         self._fade_from = 0.0
@@ -494,6 +505,18 @@ class CommandOverlay(NSObject):
         if immediate:
             self._brightness = self._brightness_target
             self._apply_surface_theme()
+
+    def _entrancePopStep_(self, timer) -> None:
+        """Ease the entrance pop back to scale 1.0."""
+        self._pop_step += 1
+        t = self._pop_step / self._pop_steps
+        eased = t * t * (3.0 - 2.0 * t)  # smoothstep
+        scale = _ENTRANCE_POP_SCALE * (1.0 - eased) + 1.0 * eased
+        self._set_overlay_scale(scale)
+        if self._pop_step >= self._pop_steps:
+            timer.invalidate()
+            self._pop_timer = None
+            self._set_overlay_scale(1.0)
 
     def cancel_dismiss(self) -> None:
         """Dismiss with a fast pop-then-shrink animation."""
@@ -1056,8 +1079,14 @@ class CommandOverlay(NSObject):
             self._cancel_timer_anim.invalidate()
             self._cancel_timer_anim = None
 
+    def _cancel_entrance_pop(self) -> None:
+        if getattr(self, "_pop_timer", None) is not None:
+            self._pop_timer.invalidate()
+            self._pop_timer = None
+
     def _cancel_all_timers(self) -> None:
         self._cancel_dismiss_animation()
+        self._cancel_entrance_pop()
         self._cancel_fade()
         self._cancel_pulse()
         self._cancel_linger()
@@ -1070,6 +1099,14 @@ class CommandOverlay(NSObject):
         if layer is None:
             return
         try:
+            # Re-assert center anchor so scale is always symmetric, even
+            # after window geometry changes that may shift the layer bounds.
+            bounds = layer.bounds()
+            layer.setAnchorPoint_((0.5, 0.5))
+            layer.setPosition_((
+                bounds.origin.x + bounds.size.width / 2,
+                bounds.origin.y + bounds.size.height / 2,
+            ))
             layer.setValue_forKeyPath_(scale, "transform.scale")
         except Exception:
             logger.exception("Failed to update command overlay scale")

@@ -2095,6 +2095,30 @@ class TranscriptionOverlay(NSObject):
         pop.setRemovedOnCompletion_(True)
         content_layer.addAnimation_forKey_(pop, "pop_entrance")
 
+    def start_insert_windup(self) -> None:
+        """Shrink animation signaling an impending insert at cursor."""
+        if self._window is None:
+            return
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+
+        content_layer = self._content_view.layer()
+        shrink = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        shrink.setFromValue_(1.0)
+        shrink.setToValue_(0.97)
+        shrink.setDuration_(0.35)
+        shrink.setTimingFunction_(
+            CAMediaTimingFunction.functionWithName_("easeIn")
+        )
+        shrink.setFillMode_("forwards")
+        shrink.setRemovedOnCompletion_(False)
+        content_layer.addAnimation_forKey_(shrink, "insert_windup")
+
+    def cancel_insert_windup(self) -> None:
+        """Cancel the wind-up and snap back to normal scale."""
+        if self._window is None or self._content_view is None:
+            return
+        self._content_view.layer().removeAnimationForKey_("insert_windup")
+
     def dismiss_recovery(self) -> None:
         """Exit recovery mode and hide the overlay."""
         if not self._recovery_mode:

@@ -13,9 +13,10 @@ import importlib
 import io
 import json as _json
 import inspect
-import inspect
 import logging
 import os
+import platform
+import sys
 import threading
 import time
 import wave
@@ -33,6 +34,7 @@ _DEFAULT_TEMPERATURE = 0.5
 _DEFAULT_TOP_K = 50
 _DEFAULT_TOP_P = 0.95
 _AUDIO_TOGGLE_FADE_S = 0.5
+_OMNIVOICE_SAMPLE_RATE = 24000
 _ABBREVIATION_SUFFIXES = (
     "dr.",
     "mr.",
@@ -126,6 +128,9 @@ def _split_sentences(text: str) -> list[str]:
 
 def tts_load(model_id: str):
     """Load an mlx_audio TTS model.  Separated for easy patching in tests."""
+    if _is_omnivoice_model(model_id):
+        return omnivoice_load(model_id)
+
     # Pre-import model backends so mlx_audio.tts.load() can find them.
     # The Voxtral backend lives in a PYTHONPATH fork that isn't auto-discovered.
     if "voxtral" in model_id.lower():
@@ -149,8 +154,70 @@ def tts_load(model_id: str):
     return load(model_id)
 
 
-def _generate_kwargs(model, *, text: str, voice: str,
-                     temperature: float, top_k: int, top_p: float) -> dict:
+def _is_omnivoice_model(model_id: str) -> bool:
+    return model_id.strip().lower() == "k2-fsa/omnivoice"
+
+
+def _default_voice_for_model(model_id: str) -> str | None:
+    """Return the implicit local voice to use for a model, if any."""
+    return None if _is_omnivoice_model(model_id) else _DEFAULT_VOICE
+
+
+def _omnivoice_dtype(torch_module, device_map: str):
+    dtype_name = os.environ.get("SPOKE_OMNIVOICE_DTYPE", "").strip()
+    if dtype_name:
+        dtype = getattr(torch_module, dtype_name, None)
+        if dtype is None:
+            raise RuntimeError(
+                f"SPOKE_OMNIVOICE_DTYPE={dtype_name!r} does not name a torch dtype"
+            )
+        return dtype
+    return torch_module.float16 if device_map != "cpu" else torch_module.float32
+
+
+def _omnivoice_device_map(torch_module) -> str:
+    explicit = os.environ.get("SPOKE_OMNIVOICE_DEVICE_MAP", "").strip()
+    if explicit:
+        return explicit
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        return "mps"
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is not None and callable(getattr(cuda, "is_available", None)) and cuda.is_available():
+        return "cuda:0"
+    return "cpu"
+
+
+def omnivoice_load(model_id: str):
+    """Load OmniVoice through its native package instead of mlx_audio."""
+    try:
+        import torch
+        from omnivoice import OmniVoice
+    except ImportError as exc:
+        raise RuntimeError(
+            "OmniVoice TTS backend is unavailable in the active runtime. "
+            "Install the `tts` extra with OmniVoice support."
+        ) from exc
+
+    device_map = _omnivoice_device_map(torch)
+    dtype = _omnivoice_dtype(torch, device_map)
+    logger.info(
+        "Loading OmniVoice model %s with device_map=%s dtype=%s",
+        model_id,
+        device_map,
+        getattr(dtype, "__name__", repr(dtype)),
+    )
+    model = OmniVoice.from_pretrained(
+        model_id,
+        device_map=device_map,
+        dtype=dtype,
+    )
+    setattr(model, "sample_rate", _OMNIVOICE_SAMPLE_RATE)
+    return model
+
+
+def _generate_kwargs(model, *, text: str, voice: str | None,
+                     temperature: float, top_k: int, top_p: float,
+                     model_id: str | None = None) -> dict:
     """Build kwargs for model.generate(), passing only params it accepts.
 
     If the model's generate() signature can't be introspected (e.g. it
@@ -169,8 +236,19 @@ def _generate_kwargs(model, *, text: str, voice: str,
     named = {n for n, p in params.items()
              if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
                            inspect.Parameter.KEYWORD_ONLY)}
-    all_extras = {"voice": voice, "temperature": temperature,
-                  "top_k": top_k, "top_p": top_p}
+    is_omnivoice = model_id is not None and _is_omnivoice_model(model_id)
+    voice_key = "instruct" if is_omnivoice else "voice"
+    all_extras: dict[str, object] = {}
+    if voice:
+        all_extras[voice_key] = voice
+    if not is_omnivoice:
+        all_extras.update(
+            {
+                "temperature": temperature,
+                "top_k": top_k,
+                "top_p": top_p,
+            }
+        )
     kwargs: dict = {"text": text}
     if not named or has_var_keyword:
         # Can't tell what's accepted — forward everything
@@ -179,7 +257,48 @@ def _generate_kwargs(model, *, text: str, voice: str,
         for k, v in all_extras.items():
             if k in named:
                 kwargs[k] = v
+            elif k == "voice" and "instruct" in named and v:
+                # OmniVoice voice-design prompts use `instruct` instead of `voice`.
+                kwargs["instruct"] = v
     return kwargs
+
+
+def _normalize_audio_array(audio) -> np.ndarray:
+    if hasattr(audio, "detach"):
+        audio = audio.detach()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    if hasattr(audio, "numpy"):
+        audio = audio.numpy()
+    array = np.asarray(audio, dtype=np.float32)
+    if array.ndim == 0:
+        array = array.reshape(1)
+    if array.ndim == 2 and array.shape[0] == 1 and array.shape[1] > 1:
+        array = array.T
+    return array
+
+
+def _materialize_generation_result(result, sample_rate_hint: int | None) -> _PlaybackResult:
+    if hasattr(result, "audio"):
+        audio = _normalize_audio_array(result.audio)
+        sample_rate = int(getattr(result, "sample_rate"))
+    else:
+        if sample_rate_hint is None:
+            raise RuntimeError("TTS backend returned raw audio without a sample-rate hint")
+        audio = _normalize_audio_array(result)
+        sample_rate = int(sample_rate_hint)
+    return _PlaybackResult(audio=audio, sample_rate=sample_rate)
+
+
+def _iter_playback_results(results, sample_rate_hint: int | None):
+    if results is None:
+        return
+    if isinstance(results, (list, tuple)):
+        iterable = results
+    else:
+        iterable = results
+    for result in iterable:
+        yield _materialize_generation_result(result, sample_rate_hint)
 
 
 class TTSClient:
@@ -188,14 +307,14 @@ class TTSClient:
     def __init__(
         self,
         model_id: str = _DEFAULT_MODEL_ID,
-        voice: str = _DEFAULT_VOICE,
+        voice: str | None = None,
         temperature: float = _DEFAULT_TEMPERATURE,
         top_k: int = _DEFAULT_TOP_K,
         top_p: float = _DEFAULT_TOP_P,
         gpu_lock: threading.Lock | None = None,
     ):
         self._model_id = model_id
-        self._voice = voice
+        self._voice = _default_voice_for_model(model_id) if voice is None else voice
         self._temperature = temperature
         self._top_k = top_k
         self._top_p = top_p
@@ -210,6 +329,11 @@ class TTSClient:
         self._audio_fade_start_gain = 1.0
         self._audio_fade_target_gain = 1.0
         self._audio_fade_started_at = time.monotonic()
+        self._warm_lock = threading.Lock()
+        self._warm_thread: threading.Thread | None = None
+        self._warm_in_progress = False
+        self._warm_completed = threading.Event()
+        self._warm_error: Exception | None = None
 
     @classmethod
     def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient | RemoteTTSClient"]:
@@ -237,6 +361,8 @@ class TTSClient:
         if self._model is None:
             logger.info("Loading TTS model %s …", self._model_id)
             self._model = tts_load(self._model_id)
+            self._warm_error = None
+            self._warm_completed.set()
             logger.info("TTS model loaded.")
 
     def warm(self) -> None:
@@ -247,9 +373,26 @@ class TTSClient:
             with lock_ctx:
                 try:
                     self._ensure_model()
-                except Exception:
+                except Exception as exc:
+                    self._warm_error = exc
                     logger.warning("TTS model warm-up failed", exc_info=True)
-        threading.Thread(target=_warm, daemon=True).start()
+                finally:
+                    with self._warm_lock:
+                        self._warm_in_progress = False
+                        self._warm_completed.set()
+
+        with self._warm_lock:
+            if self._model is not None:
+                self._warm_error = None
+                self._warm_completed.set()
+                return
+            if self._warm_in_progress and self._warm_thread is not None and self._warm_thread.is_alive():
+                return
+            self._warm_error = None
+            self._warm_completed.clear()
+            self._warm_in_progress = True
+            self._warm_thread = threading.Thread(target=_warm, daemon=True)
+            self._warm_thread.start()
 
     def unload(self) -> None:
         """Release the TTS model to free memory."""
@@ -257,10 +400,30 @@ class TTSClient:
             return
         logger.info("Unloading TTS model %s", self._model_id)
         self._model = None
+        self._warm_completed.clear()
 
     @property
     def is_loaded(self) -> bool:
         """Whether the model is currently resident in memory."""
+        return self._model is not None
+
+    @property
+    def is_warming(self) -> bool:
+        """Whether a background warmup is currently in flight."""
+        with self._warm_lock:
+            if self._warm_in_progress and self._warm_thread is not None and not self._warm_thread.is_alive():
+                self._warm_in_progress = False
+            return self._warm_in_progress
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait for an in-flight warmup to finish."""
+        if self._model is not None:
+            return True
+        if not self.is_warming:
+            return self._model is not None
+        finished = self._warm_completed.wait(timeout=timeout)
+        if not finished:
+            return False
         return self._model is not None
 
     def _current_audio_gain_locked(self, now: float) -> float:
@@ -424,26 +587,17 @@ class TTSClient:
                             temperature=self._temperature,
                             top_k=self._top_k,
                             top_p=self._top_p,
+                            model_id=self._model_id,
                         )
                         results = self._model.generate(**gen_kwargs)
                         logger.info("TTS speak: generate() returned, iterating results")
 
+                    sample_rate_hint = getattr(self._model, "sample_rate", None)
                     chunk_count = 0
-                    while True:
+                    for materialized in _iter_playback_results(results, sample_rate_hint):
                         if self._cancelled:
                             logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
                             return
-                        # Don't hold GPU lock for next() — the generate iterator
-                        # does Metal work internally but holding the lock here
-                        # deadlocks with Whisper transcription on another thread.
-                        try:
-                            result = next(results)
-                        except StopIteration:
-                            break
-                        materialized = _PlaybackResult(
-                            audio=np.asarray(result.audio, dtype=np.float32),
-                            sample_rate=int(result.sample_rate),
-                        )
                         chunk_count += 1
                         if chunk_count == 1:
                             logger.info("TTS speak: first audio chunk: %d samples @ %dHz",

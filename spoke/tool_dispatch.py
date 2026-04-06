@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Callable
+
+# Filesystem tools resolve relative paths against ~/dev so the model
+# can use short paths like "epistaxis/projects/spoke/epistaxis.md"
+# regardless of which launcher target started the process.
+_TOOLS_HOME = os.path.expanduser("~/dev")
 
 from spoke.epistaxis_operator import (
     EpistaxisOperator,
@@ -25,6 +31,22 @@ from spoke.gmail_operator import (
 from spoke.scene_capture import SceneCaptureCache
 
 logger = logging.getLogger(__name__)
+
+
+def _is_local_omnivoice_cold_tts(tts_client: Any) -> bool:
+    """Whether the active TTS client is a cold local OmniVoice instance."""
+    model_id = getattr(tts_client, "_model_id", "")
+    if not isinstance(model_id, str) or model_id.strip().lower() != "k2-fsa/omnivoice":
+        return False
+    if getattr(tts_client, "_model", None) is not None:
+        return False
+    base_url = getattr(tts_client, "_base_url", "")
+    return not bool(base_url)
+
+
+def _omnivoice_warmup_inflight(tts_client: Any) -> bool:
+    warming = getattr(tts_client, "is_warming", False)
+    return warming if isinstance(warming, bool) else False
 
 
 # ── Tool schemas (OpenAI function calling format) ────────────────
@@ -314,6 +336,49 @@ def _execute_read_aloud(
         model_loaded = getattr(tts_client, "_model", None) is not None
         logger.info("read_aloud: tts_client present, model=%s, model_loaded=%s, cancelled=%s, text=%d chars",
                      model_id, model_loaded, cancelled, len(text))
+        if _is_local_omnivoice_cold_tts(tts_client):
+            wait_until_ready = getattr(tts_client, "wait_until_ready", None)
+            if _omnivoice_warmup_inflight(tts_client) and callable(wait_until_ready):
+                logger.info(
+                    "read_aloud: waiting for local OmniVoice warmup to finish"
+                )
+                if wait_until_ready(timeout=15.0):
+                    model_loaded = getattr(tts_client, "_model", None) is not None
+                    logger.info(
+                        "read_aloud: local OmniVoice warmup finished during command turn"
+                    )
+                else:
+                    logger.warning(
+                        "read_aloud: local OmniVoice warmup still in flight after timeout"
+                    )
+                    return (
+                        "Error speaking text: Local OmniVoice TTS is still warming. "
+                        "Retry in a moment once the background load finishes."
+                    )
+            if _is_local_omnivoice_cold_tts(tts_client):
+                warm = getattr(tts_client, "warm", None)
+                if callable(warm):
+                    logger.info(
+                        "read_aloud: starting background warmup for local OmniVoice"
+                    )
+                    warm()
+                if callable(wait_until_ready) and wait_until_ready(timeout=5.0):
+                    model_loaded = getattr(tts_client, "_model", None) is not None
+                    logger.info(
+                        "read_aloud: local OmniVoice warmup completed after cold start"
+                    )
+                if not _is_local_omnivoice_cold_tts(tts_client):
+                    logger.info(
+                        "read_aloud: local OmniVoice became ready after cold warm start"
+                    )
+                else:
+                    logger.warning(
+                        "read_aloud: local OmniVoice still cold after background warm start"
+                    )
+                    return (
+                        "Error speaking text: Local OmniVoice TTS is loading in the background. "
+                        "Try read_aloud again in a moment."
+                    )
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
@@ -338,7 +403,7 @@ def _execute_read_aloud(
         logger.warning("read_aloud: no tts_client available")
         return (
             "Error: TTS client is not available. "
-            "This means SPOKE_TTS_VOICE is not set in the environment, "
+            "This usually means no TTS voice/backend is configured, "
             "or the TTS client failed to initialize at startup. "
             "Tell the user: TTS is not configured."
         )
@@ -368,14 +433,23 @@ def _execute_add_to_tray(
 
 
 
+def _resolve_tool_path(p: str) -> str:
+    """Resolve a path for filesystem tools.
+
+    Expands ``~``, and resolves relative paths against ``_TOOLS_HOME``
+    (~/dev) so the model can use short paths like ``epistaxis/...``.
+    """
+    expanded = os.path.expanduser(p)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.join(_TOOLS_HOME, expanded)
+
+
 def _execute_list_directory(arguments: dict) -> dict[str, Any]:
     import fnmatch
-    import os
     from datetime import datetime, timezone
 
-    dir_path = arguments.get("dir_path")
-    if dir_path is None:
-        dir_path = "."
+    dir_path = _resolve_tool_path(arguments.get("dir_path") or ".")
     pattern = arguments.get("pattern")
     try:
         if not os.path.isdir(dir_path):
@@ -407,14 +481,14 @@ def _execute_list_directory(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 def _execute_read_file(arguments: dict) -> dict[str, Any]:
-    import os
     import ast
     import re
     from itertools import islice
 
-    file_path = arguments.get("file_path")
-    if not file_path:
+    raw_path = arguments.get("file_path")
+    if not raw_path:
         return {"error": "file_path is required"}
+    file_path = _resolve_tool_path(raw_path)
 
     start_line = arguments.get("start_line")
     end_line = arguments.get("end_line")
@@ -489,8 +563,10 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 def _execute_write_file(arguments: dict) -> dict[str, Any]:
-    import os
-    file_path = arguments.get("file_path", "")
+    raw_path = arguments.get("file_path")
+    if not raw_path:
+        return {"error": "file_path is required"}
+    file_path = _resolve_tool_path(raw_path)
     content = arguments.get("content", "")
     if not file_path:
         return {"error": "file_path is required"}
@@ -517,7 +593,7 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
     import subprocess
     pattern = arguments.get("pattern", "")
-    dir_path = arguments.get("dir_path", ".")
+    dir_path = _resolve_tool_path(arguments.get("dir_path", "."))
     if not pattern:
         return {"error": "pattern is required"}
     try:
@@ -536,12 +612,11 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
 
 
 def _execute_find_file(arguments: dict) -> dict[str, Any]:
-    import os
     from datetime import datetime, timezone
     from pathlib import Path
 
     pattern = arguments.get("pattern", "")
-    dir_path = arguments.get("dir_path", ".")
+    dir_path = _resolve_tool_path(arguments.get("dir_path", "."))
     if not pattern:
         return {"error": "pattern is required"}
     try:

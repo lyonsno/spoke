@@ -102,6 +102,46 @@ export SPOKE_TTS_VOICE="casual_female"
 export SPOKE_TTS_MODEL="mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
 ```
 
+### OmniVoice local/quant note
+
+`spoke`'s current OmniVoice path is not MLX-native. It loads
+`k2-fsa/OmniVoice` through the upstream `omnivoice` PyTorch package, so treat
+MLX conversion or MLX quantization as an experiment until there is an explicit
+adapter for `model_type: omnivoice`.
+
+As of `2026-04-05`, useful Hugging Face search terms are:
+
+```text
+OmniVoice
+mlx-community OmniVoice
+OmniVoice-bf16
+OmniVoice-4bit
+OmniVoice-6bit
+OmniVoice-8bit
+OmniVoice 4bit
+OmniVoice 6bit
+OmniVoice 8bit
+omnivoice mlx
+```
+
+Current state on this box:
+
+- upstream repo: `k2-fsa/OmniVoice`
+- published mirrors found: `mlx-community/OmniVoice-bf16`, `drbaph/OmniVoice-bf16`
+- published `4bit` / `6bit` / `8bit` OmniVoice repos found: none
+- cached upstream snapshot footprint: about `3.0G` total (`model.safetensors`
+  about `2.3G`, `audio_tokenizer/` about `768M`)
+
+If you build or stage a local OmniVoice variant, point `SPOKE_TTS_MODEL` at the
+local folder path instead of a Hub ID. The current loader forwards the value to
+`OmniVoice.from_pretrained(...)`, so a local model directory is already a valid
+shape:
+
+```sh
+export SPOKE_TTS_MODEL="/path/to/OmniVoice-local"
+export SPOKE_TTS_VOICE="female, british accent"
+```
+
 ### When a fresh worktree venv is sick
 
 Some fresh worktrees can still abort on bare `import mlx.core` or
