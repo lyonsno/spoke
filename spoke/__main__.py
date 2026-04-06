@@ -53,20 +53,24 @@ class _PastableTextField(NSTextField):
     def performKeyEquivalent_(self, event) -> bool:
         if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
             chars = event.charactersIgnoringModifiers()
-            editor = self.currentEditor()
-            if editor is not None:
-                if chars == "v":
-                    editor.paste_(self)
-                    return True
-                if chars == "c":
-                    editor.copy_(self)
-                    return True
-                if chars == "x":
-                    editor.cut_(self)
-                    return True
-                if chars == "a":
-                    editor.selectAll_(self)
-                    return True
+            if chars in ("v", "c", "x", "a"):
+                editor = self.currentEditor()
+                if editor is None:
+                    # Field isn't focused — grab focus so the field editor exists.
+                    self.window().makeFirstResponder_(self)
+                    editor = self.currentEditor()
+                if editor is not None:
+                    if chars == "v":
+                        editor.paste_(self)
+                    elif chars == "c":
+                        editor.copy_(self)
+                    elif chars == "x":
+                        editor.cut_(self)
+                    elif chars == "a":
+                        editor.selectAll_(self)
+                # Swallow the event even if editor setup failed, so
+                # the alert doesn't dismiss on Cmd+V/C/X/A.
+                return True
         return super().performKeyEquivalent_(event)
 
 from .capture import AudioCapture
