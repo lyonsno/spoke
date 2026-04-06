@@ -877,6 +877,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
         self._detector._on_enter_during_recording = self._on_enter_during_recording
+        self._detector._on_space_enter_chord = self._on_space_enter_chord
         self._detector._on_double_tap_shift = self._toggle_terraform_hud
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
@@ -1604,10 +1605,33 @@ class SpokeAppDelegate(NSObject):
             return
         if self._transcribing:
             return  # cancel spring path handles this
-        logger.info("Enter added during recording — arming live mode timer (3000ms)")
+        self._arm_live_mode()
+
+    def _on_space_enter_chord(self) -> None:
+        """Both space and enter are physically held — fires from raw keyDown.
+
+        This is the earliest possible detection of the chord, before the
+        state machine decides what to do with Enter.  Used to start the
+        live mode arm timer regardless of whether the hold threshold has
+        fired yet.
+        """
+        if getattr(self, "_live_mode", False):
+            logger.info("Space+enter chord in live mode — arming exit timer")
+            self._start_live_exit_timer()
+            return
+        if self._transcribing:
+            return  # cancel spring handles this
+        # Don't re-arm if already armed
+        if getattr(self, "_live_arm_timer", None) is not None:
+            return
+        self._arm_live_mode()
+
+    def _arm_live_mode(self) -> None:
+        """Start the live mode arm timer with visual feedback."""
+        logger.info("Arming live mode timer (2600ms)")
         if self._menubar is not None:
-            self._menubar.set_status_text("Live mode arming (3s)…")
-        self._start_live_arm_timer_full()
+            self._menubar.set_status_text("Live mode arming…")
+        self._start_live_arm_timer()
 
     # ── Gemini Live conversation mode ────────────────────────────────
 
