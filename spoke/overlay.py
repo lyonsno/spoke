@@ -153,7 +153,7 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
-_DARK_TEXT_CUTOUT_FILTER = "destinationOut"
+_LIGHT_TEXT_CUTOUT_FILTER = "destinationOut"
 _TEXT_SNAP_SPEED = 0.35
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -588,6 +588,8 @@ class TranscriptionOverlay(NSObject):
         self._metal_preview_renderer = None
         self._metal_preview_active = False
         self._metal_preview_ready = False
+        self._preview_cutout_layer = None
+        self._preview_cutout_active = False
         self._preview_surface_alpha = _TEXT_ALPHA_MIN
 
         # Adaptive compositing defaults dark until we get a brightness sample.
@@ -596,6 +598,8 @@ class TranscriptionOverlay(NSObject):
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
         self._fill_renderer = None
+        self._fill_metal_layer = None
+        self._metal_fill_active = False
         self._visual_layer_state = None
 
         # Recovery mode state
@@ -628,8 +632,24 @@ class TranscriptionOverlay(NSObject):
     def _apply_visual_layer_state(self) -> None:
         if not hasattr(self, "_fill_layer") or self._fill_layer is None:
             return
+        self._set_fill_render_mode(getattr(self, "_metal_fill_active", False))
+
+    def _set_fill_render_mode(self, use_metal: bool) -> None:
         state = getattr(self, "_visual_layer_state", None)
-        self._fill_layer.setHidden_(False if state is None else not state.is_visible(PREVIEW_FILL_LAYER_ID))
+        visible = False if state is None else state.is_visible(PREVIEW_FILL_LAYER_ID)
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
+            self._fill_layer.setHidden_(not visible or use_metal)
+        metal_layer = getattr(self, "_fill_metal_layer", None)
+        if metal_layer is not None:
+            metal_layer.setHidden_(not visible or not use_metal)
+        self._metal_fill_active = bool(use_metal and metal_layer is not None)
+
+    def _set_fill_opacity(self, opacity: float) -> None:
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
+            self._fill_layer.setOpacity_(opacity)
+        metal_layer = getattr(self, "_fill_metal_layer", None)
+        if metal_layer is not None:
+            metal_layer.setOpacity_(opacity)
 
     def setup(self) -> None:
         """Create the overlay window."""
@@ -691,18 +711,18 @@ class TranscriptionOverlay(NSObject):
         # the alpha falloff is in the image itself.  The fill color is updated
         # by rebuilding the image in update_text_amplitude.
         self._fill_renderer = _maybe_create_metal_preview_fill_renderer((win_w, win_h), self._ridge_scale)
-        if self._fill_renderer is not None:
-            self._fill_layer = self._fill_renderer.layer()
-        else:
-            self._fill_layer = CALayer.alloc().init()
-            self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
-            self._fill_layer.setContentsGravity_("resize")
+        self._fill_metal_layer = self._fill_renderer.layer() if self._fill_renderer is not None else None
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setContentsGravity_("resize")
 
         # Build initial SDF fill image
         self._apply_ridge_masks(w, h)
         self._apply_visual_layer_state()
 
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        if self._fill_metal_layer is not None:
+            wrapper.layer().insertSublayer_below_(self._fill_metal_layer, content.layer())
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -751,6 +771,15 @@ class TranscriptionOverlay(NSObject):
         content.addSubview_(self._scroll_view)
         self._window.setContentView_(wrapper)
 
+        self._preview_cutout_layer = CALayer.alloc().init()
+        self._preview_cutout_layer.setFrame_(scroll_frame)
+        self._preview_cutout_layer.setContentsGravity_("resize")
+        self._preview_cutout_layer.setHidden_(True)
+        self._preview_cutout_layer.setOpacity_(0.0)
+        if hasattr(self._preview_cutout_layer, "setCompositingFilter_"):
+            self._preview_cutout_layer.setCompositingFilter_(_LIGHT_TEXT_CUTOUT_FILTER)
+        content.layer().addSublayer_(self._preview_cutout_layer)
+
         if _PREVIEW_TEXT_METAL_ENABLED:
             try:
                 from .metal_preview import maybe_create_metal_textured_layer
@@ -798,7 +827,9 @@ class TranscriptionOverlay(NSObject):
         self._text_payload_signature = None
         self._text_payload_dirty = True
         self._preview_surface_signature = None
-        self._set_preview_surface_mode(self._metal_preview_renderer is not None)
+        self._set_preview_surface_mode(
+            self._should_use_metal_preview_surface(getattr(self, "_brightness", 0.0))
+        )
         self._apply_preview_surface_alpha(_TEXT_ALPHA_MIN)
         self._refresh_text_payload(force=True)
         self._content_view.layer().setBackgroundColor_(None)
@@ -959,6 +990,8 @@ class TranscriptionOverlay(NSObject):
     def _set_preview_surface_mode(self, use_metal: bool) -> None:
         renderer = getattr(self, "_metal_preview_renderer", None)
         active = bool(use_metal and renderer is not None)
+        if active == getattr(self, "_metal_preview_active", False):
+            return
         self._metal_preview_active = active
         self._metal_preview_ready = False
         self._preview_surface_signature = None
@@ -967,6 +1000,26 @@ class TranscriptionOverlay(NSObject):
             if hasattr(renderer, "set_opacity"):
                 renderer.set_opacity(0.0)
         self._set_view_alpha(getattr(self, "_scroll_view", None), 1.0)
+
+    def _set_preview_cutout_mode(self, active: bool) -> None:
+        layer = getattr(self, "_preview_cutout_layer", None)
+        active = bool(active and layer is not None)
+        if active == getattr(self, "_preview_cutout_active", False):
+            return
+        self._preview_cutout_active = active
+        self._preview_surface_signature = None
+        if layer is not None:
+            layer.setHidden_(not active)
+            if not active:
+                layer.setOpacity_(0.0)
+
+    def _should_use_metal_preview_surface(self, brightness: float) -> bool:
+        renderer = getattr(self, "_metal_preview_renderer", None)
+        return bool(renderer is not None and brightness <= 0.15)
+
+    def _should_use_preview_cutout_surface(self, brightness: float) -> bool:
+        layer = getattr(self, "_preview_cutout_layer", None)
+        return bool(layer is not None and brightness > 0.15)
 
     def _preview_surface_uses_metal(self) -> bool:
         return bool(
@@ -980,6 +1033,15 @@ class TranscriptionOverlay(NSObject):
             getattr(self, "_metal_preview_active", False)
             and getattr(self, "_metal_preview_renderer", None) is not None
         )
+
+    def _preview_surface_uses_cutout(self) -> bool:
+        return bool(
+            getattr(self, "_preview_cutout_active", False)
+            and getattr(self, "_preview_cutout_layer", None) is not None
+        )
+
+    def _preview_surface_wants_snapshot(self) -> bool:
+        return self._preview_surface_wants_metal() or self._preview_surface_uses_cutout()
 
     def _preview_surface_bounds_key(self) -> tuple[tuple[float, float], tuple[float, float] | None]:
         scroll_view = getattr(self, "_scroll_view", None)
@@ -1007,16 +1069,26 @@ class TranscriptionOverlay(NSObject):
         scroll_view = getattr(self, "_scroll_view", None)
         if scroll_view is None or not hasattr(scroll_view, "bounds"):
             return None
-        restore_alpha = None
-        set_alpha = getattr(scroll_view, "setAlphaValue_", None)
-        get_alpha = getattr(scroll_view, "alphaValue", None)
-        if callable(set_alpha):
+        alpha_restores: list[tuple[object, float]] = []
+
+        def _force_view_opaque(view) -> None:
+            if view is None:
+                return
+            set_alpha = getattr(view, "setAlphaValue_", None)
+            get_alpha = getattr(view, "alphaValue", None)
+            if not callable(set_alpha):
+                return
             try:
-                restore_alpha = float(get_alpha()) if callable(get_alpha) else None
+                alpha = float(get_alpha()) if callable(get_alpha) else None
             except Exception:
-                restore_alpha = None
-            if restore_alpha is not None and restore_alpha < 0.999:
-                set_alpha(1.0)
+                alpha = None
+            if alpha is None or alpha >= 0.999:
+                return
+            alpha_restores.append((view, alpha))
+            set_alpha(1.0)
+
+        _force_view_opaque(scroll_view)
+        _force_view_opaque(getattr(self, "_text_view", None))
         try:
             if hasattr(scroll_view, "displayIfNeeded"):
                 scroll_view.displayIfNeeded()
@@ -1033,20 +1105,26 @@ class TranscriptionOverlay(NSObject):
                 return rep.CGImage()
             return None
         finally:
-            if restore_alpha is not None and callable(set_alpha) and abs(restore_alpha - 1.0) > 0.001:
-                set_alpha(restore_alpha)
+            for view, alpha in reversed(alpha_restores):
+                set_alpha = getattr(view, "setAlphaValue_", None)
+                if callable(set_alpha):
+                    set_alpha(alpha)
 
     def _sync_preview_surface(self, *, force: bool = False) -> bool:
-        if not self._preview_surface_wants_metal():
+        if not self._preview_surface_wants_snapshot():
             return False
         renderer = getattr(self, "_metal_preview_renderer", None)
+        cutout_layer = getattr(self, "_preview_cutout_layer", None)
         scroll_view = getattr(self, "_scroll_view", None)
-        if renderer is None or scroll_view is None:
+        if scroll_view is None:
             return False
         signature = self._preview_surface_signature_for_current_state()
         if (
             not force
-            and getattr(self, "_metal_preview_ready", False)
+            and (
+                getattr(self, "_metal_preview_ready", False)
+                or getattr(self, "_preview_cutout_active", False)
+            )
             and signature == getattr(self, "_preview_surface_signature", None)
         ):
             return False
@@ -1055,32 +1133,57 @@ class TranscriptionOverlay(NSObject):
             if hasattr(self._screen, "backingScaleFactor")
             else 2.0
         )
-        renderer.set_frame(scroll_view.frame(), contents_scale)
+        if self._preview_surface_wants_metal() and renderer is not None:
+            renderer.set_frame(scroll_view.frame(), contents_scale)
+        if self._preview_surface_uses_cutout() and cutout_layer is not None:
+            cutout_layer.setFrame_(scroll_view.frame())
         image = self._snapshot_preview_surface_image()
         if image is None:
             self._metal_preview_ready = False
-            renderer.set_hidden(True)
-            renderer.set_opacity(0.0)
+            if renderer is not None:
+                renderer.set_hidden(True)
+                renderer.set_opacity(0.0)
+            if cutout_layer is not None:
+                cutout_layer.setHidden_(True)
+                cutout_layer.setOpacity_(0.0)
             self._set_view_alpha(scroll_view, 1.0)
             self._apply_text_view_alpha(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
             return False
-        if not renderer.update_cgimage(image):
-            self._metal_preview_ready = False
-            renderer.set_hidden(True)
-            renderer.set_opacity(0.0)
-            self._set_view_alpha(scroll_view, 1.0)
-            self._apply_text_view_alpha(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
-            return False
-        self._metal_preview_ready = True
-        renderer.set_hidden(False)
-        renderer.set_opacity(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
+        if self._preview_surface_wants_metal() and renderer is not None:
+            if not renderer.update_cgimage(image):
+                self._metal_preview_ready = False
+                renderer.set_hidden(True)
+                renderer.set_opacity(0.0)
+                self._set_view_alpha(scroll_view, 1.0)
+                self._apply_text_view_alpha(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
+                return False
+            self._metal_preview_ready = True
+            renderer.set_hidden(False)
+            renderer.set_opacity(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
+        if self._preview_surface_uses_cutout() and cutout_layer is not None:
+            cutout_layer.setContents_(image)
+            cutout_layer.setHidden_(False)
+            cutout_layer.setOpacity_(getattr(self, "_preview_surface_alpha", _TEXT_ALPHA_MIN))
         self._set_view_alpha(scroll_view, 0.0)
+        if self._preview_surface_uses_cutout():
+            self._apply_text_view_alpha(0.0)
         self._apply_text_compositing_mode(getattr(self, "_brightness", 0.0))
         self._preview_surface_signature = signature
         return True
 
     def _apply_preview_surface_alpha(self, alpha: float) -> None:
         self._preview_surface_alpha = alpha
+        if self._preview_surface_uses_cutout():
+            self._set_view_alpha(getattr(self, "_scroll_view", None), 0.0)
+            self._apply_text_view_alpha(0.0)
+            layer = getattr(self, "_preview_cutout_layer", None)
+            if layer is not None:
+                layer.setOpacity_(alpha)
+            renderer = getattr(self, "_metal_preview_renderer", None)
+            if renderer is not None:
+                renderer.set_hidden(True)
+                renderer.set_opacity(0.0)
+            return
         if self._preview_surface_uses_metal():
             self._set_view_alpha(getattr(self, "_scroll_view", None), 0.0)
             self._metal_preview_renderer.set_opacity(alpha)
@@ -1320,11 +1423,24 @@ class TranscriptionOverlay(NSObject):
         layer.setBackgroundColor_(None)
 
     def _apply_text_compositing_mode(self, brightness: float) -> None:
-        """Flip preview text into cutout mode on bright backgrounds."""
+        """Route preview text through either normal display or cutout display."""
+        cutout_layer = getattr(self, "_preview_cutout_layer", None)
+        if cutout_layer is not None and hasattr(cutout_layer, "setCompositingFilter_"):
+            cutout_layer.setCompositingFilter_(
+                _LIGHT_TEXT_CUTOUT_FILTER if self._preview_surface_uses_cutout() else None
+            )
         if self._preview_surface_uses_metal():
             self._metal_preview_renderer.set_compositing_filter(
-                _DARK_TEXT_CUTOUT_FILTER if brightness > 0.15 else None
+                None
             )
+            return
+        if self._preview_surface_uses_cutout():
+            text_view = getattr(self, "_text_view", None)
+            if text_view is not None and hasattr(text_view, "setWantsLayer_"):
+                text_view.setWantsLayer_(True)
+                layer = text_view.layer() if hasattr(text_view, "layer") else None
+                if layer is not None and hasattr(layer, "setCompositingFilter_"):
+                    layer.setCompositingFilter_(None)
             return
         text_view = getattr(self, "_text_view", None)
         if text_view is None:
@@ -1334,8 +1450,7 @@ class TranscriptionOverlay(NSObject):
         layer = text_view.layer() if hasattr(text_view, "layer") else None
         if layer is None or not hasattr(layer, "setCompositingFilter_"):
             return
-        filter_name = _DARK_TEXT_CUTOUT_FILTER if brightness > 0.15 else None
-        layer.setCompositingFilter_(filter_name)
+        layer.setCompositingFilter_(None)
 
     # ── amplitude-reactive text ──────────────────────────────
 
@@ -1371,6 +1486,10 @@ class TranscriptionOverlay(NSObject):
 
         t = getattr(self, "_brightness", 0.0)
         mode_t = getattr(self, "_brightness_target", t)
+        self._set_preview_cutout_mode(self._should_use_preview_cutout_surface(mode_t))
+        self._set_preview_surface_mode(
+            self._should_use_metal_preview_surface(mode_t) and not self._preview_surface_uses_cutout()
+        )
         self._apply_text_compositing_mode(mode_t)
 
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
@@ -1407,8 +1526,11 @@ class TranscriptionOverlay(NSObject):
         self._set_text_palette_mode(palette_mode)
         self._apply_preview_surface_alpha(_TEXT_ANCHOR_ALPHA)
         payload_updated = self._refresh_text_payload()
-        if payload_updated:
-            self._sync_preview_surface(force=True)
+        if self._preview_surface_wants_snapshot():
+            if payload_updated or not getattr(self, "_metal_preview_ready", False):
+                self._sync_preview_surface(force=True)
+        elif payload_updated:
+            self._preview_surface_signature = None
 
         # SDF fill breathes with amplitude.  On light backgrounds the fill
         # is relatively MORE assertive (because the glow is dimming the same
@@ -1425,7 +1547,7 @@ class TranscriptionOverlay(NSObject):
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         fill_rgb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(fill_opacity, 0.99))
+            self._set_fill_opacity(min(fill_opacity, 0.99))
             # Rebuild the fill image when brightness changes enough to
             # affect the baked color.
             last_t = getattr(self, '_fill_image_brightness', -1.0)
@@ -1556,6 +1678,11 @@ class TranscriptionOverlay(NSObject):
                         fill_opacity = _BG_ALPHA_MIN
                 else:
                     fill_opacity = _BG_ALPHA_MIN
+            filter_name = (
+                None
+                if fill_override_rgb is not None
+                else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+            )
             renderer = getattr(self, "_fill_renderer", None)
             if renderer is not None:
                 renderer.set_geometry(total_w, total_h, self._fill_sdf, scale)
@@ -1565,15 +1692,13 @@ class TranscriptionOverlay(NSObject):
                     floor,
                     fill_width=width * scale,
                 )
-                renderer.draw_frame()
-                if hasattr(self._fill_layer, "setCompositingFilter_"):
-                    filter_name = (
-                        None
-                        if fill_override_rgb is not None
-                        else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
-                    )
-                    self._fill_layer.setCompositingFilter_(filter_name)
-                return
+                if renderer.draw_frame():
+                    self._set_fill_render_mode(True)
+                    metal_layer = getattr(self, "_fill_metal_layer", None) or self._fill_layer
+                    if hasattr(metal_layer, "setCompositingFilter_"):
+                        metal_layer.setCompositingFilter_(filter_name)
+                    return
+                self._set_fill_render_mode(False)
             fill_alpha = _glow_fill_alpha(self._fill_sdf, width=width * scale, interior_floor=floor)
             # Scale color to 0-255
             fill_image, self._fill_payload = _fill_field_to_image(
@@ -1583,12 +1708,8 @@ class TranscriptionOverlay(NSObject):
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
             if hasattr(self._fill_layer, "setCompositingFilter_"):
-                filter_name = (
-                    None
-                    if fill_override_rgb is not None
-                    else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
-                )
                 self._fill_layer.setCompositingFilter_(filter_name)
+            self._set_fill_render_mode(False)
         except (ImportError, Exception):
             pass
 
@@ -1604,8 +1725,7 @@ class TranscriptionOverlay(NSObject):
     ) -> None:
         self._fill_override_rgb = rgb
         self._fill_override_opacity = opacity
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(opacity)
+        self._set_fill_opacity(opacity)
         if getattr(self, "_content_view", None) is not None:
             content_frame = self._content_view.frame()
             if getattr(self, "_fill_renderer", None) is not None:
@@ -1619,8 +1739,8 @@ class TranscriptionOverlay(NSObject):
     def _clear_fill_override(self, *, opacity: float | None = None) -> None:
         self._fill_override_rgb = None
         self._fill_override_opacity = None
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None and opacity is not None:
-            self._fill_layer.setOpacity_(opacity)
+        if opacity is not None:
+            self._set_fill_opacity(opacity)
         if getattr(self, "_content_view", None) is not None:
             content_frame = self._content_view.frame()
             if getattr(self, "_fill_renderer", None) is not None:
@@ -1985,7 +2105,9 @@ class TranscriptionOverlay(NSObject):
         # Restore normal overlay state
         if self._scroll_view is not None:
             self._scroll_view.setHidden_(False)
-        self._set_preview_surface_mode(self._metal_preview_renderer is not None)
+        self._set_preview_surface_mode(
+            self._should_use_metal_preview_surface(getattr(self, "_brightness", 0.0))
+        )
         self._window.setIgnoresMouseEvents_(True)
 
         # Restore the standard preview fill and clear any recovery-specific tint.

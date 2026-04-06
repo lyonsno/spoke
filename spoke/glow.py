@@ -830,6 +830,9 @@ class _MetalWideBloomRenderer:
         self._additive_mix = 1.0
         self._start_time = time.monotonic()
 
+    def layer(self):
+        return self._layer
+
     def set_base_color(self, base_color: tuple[float, float, float]) -> None:
         self._base_color = base_color
 
@@ -944,6 +947,7 @@ class GlowOverlay(NSObject):
         self._active_additive_mask_intensity = 1.0
         self._active_wide_bloom_profile = WIDE_BLOOM_PROFILE_QUEST
         self._additive_renderer = None
+        self._cpu_additive_fallback_active = False
         self._metal_frame_timer = None
         return self
 
@@ -964,9 +968,7 @@ class GlowOverlay(NSObject):
     def _apply_visual_layer_state(self) -> None:
         self._refresh_glow_masks_if_needed()
         state = getattr(self, "_visual_layer_state", None)
-        if hasattr(self, "_glow_pass_layers"):
-            for layer_id, entry in zip(_GLOW_LAYER_IDS, self._glow_pass_layers):
-                entry["layer"].setHidden_(False if state is None else not state.is_visible(layer_id))
+        self._set_additive_render_mode(getattr(self, "_cpu_additive_fallback_active", False))
         if hasattr(self, "_vignette_pass_layers"):
             for layer_id, entry in zip(_VIGNETTE_LAYER_IDS, self._vignette_pass_layers):
                 entry["layer"].setHidden_(False if state is None else not state.is_visible(layer_id))
@@ -975,6 +977,35 @@ class GlowOverlay(NSObject):
                 False if state is None else not state.is_visible(SCREEN_DIMMER_LAYER_ID)
             )
         self._apply_glow_color(self._glow_color)
+
+    def _set_additive_render_mode(self, use_cpu_fallback: bool) -> None:
+        state = getattr(self, "_visual_layer_state", None)
+        if hasattr(self, "_glow_pass_layers"):
+            for layer_id, entry in zip(_GLOW_LAYER_IDS, self._glow_pass_layers):
+                entry["layer"].setHidden_(
+                    (not use_cpu_fallback)
+                    or (False if state is None else not state.is_visible(layer_id))
+                )
+        renderer = getattr(self, "_additive_renderer", None)
+        if renderer is not None and hasattr(renderer, "layer"):
+            metal_layer = renderer.layer()
+            if metal_layer is not None:
+                metal_layer.setHidden_(use_cpu_fallback)
+        self._cpu_additive_fallback_active = bool(use_cpu_fallback)
+
+    def _draw_additive_frame(self, now: float | None = None, *, start_timer: bool = False) -> bool:
+        renderer = getattr(self, "_additive_renderer", None)
+        if renderer is None:
+            self._set_additive_render_mode(True)
+            return False
+        if renderer.draw_frame(now):
+            self._set_additive_render_mode(False)
+            if start_timer:
+                self._start_metal_frame_timer()
+            return True
+        self._set_additive_render_mode(True)
+        self._stop_metal_frame_timer()
+        return False
 
     def _cancel_pending_hide(self) -> None:
         if self._hide_timer is not None:
@@ -1043,28 +1074,27 @@ class GlowOverlay(NSObject):
         self._active_additive_curve_mode = curve_mode
         self._active_additive_mask_intensity = intensity_multiplier
         self._active_wide_bloom_profile = wide_bloom_profile
-        if self._additive_renderer is None:
-            for entry in _distance_field_masks_for_specs(
-                geometry,
-                _continuous_glow_pass_specs(
-                    wide_bloom_profile=wide_bloom_profile,
-                    intensity_multiplier=intensity_multiplier,
-                ),
-                curve_mode=curve_mode,
+        for entry in _distance_field_masks_for_specs(
+            geometry,
+            _continuous_glow_pass_specs(
+                wide_bloom_profile=wide_bloom_profile,
                 intensity_multiplier=intensity_multiplier,
-                signed_distance=self._glow_signed_distance,
-            ):
-                spec = entry["spec"]
-                layer = CALayer.alloc().init()
-                layer.setFrame_(((0, 0), (w, h)))
-                mask_layer = CALayer.alloc().init()
-                mask_layer.setFrame_(((0, 0), (w, h)))
-                mask_layer.setContents_(entry["image"])
-                mask_layer.setContentsScale_(mask_scale)
-                layer.setMask_(mask_layer)
-                self._glow_layer.addSublayer_(layer)
-                self._glow_mask_payloads.append(entry["payload"])
-                glow_pass_layers.append({"layer": layer, "spec": spec})
+            ),
+            curve_mode=curve_mode,
+            intensity_multiplier=intensity_multiplier,
+            signed_distance=self._glow_signed_distance,
+        ):
+            spec = entry["spec"]
+            layer = CALayer.alloc().init()
+            layer.setFrame_(((0, 0), (w, h)))
+            mask_layer = CALayer.alloc().init()
+            mask_layer.setFrame_(((0, 0), (w, h)))
+            mask_layer.setContents_(entry["image"])
+            mask_layer.setContentsScale_(mask_scale)
+            layer.setMask_(mask_layer)
+            self._glow_layer.addSublayer_(layer)
+            self._glow_mask_payloads.append(entry["payload"])
+            glow_pass_layers.append({"layer": layer, "spec": spec})
 
         self._glow_pass_layers = glow_pass_layers
         self._shadow_shape = glow_pass_layers[-1]["layer"] if glow_pass_layers else None
@@ -1097,6 +1127,7 @@ class GlowOverlay(NSObject):
         self._mask_payloads = self._glow_mask_payloads + self._vignette_mask_payloads
         self._vignette_pass_layers = vignette_pass_layers
         self._apply_glow_color(_GLOW_COLOR)
+        self._set_additive_render_mode(self._additive_renderer is None)
         self._apply_visual_layer_state()
         content.layer().addSublayer_(self._glow_layer)
         content.layer().addSublayer_(self._vignette_layer)
@@ -1199,10 +1230,10 @@ class GlowOverlay(NSObject):
         if additive_renderer is not None:
             additive_renderer.set_base_color(base_color)
             if self._visible:
-                additive_renderer.draw_frame(time.monotonic())
+                self._draw_additive_frame(time.monotonic())
 
         glow_colors = _glow_role_colors(base_color)
-        if additive_renderer is None and hasattr(self, "_glow_pass_layers"):
+        if hasattr(self, "_glow_pass_layers"):
             for entry in self._glow_pass_layers:
                 layer = entry["layer"]
                 spec = entry["spec"]
@@ -1238,10 +1269,7 @@ class GlowOverlay(NSObject):
     def metalFrameTick_(self, timer) -> None:
         if not self._visible:
             return
-        renderer = getattr(self, "_additive_renderer", None)
-        if renderer is None:
-            return
-        renderer.draw_frame(time.monotonic())
+        self._draw_additive_frame(time.monotonic())
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
@@ -1265,8 +1293,7 @@ class GlowOverlay(NSObject):
         self._additive_mix, self._subtractive_mix = _edge_mix_for_brightness(brightness)
         if getattr(self, "_additive_renderer", None) is not None:
             self._additive_renderer.set_additive_mix(self._additive_mix)
-            self._additive_renderer.draw_frame(time.monotonic())
-            self._start_metal_frame_timer()
+            self._draw_additive_frame(time.monotonic(), start_timer=True)
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -1337,6 +1364,7 @@ class GlowOverlay(NSObject):
         self._additive_mix, self._subtractive_mix = _edge_mix_for_brightness(new_brightness)
         if getattr(self, "_additive_renderer", None) is not None:
             self._additive_renderer.set_additive_mix(self._additive_mix)
+            self._draw_additive_frame(time.monotonic())
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:

@@ -96,3 +96,24 @@ def test_fill_override_refreshes_metal_fill_without_geometry_rebuild(
         overlay._apply_ridge_masks.assert_not_called()
     finally:
         sys.modules.pop("spoke.overlay", None)
+
+
+def test_update_fill_image_falls_back_to_baked_fill_when_metal_draw_fails(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._fill_renderer.draw_frame.return_value = False
+        monkeypatch.setattr(mod, "_glow_fill_alpha", lambda *args, **kwargs: "fill-alpha")
+        monkeypatch.setattr(mod, "_fill_field_to_image", lambda *args, **kwargs: ("fill-image", "payload"))
+
+        overlay._update_fill_image(680.0, 160.0)
+
+        overlay._fill_renderer.set_geometry.assert_called_once_with(
+            680.0, 160.0, overlay._fill_sdf, overlay._fill_scale
+        )
+        overlay._fill_renderer.draw_frame.assert_called_once_with()
+        overlay._fill_layer.setContents_.assert_called_once_with("fill-image")
+    finally:
+        sys.modules.pop("spoke.overlay", None)

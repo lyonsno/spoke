@@ -232,6 +232,9 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._fill_renderer = None
+        self._fill_metal_layer = None
+        self._metal_fill_active = False
         self._visual_layer_state = None
 
         return self
@@ -253,8 +256,22 @@ class CommandOverlay(NSObject):
     def _apply_visual_layer_state(self) -> None:
         if not hasattr(self, "_fill_layer") or self._fill_layer is None:
             return
+        self._set_fill_render_mode(getattr(self, "_metal_fill_active", False))
+
+    def _set_fill_render_mode(self, use_metal: bool) -> None:
         state = getattr(self, "_visual_layer_state", None)
-        self._fill_layer.setHidden_(False if state is None else not state.is_visible(COMMAND_FILL_LAYER_ID))
+        visible = False if state is None else state.is_visible(COMMAND_FILL_LAYER_ID)
+        self._fill_layer.setHidden_(not visible or use_metal)
+        metal_layer = getattr(self, "_fill_metal_layer", None)
+        if metal_layer is not None:
+            metal_layer.setHidden_(not visible or not use_metal)
+        self._metal_fill_active = bool(use_metal and metal_layer is not None)
+
+    def _set_fill_opacity(self, opacity: float) -> None:
+        self._fill_layer.setOpacity_(opacity)
+        metal_layer = getattr(self, "_fill_metal_layer", None)
+        if metal_layer is not None:
+            metal_layer.setOpacity_(opacity)
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -313,16 +330,16 @@ class CommandOverlay(NSObject):
             self._fill_renderer = _maybe_create_metal_preview_fill_renderer(
                 (win_w, win_h), self._ridge_scale
             )
-        if self._fill_renderer is not None:
-            self._fill_layer = self._fill_renderer.layer()
-        else:
-            self._fill_layer = CALayer.alloc().init()
-            self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
-            self._fill_layer.setContentsGravity_("resize")
+        self._fill_metal_layer = self._fill_renderer.layer() if self._fill_renderer is not None else None
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setContentsGravity_("resize")
 
         self._apply_ridge_masks(w, h)
         self._apply_visual_layer_state()
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        if self._fill_metal_layer is not None:
+            wrapper.layer().insertSublayer_below_(self._fill_metal_layer, content.layer())
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
         self._spring_tint_layer = CALayer.alloc().init()
@@ -989,7 +1006,7 @@ class CommandOverlay(NSObject):
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             _fill_width, _fill_floor, fill_min, fill_max = _fill_profile_for_brightness(t)
             fill_opacity = _lerp(fill_min, fill_max, breath)
-            self._fill_layer.setOpacity_(min(fill_opacity, 0.98))
+            self._set_fill_opacity(min(fill_opacity, 0.98))
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
@@ -1126,15 +1143,18 @@ class CommandOverlay(NSObject):
 
         renderer.set_geometry(total_w, total_h, sdf, scale)
         renderer.set_fill_state((bg_r, bg_g, bg_b), float(fill_opacity), 0.775)
-        renderer.draw_frame()
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
-            if hasattr(self._fill_layer, "setCompositingFilter_"):
-                self._fill_layer.setCompositingFilter_(
+        if renderer.draw_frame():
+            self._set_fill_render_mode(True)
+            target_layer = getattr(self, "_fill_metal_layer", None) or self._fill_layer
+            if hasattr(target_layer, "setCompositingFilter_"):
+                target_layer.setCompositingFilter_(
                     _fill_compositing_filter_for_brightness(
                         getattr(self, "_brightness", 0.0)
                     )
                 )
-        return True
+            return True
+        self._set_fill_render_mode(False)
+        return False
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge mask + build fill image."""
@@ -1243,10 +1263,13 @@ class CommandOverlay(NSObject):
         # Keep the content view transparent so the same SDF fill/material carries
         # the assistant window chrome as the preview overlay.
         self._content_view.layer().setBackgroundColor_(None)
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None and hasattr(
-            self._fill_layer, "setCompositingFilter_"
-        ):
-            self._fill_layer.setCompositingFilter_(
+        target_layer = (
+            getattr(self, "_fill_metal_layer", None)
+            if getattr(self, "_metal_fill_active", False)
+            else getattr(self, "_fill_layer", None)
+        )
+        if target_layer is not None and hasattr(target_layer, "setCompositingFilter_"):
+            target_layer.setCompositingFilter_(
                 _fill_compositing_filter_for_brightness(self._brightness)
             )
         last_t = getattr(self, "_fill_image_brightness", -1.0)

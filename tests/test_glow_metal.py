@@ -51,7 +51,7 @@ def test_apply_glow_color_routes_additive_surface_to_metal_renderer(mock_pyobjc,
         glow._apply_glow_color(mod._GLOW_COLOR)
 
         glow._additive_renderer.set_base_color.assert_called_once_with(mod._GLOW_COLOR)
-        glow._glow_pass_layers[0]["layer"].setBackgroundColor_.assert_not_called()
+        glow._glow_pass_layers[0]["layer"].setBackgroundColor_.assert_called_once()
         glow._vignette_pass_layers[0]["layer"].setBackgroundColor_.assert_called_once()
     finally:
         sys.modules.pop("spoke.glow", None)
@@ -77,6 +77,26 @@ def test_show_starts_metal_frame_timer_when_renderer_present(mock_pyobjc, monkey
         assert metal_call.args[1] is glow
         assert metal_call.args[4] is True
         assert glow._metal_frame_timer is timer
+    finally:
+        sys.modules.pop("spoke.glow", None)
+
+
+def test_show_falls_back_to_cpu_glow_when_metal_draw_fails(mock_pyobjc, monkeypatch):
+    mod = _import_glow(mock_pyobjc, monkeypatch)
+    try:
+        glow = _make_glow(mod)
+        glow._additive_renderer = MagicMock()
+        glow._additive_renderer.draw_frame.return_value = False
+        glow._visible = True
+        monkeypatch.setattr(mod, "_sample_screen_brightness", lambda screen: 0.0)
+
+        glow.show()
+
+        glow._additive_renderer.set_additive_mix.assert_called_once_with(1.0)
+        glow._additive_renderer.draw_frame.assert_called()
+        glow._glow_pass_layers[0]["layer"].setBackgroundColor_.assert_called()
+        timer_calls = mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args_list
+        assert not any(call.args[2] == "metalFrameTick:" for call in timer_calls)
     finally:
         sys.modules.pop("spoke.glow", None)
 
