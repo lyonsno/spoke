@@ -1309,6 +1309,8 @@ class SpokeAppDelegate(NSObject):
         if self._transcribing:
             return  # cancel spring path handles this
         logger.info("Enter added during recording — arming live mode timer (3000ms)")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Live mode arming (3s)…")
         self._start_live_arm_timer_full()
 
     # ── Gemini Live conversation mode ────────────────────────────────
@@ -1343,6 +1345,8 @@ class SpokeAppDelegate(NSObject):
         """Space+enter held for 3000ms total — enter live conversation mode."""
         self._live_arm_timer = None
         logger.info("Live arm timer fired — entering live mode")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Entering live mode…")
         # Stop normal recording and discard audio
         if self._capture is not None:
             self._capture.stop()
