@@ -180,6 +180,38 @@ def parse_topoi(text: str) -> list[Topos]:
 
         topoi.append(topos)
 
+    # Also parse the Katastasis section — entries there are settled regardless
+    # of their format. They appear as bullet points: - **id** (date): text...
+    kata_match = re.search(r"^## Katastasis\s*$", text, re.MULTILINE)
+    if kata_match:
+        kata_start = kata_match.end()
+        kata_next = re.search(r"^## ", text[kata_start:], re.MULTILINE)
+        kata_text = text[kata_start : kata_start + kata_next.start()] if kata_next else text[kata_start:]
+
+        # Known active topos IDs — skip duplicates
+        active_ids = {t.id.split(" ")[0].split("—")[0].strip() for t in topoi}
+
+        for m in re.finditer(
+            r"^- \*\*([a-zA-Z0-9][\w-]*)\*\*\s*(?:\(([^)]*)\))?:\s*(.*)",
+            kata_text,
+            re.MULTILINE,
+        ):
+            raw_id = m.group(1).strip()
+            if raw_id in active_ids:
+                continue  # already in scoped local state
+            date = m.group(2) or ""
+            description = m.group(3).strip()
+            # Truncate long descriptions
+            if len(description) > 80:
+                description = description[:77] + "..."
+            topos = Topos(
+                id=raw_id,
+                temperature="katástasis",
+                status=description or f"Settled {date}".strip(),
+                observed=date or None,
+            )
+            topoi.append(topos)
+
     return topoi
 
 
