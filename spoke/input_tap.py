@@ -655,6 +655,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                     cb = getattr(det, '_on_cancel_spring_start', None)
                     if cb is not None:
                         cb()
+                else:
+                    # Enter during recording with no generation — notify delegate
+                    # (used to arm live conversation mode timer)
+                    cb = getattr(det, '_on_enter_during_recording', None)
+                    if cb is not None:
+                        cb()
                 return None  # suppress enter while space is held
             if det._state == _State.LATCHED and getattr(det, '_latched_space_down', False):
                 det._enter_latched = True

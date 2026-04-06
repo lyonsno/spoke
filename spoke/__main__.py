@@ -876,6 +876,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
+        self._detector._on_enter_during_recording = self._on_enter_during_recording
         self._detector._on_double_tap_shift = self._toggle_terraform_hud
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
@@ -1591,6 +1592,21 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is not None:
             self._command_overlay.set_cancel_spring(0.0)
 
+    def _on_enter_during_recording(self) -> None:
+        """Enter pressed while space is held and no generation in flight.
+
+        This is the natural gesture for entering live mode: hold space
+        (recording starts at 400ms), then add Enter.  Start the live arm
+        timer from here so the user gets the full 3s countdown from the
+        moment they added Enter.
+        """
+        if getattr(self, "_live_mode", False):
+            return
+        if self._transcribing:
+            return  # cancel spring path handles this
+        logger.info("Enter added during recording — arming live mode timer (3000ms)")
+        self._start_live_arm_timer_full()
+
     # ── Gemini Live conversation mode ────────────────────────────────
 
     _LIVE_ARM_DELAY = 2.6   # seconds after hold starts (400ms hold threshold already elapsed → 3000ms total)
@@ -1599,10 +1615,19 @@ class SpokeAppDelegate(NSObject):
     _LIVE_SESSION_MAX = 15 * 60    # 15 minutes
 
     def _start_live_arm_timer(self) -> None:
+        """Arm from hold start (2.6s remaining after 400ms threshold)."""
         self._cancel_live_arm_timer()
         from Foundation import NSTimer
         self._live_arm_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             self._LIVE_ARM_DELAY, self, "_liveArmFired:", None, False
+        )
+
+    def _start_live_arm_timer_full(self) -> None:
+        """Arm from Enter press during recording (full 3s countdown)."""
+        self._cancel_live_arm_timer()
+        from Foundation import NSTimer
+        self._live_arm_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._LIVE_EXIT_DELAY, self, "_liveArmFired:", None, False
         )
 
     def _cancel_live_arm_timer(self) -> None:
