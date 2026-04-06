@@ -285,25 +285,24 @@ class _ManualScrollView(NSView):
     def mouseUp_(self, event):
         if getattr(self, '_drag_moved', False):
             return
-        # Click (not drag) — find which card subview was hit
         hud = getattr(self, '_hud_ref', None)
-        if hud is None or self._content is None:
+        if hud is None or not hud._topoi:
             return
-        # Convert click to content view coordinates
-        win_pt = event.locationInWindow()
-        content_pt = self._content.convertPoint_fromView_(win_pt, None)
-        # Check each subview (ToposRowView) — they store their index
-        for subview in self._content.subviews():
-            idx = getattr(subview, '_card_index', None)
-            if idx is None:
-                continue
-            frame = subview.frame()
-            if (frame.origin.x <= content_pt.x <= frame.origin.x + frame.size.width
-                    and frame.origin.y <= content_pt.y <= frame.origin.y + frame.size.height):
-                hud._toggle_detail(idx)
-                return
-        # Clicked outside any card — collapse
-        if hud._expanded_index is not None:
+        # Click position in scroll view coords (y=0 at bottom)
+        loc = self.convertPoint_fromView_(event.locationInWindow(), None)
+        visible_h = self.bounds().size.height
+        # Distance from the top of the visible area
+        dist_from_top = visible_h - loc.y
+        # Add scroll offset to get distance from top of content
+        dist_from_content_top = dist_from_top + self._scroll_offset
+        # Which card index? (card 0 is at top)
+        row_stride = _ROW_HEIGHT + _ROW_GAP
+        idx = int(dist_from_content_top / row_stride)
+        # Check we're in the card body, not the gap
+        pos_in_row = dist_from_content_top - idx * row_stride
+        if 0 <= idx < len(hud._topoi) and pos_in_row <= _ROW_HEIGHT:
+            hud._toggle_detail(idx)
+        elif hud._expanded_index is not None:
             hud._collapse_detail()
 
     def mouseDragged_(self, event):
