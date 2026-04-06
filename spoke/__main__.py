@@ -1300,11 +1300,14 @@ class SpokeAppDelegate(NSObject):
     def _on_enter_during_recording(self) -> None:
         """Enter pressed while space is held and no generation in flight.
 
-        This is the natural gesture for entering live mode: hold space
-        (recording starts at 400ms), then add Enter.  Start the live arm
-        timer from here so the user gets the full 3s countdown from the
-        moment they added Enter.
+        Fires from CGEvent tap thread — marshal to main thread.
         """
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "_enterDuringRecordingOnMain:", None, False
+        )
+
+    def _enterDuringRecordingOnMain_(self, _) -> None:
+        """Main thread: handle Enter during recording."""
         if getattr(self, "_live_mode", False):
             return
         if self._transcribing:
@@ -1312,13 +1315,16 @@ class SpokeAppDelegate(NSObject):
         self._arm_live_mode()
 
     def _on_space_enter_chord(self) -> None:
-        """Both space and enter are physically held — fires from raw keyDown.
+        """Both space and enter are physically held — fires from CGEvent tap thread.
 
-        This is the earliest possible detection of the chord, before the
-        state machine decides what to do with Enter.  Used to start the
-        live mode arm timer regardless of whether the hold threshold has
-        fired yet.
+        Must marshal to main thread since NSTimer needs the main runloop.
         """
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "_spaceEnterChordOnMain:", None, False
+        )
+
+    def _spaceEnterChordOnMain_(self, _) -> None:
+        """Main thread: handle space+enter chord."""
         if getattr(self, "_live_mode", False):
             logger.info("Space+enter chord in live mode — arming exit timer")
             self._start_live_exit_timer()
