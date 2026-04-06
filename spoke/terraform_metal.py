@@ -199,8 +199,8 @@ fragment float4 fs_ring(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
-    float ring_width = u.fill_width * 1.8;
-    float ring_peak_dist = u.fill_width * 0.5;
+    float ring_width = u.fill_width * 6.0;     // wide diffuse halo, not a border
+    float ring_peak_dist = u.fill_width * 4.0; // peak well outside the card edge
 
     float best_ring = 0.0;
 
