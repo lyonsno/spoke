@@ -135,22 +135,19 @@ inline float card_sdf(float2 pixel, float4 rect, float corner_radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - corner_radius;
 }
 
-// Card fill: flat interior at floor, fast Gaussian outer scoop.
-// No bright peak at the boundary — uniform material throughout,
-// fading to zero outside.
-inline float fill_alpha(float sd, float width, float floor_val) {
+// Exact port of overlay.py _glow_fill_alpha:
+// Stretched-exponential: exp(-sqrt(|d|/width))
+// Inside: cusp at boundary, floors at interior_floor
+// Outside: same cusp, drops all the way to zero
+inline float overlay_fill_alpha(float sd, float width, float floor_val) {
+    float raw = exp(-sqrt(abs(sd) / max(width, 1e-6)));
     if (sd <= 0.0) {
-        // Interior: flat at floor level — no edge highlight
-        return floor_val;
+        return floor_val + (1.0 - floor_val) * raw;
     }
-    // Outside: fast Gaussian scoop from floor to zero
-    float normalized = sd / max(width, 1e-6);
-    return floor_val * exp(-normalized * normalized);
+    return raw;
 }
 
 // 1px anti-aliased stroke at the card boundary.
-// Returns 1.0 exactly at sd=0, drops to 0.0 within ±1px.
-// This is a hard edge with AA, not a soft glow.
 inline float hairline(float sd) {
     return clamp(1.0 - abs(sd), 0.0, 1.0);
 }
@@ -164,27 +161,22 @@ fragment float4 fs_fill(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
-    // Chromatic hairline: two 1px strokes displaced by ~1px.
-    // Where they overlap (center) → white. Where they separate
-    // (corners, curvature) → gold on one side, blue on the other.
-    float2 hl_offset = float2(0.75, 0.4);    // subpixel chromatic split
-    float hl_gold_str = 0.25;
-    float hl_blue_str = 0.15;
-    float3 gold_rgb = float3(1.0, 0.85, 0.5);
-    float3 blue_rgb = float3(0.6, 0.7, 0.9);
+    // Hairline stroke parameters
+    float hl_strength = 0.22;
+    float3 hl_rgb = float3(1.0, 1.0, 1.0);
 
     float best_alpha = 0.0;
     float3 best_rgb = float3(0.0);
-    float best_hl_gold = 0.0;
-    float best_hl_blue = 0.0;
+    float best_hl = 0.0;
 
     for (uint i = 0; i < count; i++) {
         float4 rect = u.cards[i].rect;
         rect.y -= u.scroll_offset_y;
 
-        // Main fill
         float sd = card_sdf(pixel, rect, u.corner_radius);
-        float a = fill_alpha(sd, u.fill_width, u.interior_floor)
+
+        // Fill: exact overlay profile
+        float a = overlay_fill_alpha(sd, u.fill_width, u.interior_floor)
                   * u.cards[i].color.a;
 
         if (a > best_alpha) {
@@ -196,19 +188,13 @@ fragment float4 fs_fill(
             best_rgb = mix(best_rgb, u.cards[i].color.rgb, t);
         }
 
-        // Gold hairline — displaced one direction
-        float sd_gold = card_sdf(pixel - hl_offset, rect, u.corner_radius);
-        best_hl_gold = max(best_hl_gold, hairline(sd_gold));
-
-        // Blue hairline — displaced opposite
-        float sd_blue = card_sdf(pixel + hl_offset, rect, u.corner_radius);
-        best_hl_blue = max(best_hl_blue, hairline(sd_blue));
+        // Hairline at boundary
+        best_hl = max(best_hl, hairline(sd));
     }
 
     // Additive hairline over fill
-    float3 hl = gold_rgb * (best_hl_gold * hl_gold_str)
-              + blue_rgb * (best_hl_blue * hl_blue_str);
-    float hl_a = max(best_hl_gold * hl_gold_str, best_hl_blue * hl_blue_str);
+    float3 hl = hl_rgb * (best_hl * hl_strength);
+    float hl_a = best_hl * hl_strength;
 
     float final_alpha = best_alpha + hl_a * (1.0 - best_alpha);
     float3 final_rgb = best_rgb * best_alpha + hl * (1.0 - best_alpha);
@@ -284,8 +270,8 @@ class TerraformCardRenderer:
         self._cards: list[CardInfo] = []
         self._scroll_offset_y: float = 0.0
         self._corner_radius: float = 10.0
-        self._fill_width: float = 2.5
-        self._interior_floor: float = 0.45
+        self._fill_width: float = 2.5   # matches overlay width param
+        self._interior_floor: float = 0.55  # matches overlay dark-bg floor
         self._pixel_width: int = 1
         self._pixel_height: int = 1
 
