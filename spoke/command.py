@@ -11,12 +11,61 @@ from dataclasses import dataclass
 import json
 import logging
 import os
+import re
+import uuid
 from typing import Any, Callable, Generator, Literal
 
 import urllib.request
 import urllib.error
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_xml_tool_calls(text: str) -> tuple[str, list[dict]] | None:
+    """Extract bare XML tool calls from content text.
+
+    Catches models (e.g. Qwen3-Coder) that emit tool calls as XML in the
+    content stream instead of using the structured tool_calls API field.
+
+    Handles:
+      <tool_call><function=name><parameter=key>value</parameter></function></tool_call>
+      <function=name><parameter=key>value</parameter></function></tool_call>
+      <function=name><parameter=key>value</parameter></function>
+
+    Returns (cleaned_text, tool_calls) or None if no XML tool calls found.
+    """
+    # Match <function=name>...</function> with or without <tool_call> wrapper
+    pattern = r"(?:<tool_call>\s*)?<function=(\w+)>(.*?)</function>(?:\s*</tool_call>)?"
+    matches = list(re.finditer(pattern, text, re.DOTALL))
+    if not matches:
+        return None
+
+    tool_calls = []
+    for m in matches:
+        func_name = m.group(1)
+        params_text = m.group(2)
+        arguments = {}
+        for pm in re.finditer(
+            r"<parameter=(\w+)>\s*(.*?)\s*</parameter>", params_text, re.DOTALL
+        ):
+            key = pm.group(1)
+            val = pm.group(2).strip()
+            try:
+                arguments[key] = json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                arguments[key] = val
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": func_name,
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+            },
+        })
+
+    # Remove matched XML from content text
+    cleaned = re.sub(pattern, "", text, flags=re.DOTALL).strip()
+    return cleaned, tool_calls
 
 _DEFAULT_COMMAND_URL = "http://localhost:8001"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
@@ -356,6 +405,31 @@ class CommandClient:
             except Exception:
                 logger.exception("Command stream error")
                 raise
+
+            # Fallback: if the model emitted XML tool calls in the content
+            # stream (e.g. Qwen3-Coder), extract them as structured calls.
+            if not tool_call_acc.has_calls and tool_executor is not None:
+                xml_result = _extract_xml_tool_calls(round_content)
+                if xml_result is not None:
+                    cleaned_text, xml_calls = xml_result
+                    logger.info(
+                        "Extracted %d XML tool call(s) from content stream: %s",
+                        len(xml_calls),
+                        ", ".join(c["function"]["name"] for c in xml_calls),
+                    )
+                    round_content = cleaned_text
+                    for i, xc in enumerate(xml_calls):
+                        tool_call_acc._calls[i] = xc
+                        indicator = f"\n[calling {xc['function']['name']}…]\n"
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=indicator,
+                        )
+                        yield CommandStreamEvent(
+                            kind="tool_call",
+                            tool_name=xc["function"]["name"],
+                            tool_arguments=xc["function"]["arguments"],
+                        )
 
             # If the model called tools, execute them and loop.
             # Use has_calls as the primary signal — some model servers
