@@ -46,7 +46,7 @@ _MTL_PIXEL_FORMAT_BGRA8_UNORM = 80
 _MTL_LOAD_ACTION_CLEAR = 2
 _MTL_STORE_ACTION_STORE = 1
 _MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP = 4
-_PREVIEW_FILL_MTL_BUFFER_LAYOUT = "<" + "f" * 8
+_PREVIEW_FILL_MTL_BUFFER_LAYOUT = "<" + "f" * 14
 _PREVIEW_FILL_MTL_BUFFER_SIZE = struct.calcsize(_PREVIEW_FILL_MTL_BUFFER_LAYOUT)
 _PREVIEW_FILL_SHADER_SOURCE = """
 #include <metal_stdlib>
@@ -60,6 +60,8 @@ struct VSOut {
 struct Uniforms {
     float4 viewport_fill;
     float4 color_floor;
+    float4 peak_rgb_alpha;
+    float2 peak_shape;
 };
 
 vertex VSOut vs_main(uint vid [[vertex_id]]) {
@@ -90,6 +92,11 @@ inline float fill_alpha(float signed_distance, float fill_width, float interior_
     return raw;
 }
 
+inline float boundary_peak_weight(float signed_distance, float peak_width, float peak_power) {
+    float normalized = fabs(signed_distance) / max(peak_width, 1e-6);
+    return exp(-pow(normalized, peak_power));
+}
+
 fragment float4 fs_main(
     VSOut in [[stage_in]],
     constant Uniforms& u [[buffer(0)]],
@@ -100,10 +107,20 @@ fragment float4 fs_main(
     uint x = min(uint(in.uv.x * float(width - 1u)), width - 1u);
     uint y = min(uint(in.uv.y * float(height - 1u)), height - 1u);
     float signed_distance = signed_field[y * width + x];
-    float alpha = fill_alpha(signed_distance, u.viewport_fill.w, u.color_floor.w) *
+    float base_alpha = fill_alpha(signed_distance, u.viewport_fill.w, u.color_floor.w) *
         clamp(u.viewport_fill.z, 0.0, 1.0);
-    float3 rgb = u.color_floor.rgb;
-    return float4(rgb * alpha, alpha);
+    float peak_mix = boundary_peak_weight(
+        signed_distance,
+        u.peak_shape.x,
+        max(u.peak_shape.y, 1.0)
+    ) * clamp(u.peak_rgb_alpha.a, 0.0, 1.0);
+    float alpha = mix(base_alpha, 1.0, peak_mix);
+    float3 base_rgb = u.color_floor.rgb;
+    float3 peak_rgb = u.peak_rgb_alpha.rgb;
+    float3 premult_base = base_rgb * base_alpha;
+    float3 premult_peak = peak_rgb * alpha;
+    float3 premult_rgb = mix(premult_base, premult_peak, peak_mix);
+    return float4(premult_rgb, alpha);
 }
 """
 
@@ -198,6 +215,30 @@ def _fill_profile_for_brightness(brightness: float) -> tuple[float, float]:
     width = _lerp(3.6, 14.5, t)
     interior_floor = _lerp(0.72, 0.9997, t)
     return width, interior_floor
+
+
+def _fill_boundary_peak_rgb_for_brightness(
+    brightness: float,
+) -> tuple[float, float, float]:
+    """Return the absolute border color for the current preview polarity."""
+    t = min(max(brightness, 0.0), 1.0)
+    bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+    bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+    if bg_lum > 0.5:
+        return (1.0, 1.0, 1.0)
+    return (0.0, 0.0, 0.0)
+
+
+def _fill_boundary_peak_profile_for_brightness(
+    brightness: float,
+) -> tuple[tuple[float, float, float], float, float, float]:
+    """Return peak RGB/strength/shape for the SDF boundary highlight."""
+    t = min(max(brightness, 0.0), 1.0)
+    peak_rgb = _fill_boundary_peak_rgb_for_brightness(t)
+    peak_alpha = 1.0
+    peak_width = _lerp(1.35, 1.75, t)
+    peak_power = _lerp(2.8, 2.2, t)
+    return peak_rgb, peak_alpha, peak_width, peak_power
 
 
 def _truncate_preview(text: str | None) -> str:
@@ -389,6 +430,67 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     return image, payload
 
 
+def _fill_field_to_image_with_boundary_peak(
+    alpha,
+    signed_distance,
+    r: int,
+    g: int,
+    b: int,
+    *,
+    peak_rgb: tuple[float, float, float],
+    peak_alpha: float,
+    peak_width: float,
+    peak_power: float,
+):
+    """Convert a fill field into a premultiplied image with a hard border peak."""
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
+
+    base_alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+    normalized = np.abs(signed_distance) / max(peak_width, 1e-6)
+    peak_mix = np.exp(
+        -np.power(normalized, peak_power, dtype=np.float32)
+    ).astype(np.float32) * np.clip(peak_alpha, 0.0, 1.0)
+    final_alpha = base_alpha + (1.0 - base_alpha) * peak_mix
+
+    base_rgb = np.array((r / 255.0, g / 255.0, b / 255.0), dtype=np.float32)
+    peak_rgb_arr = np.array(peak_rgb, dtype=np.float32)
+    premult_base = base_rgb[None, None, :] * base_alpha[..., None]
+    premult_peak = peak_rgb_arr[None, None, :] * final_alpha[..., None]
+    premult_rgb = (
+        premult_base * (1.0 - peak_mix[..., None]) +
+        premult_peak * peak_mix[..., None]
+    )
+
+    rgba = np.empty(base_alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., :3] = np.clip(premult_rgb * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 3] = np.clip(final_alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        base_alpha.shape[1],
+        base_alpha.shape[0],
+        8,
+        32,
+        int(base_alpha.shape[1] * 4),
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
 def _build_preview_fill_metal_pipeline(device):
     from . import glow as glow_module
 
@@ -423,6 +525,10 @@ class _MetalPreviewFillRenderer:
         self._rgb = (0.0, 0.0, 0.0)
         self._opacity = _BG_ALPHA_MIN
         self._interior_floor = 0.55
+        self._peak_rgb = (1.0, 1.0, 1.0)
+        self._peak_alpha = 0.0
+        self._peak_width = 1.0
+        self._peak_power = 2.0
         self._layer = objc.lookUpClass("CAMetalLayer").layer()
         self._layer.setDevice_(device)
         self._layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
@@ -460,12 +566,24 @@ class _MetalPreviewFillRenderer:
         interior_floor: float,
         *,
         fill_width: float | None = None,
+        peak_rgb: tuple[float, float, float] | None = None,
+        peak_alpha: float | None = None,
+        peak_width: float | None = None,
+        peak_power: float | None = None,
     ) -> None:
         self._rgb = rgb
         self._opacity = opacity
         self._interior_floor = interior_floor
         if fill_width is not None:
             self._fill_width = fill_width
+        if peak_rgb is not None:
+            self._peak_rgb = peak_rgb
+        if peak_alpha is not None:
+            self._peak_alpha = peak_alpha
+        if peak_width is not None:
+            self._peak_width = peak_width
+        if peak_power is not None:
+            self._peak_power = peak_power
 
     def draw_frame(self) -> bool:
         from . import glow as glow_module
@@ -486,6 +604,12 @@ class _MetalPreviewFillRenderer:
             float(self._rgb[1]),
             float(self._rgb[2]),
             float(self._interior_floor),
+            float(self._peak_rgb[0]),
+            float(self._peak_rgb[1]),
+            float(self._peak_rgb[2]),
+            float(self._peak_alpha),
+            float(self._peak_width),
+            float(self._peak_power),
         )
         glow_module._copy_bytes_to_metal_buffer(self._uniform_buffer, uniforms)
 
@@ -582,6 +706,7 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._fill_surface_opacity = _BG_ALPHA_MIN
 
         # Recovery mode state
         self._recovery_mode = False
@@ -730,7 +855,7 @@ class TranscriptionOverlay(NSObject):
             # Content view stays transparent; reset the fill layer opacity
             self._content_view.layer().setBackgroundColor_(None)
             if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-                self._fill_layer.setOpacity_(_BG_ALPHA_MIN)
+                self._set_fill_surface_opacity(_BG_ALPHA_MIN)
         self._cancel_fade()
         self._cancel_typewriter()
         self._visible = True
@@ -1061,7 +1186,10 @@ class TranscriptionOverlay(NSObject):
         fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
+            effective_fill_opacity = fill_opacity
+            if getattr(self, "_fill_renderer", None) is None:
+                effective_fill_opacity = min(fill_opacity, 0.96)
+            self._set_fill_surface_opacity(effective_fill_opacity)
             # Rebuild the fill image when brightness changes enough to
             # affect the baked color.
             last_t = getattr(self, '_fill_image_brightness', -1.0)
@@ -1165,6 +1293,32 @@ class TranscriptionOverlay(NSObject):
         # Build and apply the colored fill image
         self._update_fill_image(total_w, total_h)
 
+    def _set_fill_surface_opacity(self, opacity: float) -> None:
+        opacity = min(max(float(opacity), 0.0), 1.0)
+        self._fill_surface_opacity = opacity
+        if not hasattr(self, "_fill_layer") or self._fill_layer is None:
+            return
+        layer_opacity = opacity
+        if getattr(self, "_fill_renderer", None) is not None:
+            layer_opacity = 1.0
+        self._fill_layer.setOpacity_(layer_opacity)
+
+    def _current_fill_surface_opacity(self) -> float:
+        override = getattr(self, "_fill_override_opacity", None)
+        if override is not None:
+            return float(override)
+        stored = getattr(self, "_fill_surface_opacity", None)
+        if stored is not None:
+            return float(stored)
+        if getattr(self, "_fill_renderer", None) is None and hasattr(self, "_fill_layer"):
+            fill_layer = getattr(self, "_fill_layer", None)
+            if fill_layer is not None and hasattr(fill_layer, "opacity"):
+                try:
+                    return float(fill_layer.opacity())
+                except Exception:
+                    pass
+        return _BG_ALPHA_MIN
+
     def _update_fill_image(self, total_w: float, total_h: float) -> None:
         """Rebuild the colored fill image from the stashed SDF and current fill color."""
         if not hasattr(self, '_fill_sdf') or self._fill_sdf is None:
@@ -1175,21 +1329,14 @@ class TranscriptionOverlay(NSObject):
             scale = getattr(self, '_fill_scale', 2.0)
             t = getattr(self, '_brightness', 0.0)
             fill_width, floor = _fill_profile_for_brightness(t)
+            peak_rgb, peak_alpha, peak_width, peak_power = _fill_boundary_peak_profile_for_brightness(t)
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
                 t = getattr(self, '_brightness', 0.0)
                 bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
             else:
                 bg_r, bg_g, bg_b = fill_override_rgb
-            fill_opacity = getattr(self, "_fill_override_opacity", None)
-            if fill_opacity is None:
-                if hasattr(self._fill_layer, "opacity"):
-                    try:
-                        fill_opacity = self._fill_layer.opacity()
-                    except Exception:
-                        fill_opacity = _BG_ALPHA_MIN
-                else:
-                    fill_opacity = _BG_ALPHA_MIN
+            fill_opacity = self._current_fill_surface_opacity()
             renderer = getattr(self, "_fill_renderer", None)
             if renderer is not None:
                 renderer.set_geometry(total_w, total_h, self._fill_sdf, scale)
@@ -1198,6 +1345,10 @@ class TranscriptionOverlay(NSObject):
                     float(fill_opacity),
                     floor,
                     fill_width=fill_width * scale,
+                    peak_rgb=peak_rgb,
+                    peak_alpha=peak_alpha,
+                    peak_width=peak_width * scale,
+                    peak_power=peak_power,
                 )
                 renderer.draw_frame()
                 if hasattr(self._fill_layer, "setCompositingFilter_"):
@@ -1216,10 +1367,16 @@ class TranscriptionOverlay(NSObject):
                 width=fill_width * scale,
                 interior_floor=floor,
             )
-            # Scale color to 0-255
-            fill_image, self._fill_payload = _fill_field_to_image(
+            fill_image, self._fill_payload = _fill_field_to_image_with_boundary_peak(
                 fill_alpha,
-                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+                self._fill_sdf,
+                int(bg_r * 255),
+                int(bg_g * 255),
+                int(bg_b * 255),
+                peak_rgb=peak_rgb,
+                peak_alpha=peak_alpha,
+                peak_width=peak_width * scale,
+                peak_power=peak_power,
             )
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
@@ -1245,8 +1402,7 @@ class TranscriptionOverlay(NSObject):
     ) -> None:
         self._fill_override_rgb = rgb
         self._fill_override_opacity = opacity
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(opacity)
+        self._set_fill_surface_opacity(opacity)
         if getattr(self, "_content_view", None) is not None:
             content_frame = self._content_view.frame()
             if getattr(self, "_fill_renderer", None) is not None:
@@ -1260,8 +1416,8 @@ class TranscriptionOverlay(NSObject):
     def _clear_fill_override(self, *, opacity: float | None = None) -> None:
         self._fill_override_rgb = None
         self._fill_override_opacity = None
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None and opacity is not None:
-            self._fill_layer.setOpacity_(opacity)
+        if opacity is not None:
+            self._set_fill_surface_opacity(opacity)
         if getattr(self, "_content_view", None) is not None:
             content_frame = self._content_view.frame()
             if getattr(self, "_fill_renderer", None) is not None:

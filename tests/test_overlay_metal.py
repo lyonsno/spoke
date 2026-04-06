@@ -117,3 +117,43 @@ def test_bright_scene_metal_fill_uses_crushed_dark_endpoint_and_deep_floor(
         assert opacity == mod._BG_ALPHA_MIN
     finally:
         sys.modules.pop("spoke.overlay", None)
+
+
+def test_metal_fill_receives_true_boundary_peak_profile(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._brightness = 0.0
+
+        overlay._update_fill_image(680.0, 160.0)
+
+        kwargs = overlay._fill_renderer.set_fill_state.call_args.kwargs
+        assert kwargs["peak_rgb"] == pytest.approx((1.0, 1.0, 1.0))
+        assert kwargs["peak_alpha"] == pytest.approx(1.0)
+        assert kwargs["peak_width"] > 0.0
+        assert kwargs["peak_power"] > 1.0
+    finally:
+        sys.modules.pop("spoke.overlay", None)
+
+
+def test_metal_fill_keeps_layer_opaque_and_passes_surface_opacity_in_shader(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_layer.reset_mock()
+        overlay._fill_renderer.reset_mock()
+
+        overlay.update_text_amplitude(10.0)
+
+        overlay._fill_layer.setOpacity_.assert_called()
+        assert overlay._fill_layer.setOpacity_.call_args.args[0] == pytest.approx(1.0)
+        overlay._fill_renderer.set_fill_state.assert_called()
+        assert overlay._fill_renderer.set_fill_state.call_args.args[1] > 0.8
+    finally:
+        sys.modules.pop("spoke.overlay", None)

@@ -259,6 +259,16 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_boundary_peak_snaps_fill_to_true_light_dark_extrema(self, mock_pyobjc):
+        """The SDF boundary should resolve to absolute white or black, not a tinted near-extreme."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._fill_boundary_peak_rgb_for_brightness(0.0) == pytest.approx((1.0, 1.0, 1.0))
+            assert mod._fill_boundary_peak_rgb_for_brightness(1.0) == pytest.approx((0.0, 0.0, 0.0))
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
