@@ -210,7 +210,7 @@ class CommandClient:
         with urllib.request.urlopen(req, timeout=10) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         return [
-            model["id"]
+            model["id"].removeprefix("models/")
             for model in payload.get("data", [])
             if isinstance(model, dict) and model.get("id")
         ]

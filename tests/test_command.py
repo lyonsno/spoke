@@ -175,6 +175,28 @@ class TestCommandClient:
         req = mock_open.call_args[0][0]
         assert req.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/models"
 
+    def test_list_models_strips_models_prefix(self):
+        """Gemini returns 'models/gemini-2.5-flash'; list_models strips the prefix."""
+        from spoke.command import CommandClient
+
+        payload = {"data": [
+            {"id": "models/gemini-2.5-flash"},
+            {"id": "models/gemini-2.5-pro"},
+            {"id": "qwen3-14b"},
+        ]}
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="key",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            assert client.list_models() == ["gemini-2.5-flash", "gemini-2.5-pro", "qwen3-14b"]
+
     def test_list_models_sends_auth_header(self):
         """list_models() should reuse the configured bearer token."""
         from spoke.command import CommandClient
