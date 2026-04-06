@@ -204,7 +204,7 @@ _DARK_TEXT_CUTOUT_FILTER = "destinationOut"
 # On light backgrounds: dark fill, text becomes transparent cutout —
 # the overlay is a dark bubble with letter-shaped holes.
 # Match the edge glow color on dark backgrounds — desaturated blue-white
-_BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.40)
+_BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.30)
 _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
 _BG_COLOR_LIGHT = (0.02, 0.02, 0.03)   # crushed dark fill on light backgrounds
 _TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
@@ -268,8 +268,8 @@ def _fill_boundary_peak_profile_for_brightness(
     t = min(max(brightness, 0.0), 1.0)
     peak_rgb = _fill_boundary_peak_rgb_for_brightness(t)
     peak_alpha = 1.0
-    peak_width = _lerp(0.32, 0.42, t)
-    peak_power = _lerp(1.45, 1.30, t)
+    peak_width = _lerp(0.24, 0.38, t)
+    peak_power = _lerp(1.65, 1.35, t)
     return peak_rgb, peak_alpha, peak_width, peak_power
 
 

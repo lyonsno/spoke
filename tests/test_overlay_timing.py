@@ -311,6 +311,18 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_dark_boundary_peak_collapses_within_half_pixel(self, mock_pyobjc):
+        """The dark-scene border peak should stop reading as a thick band by half a pixel out."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            _, _, dark_width, dark_power = mod._fill_boundary_peak_profile_for_brightness(0.0)
+
+            assert mod._boundary_peak_weight(0.0, dark_width, dark_power) == pytest.approx(1.0)
+            assert mod._boundary_peak_weight(0.5, dark_width, dark_power) < 0.08
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_dark_background_fill_profile_stays_ghosted(self, mock_pyobjc):
         """Dark-scene preview fill should stay light and airy rather than becoming a heavy slab."""
         sys.modules.pop("spoke.overlay", None)
@@ -319,6 +331,16 @@ class TestAdaptiveOverlayCompositing:
             width, interior_floor = mod._fill_profile_for_brightness(0.0)
             assert width < 3.0
             assert interior_floor < 0.65
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_dark_background_fill_tint_stays_near_neutral(self, mock_pyobjc):
+        """The dark-scene fill tint should stay cool but not drift into a chromatic fringe."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            dark_sat = colorsys.rgb_to_hsv(*mod._BG_COLOR_DARK)[1]
+            assert dark_sat < 0.13
         finally:
             sys.modules.pop("spoke.overlay", None)
 
