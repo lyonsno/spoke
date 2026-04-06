@@ -581,6 +581,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key state for command fast path
         if keycode in ENTER_KEYCODES:
             det._enter_held = True
+            # Notify delegate when space+enter are both held during active
+            # recording.  Used for live mode arming.  Not fired during WAITING
+            # because Enter during WAITING cancels the hold (overlay toggle).
+            if det._state in (_State.RECORDING, _State.LATCHED):
+                cb = getattr(det, '_on_space_enter_chord', None)
+                if cb is not None:
+                    cb()
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
