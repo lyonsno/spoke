@@ -72,6 +72,25 @@ _TEMP_COLORS = {
     "katástasis": (0.3, 0.8, 0.4, 0.10), # settled green
 }
 
+def _format_observed(raw: str) -> str:
+    """Format an Observed timestamp as 12-hour EST with AM/PM."""
+    from datetime import datetime, timezone, timedelta
+    est = timezone(timedelta(hours=-4))  # EDT
+    try:
+        if "T" in raw:
+            # ISO timestamp — parse and convert to EST 12-hour
+            # Handle both -0400 and -04:00 offset formats
+            cleaned = raw.strip()
+            dt = datetime.fromisoformat(cleaned)
+            dt_est = dt.astimezone(est)
+            return dt_est.strftime("%-I:%M%p").lower()
+        else:
+            # Date only
+            return raw.strip()
+    except Exception:
+        return raw.strip()
+
+
 # Base SDF fill color — matches overlay _BG_COLOR_DARK desaturated cornflower
 _SDF_BASE_RGB = (0.50 * 0.6 + 0.5 * 0.4,
                  0.59 * 0.6 + 0.5 * 0.4,
@@ -134,11 +153,7 @@ class ToposRowView(NSView):
         if topos.tool:
             badge_parts.append(topos.tool)
         if topos.observed:
-            # Show just the compact part — date or time
-            obs = topos.observed
-            if "T" in obs:
-                # ISO timestamp — show just the time portion
-                obs = obs.split("T")[1][:5]  # HH:MM
+            obs = _format_observed(topos.observed)
             badge_parts.append(obs)
         if badge_parts:
             badge_text = " · ".join(badge_parts)
@@ -590,7 +605,7 @@ class TerraformHUD(NSObject):
             return
 
         # Skip full view rebuild if topos data hasn't changed
-        topos_keys = [(t.id, t.temperature, t.status, t.tool) for t in self._topoi]
+        topos_keys = [(t.id, t.temperature, t.status, t.tool, t.observed) for t in self._topoi]
         if topos_keys == getattr(self, '_last_topos_keys', None):
             # Data unchanged — just redraw Metal if active
             if self._metal_renderer is not None:

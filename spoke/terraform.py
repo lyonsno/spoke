@@ -155,13 +155,15 @@ def parse_topoi(text: str) -> list[Topos]:
                 status_m = re.search(r"Status:\s*\**(.+)", content)
                 if status_m:
                     topos.status = _clean_status(status_m.group(1))
-                    # Infer temperature from status if not set explicitly
-                    if not topos.temperature:
-                        status_lower = topos.status.lower()
-                        if ("katástasis" in status_lower
-                                or "κατάστασις" in status_lower
-                                or "katastasis" in status_lower):
-                            topos.temperature = "katástasis"
+                    # Override temperature when status says settled/katástasis,
+                    # even if an explicit Temperature: field was set — the status
+                    # is the more recent signal.
+                    status_lower = topos.status.lower()
+                    if ("katástasis" in status_lower
+                            or "κατάστασις" in status_lower
+                            or "katastasis" in status_lower
+                            or "settled" in status_lower):
+                        topos.temperature = "katástasis"
 
             # Attractors
             attr_m = re.search(r"Attractors?:\s*(.+)", content)
