@@ -499,13 +499,11 @@ class SpokeAppDelegate(NSObject):
             cloud_api_key = None
             if command_backend == "cloud":
                 self._command_model_id = (
-                    os.environ.get("SPOKE_COMMAND_MODEL")
-                    or self._load_cloud_model_preference()
+                    self._load_cloud_model_preference()
                     or _DEFAULT_CLOUD_MODEL
                 )
                 cloud_api_key = (
-                    os.environ.get("SPOKE_COMMAND_API_KEY")
-                    or self._load_cloud_api_key_preference()
+                    self._load_cloud_api_key_preference()
                     or os.environ.get("GEMINI_API_KEY", "")
                 )
             else:
