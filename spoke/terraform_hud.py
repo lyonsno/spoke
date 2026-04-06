@@ -88,7 +88,7 @@ class ToposRowView(NSView):
         # Frosted glass — oversized so the fade zone extends beyond the
         # nominal card bounds. Adjacent cards' frost zones overlap and
         # composite additively (more intense where they meet).
-        _BLEED = 12  # px of frost beyond card bounds on each side
+        _BLEED = 30  # px of frost beyond card bounds on each side
         frost = NSVisualEffectView.alloc().initWithFrame_(
             NSMakeRect(-_BLEED, -_BLEED, width + _BLEED * 2, _ROW_HEIGHT + _BLEED * 2)
         )
@@ -101,7 +101,7 @@ class ToposRowView(NSView):
         # on all edges using two composited linear gradients.
         fw = width + _BLEED * 2
         fh = _ROW_HEIGHT + _BLEED * 2
-        _FADE_PX = 14.0  # fade distance in pixels
+        _FADE_PX = 28.0  # fade distance in pixels — matches the bleed
         hfrac = _FADE_PX / fw  # horizontal fade fraction
         vfrac = _FADE_PX / fh  # vertical fade fraction
 
@@ -231,7 +231,8 @@ class _ManualScrollView(NSView):
         self._scroll_offset = 0.0  # how far the content is scrolled (positive = scrolled down)
         self._content: NSView | None = None
         self.setWantsLayer_(True)
-        self.layer().setMasksToBounds_(True)
+        # No masksToBounds — the gradient mask handles vertical clipping,
+        # and we need horizontal frost bleed to extend past the scroll bounds.
 
         # Fade mask
         h = frame.size.height
@@ -563,7 +564,7 @@ class TerraformHUD(NSObject):
 
         scroll_bounds = self._scroll_view.bounds()
         width = scroll_bounds.size.width - 8  # edge padding
-        row_stride = _ROW_HEIGHT + 2  # slight gap — frost bleed fills it
+        row_stride = _ROW_HEIGHT + 10  # wider gap — frost bleed overlaps
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
             scroll_bounds.size.height,
