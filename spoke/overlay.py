@@ -194,6 +194,7 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
+_DARK_TEXT_CUTOUT_FILTER = "destinationOut"
 
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -1049,6 +1050,7 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = min(max(brightness, 0.0), 1.0)
         if immediate:
             self._brightness = self._brightness_target
+            self._apply_text_compositing_mode(self._brightness)
             if self._visible and self._text_view is not None:
                 self._refresh_preview_text_style(snap_polarity=True)
 
@@ -1154,6 +1156,19 @@ class TranscriptionOverlay(NSObject):
         )
         return base_color, ontology_color
 
+    def _apply_text_compositing_mode(self, brightness: float) -> None:
+        """Punch preview text through dark fills and use normal text on bright fills."""
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return
+        if hasattr(text_view, "setWantsLayer_"):
+            text_view.setWantsLayer_(True)
+        layer = text_view.layer() if hasattr(text_view, "layer") else None
+        if layer is None or not hasattr(layer, "setCompositingFilter_"):
+            return
+        filter_name = _DARK_TEXT_CUTOUT_FILTER if brightness <= 0.15 else None
+        layer.setCompositingFilter_(filter_name)
+
     def _refresh_preview_text_style(
         self, *, text: str | None = None, snap_polarity: bool = False
     ) -> None:
@@ -1161,6 +1176,7 @@ class TranscriptionOverlay(NSObject):
             return
         if text is None:
             text = getattr(self, "_typewriter_displayed", "")
+        self._apply_text_compositing_mode(getattr(self, "_brightness", 0.0))
         base_color, ontology_color = self._preview_text_colors(
             snap_polarity=snap_polarity
         )
