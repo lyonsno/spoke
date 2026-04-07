@@ -343,6 +343,11 @@ class ThinkingNarrator:
                 if not self._vamp_active:
                     return
 
+        # Grace period expired — model hasn't responded yet, show loading indicator
+        loading_label = f"Loading {model_id}…" if model_id else "Loading model…"
+        self._on_summary(loading_label)
+        logger.info("Loading indicator shown: %s", loading_label)
+
         vamp_messages: list[dict] = [
             {"role": "system", "content": _LOADING_VAMP_SYSTEM_PROMPT},
         ]
