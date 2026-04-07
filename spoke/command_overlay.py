@@ -165,6 +165,76 @@ def _spinner_state(elapsed: float) -> tuple[float, float]:
     return (angle, fill)
 
 
+def _build_halo_ring(
+    radius: float,
+    scale: float,
+    ring_width: float = 2.0,
+    highlight_angle: float = 0.0,
+    highlight_width: float = 0.4,
+):
+    """Build a pre-rendered SDF ring with a directional highlight.
+
+    The ring is mostly transparent with a bright spot at highlight_angle.
+    Returns (CGImage, NSData payload).
+    """
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
+
+    # Image size: slightly larger than diameter to fit glow
+    img_size = int((radius * 2.0 + 8.0) * scale)
+    cx = img_size * 0.5
+    cy = img_size * 0.5
+    r_px = radius * scale
+    rw_px = ring_width * scale
+
+    x = np.arange(img_size, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(img_size, dtype=np.float32)[:, None] + 0.5
+    dx = x - cx
+    dy = y - cy
+    dist = np.sqrt(dx * dx + dy * dy)
+
+    # Ring SDF: distance from the ring centerline
+    ring_dist = np.abs(dist - r_px)
+    ring_alpha = np.exp(-(ring_dist / rw_px) ** 2)
+
+    # Directional highlight: bright at highlight_angle, fades around
+    pixel_angle = np.arctan2(dx, dy)  # CW from top
+    angle_diff = pixel_angle - highlight_angle
+    # Wrap to [-pi, pi]
+    angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
+    highlight = np.exp(-(angle_diff / highlight_width) ** 2)
+
+    # Combine: ring alpha * highlight intensity
+    # Base ring is very subtle, highlight makes one edge bright
+    alpha = ring_alpha * (0.08 + 0.92 * highlight)
+
+    # Color: white-ish with slight warmth
+    rgba = np.zeros((img_size, img_size, 4), dtype=np.uint8)
+    r_val, g_val, b_val = 0.95, 0.92, 0.88
+    rgba[..., 0] = np.clip(r_val * alpha * 255.0, 0, 255).astype(np.uint8)
+    rgba[..., 1] = np.clip(g_val * alpha * 255.0, 0, 255).astype(np.uint8)
+    rgba[..., 2] = np.clip(b_val * alpha * 255.0, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(alpha * 255.0, 0, 255).astype(np.uint8)
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        img_size, img_size, 8, 32, img_size * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider, None, False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
 def _spinner_cutout_mask(
     fill_alpha,
     fill_width: float,
@@ -1063,6 +1133,7 @@ class CommandOverlay(NSObject):
         if getattr(self, "_spinner_active", False):
             self._spinner_elapsed = getattr(self, "_spinner_elapsed", 0.0) + dt
             self._update_spinner_fill()
+            self._update_spinner_halos()
             # Render Metal effect behind the cutout
             if self._spinner_metal is not None and self._spinner_metal.ready:
                 angle, sweep_fill = _spinner_state(self._spinner_elapsed)
@@ -1172,13 +1243,103 @@ class CommandOverlay(NSObject):
         self._spinner_elapsed = 0.0
         # Rebuild fill with spinner cutout at t=0
         self._update_spinner_fill()
-        # Set up Metal effect layer behind the fill (visible through cutout)
+        # Set up halo rings and Metal effect layer
+        self._setup_spinner_halos()
         self._setup_spinner_metal()
 
         logger.info("Thinking timer started (with spinner)")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )
+
+    def _setup_spinner_halos(self) -> None:
+        """Create two pre-rendered SDF ring layers that spin at different rates.
+
+        Ring 1: spins at 1x sweep speed, same direction
+        Ring 2: spins at 7/5x sweep speed, opposite direction, slightly inset
+
+        Both are mostly transparent with a bright highlight on one edge —
+        like an eclipse halo. The spinning creates moiré-like interference.
+        """
+        if self._wrapper_view is None:
+            return
+
+        try:
+            self._setup_spinner_halos_inner()
+        except Exception:
+            logger.debug("Halo ring setup failed", exc_info=True)
+
+    def _setup_spinner_halos_inner(self) -> None:
+        f = _OUTER_FEATHER
+        content_frame = self._content_view.frame() if self._content_view else None
+        if content_frame is None:
+            return
+
+        diameter = _SPINNER_RADIUS * 2.0
+        halo_size = diameter + 8.0  # slight overflow for glow
+        # Bottom-right in wrapper coords
+        halo_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - 4.0
+        halo_y = f + _SPINNER_MARGIN_BOTTOM - 4.0
+        frame = ((halo_x, halo_y), (halo_size, halo_size))
+
+        scale = getattr(self, "_ridge_scale", 2.0)
+
+        ring1_img, ring1_pay = _build_halo_ring(
+            _SPINNER_RADIUS, scale, ring_width=2.5,
+            highlight_angle=0.0, highlight_width=0.4,
+        )
+        ring2_img, ring2_pay = _build_halo_ring(
+            _SPINNER_RADIUS * 0.82, scale, ring_width=1.8,
+            highlight_angle=math.pi, highlight_width=0.5,
+        )
+
+        # Keep payloads alive
+        self._halo_ring1_pay = ring1_pay
+        self._halo_ring2_pay = ring2_pay
+
+        if getattr(self, "_halo_layer1", None) is None:
+            self._halo_layer1 = CALayer.alloc().init()
+            self._halo_layer1.setFrame_(frame)
+            self._halo_layer1.setContentsGravity_("resize")
+            self._halo_layer1.setOpacity_(0.7)
+            self._wrapper_view.layer().addSublayer_(self._halo_layer1)
+        else:
+            self._halo_layer1.setFrame_(frame)
+            self._halo_layer1.setHidden_(False)
+
+        if getattr(self, "_halo_layer2", None) is None:
+            self._halo_layer2 = CALayer.alloc().init()
+            self._halo_layer2.setFrame_(frame)
+            self._halo_layer2.setContentsGravity_("resize")
+            self._halo_layer2.setOpacity_(0.5)
+            self._wrapper_view.layer().addSublayer_(self._halo_layer2)
+        else:
+            self._halo_layer2.setFrame_(frame)
+            self._halo_layer2.setHidden_(False)
+
+        self._halo_layer1.setContents_(ring1_img)
+        self._halo_layer2.setContents_(ring2_img)
+
+    def _update_spinner_halos(self) -> None:
+        """Rotate the halo ring layers based on spinner elapsed time."""
+        elapsed = getattr(self, "_spinner_elapsed", 0.0)
+        # Ring 1: same speed as sweep (1 revolution per SPINNER_PERIOD)
+        angle1 = (elapsed / _SPINNER_PERIOD) * 2.0 * math.pi
+        # Ring 2: 7/5 speed, opposite direction
+        angle2 = -(elapsed / _SPINNER_PERIOD) * (7.0 / 5.0) * 2.0 * math.pi
+
+        try:
+            from Quartz import CATransform3DMakeRotation
+            if getattr(self, "_halo_layer1", None) is not None:
+                self._halo_layer1.setTransform_(
+                    CATransform3DMakeRotation(angle1, 0.0, 0.0, 1.0)
+                )
+            if getattr(self, "_halo_layer2", None) is not None:
+                self._halo_layer2.setTransform_(
+                    CATransform3DMakeRotation(angle2, 0.0, 0.0, 1.0)
+                )
+        except Exception:
+            pass
 
     def _setup_spinner_metal(self) -> None:
         """Create or show the Metal effect layer behind the spinner cutout."""
@@ -1219,12 +1380,80 @@ class CommandOverlay(NSObject):
         else:
             self._spinner_metal.set_hidden(False)
 
-    def _update_spinner_fill(self) -> None:
-        """Rebuild the fill image with the spinner cutout baked in."""
-        if self._content_view is None:
+    def _stamp_spinner_cutout(self, fill_alpha, width, height, f, scale):
+        """Punch the spinner cutout into a fill alpha array."""
+        _, sweep_fill = _spinner_state(
+            getattr(self, "_spinner_elapsed", 0.0)
+        )
+        spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
+        ph = fill_alpha.shape[0]
+        spinner_cy = ph - (f + _SPINNER_MARGIN_BOTTOM + _SPINNER_RADIUS) * scale
+        _spinner_cutout_mask(
+            fill_alpha, width + 2 * f, height + 2 * f,
+            spinner_cx, spinner_cy,
+            _SPINNER_RADIUS, sweep_fill, scale,
+        )
+
+    def _bake_fill_image(self, fill_alpha):
+        """Convert fill alpha array to CGImage and update layers."""
+        try:
+            from .overlay import _fill_field_to_image
+
+            bg_r, bg_g, bg_b = _background_color_for_brightness(
+                getattr(self, '_brightness', 0.0)
+            )
+            fill_image, self._fill_payload = _fill_field_to_image(
+                fill_alpha,
+                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+            )
+        except (ImportError, Exception):
             return
-        content_frame = self._content_view.frame()
-        self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+
+        f = _OUTER_FEATHER
+        width = getattr(self, "_base_fill_width", _OVERLAY_WIDTH)
+        height = getattr(self, "_base_fill_height", _OVERLAY_HEIGHT)
+        total_w = width + 2 * f
+        total_h = height + 2 * f
+
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setContents_(fill_image)
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setCompositingFilter_"):
+                self._fill_layer.setCompositingFilter_(
+                    _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+                )
+        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
+            self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
+            mask = CALayer.alloc().init()
+            mask.setFrame_(((0, 0), (total_w, total_h)))
+            mask.setContents_(fill_image)
+            mask.setContentsGravity_("resize")
+            self._spring_tint_layer.setMask_(mask)
+
+    def _update_spinner_fill(self) -> None:
+        """Fast path: copy cached base fill, stamp cutout, bake image.
+
+        Skips the SDF computation — only the cutout mask and CGImage
+        rebuild happen per frame.
+        """
+        base = getattr(self, "_base_fill_alpha", None)
+        if base is None:
+            # No cached fill — fall back to full rebuild
+            if self._content_view is None:
+                return
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+            return
+
+        fill_alpha = base.copy()
+        if getattr(self, "_spinner_active", False):
+            f = _OUTER_FEATHER
+            scale = getattr(self, '_ridge_scale', 2.0)
+            width = self._base_fill_width
+            height = self._base_fill_height
+            self._stamp_spinner_cutout(fill_alpha, width, height, f, scale)
+
+        self._bake_fill_image(fill_alpha)
 
     def invert_thinking_timer(self) -> None:
         """Switch from glowing number to negative-space cutout mode.
@@ -1245,7 +1474,11 @@ class CommandOverlay(NSObject):
         # Deactivate spinner and rebuild fill without the cutout
         self._spinner_active = False
         self._update_spinner_fill()
-        # Hide the Metal effect layer
+        # Hide the halo rings and Metal effect layer
+        if getattr(self, "_halo_layer1", None) is not None:
+            self._halo_layer1.setHidden_(True)
+        if getattr(self, "_halo_layer2", None) is not None:
+            self._halo_layer2.setHidden_(True)
         if self._spinner_metal is not None and self._spinner_metal.ready:
             self._spinner_metal.set_hidden(True)
 
@@ -1260,7 +1493,11 @@ class CommandOverlay(NSObject):
     # ── ridge masks ────────────────────────────────────────
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
-        """Compute SDF and apply ridge mask + build fill image."""
+        """Compute SDF and apply ridge mask + build fill image.
+
+        Caches the base fill alpha so the spinner can stamp its cutout
+        into a copy without recomputing the SDF every frame.
+        """
         from .overlay import (
             _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
@@ -1281,58 +1518,18 @@ class CommandOverlay(NSObject):
 
             fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
 
-            # Punch spinner cutout into fill if active
-            if getattr(self, "_spinner_active", False):
-                _, sweep_fill = _spinner_state(
-                    getattr(self, "_spinner_elapsed", 0.0)
-                )
-                # Spinner center in fill-image pixel coordinates.
-                # The fill image covers total_w x total_h with the content area
-                # inset by f (feather) on each side. The spinner sits at the
-                # bottom-right corner of the content area, nestled into the
-                # corner radius.
-                #
-                # Image convention: row 0 = top of image = top of overlay.
-                # X: right side of content
-                spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
-                # Y: bottom of content. In image coords, bottom = large row index.
-                # total_h in image = bottom of fill. Content bottom is at f from
-                # the bottom of the fill image, so in image rows:
-                # row = total_h - f - margin - radius (from bottom)
-                ph = fill_alpha.shape[0]
-                spinner_cy = ph - (f + _SPINNER_MARGIN_BOTTOM + _SPINNER_RADIUS) * scale
-                _spinner_cutout_mask(
-                    fill_alpha, total_w, total_h,
-                    spinner_cx, spinner_cy,
-                    _SPINNER_RADIUS, sweep_fill, scale,
-                )
+            # Cache the base fill alpha for fast spinner updates
+            self._base_fill_alpha = fill_alpha.copy()
+            self._base_fill_width = width
+            self._base_fill_height = height
 
-            bg_r, bg_g, bg_b = _background_color_for_brightness(
-                getattr(self, '_brightness', 0.0)
-            )
-            fill_image, self._fill_payload = _fill_field_to_image(
-                fill_alpha,
-                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
-            )
+            # Apply spinner cutout if active
+            if getattr(self, "_spinner_active", False):
+                self._stamp_spinner_cutout(fill_alpha, width, height, f, scale)
+
+            self._bake_fill_image(fill_alpha)
         except (ImportError, Exception):
             return
-
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setContents_(fill_image)
-            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
-            if hasattr(self._fill_layer, "setCompositingFilter_"):
-                self._fill_layer.setCompositingFilter_(
-                    _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
-                )
-        # Keep the spring tint layer's mask in sync with the fill shape
-        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
-            self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
-            # Use the fill image as a mask so the tint only shows within the overlay
-            mask = CALayer.alloc().init()
-            mask.setFrame_(((0, 0), (total_w, total_h)))
-            mask.setContents_(fill_image)
-            mask.setContentsGravity_("resize")
-            self._spring_tint_layer.setMask_(mask)
 
     # ── layout ──────────────────────────────────────────────
 
