@@ -1462,9 +1462,10 @@ class CommandOverlay(NSObject):
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
-            # Hide narrator label when overlay has expanded beyond initial
-            # size — the fixed-position label would overlap scrolling content.
-            if new_height > _OVERLAY_HEIGHT + 10 and self._narrator_label is not None:
+            # Hide narrator label when response content is streaming —
+            # the fixed-position label would overlap scrolling content.
+            # Don't hide during loading (only collapsed/loading text present).
+            if self._response_text and self._narrator_label is not None:
                 if not self._narrator_label.isHidden():
                     self._hide_narrator()
 
