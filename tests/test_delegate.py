@@ -1181,6 +1181,37 @@ class TestDualModelConfiguration:
         MockTTS.assert_not_called()
         assert result is None
 
+    def test_build_tts_client_falls_back_to_sidecar_when_local_voxtral_runtime_is_unavailable(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = "http://MacBook-Pro-2.local:9001"
+        d._local_inference_lock = object()
+        saved = {
+            "tts_voice": "casual_female",
+            "tts_model": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+        }
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        with patch.object(
+            main_module, "_local_tts_runtime_ready", return_value=False, create=True
+        ):
+            with patch.object(main_module, "RemoteTTSClient") as MockRemote:
+                with patch.object(main_module, "TTSClient") as MockTTS:
+                    result = d._build_tts_client()
+
+        MockTTS.assert_not_called()
+        MockRemote.assert_called_once_with(
+            base_url="http://MacBook-Pro-2.local:9001",
+            model_id="mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+            voice="casual_female",
+        )
+        assert result is MockRemote.return_value
+        assert d._tts_backend == "sidecar"
+
     def test_handle_model_menu_none_surfaces_transcription_and_preview_backends(
         self, main_module, monkeypatch
     ):

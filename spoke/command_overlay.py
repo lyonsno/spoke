@@ -206,12 +206,16 @@ def _spinner_cutout_mask(
     pixel_angle = np.arctan2(dx, dy)
     pixel_angle = pixel_angle % (2.0 * np.pi)
 
-    # Swept region: angles from 0 to sweep_fill * 2*pi
+    # Swept region with soft angular edge at the sweep boundary.
+    # Instead of a hard step, the cutout fades over ~6 degrees at the
+    # sweep hand for a smooth feathered transition.
     fill_end = sweep_fill * 2.0 * np.pi
-    is_swept = pixel_angle <= fill_end
+    edge_width = 0.10  # radians (~5.7 degrees) of angular feather
+    # Smooth ramp: 1.0 deep in swept region, fades to 0.0 at sweep edge
+    sweep_mask = np.clip((fill_end - pixel_angle) / edge_width, 0.0, 1.0)
 
     # The cutout: where swept AND inside circle, multiply fill_alpha toward 0
-    cutout = is_swept.astype(np.float32) * circle_mask
+    cutout = sweep_mask * circle_mask
     fill_alpha *= (1.0 - cutout)
 
     return fill_alpha
@@ -294,6 +298,7 @@ class CommandOverlay(NSObject):
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
+        self._spinner_metal = None  # SpinnerMetalLayer (lazy init)
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -1054,6 +1059,27 @@ class CommandOverlay(NSObject):
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
 
+        # Spinner: rebuild fill with cutout at 30Hz for smooth sweep
+        if getattr(self, "_spinner_active", False):
+            self._spinner_elapsed = getattr(self, "_spinner_elapsed", 0.0) + dt
+            self._update_spinner_fill()
+            # Render Metal effect behind the cutout
+            if self._spinner_metal is not None and self._spinner_metal.ready:
+                angle, sweep_fill = _spinner_state(self._spinner_elapsed)
+                metal_size = _SPINNER_RADIUS * 2.0 + 8.0  # diameter + margin
+                self._spinner_metal.render(
+                    time=self._spinner_elapsed,
+                    sweep_angle=angle,
+                    sweep_fill=sweep_fill,
+                    radius=_SPINNER_RADIUS * getattr(self, "_ridge_scale", 2.0),
+                    center=(metal_size / 2 * getattr(self, "_ridge_scale", 2.0),
+                            metal_size / 2 * getattr(self, "_ridge_scale", 2.0)),
+                    size=(metal_size * getattr(self, "_ridge_scale", 2.0),
+                          metal_size * getattr(self, "_ridge_scale", 2.0)),
+                    hue_color=(r, g, b),
+                    brightness=self._brightness,
+                )
+
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
         self._linger_timer = None
@@ -1143,13 +1169,50 @@ class CommandOverlay(NSObject):
 
         # Mark spinner as active — the fill image will include the cutout
         self._spinner_active = True
+        self._spinner_elapsed = 0.0
         # Rebuild fill with spinner cutout at t=0
         self._update_spinner_fill()
+        # Set up Metal effect layer behind the fill (visible through cutout)
+        self._setup_spinner_metal()
 
         logger.info("Thinking timer started (with spinner)")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )
+
+    def _setup_spinner_metal(self) -> None:
+        """Create or show the Metal effect layer behind the spinner cutout."""
+        if self._wrapper_view is None:
+            return
+
+        if self._spinner_metal is None:
+            from .spinner_metal import SpinnerMetalLayer
+            self._spinner_metal = SpinnerMetalLayer()
+
+        if not self._spinner_metal.ready:
+            # Set up the Metal layer covering the entire wrapper
+            # (the effect is clipped by the fill's alpha anyway)
+            f = _OUTER_FEATHER
+            content_frame = self._content_view.frame() if self._content_view else None
+            if content_frame is None:
+                return
+            # Position the Metal layer to cover the spinner region with margin
+            diameter = _SPINNER_RADIUS * 2.0
+            margin = 4.0  # extra pixels for glow
+            metal_size = diameter + margin * 2
+            # In wrapper coords (macOS: Y=0 at bottom)
+            metal_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - margin
+            metal_y = f + content_frame.size.height - diameter - _SPINNER_MARGIN_TOP - margin
+            frame = ((metal_x, metal_y), (metal_size, metal_size))
+            scale = getattr(self, "_ridge_scale", 2.0)
+
+            if not self._spinner_metal.setup(
+                self._wrapper_view.layer(), frame, scale
+            ):
+                logger.info("Metal spinner unavailable, falling back to cutout-only")
+                return
+        else:
+            self._spinner_metal.set_hidden(False)
 
     def _update_spinner_fill(self) -> None:
         """Rebuild the fill image with the spinner cutout baked in."""
@@ -1177,6 +1240,9 @@ class CommandOverlay(NSObject):
         # Deactivate spinner and rebuild fill without the cutout
         self._spinner_active = False
         self._update_spinner_fill()
+        # Hide the Metal effect layer
+        if self._spinner_metal is not None and self._spinner_metal.ready:
+            self._spinner_metal.set_hidden(True)
 
     def thinkingTick_(self, timer) -> None:
         """Update the thinking counter and spinner every 100ms."""
@@ -1184,9 +1250,7 @@ class CommandOverlay(NSObject):
         if self._thinking_label is not None and not self._thinking_label.isHidden():
             if self._tool_mode: self._thinking_label.setStringValue_("tool…")
             else: self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
-        # Update the radar-sweep spinner (rebuild fill with new cutout angle)
-        if getattr(self, "_spinner_active", False):
-            self._update_spinner_fill()
+        # Spinner fill is now updated at 30Hz in the pulse timer, not here.
 
     # ── ridge masks ────────────────────────────────────────
 
@@ -1215,7 +1279,7 @@ class CommandOverlay(NSObject):
             # Punch spinner cutout into fill if active
             if getattr(self, "_spinner_active", False):
                 _, sweep_fill = _spinner_state(
-                    getattr(self, "_thinking_seconds", 0.0)
+                    getattr(self, "_spinner_elapsed", 0.0)
                 )
                 # Spinner center in fill-image pixel coordinates.
                 # The fill image covers total_w x total_h with the content area

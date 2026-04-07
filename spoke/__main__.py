@@ -18,6 +18,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 import faulthandler
+import importlib.util
 import json
 import logging
 import os
@@ -142,6 +143,18 @@ def _url_host(url: str) -> str:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     return parsed.netloc or url
+
+
+def _is_voxtral_tts_model(model_id: str) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return "voxtral" in normalized and "tts" in normalized
+
+
+def _local_tts_runtime_ready(model_id: str) -> bool:
+    """Whether the active runtime can satisfy this local TTS selection."""
+    if not _is_voxtral_tts_model(model_id):
+        return True
+    return importlib.util.find_spec("mlx_lm") is not None
 
 
 def _ensure_edit_menu() -> None:
@@ -3701,6 +3714,23 @@ class SpokeAppDelegate(NSObject):
             self._load_preference("tts_model")
             or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
         )
+        if (
+            self._tts_sidecar_url
+            and voice
+            and not _local_tts_runtime_ready(model_id)
+        ):
+            fallback_model = self._load_preference("tts_sidecar_model") or model_id
+            logger.warning(
+                "Local TTS runtime cannot satisfy %s; falling back to sidecar %s",
+                model_id,
+                self._tts_sidecar_url,
+            )
+            self._tts_backend = "sidecar"
+            return RemoteTTSClient(
+                base_url=self._tts_sidecar_url,
+                model_id=fallback_model,
+                voice=voice,
+            )
         if not voice and not allow_default_voice:
             return None
         return TTSClient(

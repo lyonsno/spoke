@@ -66,6 +66,9 @@ def _make_overlay(mock_pyobjc):
     overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
+    overlay._spinner_metal = None
+    overlay._spinner_active = False
+    overlay._spinner_elapsed = 0.0
     return overlay, mod
 
 
