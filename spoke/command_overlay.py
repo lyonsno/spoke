@@ -1129,13 +1129,15 @@ class CommandOverlay(NSObject):
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
 
-        # Spinner: advance time every pulse tick, but only rebuild the fill
-        # image every other tick (15Hz) to reduce CGImage allocation pressure.
-        # Halos rotate every tick (30Hz) since that's just a transform, no alloc.
+        # Spinner: advance time every pulse tick. Halos rotate at 30Hz
+        # (just a transform, free). Fill image rebuilds at ~5Hz (every 6th
+        # tick) to avoid CGImage allocation stutter — the halos carry the
+        # visual motion, the cutout just needs to roughly track the sweep.
         if getattr(self, "_spinner_active", False):
             self._spinner_elapsed = getattr(self, "_spinner_elapsed", 0.0) + dt
-            self._spinner_frame_skip = not getattr(self, "_spinner_frame_skip", False)
-            if self._spinner_frame_skip:
+            self._spinner_fill_counter = getattr(self, "_spinner_fill_counter", 0) + 1
+            if self._spinner_fill_counter >= 6:  # ~5Hz
+                self._spinner_fill_counter = 0
                 self._update_spinner_fill()
             self._update_spinner_halos()
             # Render Metal effect behind the cutout
@@ -1292,13 +1294,13 @@ class CommandOverlay(NSObject):
         # Ring 1: synced to cutout — same radius, highlight at 12 o'clock (angle 0),
         # rotates in sync with the sweep so the highlight tracks the sweep hand.
         ring1_img, ring1_pay = _build_halo_ring(
-            _SPINNER_RADIUS, scale, ring_width=0.83,
+            _SPINNER_RADIUS, scale, ring_width=0.36,
             highlight_angle=0.0, highlight_width=0.35,
         )
-        # Ring 2: slightly larger radius, thinner, opposite highlight,
+        # Ring 2: inset, even thinner, opposite highlight,
         # spins at 7/5x opposite — creates interference with ring 1.
         ring2_img, ring2_pay = _build_halo_ring(
-            _SPINNER_RADIUS * 1.15, scale, ring_width=0.36,
+            _SPINNER_RADIUS * 0.7, scale, ring_width=0.18,
             highlight_angle=math.pi, highlight_width=0.45,
         )
 
