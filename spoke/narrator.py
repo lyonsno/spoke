@@ -44,6 +44,29 @@ tradeoff). Never generic ("Thinking about the problem").
 - Say what the AI is doing, not "the user".
 - No preamble, no commentary. Output ONLY the status line."""
 
+_LOADING_VAMP_SYSTEM_PROMPT = """\
+You write short, fun, varied status lines for a voice assistant while \
+a large AI model is loading into GPU memory. The user is waiting and \
+can see your messages, so be entertaining and informative.
+
+Rules:
+- ONE line only. 8–20 words.
+- Be creative, varied, and fun. Mix humor, tech facts, encouragement, \
+and playful commentary. Never repeat yourself.
+- You can reference: the model name, how long it's been loading, the \
+size, what the user asked, the hardware, AI in general, the wait itself.
+- Tone: friendly, slightly irreverent, like a witty loading screen.
+- No preamble, no quotes. Output ONLY the status line.
+
+Examples of good lines:
+- Waking up a 27-billion-parameter brain — neurons need their coffee too
+- 45 seconds in — still cheaper than waiting for a human expert
+- Shuffling 15GB of weights onto the GPU like a very expensive game of Tetris
+- Almost there — the model is doing its stretches before the big performance
+- Loading layer 34 of 80 — each one a little smarter than the last"""
+
+_LOADING_VAMP_INTERVAL_S = 6.0  # seconds between vamp lines
+
 # ── chunking parameters ─────────────────────────────────────────────
 
 _TARGET_CHUNK_TOKENS = 300
@@ -97,6 +120,15 @@ class ThinkingNarrator:
             or os.environ.get("OMLX_SERVER_API_KEY", "")
         )
 
+        # Command URL for polling OMLX status (may differ from narrator URL)
+        self._command_url = (
+            os.environ.get("SPOKE_COMMAND_URL", "http://localhost:8001")
+        ).rstrip("/")
+        self._command_api_key = (
+            os.environ.get("SPOKE_COMMAND_API_KEY")
+            or os.environ.get("OMLX_SERVER_API_KEY", "")
+        )
+
         # State (guarded by _lock)
         self._lock = threading.Lock()
         self._buffer = ""          # accumulated thinking tokens since last dispatch
@@ -105,6 +137,11 @@ class ThinkingNarrator:
         self._active = False
         self._dispatch_thread: threading.Thread | None = None
         self._pending_dispatch = False  # a dispatch is in flight
+
+        # Loading vamp state
+        self._vamp_active = False
+        self._vamp_thread: threading.Thread | None = None
+        self._vamp_start_time = 0.0
 
     @staticmethod
     def is_enabled() -> bool:
@@ -182,13 +219,117 @@ class ThinkingNarrator:
             with self._lock:
                 self._pending_dispatch = False
 
-    def _chat_completion(self, messages: list[dict]) -> str:
+    # ── loading vamp mode ─────────────────────────────────────────
+
+    def start_loading_vamp(self, utterance: str = "", model_id: str = "") -> None:
+        """Start generating fun vamp lines while a model is loading.
+
+        Call this when you detect the model server is loading. The vamp
+        loop polls OMLX /api/status for context and generates lines via
+        the narrator sidecar model.
+        """
+        with self._lock:
+            if self._vamp_active:
+                return
+            self._vamp_active = True
+            self._vamp_start_time = time.monotonic()
+
+        logger.info("Loading vamp started for model=%s", model_id)
+        self._vamp_thread = threading.Thread(
+            target=self._vamp_loop,
+            args=(utterance, model_id),
+            daemon=True,
+        )
+        self._vamp_thread.start()
+
+    def stop_loading_vamp(self) -> None:
+        """Stop the loading vamp loop."""
+        with self._lock:
+            self._vamp_active = False
+        logger.info("Loading vamp stopped")
+
+    def _vamp_loop(self, utterance: str, model_id: str) -> None:
+        """Background loop that generates vamp lines every few seconds."""
+        vamp_messages: list[dict] = [
+            {"role": "system", "content": _LOADING_VAMP_SYSTEM_PROMPT},
+        ]
+
+        while True:
+            with self._lock:
+                if not self._vamp_active:
+                    return
+                elapsed = time.monotonic() - self._vamp_start_time
+
+            # Gather context for the vamp prompt
+            loading_context = self._poll_loading_status()
+            context_parts = []
+            if model_id:
+                context_parts.append(f"Model being loaded: {model_id}")
+            if loading_context:
+                context_parts.append(loading_context)
+            context_parts.append(f"Time waiting so far: {elapsed:.0f} seconds")
+            if utterance:
+                context_parts.append(f"The user asked: \"{utterance}\"")
+
+            user_content = "Generate the next loading status line.\n\n" + "\n".join(context_parts)
+            vamp_messages.append({"role": "user", "content": user_content})
+
+            try:
+                summary = self._chat_completion(
+                    vamp_messages, temperature=0.9, max_tokens=40
+                )
+                if summary:
+                    vamp_messages.append({"role": "assistant", "content": summary})
+                    with self._lock:
+                        if not self._vamp_active:
+                            return
+                    logger.info("Vamp line: %s", summary)
+                    self._on_summary(summary)
+            except Exception:
+                logger.exception("Vamp dispatch failed")
+
+            # Wait before next vamp line
+            time.sleep(_LOADING_VAMP_INTERVAL_S)
+
+    def _poll_loading_status(self) -> str:
+        """Poll OMLX /api/status for loading context."""
+        try:
+            headers = {}
+            if self._command_api_key:
+                headers["Authorization"] = f"Bearer {self._command_api_key}"
+            req = urllib.request.Request(
+                f"{self._command_url}/api/status",
+                headers=headers,
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+
+            parts = []
+            models_loading = data.get("models_loading", 0)
+            if models_loading:
+                parts.append(f"{models_loading} model(s) currently loading")
+            mem_used = data.get("model_memory_used", 0)
+            mem_max = data.get("model_memory_max", 0)
+            if mem_max > 0:
+                used_gb = mem_used / (1024 ** 3)
+                max_gb = mem_max / (1024 ** 3)
+                parts.append(f"GPU memory: {used_gb:.1f}GB / {max_gb:.1f}GB")
+            loaded = data.get("loaded_models", [])
+            if loaded:
+                parts.append(f"Models already in memory: {', '.join(loaded[:3])}")
+            return ". ".join(parts)
+        except Exception:
+            logger.debug("Failed to poll OMLX status", exc_info=True)
+            return ""
+
+    def _chat_completion(self, messages: list[dict], *, temperature: float = 0.3, max_tokens: int = _MAX_TOKENS) -> str:
         """Synchronous chat completion call."""
         body = {
             "model": self._model,
             "messages": messages,
-            "max_tokens": _MAX_TOKENS,
-            "temperature": 0.3,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
             "stream": False,
         }
 

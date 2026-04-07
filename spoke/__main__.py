@@ -2628,11 +2628,21 @@ class SpokeAppDelegate(NSObject):
         full_response = ""
         stale_break = False
         narrator_started = False
+        vamp_started = False
+        first_event_received = False
         try:
             # Start the narrator if available
             if self._narrator is not None:
                 self._narrator.start()
                 narrator_started = True
+                # Start loading vamp — runs in background while the HTTP
+                # request blocks during model loading.  Stops when the
+                # first event arrives (model is loaded and generating).
+                model_id = getattr(self, "_command_model_id", "") or ""
+                self._narrator.start_loading_vamp(
+                    utterance=utterance, model_id=model_id
+                )
+                vamp_started = True
 
             for event in self._command_client.stream_command_events(
                 utterance,
@@ -2643,6 +2653,13 @@ class SpokeAppDelegate(NSObject):
                 if token != self._transcription_token:
                     stale_break = True
                     break  # stale
+
+                # Stop loading vamp on first event from the model
+                if not first_event_received:
+                    first_event_received = True
+                    if vamp_started and self._narrator is not None:
+                        self._narrator.stop_loading_vamp()
+                        vamp_started = False
 
                 if event.kind == "thinking_delta":
                     # Feed thinking tokens to the narrator sidecar
@@ -2676,7 +2693,9 @@ class SpokeAppDelegate(NSObject):
             )
             return
         finally:
-            # Always stop the narrator on stream end
+            # Always stop the narrator and vamp on stream end
+            if vamp_started and self._narrator is not None:
+                self._narrator.stop_loading_vamp()
             if narrator_started and self._narrator is not None:
                 self._narrator.stop()
             # Repair history only when a stale token break interrupts the
