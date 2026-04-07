@@ -587,10 +587,12 @@ class CommandOverlay(NSObject):
         self._update_layout()
 
     def set_thinking_collapsed(self, text: str) -> None:
-        """Inject a collapsed thinking summary line into the text view.
+        """Inject or append to a collapsed thinking summary in the text view.
 
-        Appears between the user utterance and the response, styled
-        as a subtle aside (smaller font, lower alpha).
+        First call: appears between the user utterance and the response,
+        styled as a subtle aside (smaller font, lower alpha).
+        Subsequent calls: appended to the existing collapsed text (used
+        for " · topic" arriving asynchronously from Bonsai).
         """
         if self._text_view is None or not self._visible:
             return
@@ -600,8 +602,9 @@ class CommandOverlay(NSObject):
             NSFontAttributeName,
         )
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
-        # Add a newline before the collapsed line if there's already content
-        prefix = "\n" if self._utterance_text else ""
+        # If this is the first collapsed text, add a newline prefix
+        is_append = text.startswith(" · ")
+        prefix = "" if is_append else ("\n" if self._utterance_text else "")
         collapsed_str = NSMutableAttributedString.alloc().initWithString_(
             prefix + text
         )
@@ -618,7 +621,15 @@ class CommandOverlay(NSObject):
             NSFont.systemFontOfSize_weight_(12.0, 0.0),
             full_range,
         )
-        self._text_view.textStorage().appendAttributedString_(collapsed_str)
+        if is_append and hasattr(self, '_collapsed_end_idx'):
+            # Insert the topic right after the initial "Thought for Xs"
+            storage = self._text_view.textStorage()
+            insert_at = min(self._collapsed_end_idx, storage.length())
+            storage.insertAttributedString_atIndex_(collapsed_str, insert_at)
+            self._collapsed_end_idx = insert_at + len(prefix + text)
+        else:
+            self._text_view.textStorage().appendAttributedString_(collapsed_str)
+            self._collapsed_end_idx = self._text_view.textStorage().length()
         self._update_layout()
 
     def append_token(self, token: str) -> None:

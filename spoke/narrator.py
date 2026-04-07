@@ -208,6 +208,11 @@ class ThinkingNarrator:
         if elapsed < 1.0:
             return  # sub-second thinking — not worth reporting
 
+        # Immediately emit the bare duration so it's in the overlay
+        # before response tokens start flowing. The topic will be
+        # appended when Bonsai returns.
+        self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
+
         # Fire async wrap-up — always call Bonsai for the topic summary.
         # If no live summaries were produced, feed the raw thinking buffer
         # directly so the model has something to summarize.
@@ -242,14 +247,11 @@ class ThinkingNarrator:
             })
             topic = self._chat_completion(messages, max_tokens=25)
             if topic:
-                collapsed = f"Thought for {elapsed:.0f}s · {topic}"
-            else:
-                collapsed = f"Thought for {elapsed:.0f}s"
-            logger.info("Thinking collapsed: %s", collapsed)
-            self._on_thinking_collapsed(collapsed)
+                # Append topic to the already-displayed duration line
+                logger.info("Thinking topic: %s", topic)
+                self._on_thinking_collapsed(f" · {topic}")
         except Exception:
             logger.exception("Failed to produce collapsed summary")
-            self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
 
     def feed(self, token: str) -> None:
         """Feed a thinking token.  May trigger an async narrator call."""
