@@ -165,102 +165,56 @@ def _spinner_state(elapsed: float) -> tuple[float, float]:
     return (angle, fill)
 
 
-def _build_spinner_image(
+def _spinner_cutout_mask(
+    fill_alpha,
+    fill_width: float,
+    fill_height: float,
+    spinner_cx: float,
+    spinner_cy: float,
     radius: float,
-    angle: float,
-    fill: float,
+    sweep_fill: float,
     scale: float,
-    bg_color: tuple[float, float, float],
-    sweep_color: tuple[float, float, float],
-    sweep_alpha: float,
 ):
-    """Build a CGImage pair for the radar-sweep spinner.
+    """Multiply a hole into fill_alpha for the spinner's swept region.
 
-    Returns (eraser_image, glow_image, payload_eraser, payload_glow).
+    Modifies fill_alpha in-place. The swept region (behind the sweep hand)
+    becomes transparent. The unswept region is untouched. A soft anti-aliased
+    edge prevents jaggies.
 
-    eraser_image: white circle with alpha in the *swept* region. Used with
-    destinationOut compositing to punch a hole through the overlay fill.
-    Anywhere this image has alpha, it erases the fill beneath.
+    spinner_cx, spinner_cy: center of the spinner in fill-image coordinates
+    (pixels at the given scale).
 
-    glow_image: the sweep-hand highlight — a thin bright arc at the boundary
-    between swept and unswept. Rendered additively on top.
+    Returns the modified fill_alpha (same array, modified in-place).
     """
     import numpy as np
-    from Quartz import (
-        CGColorSpaceCreateDeviceRGB,
-        CGDataProviderCreateWithCFData,
-        CGImageCreate,
-        kCGImageAlphaPremultipliedLast,
-        kCGRenderingIntentDefault,
-    )
-    from Foundation import NSData
 
-    diameter = radius * 2.0
-    px = int(diameter * scale)
-    py = int(diameter * scale)
-    cx = px * 0.5
-    cy = py * 0.5
+    ph, pw = fill_alpha.shape
     r_px = radius * scale
 
-    # Coordinate grids
-    x = np.arange(px, dtype=np.float32)[None, :] + 0.5
-    y = np.arange(py, dtype=np.float32)[:, None] + 0.5
-    dx = x - cx
-    dy = y - cy
-
-    # Distance from center
+    # Coordinate grids relative to spinner center
+    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
+    dx = x - spinner_cx
+    dy = y - spinner_cy
     dist = np.sqrt(dx * dx + dy * dy)
 
-    # Circle mask — smooth anti-aliased edge
+    # Circle region — only modify pixels inside the spinner circle
     edge_softness = 1.5 * scale
-    circle_alpha = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
+    circle_mask = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
 
     # Angle of each pixel (CW from top / 12 o'clock = 0)
-    pixel_angle = np.arctan2(dx, dy)  # (dx, dy) gives CW-from-top
+    pixel_angle = np.arctan2(dx, dy)
     pixel_angle = pixel_angle % (2.0 * np.pi)
 
-    # The sweep hand is at fill * 2*pi. Everything behind it (swept)
-    # is the cutout region — the eraser punches through here.
-    fill_end = fill * 2.0 * np.pi
-    is_swept = pixel_angle <= fill_end  # behind sweep = erased
+    # Swept region: angles from 0 to sweep_fill * 2*pi
+    fill_end = sweep_fill * 2.0 * np.pi
+    is_swept = pixel_angle <= fill_end
 
-    # --- Eraser image: alpha in swept region knocks out the fill ---
-    eraser_alpha = is_swept.astype(np.float32) * circle_alpha
-    eraser_rgba = np.zeros((py, px, 4), dtype=np.uint8)
-    # White pixels — color doesn't matter for destinationOut, only alpha
-    eraser_rgba[..., 0] = np.clip(eraser_alpha * 255.0, 0, 255).astype(np.uint8)
-    eraser_rgba[..., 1] = np.clip(eraser_alpha * 255.0, 0, 255).astype(np.uint8)
-    eraser_rgba[..., 2] = np.clip(eraser_alpha * 255.0, 0, 255).astype(np.uint8)
-    eraser_rgba[..., 3] = np.clip(eraser_alpha * 255.0, 0, 255).astype(np.uint8)
+    # The cutout: where swept AND inside circle, multiply fill_alpha toward 0
+    cutout = is_swept.astype(np.float32) * circle_mask
+    fill_alpha *= (1.0 - cutout)
 
-    # --- Glow image: sweep hand highlight ---
-    sweep_hand_width = 0.08  # radians (~4.6 degrees)
-    angle_to_hand = np.abs(pixel_angle - fill_end)
-    angle_to_hand = np.minimum(angle_to_hand, 2.0 * np.pi - angle_to_hand)
-    hand_glow = np.exp(-angle_to_hand / sweep_hand_width) * circle_alpha
-    hand_alpha = hand_glow * 0.9
-
-    glow_rgba = np.zeros((py, px, 4), dtype=np.uint8)
-    glow_rgba[..., 0] = np.clip(sweep_color[0] * hand_alpha * 255.0, 0, 255).astype(np.uint8)
-    glow_rgba[..., 1] = np.clip(sweep_color[1] * hand_alpha * 255.0, 0, 255).astype(np.uint8)
-    glow_rgba[..., 2] = np.clip(sweep_color[2] * hand_alpha * 255.0, 0, 255).astype(np.uint8)
-    glow_rgba[..., 3] = np.clip(hand_alpha * 255.0, 0, 255).astype(np.uint8)
-
-    def _make_image(rgba_arr):
-        payload = NSData.dataWithBytes_length_(rgba_arr.tobytes(), int(rgba_arr.nbytes))
-        provider = CGDataProviderCreateWithCFData(payload)
-        image = CGImageCreate(
-            px, py, 8, 32, px * 4,
-            CGColorSpaceCreateDeviceRGB(),
-            kCGImageAlphaPremultipliedLast,
-            provider, None, False,
-            kCGRenderingIntentDefault,
-        )
-        return image, payload
-
-    eraser_img, eraser_pay = _make_image(eraser_rgba)
-    glow_img, glow_pay = _make_image(glow_rgba)
-    return eraser_img, glow_img, eraser_pay, glow_pay
+    return fill_alpha
 
 
 def _ease_in(progress: float) -> float:
@@ -1187,90 +1141,22 @@ class CommandOverlay(NSObject):
                 )
             )
 
-        # Create the radar-sweep spinner layer
-        self._create_spinner_layer()
+        # Mark spinner as active — the fill image will include the cutout
+        self._spinner_active = True
+        # Rebuild fill with spinner cutout at t=0
+        self._update_spinner_fill()
 
         logger.info("Thinking timer started (with spinner)")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )
 
-    def _create_spinner_layer(self) -> None:
-        """Create or reset the radar-sweep spinner layers.
-
-        Two layers work together:
-        - _spinner_layer (eraser): destinationOut compositing punches a hole
-          through the overlay fill in the swept region
-        - _spinner_glow_layer: additive glow for the sweep hand
-        """
-        if self._wrapper_view is None:
-            self._spinner_layer = None
-            self._spinner_glow_layer = None
+    def _update_spinner_fill(self) -> None:
+        """Rebuild the fill image with the spinner cutout baked in."""
+        if self._content_view is None:
             return
-
-        # Position: top-right of content area, but in wrapper coordinates
-        # (content is offset by _OUTER_FEATHER inside wrapper)
-        f = _OUTER_FEATHER
-        content_frame = self._content_view.frame() if self._content_view else None
-        if content_frame is None:
-            self._spinner_layer = None
-            self._spinner_glow_layer = None
-            return
-        diameter = _SPINNER_RADIUS * 2.0
-        # Position relative to wrapper (content origin is at (f, f))
-        spinner_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT
-        spinner_y = f + content_frame.size.height - diameter - _SPINNER_MARGIN_TOP
-        frame = ((spinner_x, spinner_y), (diameter, diameter))
-
-        # Eraser layer — destinationOut punches holes in the fill
-        if getattr(self, "_spinner_layer", None) is not None:
-            self._spinner_layer.setFrame_(frame)
-            self._spinner_layer.setHidden_(False)
-        else:
-            self._spinner_layer = CALayer.alloc().init()
-            self._spinner_layer.setFrame_(frame)
-            self._spinner_layer.setContentsGravity_("resize")
-            if hasattr(self._spinner_layer, "setCompositingFilter_"):
-                self._spinner_layer.setCompositingFilter_("sourceOutCompositing")
-            self._wrapper_view.layer().addSublayer_(self._spinner_layer)
-
-        # Glow layer — additive, sits on top of everything
-        if getattr(self, "_spinner_glow_layer", None) is not None:
-            self._spinner_glow_layer.setFrame_(frame)
-            self._spinner_glow_layer.setHidden_(False)
-        else:
-            self._spinner_glow_layer = CALayer.alloc().init()
-            self._spinner_glow_layer.setFrame_(frame)
-            self._spinner_glow_layer.setContentsGravity_("resize")
-            if hasattr(self._spinner_glow_layer, "setCompositingFilter_"):
-                self._spinner_glow_layer.setCompositingFilter_("plusL")
-            self._wrapper_view.layer().addSublayer_(self._spinner_glow_layer)
-
-        # Initial render at t=0
-        self._update_spinner_image()
-
-    def _update_spinner_image(self) -> None:
-        """Rebuild the spinner CGImages for the current elapsed time."""
-        if getattr(self, "_spinner_layer", None) is None:
-            return
-        angle, fill = _spinner_state(self._thinking_seconds)
-        scale = getattr(self, "_ridge_scale", 2.0)
-        bg = _background_color_for_brightness(self._brightness)
-        sweep_rgb = self._current_hue_rgb()
-        try:
-            eraser_img, glow_img, self._spinner_eraser_pay, self._spinner_glow_pay = (
-                _build_spinner_image(
-                    _SPINNER_RADIUS, angle, fill, scale,
-                    bg_color=bg,
-                    sweep_color=sweep_rgb,
-                    sweep_alpha=_BG_ALPHA,
-                )
-            )
-            self._spinner_layer.setContents_(eraser_img)
-            if getattr(self, "_spinner_glow_layer", None) is not None:
-                self._spinner_glow_layer.setContents_(glow_img)
-        except Exception:
-            logger.debug("Spinner image build failed", exc_info=True)
+        content_frame = self._content_view.frame()
+        self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
 
     def invert_thinking_timer(self) -> None:
         """Switch from glowing number to negative-space cutout mode.
@@ -1288,10 +1174,9 @@ class CommandOverlay(NSObject):
             self._thinking_timer = None
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(True)
-        if getattr(self, "_spinner_layer", None) is not None:
-            self._spinner_layer.setHidden_(True)
-        if getattr(self, "_spinner_glow_layer", None) is not None:
-            self._spinner_glow_layer.setHidden_(True)
+        # Deactivate spinner and rebuild fill without the cutout
+        self._spinner_active = False
+        self._update_spinner_fill()
 
     def thinkingTick_(self, timer) -> None:
         """Update the thinking counter and spinner every 100ms."""
@@ -1299,8 +1184,9 @@ class CommandOverlay(NSObject):
         if self._thinking_label is not None and not self._thinking_label.isHidden():
             if self._tool_mode: self._thinking_label.setStringValue_("tool…")
             else: self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
-        # Update the radar-sweep spinner
-        self._update_spinner_image()
+        # Update the radar-sweep spinner (rebuild fill with new cutout angle)
+        if getattr(self, "_spinner_active", False):
+            self._update_spinner_fill()
 
     # ── ridge masks ────────────────────────────────────────
 
@@ -1325,6 +1211,27 @@ class CommandOverlay(NSObject):
             )
 
             fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+
+            # Punch spinner cutout into fill if active
+            if getattr(self, "_spinner_active", False):
+                _, sweep_fill = _spinner_state(
+                    getattr(self, "_thinking_seconds", 0.0)
+                )
+                # Spinner center in fill-image pixel coordinates
+                # Content area is centered in fill; spinner is top-right of content
+                spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
+                spinner_cy_content = height - _SPINNER_RADIUS - _SPINNER_MARGIN_TOP
+                # Fill image Y is flipped (row 0 = top of image = top of fill)
+                spinner_cy = (f + spinner_cy_content) * scale
+                # Flip Y: image row 0 is top, but our SDF has row 0 at bottom
+                ph = fill_alpha.shape[0]
+                spinner_cy = ph - spinner_cy
+                _spinner_cutout_mask(
+                    fill_alpha, total_w, total_h,
+                    spinner_cx, spinner_cy,
+                    _SPINNER_RADIUS, sweep_fill, scale,
+                )
+
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
             )

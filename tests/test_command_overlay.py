@@ -252,7 +252,8 @@ class TestShowFinishHide:
 
         overlay.show()
 
-        overlay._apply_ridge_masks.assert_called_once_with(
+        # show() rebuilds fill geometry (may be called more than once due to spinner)
+        overlay._apply_ridge_masks.assert_any_call(
             mod._OVERLAY_WIDTH,
             mod._OVERLAY_HEIGHT,
         )
@@ -597,28 +598,23 @@ class TestSpinnerState:
         assert fill < 0.2
 
 
-class TestSpinnerLayer:
-    """Test that the spinner layer is created and managed correctly."""
+class TestSpinnerFillIntegration:
+    """Test that the spinner cutout is baked into the fill image."""
 
-    def test_start_thinking_creates_spinner_layer(self, mock_pyobjc):
-        """_start_thinking_timer must create a _spinner_layer attribute."""
+    def test_start_thinking_activates_spinner(self, mock_pyobjc):
+        """_start_thinking_timer must set _spinner_active = True."""
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._start_thinking_timer()
-        assert hasattr(overlay, "_spinner_layer"), (
-            "_spinner_layer not created by _start_thinking_timer"
-        )
-        assert overlay._spinner_layer is not None
+        assert overlay._spinner_active is True
 
-    def test_stop_thinking_hides_spinner_layer(self, mock_pyobjc):
-        """_stop_thinking_timer must hide the spinner layer."""
+    def test_stop_thinking_deactivates_spinner(self, mock_pyobjc):
+        """_stop_thinking_timer must set _spinner_active = False."""
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._start_thinking_timer()
-        assert overlay._spinner_layer is not None
+        assert overlay._spinner_active is True
 
         overlay._stop_thinking_timer()
-        # Either removed or hidden
-        if overlay._spinner_layer is not None:
-            overlay._spinner_layer.setHidden_.assert_called_with(True)
+        assert overlay._spinner_active is False
 
     def test_thinking_tick_advances_spinner_angle(self, mock_pyobjc):
         """Each thinking tick must advance the spinner's elapsed time."""
@@ -634,3 +630,43 @@ class TestSpinnerLayer:
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay.show()
         assert overlay._thinking_seconds == pytest.approx(0.0)
+
+
+class TestSpinnerCutoutMask:
+    """Test that _spinner_cutout_mask punches a hole in the fill alpha."""
+
+    def test_cutout_zeros_swept_region(self, mock_pyobjc):
+        """Swept pixels inside the circle must have alpha near 0."""
+        import numpy as np
+        _, mod = _make_overlay(mock_pyobjc)
+
+        # Create a uniform fill alpha field
+        fill = np.ones((100, 200), dtype=np.float32) * 0.8
+        # Punch a half-swept spinner in the center
+        mod._spinner_cutout_mask(
+            fill, 200.0, 100.0,
+            spinner_cx=100.0, spinner_cy=50.0,
+            radius=20.0, sweep_fill=0.5, scale=1.0,
+        )
+        # Center pixel should be zeroed (it's in the swept region)
+        # The swept half (angles 0 to pi) should be near 0
+        assert fill[50, 100] < 0.01, (
+            f"Center pixel alpha should be ~0 in swept region, got {fill[50, 100]}"
+        )
+        # A pixel far outside the spinner should be untouched
+        assert fill[0, 0] == pytest.approx(0.8)
+
+    def test_cutout_preserves_unswept_region(self, mock_pyobjc):
+        """Unswept pixels inside the circle must retain their original alpha."""
+        import numpy as np
+        _, mod = _make_overlay(mock_pyobjc)
+
+        fill = np.ones((100, 200), dtype=np.float32) * 0.8
+        # sweep_fill=0.0 means nothing is swept — no cutout
+        mod._spinner_cutout_mask(
+            fill, 200.0, 100.0,
+            spinner_cx=100.0, spinner_cy=50.0,
+            radius=20.0, sweep_fill=0.0, scale=1.0,
+        )
+        # Everything should be untouched
+        assert fill[50, 100] == pytest.approx(0.8)
