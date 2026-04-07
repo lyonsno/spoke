@@ -3136,12 +3136,19 @@ class SpokeAppDelegate(NSObject):
                         if not narrator_started:
                             self._narrator.start()
                             narrator_started = True
-                            # Unsuppress narrator display and show "Thinking" placeholder
                             if self._command_overlay is not None:
                                 self._command_overlay._narrator_suppressed = False
-                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                                "narratorSummary:", {"summary": "Thinking"}, False
-                            )
+                            if first_event_received:
+                                # Overlay is expanded (content already flowing) —
+                                # inject "Thinking" inline instead of floating label
+                                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                    "narratorCollapsed:", {"text": "Thinking"}, False
+                                )
+                            else:
+                                # Overlay is compact — use the floating label
+                                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                    "narratorSummary:", {"summary": "Thinking"}, False
+                                )
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
                     # Stop narrator when visible content starts — produce collapsed summary
