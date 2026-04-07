@@ -1883,7 +1883,19 @@ class SpokeAppDelegate(NSObject):
         """Called from the WebSocket receiver thread when Gemini wants tools.
 
         Each entry has: {"id": str, "name": str, "args": dict}
+
+        Tool execution is offloaded to a worker thread so it doesn't
+        block the asyncio event loop (which would stall audio streaming).
         """
+        threading.Thread(
+            target=self._live_tool_worker,
+            args=(function_calls,),
+            daemon=True,
+            name="live-tool-exec",
+        ).start()
+
+    def _live_tool_worker(self, function_calls: list[dict]) -> None:
+        """Worker thread: execute tools and send results back."""
         from spoke.tool_dispatch import execute_tool
 
         responses = []
