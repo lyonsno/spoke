@@ -2917,11 +2917,8 @@ class SpokeAppDelegate(NSObject):
                     utterance=utterance, model_id=model_id
                 )
                 vamp_started = True
-                # Show "Loading model" inline below the user prompt
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "narratorCollapsed:", {"text": f"Loading {model_id}…"}, False
-                )
-                # Enable color shimmer on the narrator label during loading
+                # Enable color shimmer — vamp lines will appear after
+                # the grace period if the model is genuinely loading.
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "narratorShimmer:", {"active": True}, False
                 )
@@ -2954,19 +2951,13 @@ class SpokeAppDelegate(NSObject):
                         if not narrator_started:
                             self._narrator.start()
                             narrator_started = True
-                            if self._command_overlay is not None:
-                                self._command_overlay._narrator_suppressed = False
-                            if first_event_received:
-                                # Overlay is expanded (content already flowing) —
-                                # inject "Thinking" inline instead of floating label
-                                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                                    "narratorCollapsed:", {"text": "Thinking"}, False
-                                )
-                            else:
-                                # Overlay is compact — use the floating label
-                                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                                    "narratorSummary:", {"summary": "Thinking"}, False
-                                )
+                            # Unsuppress and show "Thinking" on main thread
+                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                "narratorUnsuppressAndShow:", {
+                                    "token": token,
+                                    "inline": first_event_received,
+                                }, False
+                            )
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
                     # Stop narrator when visible content starts — produce collapsed summary
@@ -3060,6 +3051,20 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorUnsuppressAndShow_(self, payload: dict) -> None:
+        """Main thread: unsuppress narrator and show 'Thinking' indicator."""
+        if payload.get("token") != self._transcription_token:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            overlay._narrator_suppressed = False
+            if payload.get("inline"):
+                # Overlay already expanded — inject inline
+                overlay.set_thinking_collapsed("Thinking")
+            else:
+                # Overlay compact — use floating label
+                overlay.set_narrator_summary("Thinking")
 
     def narratorHide_(self, payload: dict) -> None:
         """Main thread: hide the narrator label immediately."""
