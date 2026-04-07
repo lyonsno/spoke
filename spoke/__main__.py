@@ -3145,6 +3145,10 @@ class SpokeAppDelegate(NSObject):
                     if narrator_started and self._narrator is not None:
                         self._narrator.stop_and_summarize()
                         narrator_started = False
+                        # Hide narrator label immediately so it doesn't overlap response
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "narratorHide:", {"token": token}, False
+                        )
                     if event.text:
                         full_response += event.text
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
