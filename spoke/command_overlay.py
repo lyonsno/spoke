@@ -165,107 +165,144 @@ def _spinner_state(elapsed: float) -> tuple[float, float]:
     return (angle, fill)
 
 
-def _ring_cutout_mask(
+def _punch_permanent_hole(
     fill_alpha,
     spinner_cx: float,
     spinner_cy: float,
     radius: float,
-    ring_width: float,
-    highlight_angle: float,
-    highlight_width: float,
     scale: float,
-    strength: float = 0.85,
 ):
-    """Stamp a ring-shaped cutout into fill_alpha.
+    """Punch a permanent circular hole in fill_alpha for the spinner region.
 
-    The ring is a thin annulus centered on (spinner_cx, spinner_cy).
-    It has a directional highlight — the cutout is deepest at
-    highlight_angle and fades around the ring. This creates a
-    negative-space halo that rotates when called with varying angles.
-
-    Modifies fill_alpha in-place.
+    Called once when geometry changes. The hole is always transparent
+    so the spinner tile layer behind it is always visible.
     """
     import numpy as np
 
     ph, pw = fill_alpha.shape
     r_px = radius * scale
-    rw_px = ring_width * scale
-
-    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
-    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
-    dx = x - spinner_cx
-    dy = y - spinner_cy
-    dist = np.sqrt(dx * dx + dy * dy)
-
-    # Ring SDF: gaussian around the ring centerline
-    ring_dist = np.abs(dist - r_px)
-    ring_mask = np.exp(-(ring_dist / max(rw_px, 0.1)) ** 2)
-
-    # Directional highlight: strongest at highlight_angle, fades around
-    pixel_angle = np.arctan2(dx, dy)  # CW from top
-    angle_diff = np.arctan2(np.sin(pixel_angle - highlight_angle),
-                            np.cos(pixel_angle - highlight_angle))
-    highlight = np.exp(-(angle_diff / highlight_width) ** 2)
-
-    # Combine: ring shape * highlight * strength
-    cutout = ring_mask * (0.05 + 0.95 * highlight) * strength
-    fill_alpha *= (1.0 - cutout)
-
-
-def _spinner_cutout_mask(
-    fill_alpha,
-    fill_width: float,
-    fill_height: float,
-    spinner_cx: float,
-    spinner_cy: float,
-    radius: float,
-    sweep_fill: float,
-    scale: float,
-):
-    """Multiply a hole into fill_alpha for the spinner's swept region.
-
-    Modifies fill_alpha in-place. The swept region (behind the sweep hand)
-    becomes transparent. The unswept region is untouched. A soft anti-aliased
-    edge prevents jaggies.
-
-    spinner_cx, spinner_cy: center of the spinner in fill-image coordinates
-    (pixels at the given scale).
-
-    Returns the modified fill_alpha (same array, modified in-place).
-    """
-    import numpy as np
-
-    ph, pw = fill_alpha.shape
-    r_px = radius * scale
-
-    # Coordinate grids relative to spinner center
-    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
-    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
-    dx = x - spinner_cx
-    dy = y - spinner_cy
-    dist = np.sqrt(dx * dx + dy * dy)
-
-    # Circle region — only modify pixels inside the spinner circle
     edge_softness = 1.5 * scale
-    circle_mask = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
 
-    # Angle of each pixel (CW from top / 12 o'clock = 0)
-    pixel_angle = np.arctan2(dx, dy)
-    pixel_angle = pixel_angle % (2.0 * np.pi)
+    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
+    dx = x - spinner_cx
+    dy = y - spinner_cy
+    dist = np.sqrt(dx * dx + dy * dy)
 
-    # Swept region with soft angular edge at the sweep boundary.
-    # Instead of a hard step, the cutout fades over ~6 degrees at the
-    # sweep hand for a smooth feathered transition.
-    fill_end = sweep_fill * 2.0 * np.pi
-    edge_width = 0.10  # radians (~5.7 degrees) of angular feather
-    # Smooth ramp: 1.0 deep in swept region, fades to 0.0 at sweep edge
+    hole = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
+    fill_alpha *= (1.0 - hole)
+
+
+def _build_spinner_tile(
+    radius: float,
+    elapsed: float,
+    scale: float,
+    bg_color: tuple[float, float, float],
+    bg_alpha: float,
+):
+    """Build a small CGImage tile for the spinner animation.
+
+    Renders sweep cutout, ring halos, and noise into a tiny square
+    (~radius*2 + margin). Called at 30Hz but only ~2500 pixels.
+
+    Returns (CGImage, NSData payload).
+    """
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
+
+    margin = 4.0
+    tile_pts = radius * 2.0 + margin * 2.0
+    tile_px = int(tile_pts * scale)
+    cx = tile_px * 0.5
+    cy = tile_px * 0.5
+    r_px = radius * scale
+    TWO_PI = 2.0 * np.pi
+
+    # Coordinate grids
+    x = np.arange(tile_px, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(tile_px, dtype=np.float32)[:, None] + 0.5
+    dx = x - cx
+    dy = y - cy
+    dist = np.sqrt(dx * dx + dy * dy)
+
+    # Circle mask
+    edge_softness = 1.5 * scale
+    circle = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
+
+    # Pixel angles (CW from top)
+    pixel_angle = np.arctan2(dx, dy) % TWO_PI
+
+    # ── Sweep state ──
+    _, sweep_fill = _spinner_state(elapsed)
+    fill_end = sweep_fill * TWO_PI
+    sweep_angle = (elapsed / _SPINNER_PERIOD) * TWO_PI
+
+    # ── Base fill ──
+    alpha = circle * bg_alpha
+
+    # ── Sweep cutout ──
+    edge_width = 0.10
     sweep_mask = np.clip((fill_end - pixel_angle) / edge_width, 0.0, 1.0)
+    alpha *= (1.0 - sweep_mask * circle)
 
-    # The cutout: where swept AND inside circle, multiply fill_alpha toward 0
-    cutout = sweep_mask * circle_mask
-    fill_alpha *= (1.0 - cutout)
+    # ── Ring 1: synced to sweep, outer radius ──
+    ring1_dist = np.abs(dist - r_px)
+    ring1_width = 1.5 * scale
+    ring1 = np.exp(-(ring1_dist / max(ring1_width, 0.1)) ** 2)
+    ad1 = np.arctan2(np.sin(pixel_angle - sweep_angle),
+                     np.cos(pixel_angle - sweep_angle))
+    ring1_cut = ring1 * (0.05 + 0.95 * np.exp(-(ad1 / 0.4) ** 2)) * 0.9
+    alpha *= (1.0 - ring1_cut)
 
-    return fill_alpha
+    # ── Ring 2: inset, counter-rotating ──
+    ring2_r = r_px * 0.6
+    ring2_dist = np.abs(dist - ring2_r)
+    ring2_width = 0.8 * scale
+    ring2 = np.exp(-(ring2_dist / max(ring2_width, 0.1)) ** 2)
+    ring2_angle = -(elapsed / _SPINNER_PERIOD) * (7.0 / 5.0) * TWO_PI
+    ad2 = np.arctan2(np.sin(pixel_angle - ring2_angle),
+                     np.cos(pixel_angle - ring2_angle))
+    ring2_cut = ring2 * (0.05 + 0.95 * np.exp(-(ad2 / 0.5) ** 2)) * 0.8
+    alpha *= (1.0 - ring2_cut)
+
+    # ── Noise: domain-warped sinusoidal field ──
+    t = elapsed
+    nx = dx / max(r_px, 1.0) * 3.0
+    ny = dy / max(r_px, 1.0) * 3.0
+    wnx = nx + 0.3 * np.sin(ny * 2.0 + t * 0.6)
+    wny = ny + 0.3 * np.cos(nx * 2.0 + t * 0.4)
+    noise = (
+        np.sin(wnx * 5.0 + t * 0.9) * np.cos(wny * 4.0 + t * 1.2)
+        + 0.5 * np.sin(wnx * 8.0 + wny * 6.0 + t * 1.5)
+    )
+    noise_field = (noise * 0.3 + 0.5).clip(0.0, 1.0)
+    noise_strength = 0.15 * circle
+    alpha *= (1.0 - noise_strength * (1.0 - noise_field))
+
+    # ── Build RGBA ──
+    rgba = np.zeros((tile_px, tile_px, 4), dtype=np.uint8)
+    rgba[..., 0] = np.clip(bg_color[0] * 255.0 * alpha, 0, 255).astype(np.uint8)
+    rgba[..., 1] = np.clip(bg_color[1] * 255.0 * alpha, 0, 255).astype(np.uint8)
+    rgba[..., 2] = np.clip(bg_color[2] * 255.0 * alpha, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(alpha * 255.0, 0, 255).astype(np.uint8)
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        tile_px, tile_px, 8, 32, tile_px * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider, None, False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
 
 
 def _ease_in(progress: float) -> float:
@@ -345,7 +382,7 @@ class CommandOverlay(NSObject):
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
-        self._spinner_metal = None  # SpinnerMetalLayer (lazy init)
+        self._spinner_tile_layer = None  # small CALayer for spinner animation
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -1106,32 +1143,10 @@ class CommandOverlay(NSObject):
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
 
-        # Spinner: advance time every pulse tick. Halos rotate at 30Hz
-        # (just a transform, free). Fill image rebuilds at ~5Hz (every 6th
-        # tick) to avoid CGImage allocation stutter — the halos carry the
-        # visual motion, the cutout just needs to roughly track the sweep.
+        # Spinner tile: 30Hz on ~2500 pixels — no stutter
         if getattr(self, "_spinner_active", False):
             self._spinner_elapsed = getattr(self, "_spinner_elapsed", 0.0) + dt
-            self._spinner_fill_counter = getattr(self, "_spinner_fill_counter", 0) + 1
-            if self._spinner_fill_counter >= 3:  # ~10Hz — rings need smooth rotation
-                self._spinner_fill_counter = 0
-                self._update_spinner_fill()
-            # Render Metal effect behind the cutout
-            if self._spinner_metal is not None and self._spinner_metal.ready:
-                angle, sweep_fill = _spinner_state(self._spinner_elapsed)
-                metal_size = _SPINNER_RADIUS * 2.0 + 8.0  # diameter + margin
-                self._spinner_metal.render(
-                    time=self._spinner_elapsed,
-                    sweep_angle=angle,
-                    sweep_fill=sweep_fill,
-                    radius=_SPINNER_RADIUS * getattr(self, "_ridge_scale", 2.0),
-                    center=(metal_size / 2 * getattr(self, "_ridge_scale", 2.0),
-                            metal_size / 2 * getattr(self, "_ridge_scale", 2.0)),
-                    size=(metal_size * getattr(self, "_ridge_scale", 2.0),
-                          metal_size * getattr(self, "_ridge_scale", 2.0)),
-                    hue_color=(r, g, b),
-                    brightness=self._brightness,
-                )
+            self._update_spinner_fill()
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
@@ -1220,90 +1235,50 @@ class CommandOverlay(NSObject):
                 )
             )
 
-        # Mark spinner as active — the fill image will include the cutout
+        # Mark spinner as active — punch permanent hole in fill
         self._spinner_active = True
         self._spinner_elapsed = 0.0
-        # Rebuild fill with spinner cutout at t=0
+        # Rebuild fill with permanent circular hole
+        if self._content_view is not None:
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+        # Create the small tile layer behind the hole
+        self._create_spinner_tile_layer()
+        # Initial tile render
         self._update_spinner_fill()
-        # Set up Metal effect layer (if available)
-        self._setup_spinner_metal()
 
         logger.info("Thinking timer started (with spinner)")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )
 
-    def _setup_spinner_metal(self) -> None:
-        """Create or show the Metal effect layer behind the spinner cutout."""
-        if self._wrapper_view is None:
+    def _create_spinner_tile_layer(self) -> None:
+        """Create the small CALayer for the spinner tile, behind the fill."""
+        if self._wrapper_view is None or self._content_view is None:
             return
 
-        if self._spinner_metal is None:
-            try:
-                from .spinner_metal import SpinnerMetalLayer
-                self._spinner_metal = SpinnerMetalLayer()
-            except Exception:
-                logger.info("Failed to import SpinnerMetalLayer", exc_info=True)
-                self._spinner_metal = None
-                return
+        f = _OUTER_FEATHER
+        content_frame = self._content_view.frame()
+        diameter = _SPINNER_RADIUS * 2.0
+        margin = 4.0
+        tile_size = diameter + margin * 2.0
 
-        if not self._spinner_metal.ready:
-            # Set up the Metal layer covering the entire wrapper
-            # (the effect is clipped by the fill's alpha anyway)
-            f = _OUTER_FEATHER
-            content_frame = self._content_view.frame() if self._content_view else None
-            if content_frame is None:
-                return
-            # Position the Metal layer to cover the spinner region with margin
-            diameter = _SPINNER_RADIUS * 2.0
-            margin = 4.0  # extra pixels for glow
-            metal_size = diameter + margin * 2
-            # In wrapper coords (macOS: Y=0 at bottom)
-            metal_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - margin
-            metal_y = f + _SPINNER_MARGIN_BOTTOM - margin  # bottom-right
-            frame = ((metal_x, metal_y), (metal_size, metal_size))
-            scale = getattr(self, "_ridge_scale", 2.0)
+        # Bottom-right in wrapper coords (macOS Y=0 at bottom)
+        tile_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - margin
+        tile_y = f + _SPINNER_MARGIN_BOTTOM - margin
+        frame = ((tile_x, tile_y), (tile_size, tile_size))
 
-            if not self._spinner_metal.setup(
-                self._wrapper_view.layer(), frame, scale
-            ):
-                logger.info("Metal spinner unavailable, falling back to cutout-only")
-                return
+        if getattr(self, "_spinner_tile_layer", None) is None:
+            self._spinner_tile_layer = CALayer.alloc().init()
+            self._spinner_tile_layer.setFrame_(frame)
+            self._spinner_tile_layer.setContentsGravity_("resize")
+            # Behind the fill so it's only visible through the permanent hole
+            self._wrapper_view.layer().insertSublayer_below_(
+                self._spinner_tile_layer, self._fill_layer
+            )
         else:
-            self._spinner_metal.set_hidden(False)
-
-    def _stamp_spinner_cutout(self, fill_alpha, width, height, f, scale):
-        """Punch the spinner cutout and ring halos into a fill alpha array."""
-        elapsed = getattr(self, "_spinner_elapsed", 0.0)
-        _, sweep_fill = _spinner_state(elapsed)
-        spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
-        ph = fill_alpha.shape[0]
-        spinner_cy = ph - (f + _SPINNER_MARGIN_BOTTOM + _SPINNER_RADIUS) * scale
-
-        # Main sweep cutout
-        _spinner_cutout_mask(
-            fill_alpha, width + 2 * f, height + 2 * f,
-            spinner_cx, spinner_cy,
-            _SPINNER_RADIUS, sweep_fill, scale,
-        )
-
-        # Ring 1: synced to sweep — same radius, highlight tracks sweep hand
-        sweep_angle = (elapsed / _SPINNER_PERIOD) * 2.0 * math.pi
-        _ring_cutout_mask(
-            fill_alpha, spinner_cx, spinner_cy,
-            radius=_SPINNER_RADIUS, ring_width=1.5,
-            highlight_angle=sweep_angle, highlight_width=0.4,
-            scale=scale, strength=0.9,
-        )
-
-        # Ring 2: inset, counter-rotating at 7/5x speed
-        ring2_angle = -(elapsed / _SPINNER_PERIOD) * (7.0 / 5.0) * 2.0 * math.pi
-        _ring_cutout_mask(
-            fill_alpha, spinner_cx, spinner_cy,
-            radius=_SPINNER_RADIUS * 0.6, ring_width=0.8,
-            highlight_angle=ring2_angle, highlight_width=0.5,
-            scale=scale, strength=0.8,
-        )
+            self._spinner_tile_layer.setFrame_(frame)
+            self._spinner_tile_layer.setHidden_(False)
 
     def _bake_fill_image(self, fill_alpha):
         """Convert fill alpha array to CGImage and update layers."""
@@ -1342,29 +1317,20 @@ class CommandOverlay(NSObject):
             self._spring_tint_layer.setMask_(mask)
 
     def _update_spinner_fill(self) -> None:
-        """Fast path: copy cached base fill, stamp cutout, bake image.
-
-        Skips the SDF computation — only the cutout mask and CGImage
-        rebuild happen per frame.
-        """
-        base = getattr(self, "_base_fill_alpha", None)
-        if base is None:
-            # No cached fill — fall back to full rebuild
-            if self._content_view is None:
-                return
-            content_frame = self._content_view.frame()
-            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+        """Render the small spinner tile. ~2500 pixels at 30Hz — fast."""
+        if getattr(self, "_spinner_tile_layer", None) is None:
             return
-
-        fill_alpha = base.copy()
-        if getattr(self, "_spinner_active", False):
-            f = _OUTER_FEATHER
-            scale = getattr(self, '_ridge_scale', 2.0)
-            width = self._base_fill_width
-            height = self._base_fill_height
-            self._stamp_spinner_cutout(fill_alpha, width, height, f, scale)
-
-        self._bake_fill_image(fill_alpha)
+        elapsed = getattr(self, "_spinner_elapsed", 0.0)
+        scale = getattr(self, "_ridge_scale", 2.0)
+        bg = _background_color_for_brightness(self._brightness)
+        try:
+            image, self._spinner_tile_payload = _build_spinner_tile(
+                _SPINNER_RADIUS, elapsed, scale,
+                bg_color=bg, bg_alpha=_BG_ALPHA,
+            )
+            self._spinner_tile_layer.setContents_(image)
+        except Exception:
+            logger.debug("Spinner tile build failed", exc_info=True)
 
     def invert_thinking_timer(self) -> None:
         """Switch from glowing number to negative-space cutout mode.
@@ -1382,12 +1348,13 @@ class CommandOverlay(NSObject):
             self._thinking_timer = None
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(True)
-        # Deactivate spinner and rebuild fill without the cutout
+        # Deactivate spinner — rebuild fill without the hole, hide tile
         self._spinner_active = False
-        self._update_spinner_fill()
-        # Hide the Metal effect layer
-        if self._spinner_metal is not None and self._spinner_metal.ready:
-            self._spinner_metal.set_hidden(True)
+        if self._content_view is not None:
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+        if getattr(self, "_spinner_tile_layer", None) is not None:
+            self._spinner_tile_layer.setHidden_(True)
 
     def thinkingTick_(self, timer) -> None:
         """Update the thinking counter and spinner every 100ms."""
@@ -1425,14 +1392,15 @@ class CommandOverlay(NSObject):
 
             fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
 
-            # Cache the base fill alpha for fast spinner updates
-            self._base_fill_alpha = fill_alpha.copy()
-            self._base_fill_width = width
-            self._base_fill_height = height
-
-            # Apply spinner cutout if active
+            # Punch permanent circular hole for the spinner tile layer
             if getattr(self, "_spinner_active", False):
-                self._stamp_spinner_cutout(fill_alpha, width, height, f, scale)
+                spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
+                ph = fill_alpha.shape[0]
+                spinner_cy = ph - (f + _SPINNER_MARGIN_BOTTOM + _SPINNER_RADIUS) * scale
+                _punch_permanent_hole(
+                    fill_alpha, spinner_cx, spinner_cy,
+                    _SPINNER_RADIUS, scale,
+                )
 
             self._bake_fill_image(fill_alpha)
         except (ImportError, Exception):

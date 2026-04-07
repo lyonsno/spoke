@@ -66,7 +66,7 @@ def _make_overlay(mock_pyobjc):
     overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
-    overlay._spinner_metal = None
+    overlay._spinner_tile_layer = None
     overlay._spinner_active = False
     overlay._spinner_elapsed = 0.0
     return overlay, mod
@@ -635,41 +635,35 @@ class TestSpinnerFillIntegration:
         assert overlay._thinking_seconds == pytest.approx(0.0)
 
 
-class TestSpinnerCutoutMask:
-    """Test that _spinner_cutout_mask punches a hole in the fill alpha."""
+class TestPermanentHole:
+    """Test that _punch_permanent_hole zeros fill alpha in the spinner circle."""
 
-    def test_cutout_zeros_swept_region(self, mock_pyobjc):
-        """Swept pixels inside the circle must have alpha near 0."""
+    def test_hole_zeros_center(self, mock_pyobjc):
+        """Center of the hole must have alpha near 0."""
         import numpy as np
         _, mod = _make_overlay(mock_pyobjc)
 
-        # Create a uniform fill alpha field
         fill = np.ones((100, 200), dtype=np.float32) * 0.8
-        # Punch a half-swept spinner in the center
-        mod._spinner_cutout_mask(
-            fill, 200.0, 100.0,
-            spinner_cx=100.0, spinner_cy=50.0,
-            radius=20.0, sweep_fill=0.5, scale=1.0,
+        mod._punch_permanent_hole(
+            fill, spinner_cx=100.0, spinner_cy=50.0,
+            radius=20.0, scale=1.0,
         )
-        # Center pixel should be zeroed (it's in the swept region)
-        # The swept half (angles 0 to pi) should be near 0
         assert fill[50, 100] < 0.01, (
-            f"Center pixel alpha should be ~0 in swept region, got {fill[50, 100]}"
+            f"Center pixel should be ~0, got {fill[50, 100]}"
         )
-        # A pixel far outside the spinner should be untouched
+        # Far outside the hole should be untouched
         assert fill[0, 0] == pytest.approx(0.8)
 
-    def test_cutout_preserves_unswept_region(self, mock_pyobjc):
-        """Unswept pixels inside the circle must retain their original alpha."""
+    def test_no_hole_when_outside(self, mock_pyobjc):
+        """Pixels outside the circle radius must be untouched."""
         import numpy as np
         _, mod = _make_overlay(mock_pyobjc)
 
         fill = np.ones((100, 200), dtype=np.float32) * 0.8
-        # sweep_fill=0.0 means nothing is swept — no cutout
-        mod._spinner_cutout_mask(
-            fill, 200.0, 100.0,
-            spinner_cx=100.0, spinner_cy=50.0,
-            radius=20.0, sweep_fill=0.0, scale=1.0,
+        # Hole centered at corner — most of the field is outside
+        mod._punch_permanent_hole(
+            fill, spinner_cx=0.0, spinner_cy=0.0,
+            radius=5.0, scale=1.0,
         )
-        # Everything should be untouched
+        # Center of image is far from the hole
         assert fill[50, 100] == pytest.approx(0.8)
