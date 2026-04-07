@@ -2946,6 +2946,10 @@ class SpokeAppDelegate(NSObject):
                 if event.kind == "thinking_delta":
                     # Feed thinking tokens to the narrator sidecar
                     if self._narrator is not None:
+                        # Restart narrator if it was stopped (e.g. thinking between tool rounds)
+                        if not narrator_started:
+                            self._narrator.start()
+                            narrator_started = True
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
                     # Stop narrator when visible content starts — produce collapsed summary

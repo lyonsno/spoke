@@ -49,25 +49,28 @@ that it wasn't before? If it's reconsidering something, say what and why.
 - No preamble, no commentary. Output ONLY the status line."""
 
 _LOADING_VAMP_SYSTEM_PROMPT = """\
-You write short, fun, varied status lines for a voice assistant while \
-a large AI model is loading into GPU memory. The user is waiting and \
-can see your messages, so be entertaining and informative.
+You write short, fun, varied status lines while a large AI model \
+is loading into GPU memory. The user is waiting and can see your \
+messages, so be entertaining and informative.
 
 Rules:
-- ONE line only. 8–20 words.
-- Be creative, varied, and fun. Mix humor, tech facts, encouragement, \
-and playful commentary. Never repeat yourself.
-- You can reference: the model name, how long it's been loading, the \
-size, what the user asked, the hardware, AI in general, the wait itself.
-- Tone: friendly, slightly irreverent, like a witty loading screen.
+- ONE line only. 10–18 words. Must fit on one line of a small overlay.
+- NEVER repeat a previous line. Each must be completely different in \
+structure, topic, angle, and wording. Read your previous messages — \
+if your new line resembles ANY of them, throw it out and try again.
+- Vary your approach: alternate between humor, technical commentary, \
+encouragement, fun facts, and observations about the wait.
+- You can reference: the model name, how long it's been loading, GPU \
+memory, what the user asked, the hardware, AI trivia.
+- Tone: witty, slightly irreverent, like a clever loading screen.
 - No preamble, no quotes. Output ONLY the status line.
 
-Examples of good lines:
-- Waking up a 27-billion-parameter brain — neurons need their coffee too
-- 45 seconds in — still cheaper than waiting for a human expert
-- Shuffling 15GB of weights onto the GPU like a very expensive game of Tetris
-- Almost there — the model is doing its stretches before the big performance
-- Loading layer 34 of 80 — each one a little smarter than the last"""
+Examples (do NOT reuse these, they show the range of styles):
+- Waking up 27 billion parameters — neurons need their coffee too
+- Tetris but the blocks are 15GB weight matrices
+- Your question is in the queue, the GPU just needs a minute
+- Fun fact: this model has more parameters than you have neurons
+- Almost there — stretching before the big performance"""
 
 _LOADING_VAMP_INTERVAL_S = 8.0  # seconds between subsequent vamp lines
 
@@ -360,12 +363,24 @@ class ThinkingNarrator:
                     vamp_messages, temperature=0.9, max_tokens=40
                 )
                 if summary:
-                    vamp_messages.append({"role": "assistant", "content": summary})
-                    with self._lock:
-                        if not self._vamp_active:
-                            return
-                    logger.info("Vamp line: %s", summary)
-                    self._on_summary(summary)
+                    # Deduplicate: skip if too similar to previous line
+                    prev_assistants = [
+                        m["content"] for m in vamp_messages
+                        if m["role"] == "assistant"
+                    ]
+                    if prev_assistants and self._lines_too_similar(
+                        summary, prev_assistants[-1]
+                    ):
+                        logger.info("Vamp line too similar, skipping: %s", summary)
+                        # Remove the user message we just added so history stays clean
+                        vamp_messages.pop()
+                    else:
+                        vamp_messages.append({"role": "assistant", "content": summary})
+                        with self._lock:
+                            if not self._vamp_active:
+                                return
+                        logger.info("Vamp line: %s", summary)
+                        self._on_summary(summary)
             except Exception:
                 logger.exception("Vamp dispatch failed")
 
@@ -377,6 +392,17 @@ class ThinkingNarrator:
                 with self._lock:
                     if not self._vamp_active:
                         return
+
+    @staticmethod
+    def _lines_too_similar(a: str, b: str, threshold: float = 0.6) -> bool:
+        """Return True if two lines share more than threshold of their words."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
+            return False
+        overlap = len(words_a & words_b)
+        smaller = min(len(words_a), len(words_b))
+        return (overlap / smaller) > threshold
 
     def _poll_loading_status(self) -> str:
         """Poll OMLX /api/status for loading context."""
