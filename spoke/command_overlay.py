@@ -1291,18 +1291,18 @@ class CommandOverlay(NSObject):
         sweep_angle = (elapsed / _SPINNER_PERIOD) * 2.0 * math.pi
         _ring_cutout_mask(
             fill_alpha, spinner_cx, spinner_cy,
-            radius=_SPINNER_RADIUS, ring_width=0.36,
-            highlight_angle=sweep_angle, highlight_width=0.35,
-            scale=scale, strength=0.7,
+            radius=_SPINNER_RADIUS, ring_width=1.5,
+            highlight_angle=sweep_angle, highlight_width=0.4,
+            scale=scale, strength=0.9,
         )
 
         # Ring 2: inset, counter-rotating at 7/5x speed
         ring2_angle = -(elapsed / _SPINNER_PERIOD) * (7.0 / 5.0) * 2.0 * math.pi
         _ring_cutout_mask(
             fill_alpha, spinner_cx, spinner_cy,
-            radius=_SPINNER_RADIUS * 0.65, ring_width=0.18,
-            highlight_angle=ring2_angle, highlight_width=0.45,
-            scale=scale, strength=0.5,
+            radius=_SPINNER_RADIUS * 0.6, ring_width=0.8,
+            highlight_angle=ring2_angle, highlight_width=0.5,
+            scale=scale, strength=0.8,
         )
 
     def _bake_fill_image(self, fill_alpha):
