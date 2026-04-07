@@ -1217,15 +1217,23 @@ class CommandOverlay(NSObject):
                 _, sweep_fill = _spinner_state(
                     getattr(self, "_thinking_seconds", 0.0)
                 )
-                # Spinner center in fill-image pixel coordinates
-                # Content area is centered in fill; spinner is top-right of content
+                # Spinner center in fill-image pixel coordinates.
+                # The fill image covers total_w x total_h with the content area
+                # inset by f (feather) on each side. The spinner sits at the
+                # top-right of the content area.
+                #
+                # Image convention: row 0 = top of image = top of overlay.
+                # X: right side of content = f + width - margin - radius
                 spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
-                spinner_cy_content = height - _SPINNER_RADIUS - _SPINNER_MARGIN_TOP
-                # Fill image Y is flipped (row 0 = top of image = top of fill)
-                spinner_cy = (f + spinner_cy_content) * scale
-                # Flip Y: image row 0 is top, but our SDF has row 0 at bottom
-                ph = fill_alpha.shape[0]
-                spinner_cy = ph - spinner_cy
+                # Y: top of content = f + margin + radius (small row = top)
+                spinner_cy = (f + _SPINNER_MARGIN_TOP + _SPINNER_RADIUS) * scale
+                logger.debug(
+                    "Spinner cutout: cx=%.1f cy=%.1f fill=%.2f "
+                    "image=%dx%d content=%.0fx%.0f",
+                    spinner_cx, spinner_cy, sweep_fill,
+                    fill_alpha.shape[1], fill_alpha.shape[0],
+                    width, height,
+                )
                 _spinner_cutout_mask(
                     fill_alpha, total_w, total_h,
                     spinner_cx, spinner_cy,
