@@ -3238,7 +3238,7 @@ class SpokeAppDelegate(NSObject):
             if show_tts_menus:
                 current_tts_model = getattr(tts, "_model_id", "") if tts else saved_tts_model
                 if tts_backend == "cloud":
-                    cloud_model = self._load_preference("tts_cloud_model") or "gemini-2.0-flash"
+                    cloud_model = self._load_preference("tts_cloud_model") or "gemini-2.5-flash-preview-tts"
                     current_tts_model = current_tts_model or cloud_model
                     tts_models = [(cloud_model, f"Gemini ({cloud_model})", True)]
                 elif tts_backend == "sidecar":
@@ -3803,7 +3803,7 @@ class SpokeAppDelegate(NSObject):
             cloud_voice = voice or "Aoede"
             cloud_model = (
                 self._load_preference("tts_cloud_model")
-                or "gemini-2.0-flash"
+                or "gemini-2.5-flash-preview-tts"
             )
             return CloudTTSClient(
                 api_key=api_key,

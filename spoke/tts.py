@@ -1067,7 +1067,7 @@ GEMINI_VOICES: list[tuple[str, str]] = [
     ("Zephyr", "Zephyr"),
 ]
 
-_DEFAULT_GEMINI_TTS_MODEL = "gemini-2.0-flash"
+_DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 _GEMINI_TTS_SAMPLE_RATE = 24000
 
 
