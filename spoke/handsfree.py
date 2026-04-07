@@ -38,6 +38,10 @@ VOICE_COMMANDS: dict[str, tuple[str, str]] = {
     "tessera": ("keystroke", "return"),
     "tesserae": ("keystroke", "return"),
     "tessara": ("keystroke", "return"),
+    "tessura": ("keystroke", "return"),
+    "kessura": ("keystroke", "return"),
+    "pessera": ("keystroke", "return"),
+    "kessera": ("keystroke", "return"),
 }
 
 
