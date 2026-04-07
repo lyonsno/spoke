@@ -223,6 +223,9 @@ class CommandOverlay(NSObject):
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
+        self._narrator_typewriter_timer: NSTimer | None = None
+        self._narrator_full_text = ""    # full summary to reveal
+        self._narrator_revealed = 0      # chars revealed so far
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -1108,13 +1111,46 @@ class CommandOverlay(NSObject):
         """
         self._thinking_inverted = True
         self._apply_thinking_label_theme()
+        # Hide narrator summary — thinking phase is over
+        self._hide_narrator()
 
     def set_narrator_summary(self, summary: str) -> None:
-        """Update the narrator summary line displayed during thinking."""
+        """Update the narrator summary with a typewriter reveal animation."""
+        if self._narrator_label is None:
+            return
+        # Cancel any in-progress typewriter
+        if self._narrator_typewriter_timer is not None:
+            self._narrator_typewriter_timer.invalidate()
+            self._narrator_typewriter_timer = None
+
+        self._narrator_full_text = summary
+        self._narrator_revealed = 0
+        self._narrator_label.setStringValue_("")
+        self._narrator_label.setHidden_(False)
+        self._apply_narrator_theme()
+
+        # Start typewriter: ~30ms per character
+        self._narrator_typewriter_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.03, self, "narratorTypewriterTick:", None, True
+            )
+        )
+
+    def narratorTypewriterTick_(self, timer) -> None:
+        """Reveal one character of the narrator summary."""
+        self._narrator_revealed += 1
+        if self._narrator_revealed >= len(self._narrator_full_text):
+            # Done — show full text and stop
+            if self._narrator_label is not None:
+                self._narrator_label.setStringValue_(self._narrator_full_text)
+            if self._narrator_typewriter_timer is not None:
+                self._narrator_typewriter_timer.invalidate()
+                self._narrator_typewriter_timer = None
+            return
         if self._narrator_label is not None:
-            self._narrator_label.setStringValue_(summary)
-            self._narrator_label.setHidden_(False)
-            self._apply_narrator_theme()
+            self._narrator_label.setStringValue_(
+                self._narrator_full_text[:self._narrator_revealed]
+            )
 
     def _apply_narrator_theme(self) -> None:
         """Match narrator label color to user utterance style."""
@@ -1126,7 +1162,10 @@ class CommandOverlay(NSObject):
         )
 
     def _hide_narrator(self) -> None:
-        """Hide the narrator summary label."""
+        """Hide the narrator summary label and stop any typewriter."""
+        if self._narrator_typewriter_timer is not None:
+            self._narrator_typewriter_timer.invalidate()
+            self._narrator_typewriter_timer = None
         if self._narrator_label is not None:
             self._narrator_label.setHidden_(True)
             self._narrator_label.setStringValue_("")
