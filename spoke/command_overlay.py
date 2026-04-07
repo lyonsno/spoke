@@ -234,8 +234,8 @@ class _SpinnerTileRenderer:
         )
 
         # Noise coordinate grids (static)
-        self.nx = self.dx / max(self.r_px, 1.0) * 3.0
-        self.ny = self.dy / max(self.r_px, 1.0) * 3.0
+        # Normalized radial distance (0 at center, 1 at edge)
+        self.r_norm = self.dist / max(self.r_px, 1.0)
 
         # Pre-allocate output buffer
         self.rgba = np.zeros((px, px, 4), dtype=np.uint8)
@@ -296,21 +296,39 @@ class _SpinnerTileRenderer:
         ring2_cut = self.ring2_base * (0.05 + 0.95 * np.exp(-(ad2 / 0.5) ** 2)) * 0.8
         alpha *= (1.0 - ring2_cut)
 
-        # ── Noise: visible smoke in the cutout ──
+        # ── Concentric noise: tree-ring ripples with coaxial pulses ──
         t = elapsed
-        nx, ny = self.nx, self.ny
-        wnx = nx + 0.3 * np.sin(ny * 2.0 + t * 0.6)
-        wny = ny + 0.3 * np.cos(nx * 2.0 + t * 0.4)
-        noise = (
-            np.sin(wnx * 5.0 + t * 0.9) * np.cos(wny * 4.0 + t * 1.2)
-            + 0.5 * np.sin(wnx * 8.0 + wny * 6.0 + t * 1.5)
-        )
-        noise_01 = ((noise * 0.35 + 0.5) * circle).clip(0.0, 1.0)
+        r_norm = self.r_norm
 
-        # Smoke in cutout: bright (white-ish) glow, not bg_color
+        # Concentric rings: sinusoidal in radial distance, time-animated
+        # Multiple frequencies for organic tree-ring layering
+        rings = (
+            0.5 * np.sin(r_norm * 18.0 - t * 2.5)
+            + 0.3 * np.sin(r_norm * 28.0 - t * 1.8 + 1.0)
+            + 0.2 * np.sin(r_norm * 42.0 - t * 3.2 + 2.0)
+        )
+
+        # Coaxial angular pulses: opacity modulation running around the rings
+        # These rotate at different speeds, creating interference
+        angular_pulse = (
+            0.5 + 0.3 * np.sin(pa * 3.0 + t * 1.5)
+            + 0.2 * np.cos(pa * 5.0 - t * 2.2 + r_norm * 4.0)
+        )
+
+        # Domain warp: slight radial wobble for organic feel
+        warp = 0.06 * np.sin(pa * 7.0 + t * 0.8) * np.cos(r_norm * 12.0 + t)
+        warped_rings = (
+            0.5 * np.sin((r_norm + warp) * 18.0 - t * 2.5)
+            + 0.3 * np.sin((r_norm + warp) * 28.0 - t * 1.8 + 1.0)
+        )
+
+        # Combine: rings modulated by angular pulses, 0..1
+        noise_01 = ((warped_rings * angular_pulse * 0.4 + 0.5) * circle).clip(0.0, 1.0)
+
+        # Smoke in cutout: warm glow shaped by concentric rings
         swept = sweep_mask * circle
         smoke_alpha = swept * noise_01 * 0.55
-        # Texture in fill: slight noise subtraction
+        # Texture in fill: concentric rings subtly eat into the fill
         alpha *= (1.0 - (1.0 - swept) * noise_01 * 0.06)
         alpha += smoke_alpha
 
