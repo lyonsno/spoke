@@ -365,10 +365,11 @@ class CommandOverlay(NSObject):
         from AppKit import NSTextAlignmentLeft, NSLineBreakByWordWrapping
         _NARRATOR_FONT_SIZE = 12.0
         _NARRATOR_LINE_HEIGHT = 15.0
-        _NARRATOR_MAX_LINES = 2  # one line for loading indicator, one for vamp/summary
+        _NARRATOR_MAX_LINES = 1
         narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
-        narrator_y = timer_y - narrator_h - 10
+        # Pin to bottom of content area so it doesn't overlap wrapped user text
+        narrator_y = 8.0
         narrator_w = _OVERLAY_WIDTH - 28
         self._narrator_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)
@@ -639,11 +640,6 @@ class CommandOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
         is_topic_append = text.startswith(" · ")
-        # Drop late topic arrivals that would splice into response text
-        if is_topic_append and self._response_text:
-            # Still track it for set_response_text rebuild
-            self._collapsed_text += text
-            return
         if not is_topic_append:
             # "Thought for Xs" replaces a preceding "Thinking" placeholder
             if self._collapsed_text.endswith("Thinking"):
@@ -687,11 +683,10 @@ class CommandOverlay(NSObject):
             self._text_view.textStorage().appendAttributedString_(sep)
 
         # Style tool call indicators smaller (like collapsed thinking)
+        # Covers: [calling tool…], [~N tokens], [screen capture · ~N tokens],
+        #         ["query" in path], [path · ~N tokens], [100%]
         stripped = token.lstrip("\n ")
-        is_tool_indicator = (
-            stripped.startswith("[calling ") or stripped.startswith("[~")
-            or stripped.startswith("[screen ") or stripped.startswith("[\"")
-        )
+        is_tool_indicator = stripped.startswith("[") and not stripped.startswith("[!")
         if is_tool_indicator:
             frag = self._make_tool_indicator_fragment(token)
         else:
