@@ -40,7 +40,11 @@ Rules:
 Breaking down, Checking, Debugging, Revisiting, Weighing, Testing, etc.
 - Be specific: name the concrete thing (algorithm, variable, edge case, \
 tradeoff). Never generic ("Thinking about the problem").
-- Focus on what CHANGED or is NEW in this excerpt compared to before.
+- IMPORTANT: Each summary MUST describe something different from your \
+previous summaries. Even if the AI is still on the same broad topic, \
+zoom in on the specific sub-step, detail, or angle that is NEW in \
+this excerpt. What changed? What shifted? What is it drilling into now \
+that it wasn't before? If it's reconsidering something, say what and why.
 - Say what the AI is doing, not "the user".
 - No preamble, no commentary. Output ONLY the status line."""
 
