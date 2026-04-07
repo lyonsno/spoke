@@ -99,12 +99,13 @@ _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
 
 _SYSTEM_PROMPT = (
-    "Respond directly to the user's request. "
-    "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
+    "You are an assistant with access to tools for interacting with the user's "
+    "development environment, screen, clipboard, email, and project state. "
+    "Think carefully and use your tools when appropriate.\n\n"
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "
-    "'epistaxis/projects/spoke/epistaxis.md' or 'donttype/spoke/command.py'. "
-    "Key repos here include: spoke (this app — voice interface), omlx (local model server), "
+    "'epistaxis/projects/spoke/epistaxis.md' or 'spoke/spoke/command.py'. "
+    "Key repos here include: spoke (this app), omlx (local model server), "
     "mlx-audio (TTS/ASR sidecar), epanorthosis (automated review), and epistaxis "
     "(cross-session state and coordination).\n\n"
     "Epistaxis (~/dev/epistaxis/) is the user's durable off-repo state system. Layout:\n"
