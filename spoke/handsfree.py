@@ -88,7 +88,7 @@ class HandsFreeController:
         self._delegate = delegate
         self._state = HandsFreeState.DORMANT
         self._wakeword = None
-        self._lock = threading.Lock()
+        self._saved_clipboard = None  # saved at dictation start, restored at stop
 
         # One-shot routing: if set, the next segment routes here then resets.
         # Values: None (normal cursor inject), "tray"
@@ -213,6 +213,13 @@ class HandsFreeController:
     def _start_dictating(self) -> None:
         """Begin continuous dictation. LISTENING → DICTATING."""
         logger.info("Starting hands-free dictation")
+
+        # Save clipboard once at dictation start — restored when dictation stops.
+        # Individual segment injections use inject_text_raw() to avoid
+        # per-segment save/restore overhead (M1 clipboard thrashing fix).
+        from .inject import save_pasteboard
+        self._saved_clipboard = save_pasteboard()
+
         self._set_state(HandsFreeState.DICTATING)
 
         delegate = self._delegate
@@ -258,6 +265,12 @@ class HandsFreeController:
 
         if capture.is_recording:
             capture.stop()
+
+        # Restore clipboard saved at dictation start (M1 fix).
+        if self._saved_clipboard is not None:
+            from .inject import restore_pasteboard
+            restore_pasteboard(self._saved_clipboard)
+            self._saved_clipboard = None
 
         if delegate._glow is not None:
             delegate._glow.hide()

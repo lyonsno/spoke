@@ -94,7 +94,7 @@ from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
 from .glow import GlowOverlay
-from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
+from .inject import inject_text, inject_text_raw, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
 from .launch_targets import (
     current_launch_target,
@@ -1205,7 +1205,7 @@ class SpokeAppDelegate(NSObject):
                 elif action == "tray_insert":
                     self._handsfree_tray_insert()
                 else:
-                    inject_text(value)
+                    inject_text_raw(value)
                 return
 
         # Route based on destination
@@ -1214,9 +1214,11 @@ class SpokeAppDelegate(NSObject):
             self._add_tray_entry(text, owner="handsfree", activate=False)
             return
 
-        # Normal text — append trailing space for continuous flow
+        # Normal text — append trailing space for continuous flow.
+        # Use inject_text_raw to skip per-segment clipboard save/restore;
+        # the HandsFreeController saves clipboard once at dictation start.
         logger.info("Hands-free inject: %r", text)
-        inject_text(text + " ")
+        inject_text_raw(text + " ")
 
     _KEYSTROKE_MAP = {
         "return": 36,
