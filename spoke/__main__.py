@@ -3103,6 +3103,10 @@ class SpokeAppDelegate(NSObject):
                     utterance=utterance, model_id=model_id
                 )
                 vamp_started = True
+                # Show "Loading model" inline below the user prompt
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "narratorCollapsed:", {"text": f"Loading {model_id}…"}, False
+                )
                 # Enable color shimmer on the narrator label during loading
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "narratorShimmer:", {"active": True}, False

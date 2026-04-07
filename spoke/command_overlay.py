@@ -570,10 +570,17 @@ class CommandOverlay(NSObject):
             NSShadow,
         )
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        _USER_FONT_SIZE = 22.0  # ~40% larger than body text
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
             NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+            (0, len(text)),
+        )
+        from AppKit import NSFontAttributeName
+        attr_str.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
             (0, len(text)),
         )
         glow = NSShadow.alloc().init()
@@ -714,11 +721,18 @@ class CommandOverlay(NSObject):
         combined = NSMutableAttributedString.alloc().initWithString_("")
 
         if self._utterance_text:
+            from AppKit import NSFontAttributeName
+            _USER_FONT_SIZE = 22.0
             user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
             utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
             utt.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
                 NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+                (0, len(self._utterance_text)),
+            )
+            utt.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
                 (0, len(self._utterance_text)),
             )
             glow = NSShadow.alloc().init()
