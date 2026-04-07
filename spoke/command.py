@@ -196,11 +196,14 @@ class CommandClient:
         )
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
-        # Ring buffer: list of (user_utterance, assistant_response) pairs
-        self._history: list[tuple[str, str]] = []
+        # Ring buffer: list of message chains (each a list[dict]).
+        # Each entry is the full sequence of messages for one turn:
+        # [user, assistant, tool_result, assistant, ...] preserving
+        # tool calls and results for multi-turn context.
+        self._history: list[list[dict]] = []
 
     @property
-    def history(self) -> list[tuple[str, str]]:
+    def history(self) -> list[list[dict]]:
         return list(self._history)
 
     def list_models(self) -> list[str]:
@@ -226,11 +229,12 @@ class CommandClient:
 
         The history is ordered oldest-first so the stable prefix stays
         KV-cache-friendly — new pairs are appended at the end.
+        Each history entry is a full message chain including tool calls
+        and results from that turn.
         """
         messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        for user_text, assistant_text in self._history:
-            messages.append({"role": "user", "content": user_text})
-            messages.append({"role": "assistant", "content": assistant_text})
+        for chain in self._history:
+            messages.extend(chain)
         messages.append({"role": "user", "content": utterance})
         return messages
 
@@ -260,9 +264,8 @@ class CommandClient:
             elif event.kind == "assistant_final":
                 final_response = event.text
 
-        if self._history and self._history[-1][0] == utterance:
-            self._history[-1] = (utterance, visible_response or final_response)
-
+        # History is now managed by stream_command_events() which stores
+        # the full message chain including tool calls and results.
         return visible_response or final_response
 
     def stream_command_events(
@@ -295,6 +298,8 @@ class CommandClient:
             Completed function call emitted by the model for the current round.
         """
         messages = self._build_messages(utterance)
+        # Track where this turn's messages start (after system + history)
+        turn_start_idx = len(messages) - 1  # points to the user message
         full_response = ""
 
         # Safety cap on tool call round-trips.  With cancel_check wired
@@ -623,8 +628,18 @@ class CommandClient:
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        # Add to ring buffer (content only, no reasoning)
-        self._history.append((utterance, full_response))
+        # Add to ring buffer — only this turn's messages (from the user
+        # utterance onward), preserving tool calls and results.
+        # Strip reasoning content from assistant messages to save context.
+        turn_messages = []
+        for msg in messages[turn_start_idx:]:
+            if msg["role"] == "assistant" and msg.get("content"):
+                # Strip <think>...</think> blocks from assistant content
+                import re
+                cleaned = re.sub(r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL).strip()
+                msg = {**msg, "content": cleaned or None}
+            turn_messages.append(msg)
+        self._history.append(turn_messages)
         if len(self._history) > self._max_history:
             self._history.pop(0)
 

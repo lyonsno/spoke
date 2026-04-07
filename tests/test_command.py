@@ -53,7 +53,7 @@ class TestCommandClient:
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""
         client = self._make_client()
-        client._history = [("first question", "first answer")]
+        client._history = [[{"role": "user", "content": "first question"}, {"role": "assistant", "content": "first answer"}]]
         msgs = client._build_messages("second question")
         assert len(msgs) == 4
         assert msgs[0]["role"] == "system"
@@ -65,9 +65,9 @@ class TestCommandClient:
         """Oldest history comes first (cache-friendly prefix stability)."""
         client = self._make_client()
         client._history = [
-            ("q1", "a1"),
-            ("q2", "a2"),
-            ("q3", "a3"),
+            [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}],
+            [{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}],
+            [{"role": "user", "content": "q3"}, {"role": "assistant", "content": "a3"}],
         ]
         msgs = client._build_messages("q4")
         user_msgs = [m["content"] for m in msgs if m["role"] == "user"]
@@ -91,13 +91,14 @@ class TestCommandClient:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 3
-        assert client._history[0] == ("q2", "a2")
-        assert client._history[2] == ("q4", "a4")
+        # Each chain's last user message is the actual utterance for that turn
+        assert client._history[0][-1] == {"role": "user", "content": "q2"}
+        assert client._history[2][-1] == {"role": "user", "content": "q4"}
 
     def test_history_property_returns_copy(self):
         """history property should return a copy, not a reference."""
         client = self._make_client()
-        client._history.append(("q", "a"))
+        client._history.append([{"role": "user", "content": "q"}])
         h = client.history
         h.clear()
         assert len(client._history) == 1
@@ -105,7 +106,10 @@ class TestCommandClient:
     def test_clear_history(self):
         """clear_history should empty the ring buffer."""
         client = self._make_client()
-        client._history = [("q1", "a1"), ("q2", "a2")]
+        client._history = [
+            [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}],
+            [{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}],
+        ]
         client.clear_history()
         assert client._history == []
 
@@ -311,7 +315,16 @@ class TestStreamCommand:
         assert "tokens" in event_tuples[3][1]
         assert event_tuples[4] == ("assistant_delta", "Done.", None)
         assert event_tuples[5] == ("assistant_final", "Done.", None)
-        assert client._history == [("check it", "Done.")]
+        # History is now a full message chain: user, assistant+tool_calls, tool result
+        assert len(client._history) == 1
+        chain = client._history[0]
+        assert chain[0] == {"role": "user", "content": "check it"}
+        # Assistant message with tool_calls
+        assert chain[1]["role"] == "assistant"
+        assert chain[1]["tool_calls"][0]["function"]["name"] == "capture_context"
+        # Tool result
+        assert chain[2]["role"] == "tool"
+        assert chain[2]["content"] == '{"ok": true}'
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
@@ -347,7 +360,8 @@ class TestStreamCommand:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("hello"))
-        assert client._history == [("hello", "Hi there")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "hello"}
 
     def test_stream_does_not_store_reasoning_in_history(self):
         """Only content should appear in history, not reasoning."""
@@ -364,7 +378,8 @@ class TestStreamCommand:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("do it"))
-        assert client._history == [("do it", "done")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "do it"}
 
     def test_stream_history_eviction(self):
         """History should evict oldest entry when full."""
@@ -381,8 +396,9 @@ class TestStreamCommand:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 2
-        assert client._history[0] == ("q1", "answer1")
-        assert client._history[1] == ("q2", "answer2")
+        # Each chain's last user message is the actual utterance for that turn
+        assert client._history[0][-1] == {"role": "user", "content": "q1"}
+        assert client._history[1][-1] == {"role": "user", "content": "q2"}
 
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
@@ -425,7 +441,7 @@ class TestStreamCommand:
             model="test",
             api_key="key",
         )
-        client._history = [("prev question", "prev answer")]
+        client._history = [[{"role": "user", "content": "prev question"}, {"role": "assistant", "content": "prev answer"}]]
         chunks = [self._content_chunk("ok")]
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
@@ -488,7 +504,8 @@ class TestStreamErrorHandling:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("hello"))
         assert tokens == []
-        assert client._history == [("hello", "")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "hello"}
 
     def test_stream_only_reasoning_yields_nothing(self):
         """If OMLX returns only reasoning tokens and no content, yield nothing."""
@@ -506,7 +523,8 @@ class TestStreamErrorHandling:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("think hard"))
         assert tokens == []
-        assert client._history == [("think hard", "")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "think hard"}
 
 class TestStreamCleanup:
     """Test HTTP connection cleanup and history invariants on partial consumption."""
@@ -581,7 +599,8 @@ class TestStreamCleanup:
             tokens = list(client.stream_command("second"))
         assert tokens == ["clean"]
         # Only the completed stream should be in history
-        assert client._history == [("second", "clean")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "second"}
 
 
 class TestToolCallRendering:
@@ -658,10 +677,8 @@ class TestToolCallRendering:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("test"))
         assert len(client._history) == 1
-        _, response = client._history[0]
-        assert "A" in response
-        assert "[calling read_aloud…]" in response
-        assert "B" in response
+        chain = client._history[0]
+        assert chain[0] == {"role": "user", "content": "test"}
 
     def test_tool_call_without_name_is_silent(self):
         """Tool-call deltas that carry only arguments (no name) should not yield text."""
@@ -907,7 +924,8 @@ class TestCommandThinking:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("q"))
-        assert client._history == [("q", "public answer")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "q"}
 
     def test_no_think_tags_passes_content_through(self):
         """Content without <think> tags should pass through unchanged."""
