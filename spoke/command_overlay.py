@@ -642,12 +642,8 @@ class CommandOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
         is_topic_append = text.startswith(" · ")
-        if not is_topic_append:
-            # "Thought for Xs" replaces a preceding "Thinking" placeholder
-            if self._collapsed_text.endswith("Thinking"):
-                self._collapsed_text = self._collapsed_text[:-len("Thinking")]
-            if self._collapsed_text:
-                text = "\n" + text
+        if not is_topic_append and self._collapsed_text:
+            text = "\n" + text
         # Track the full collapsed text for rebuild in set_response_text
         self._collapsed_text += text
         # Append styled text to the text view
