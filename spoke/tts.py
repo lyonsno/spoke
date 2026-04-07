@@ -1152,6 +1152,8 @@ class CloudTTSClient:
         gen_thread = threading.Thread(target=_synthesize_all, daemon=True)
         gen_thread.start()
 
+        stream: sd.OutputStream | None = None
+        stream_sr: int = 0
         try:
             while True:
                 if self._cancelled:
@@ -1163,8 +1165,63 @@ class CloudTTSClient:
                 if item is None:
                     break
                 audio, sample_rate = item
-                self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
+                if audio.size == 0:
+                    continue
+                if audio.ndim == 1:
+                    audio = audio.reshape(-1, 1)
+
+                # Open stream lazily, reopen only on sample rate change
+                if stream is None or sample_rate != stream_sr:
+                    if stream is not None:
+                        stream.stop()
+                        stream.close()
+                    output_device = _resolve_output_device()
+                    stream = sd.OutputStream(
+                        samplerate=sample_rate,
+                        channels=audio.shape[1],
+                        dtype="float32",
+                        device=output_device,
+                    )
+                    self._stream = stream
+                    self._last_chunk = None
+                    stream_sr = sample_rate
+                    stream.start()
+                    logger.info(
+                        "TTS cloud playback stream opened: sample_rate=%d device=%r",
+                        sample_rate, output_device,
+                    )
+
+                # Write audio in ~64ms chunks
+                chunk_size = int(sample_rate * 0.064)
+                offset = 0
+                while offset < len(audio):
+                    if self._cancelled:
+                        break
+                    end = min(offset + chunk_size, len(audio))
+                    chunk = audio[offset:end]
+                    self._last_chunk = chunk
+                    stream.write(chunk)
+                    if amplitude_callback is not None:
+                        rms = float(np.sqrt(np.mean(chunk ** 2)))
+                        amplitude_callback(rms)
+                    offset = end
         finally:
+            # Fade out on cancel
+            if self._cancelled and stream is not None and self._last_chunk is not None:
+                fade_samples = int(stream_sr * 0.05)
+                last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                try:
+                    stream.write(fade_ramp)
+                except Exception:
+                    pass
+            if stream is not None:
+                stream.stop()
+                stream.close()
+                self._stream = None
+                self._last_chunk = None
+            if amplitude_callback is not None:
+                amplitude_callback(0.0)
             # Drain queue so gen thread doesn't block on put()
             self._cancelled = True
             while True:
