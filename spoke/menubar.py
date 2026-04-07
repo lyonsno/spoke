@@ -204,20 +204,11 @@ class MenuBarIcon(NSObject):
 
         menu.addItem_(NSMenuItem.separatorItem())
         added_menu_section = False
+        launch_target = None
         if getattr(self, '_on_select_model', None) is not None:
             model_state = self._on_select_model(None)
             if isinstance(model_state, dict):
                 launch_target = model_state.get("launch_target")
-                if launch_target:
-                    menu.addItem_(
-                        self._build_choice_submenu_item(
-                            launch_target["title"],
-                            "launch_target",
-                            launch_target["selected"],
-                            launch_target["items"],
-                        )
-                    )
-                    added_menu_section = True
                 assistant = model_state.get("assistant")
                 assistant_backend = model_state.get("assistant_backend")
                 transcription = model_state.get("transcription")
@@ -357,8 +348,21 @@ class MenuBarIcon(NSObject):
             )
             terraform_item.setTarget_(self)
             menu.addItem_(terraform_item)
-            menu.addItem_(NSMenuItem.separatorItem())
 
+        if launch_target:
+            menu.addItem_(NSMenuItem.separatorItem())
+            for item_id, label, enabled in launch_target["items"]:
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    label, "selectModel:", ""
+                )
+                item.setTarget_(self)
+                item.setRepresentedObject_(("launch_target", item_id))
+                item.setEnabled_(enabled)
+                if item_id == launch_target["selected"]:
+                    item.setState_(1)
+                menu.addItem_(item)
+
+        menu.addItem_(NSMenuItem.separatorItem())
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Spoke", "quitApp:", "q"
         )

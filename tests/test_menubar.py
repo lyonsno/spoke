@@ -308,7 +308,7 @@ class TestMenuBarIcon:
         assert any(call.args == ("Set Sidecar URL…", "selectModel:", "") for call in calls)
 
     def test_build_menu_shows_launch_target_submenu(self, menubar_module):
-        """Registry-backed launch targets should appear as their own submenu."""
+        """Registry-backed launch targets should appear as flat items at the bottom of the menu."""
         AppKit = __import__("AppKit")
 
         status_item_menu_holder = MagicMock(name="status_item_holder")
@@ -338,6 +338,6 @@ class TestMenuBarIcon:
         icon.setup()
 
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
-        assert any(call.args == ("Launch Target", None, "") for call in calls)
+        # Launch targets are now flat items at the bottom, no submenu header
         assert any(call.args == ("Main", "selectModel:", "") for call in calls)
         assert any(call.args == ("Smoke", "selectModel:", "") for call in calls)
