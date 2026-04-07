@@ -245,3 +245,151 @@ class TestReceiverParsing:
             client.on_turn_complete()
 
         assert completed == [True]
+
+
+class TestToolUseSupport:
+    """Tests for Gemini Live tool use (function calling) integration."""
+
+    def test_openai_schemas_converted_to_gemini_format(self):
+        from spoke.gemini_live import _openai_tools_to_gemini
+
+        openai_schemas = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "capture_context",
+                    "description": "Capture the screen",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "scope": {"type": "string", "enum": ["active_window", "screen"]},
+                        },
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_to_tray",
+                    "description": "Add text to tray",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            },
+        ]
+        result = _openai_tools_to_gemini(openai_schemas)
+
+        assert len(result) == 1
+        declarations = result[0]["function_declarations"]
+        assert len(declarations) == 2
+        assert declarations[0]["name"] == "capture_context"
+        assert declarations[0]["description"] == "Capture the screen"
+        assert "parameters" in declarations[0]
+        assert declarations[1]["name"] == "add_to_tray"
+
+    def test_client_stores_converted_tools(self):
+        from spoke.gemini_live import GeminiLiveClient
+
+        tools = [
+            {"type": "function", "function": {"name": "test_tool", "description": "A test"}},
+        ]
+        client = GeminiLiveClient("test-key", tools=tools)
+
+        assert client._tools is not None
+        assert len(client._tools) == 1
+        decls = client._tools[0]["function_declarations"]
+        assert decls[0]["name"] == "test_tool"
+
+    def test_client_no_tools_leaves_none(self):
+        from spoke.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient("test-key")
+        assert client._tools is None
+
+    def test_send_tool_response_queues_structured_message(self):
+        from spoke.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient("test-key")
+        client._connected = True
+
+        client.send_tool_response([
+            {"id": "call_1", "name": "capture_context", "response": {"result": "{}"}}
+        ])
+
+        item = client._send_queue.get(timeout=1)
+        assert isinstance(item, tuple)
+        tag, msg = item
+        assert tag == "__tool_response__"
+        assert "tool_response" in msg
+        fn_responses = msg["tool_response"]["function_responses"]
+        assert len(fn_responses) == 1
+        assert fn_responses[0]["id"] == "call_1"
+
+    def test_send_tool_response_noop_when_disconnected(self):
+        from spoke.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient("test-key")
+        assert not client._connected
+
+        client.send_tool_response([
+            {"id": "call_1", "name": "test", "response": {"result": "x"}}
+        ])
+        assert client._send_queue.empty()
+
+    def test_tool_call_callback_receives_function_calls(self):
+        """Simulate a toolCall message arriving and verify dispatch."""
+        from spoke.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient("test-key")
+        received = []
+        client.on_tool_call = received.append
+
+        tool_call_msg = {
+            "toolCall": {
+                "functionCalls": [
+                    {"id": "abc-123", "name": "capture_context", "args": {"scope": "screen"}},
+                    {"id": "abc-124", "name": "add_to_tray", "args": {"text": "hello"}},
+                ]
+            }
+        }
+
+        # Simulate what _receiver_loop does
+        tc = tool_call_msg.get("toolCall")
+        fn_calls = tc.get("functionCalls", [])
+        if fn_calls and client.on_tool_call:
+            client.on_tool_call(fn_calls)
+
+        assert len(received) == 1
+        assert len(received[0]) == 2
+        assert received[0][0]["name"] == "capture_context"
+        assert received[0][1]["args"] == {"text": "hello"}
+
+    def test_sender_loop_handles_tagged_tuple(self):
+        """Verify sender_loop forwards tagged tuples as JSON."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from spoke.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient("test-key")
+        client._connected = True
+        client._ws = AsyncMock()
+
+        # Queue a tool response
+        tool_msg = {"tool_response": {"function_responses": [{"id": "1", "name": "t", "response": {}}]}}
+        client._send_queue.put(("__tool_response__", tool_msg))
+        # Then shutdown
+        from spoke.gemini_live import _SHUTDOWN
+        client._send_queue.put(_SHUTDOWN)
+
+        asyncio.run(client._sender_loop())
+
+        # First call should be the tool response JSON
+        calls = client._ws.send.call_args_list
+        assert len(calls) == 1
+        sent = json.loads(calls[0][0][0])
+        assert "tool_response" in sent

@@ -1741,16 +1741,26 @@ class SpokeAppDelegate(NSObject):
         self._live_player = LiveAudioPlayer(
             amplitude_callback=self._on_live_playback_amplitude,
         )
+
+        # Build live-mode tool schemas (subset: capture_context + add_to_tray).
+        from spoke.tool_dispatch import get_tool_schemas
+        live_tools = [
+            s for s in get_tool_schemas()
+            if s.get("function", {}).get("name") in ("capture_context", "add_to_tray")
+        ]
+
         self._live_client = GeminiLiveClient(
             api_key,
             model=live_model,
             voice=live_voice,
+            tools=live_tools or None,
         )
         self._live_client.on_audio_chunk = self._live_player.write_chunk
         self._live_client.on_text_chunk = self._on_live_text
         self._live_client.on_turn_complete = self._on_live_turn_complete
         self._live_client.on_interrupted = self._on_live_interrupted
         self._live_client.on_error = self._on_live_error
+        self._live_client.on_tool_call = self._on_live_tool_call
 
         if self._menubar is not None:
             self._menubar.set_status_text("Connecting to Gemini Live...")
@@ -1867,6 +1877,42 @@ class SpokeAppDelegate(NSObject):
         logger.info("Gemini Live interrupted — flushing playback")
         if self._live_player is not None:
             self._live_player.flush()
+
+    def _on_live_tool_call(self, function_calls: list[dict]) -> None:
+        """Called from the WebSocket receiver thread when Gemini wants tools.
+
+        Each entry has: {"id": str, "name": str, "args": dict}
+        """
+        from spoke.tool_dispatch import execute_tool
+
+        responses = []
+        for fc in function_calls:
+            call_id = fc.get("id", "")
+            fn_name = fc.get("name", "")
+            fn_args = fc.get("args", {})
+            logger.info("Live tool call: %s(%s)", fn_name, fn_args)
+
+            try:
+                result = execute_tool(
+                    name=fn_name,
+                    arguments=fn_args,
+                    scene_cache=self._scene_cache,
+                    last_response=None,
+                    tts_client=None,
+                    tray_writer=self._add_assistant_content_to_tray,
+                )
+            except Exception:
+                logger.exception("Live tool execution failed: %s", fn_name)
+                result = json.dumps({"error": f"Tool {fn_name} failed"})
+
+            responses.append({
+                "id": call_id,
+                "name": fn_name,
+                "response": {"result": result},
+            })
+
+        if self._live_client is not None:
+            self._live_client.send_tool_response(responses)
 
     def _on_live_error(self, error_msg: str) -> None:
         logger.error("Gemini Live error: %s", error_msg)

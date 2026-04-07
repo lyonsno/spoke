@@ -3,6 +3,11 @@
 Opens a WebSocket to the Gemini Live API, streams raw 16 kHz PCM from
 the microphone, and plays back 24 kHz PCM audio responses.  The API
 handles voice activity detection and turn-taking natively.
+
+Supports tool use (function calling): pass OpenAI-format tool schemas
+to GeminiLiveClient and set the on_tool_call callback.  The client
+converts schemas to Gemini format, dispatches tool calls from the model,
+and sends results back over the WebSocket.
 """
 
 from __future__ import annotations
@@ -45,6 +50,29 @@ _DEFAULT_SYSTEM_INSTRUCTION = (
 
 # Sentinel pushed to the send queue to signal shutdown.
 _SHUTDOWN = object()
+
+
+def _openai_tools_to_gemini(openai_schemas: list[dict]) -> list[dict]:
+    """Convert OpenAI-format tool schemas to Gemini function_declarations.
+
+    OpenAI shape:
+        {"type": "function", "function": {"name": ..., "description": ...,
+         "parameters": {...}}}
+
+    Gemini shape:
+        {"function_declarations": [{"name": ..., "description": ...,
+         "parameters": {...}}]}
+    """
+    declarations = []
+    for schema in openai_schemas:
+        fn = schema.get("function", schema)
+        decl: dict = {"name": fn["name"]}
+        if "description" in fn:
+            decl["description"] = fn["description"]
+        if "parameters" in fn:
+            decl["parameters"] = fn["parameters"]
+        declarations.append(decl)
+    return [{"function_declarations": declarations}]
 
 
 class LiveAudioPlayer:
@@ -121,11 +149,13 @@ class GeminiLiveClient:
         model: str = _DEFAULT_MODEL,
         voice: str = _DEFAULT_VOICE,
         system_instruction: str = _DEFAULT_SYSTEM_INSTRUCTION,
+        tools: list[dict] | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._voice = voice
         self._system_instruction = system_instruction
+        self._tools = _openai_tools_to_gemini(tools) if tools else None
 
         # Callbacks — set these before calling connect().
         self.on_audio_chunk: Callable[[bytes], None] | None = None
@@ -134,6 +164,7 @@ class GeminiLiveClient:
         self.on_interrupted: Callable[[], None] | None = None
         self.on_connected: Callable[[], None] | None = None
         self.on_error: Callable[[str], None] | None = None
+        self.on_tool_call: Callable[[list[dict]], None] | None = None
 
         self._send_queue: queue.Queue = queue.Queue()
         self._ws = None
@@ -209,6 +240,21 @@ class GeminiLiveClient:
         pcm_int16 = np.clip(float32_chunk * 32767, -32768, 32767).astype(np.int16)
         self._send_queue.put(pcm_int16.tobytes())
 
+    def send_tool_response(self, function_responses: list[dict]) -> None:
+        """Send tool results back to the model.  Thread-safe.
+
+        Each entry in *function_responses* should have:
+            {"id": "call_id", "name": "fn_name", "response": {...}}
+        """
+        if not self._connected:
+            return
+        msg = {
+            "tool_response": {
+                "function_responses": function_responses,
+            }
+        }
+        self._send_queue.put(("__tool_response__", msg))
+
     # -- Async internals -----------------------------------------------------
 
     async def _connect(
@@ -233,24 +279,25 @@ class GeminiLiveClient:
             return
 
         # Send setup message.
-        setup = {
-            "setup": {
-                "model": f"models/{self._model}",
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {
-                                "voiceName": self._voice,
-                            }
+        setup_body: dict = {
+            "model": f"models/{self._model}",
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": self._voice,
                         }
-                    },
+                    }
                 },
-                "systemInstruction": {
-                    "parts": [{"text": self._system_instruction}]
-                },
-            }
+            },
+            "systemInstruction": {
+                "parts": [{"text": self._system_instruction}]
+            },
         }
+        if self._tools:
+            setup_body["tools"] = self._tools
+        setup = {"setup": setup_body}
         await self._ws.send(json.dumps(setup))
         logger.info("Sent setup message, waiting for setupComplete")
 
@@ -292,7 +339,11 @@ class GeminiLiveClient:
                     pass
 
     async def _sender_loop(self) -> None:
-        """Pull PCM bytes from the queue and send as realtimeInput."""
+        """Pull items from the queue and send over the WebSocket.
+
+        Items are either raw PCM bytes (audio) or tagged tuples for
+        structured messages like tool responses.
+        """
         while self._connected:
             try:
                 data = await asyncio.to_thread(self._send_queue.get, timeout=0.1)
@@ -302,6 +353,18 @@ class GeminiLiveClient:
                 break
             if not self._connected or self._ws is None:
                 break
+
+            # Tagged tuple = structured message (e.g. tool response).
+            if isinstance(data, tuple) and len(data) == 2:
+                _tag, msg = data
+                try:
+                    await self._ws.send(json.dumps(msg))
+                except Exception:
+                    logger.warning("Failed to send structured message", exc_info=True)
+                    break
+                continue
+
+            # Default: raw PCM audio bytes.
             encoded = base64.b64encode(data).decode("ascii")
             msg = {
                 "realtimeInput": {
@@ -334,6 +397,21 @@ class GeminiLiveClient:
             except json.JSONDecodeError:
                 continue
 
+            # ── Tool calls ──────────────────────────────────────────
+            tool_call = msg.get("toolCall")
+            if tool_call is not None:
+                fn_calls = tool_call.get("functionCalls", [])
+                if fn_calls:
+                    logger.info(
+                        "Gemini Live: tool call with %d function(s): %s",
+                        len(fn_calls),
+                        [fc.get("name") for fc in fn_calls],
+                    )
+                    if self.on_tool_call is not None:
+                        self.on_tool_call(fn_calls)
+                continue
+
+            # ── Server content (audio / text / turn signals) ───────
             server_content = msg.get("serverContent")
             if server_content is None:
                 continue
