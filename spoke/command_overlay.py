@@ -581,6 +581,41 @@ class CommandOverlay(NSObject):
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
 
+    def set_thinking_collapsed(self, text: str) -> None:
+        """Inject a collapsed thinking summary line into the text view.
+
+        Appears between the user utterance and the response, styled
+        as a subtle aside (smaller font, lower alpha).
+        """
+        if self._text_view is None or not self._visible:
+            return
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        # Add a newline before the collapsed line if there's already content
+        prefix = "\n" if self._utterance_text else ""
+        collapsed_str = NSMutableAttributedString.alloc().initWithString_(
+            prefix + text
+        )
+        full_range = (0, len(prefix + text))
+        collapsed_str.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                user_r, user_g, user_b, 0.25
+            ),
+            full_range,
+        )
+        collapsed_str.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
+            full_range,
+        )
+        self._text_view.textStorage().appendAttributedString_(collapsed_str)
+        self._update_layout()
+
     def append_token(self, token: str) -> None:
         """Append a streamed response token."""
         if self._text_view is None or not self._visible:

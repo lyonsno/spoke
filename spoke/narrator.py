@@ -105,12 +105,14 @@ class ThinkingNarrator:
     def __init__(
         self,
         on_summary: Callable[[str], None],
+        on_thinking_collapsed: Callable[[str], None] | None = None,
         *,
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
     ):
         self._on_summary = on_summary
+        self._on_thinking_collapsed = on_thinking_collapsed
 
         # Endpoint config — fall back to command URL, then localhost
         raw_url = (
@@ -165,6 +167,7 @@ class ThinkingNarrator:
         """Begin a new narration session (new thinking phase)."""
         with self._lock:
             self._buffer = ""
+            self._thinking_start = time.monotonic()
             self._last_dispatch = time.monotonic()
             self._messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
             self._active = True
@@ -172,11 +175,67 @@ class ThinkingNarrator:
         logger.info("Narrator session started")
 
     def stop(self) -> None:
-        """End the narration session."""
+        """End the narration session without a collapsed summary."""
         with self._lock:
             self._active = False
             self._buffer = ""
         logger.info("Narrator session stopped")
+
+    def stop_and_summarize(self) -> None:
+        """End the narration session and produce a collapsed summary.
+
+        Fires one final call to the narrator model asking for a concise
+        wrap-up of what was thought about.  The result is delivered via
+        on_thinking_collapsed as "Thought for Xs · {summary}".
+        """
+        with self._lock:
+            self._active = False
+            self._buffer = ""
+            elapsed = time.monotonic() - self._thinking_start
+            messages = list(self._messages)
+
+        if not self._on_thinking_collapsed:
+            return
+        if len(messages) < 3:
+            # No summaries were produced — thinking was too short
+            if elapsed >= 2.0:
+                self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
+            return
+
+        # Fire async wrap-up
+        t = threading.Thread(
+            target=self._produce_collapsed_summary,
+            args=(messages, elapsed),
+            daemon=True,
+        )
+        t.start()
+
+    def _produce_collapsed_summary(self, messages: list[dict], elapsed: float) -> None:
+        """Generate and deliver the collapsed thinking summary."""
+        try:
+            messages = list(messages)
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The AI has finished thinking. Write a single short phrase "
+                    "(5-10 words, no participle needed) summarizing WHAT it "
+                    "thought about overall. Like a section heading. "
+                    "Examples: 'palindrome algorithm design and edge cases', "
+                    "'debugging the auth token refresh flow', "
+                    "'weighing three caching strategies'. "
+                    "Output ONLY the phrase."
+                ),
+            })
+            topic = self._chat_completion(messages, max_tokens=25)
+            if topic:
+                collapsed = f"Thought for {elapsed:.0f}s · {topic}"
+            else:
+                collapsed = f"Thought for {elapsed:.0f}s"
+            logger.info("Thinking collapsed: %s", collapsed)
+            self._on_thinking_collapsed(collapsed)
+        except Exception:
+            logger.exception("Failed to produce collapsed summary")
+            self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
 
     def feed(self, token: str) -> None:
         """Feed a thinking token.  May trigger an async narrator call."""
