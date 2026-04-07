@@ -26,18 +26,24 @@ logger = logging.getLogger(__name__)
 
 
 # ── Voice commands (matched against full transcription, case-insensitive) ──
+#
+# Each entry maps to a tuple of (action, value):
+#   ("inject", "\n")       — paste this text at cursor
+#   ("keystroke", "return") — synthesize this keystroke
 
-VOICE_COMMANDS: dict[str, str] = {
-    "new line": "\n",
-    "newline": "\n",
-    "enter": "\n",
-    "new paragraph": "\n\n",
+VOICE_COMMANDS: dict[str, tuple[str, str]] = {
+    "new line": ("inject", "\n"),
+    "newline": ("inject", "\n"),
+    "new paragraph": ("inject", "\n\n"),
+    "tessera": ("keystroke", "return"),
+    "tesserae": ("keystroke", "return"),
+    "tessara": ("keystroke", "return"),
 }
 
 
-def match_voice_command(text: str) -> str | None:
-    """If *text* is a voice command, return the replacement string. Else None."""
-    normalized = text.strip().lower().rstrip(".")
+def match_voice_command(text: str) -> tuple[str, str] | None:
+    """If *text* is a voice command, return (action, value). Else None."""
+    normalized = text.strip().lower().rstrip(".,!?")
     return VOICE_COMMANDS.get(normalized)
 
 

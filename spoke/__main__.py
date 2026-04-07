@@ -1190,15 +1190,40 @@ class SpokeAppDelegate(NSObject):
             return
 
         # Check for voice commands
-        replacement = match_voice_command(text)
-        if replacement is not None:
-            logger.info("Hands-free voice command: %r → %r", text, replacement)
-            inject_text(replacement)
+        cmd = match_voice_command(text)
+        if cmd is not None:
+            action, value = cmd
+            logger.info("Hands-free voice command: %r → %s(%r)", text, action, value)
+            if action == "keystroke":
+                self._synthesize_keystroke(value)
+            else:
+                inject_text(value)
             return
 
         # Normal text — append trailing space for continuous flow
         logger.info("Hands-free inject: %r", text)
         inject_text(text + " ")
+
+    _KEYSTROKE_MAP = {
+        "return": 36,
+        "tab": 48,
+        "escape": 53,
+        "delete": 51,
+        "space": 49,
+    }
+
+    def _synthesize_keystroke(self, key_name: str) -> None:
+        """Synthesize a bare keystroke (no modifiers)."""
+        from Quartz import CGEventCreateKeyboardEvent, CGEventPost, kCGHIDEventTap
+        keycode = self._KEYSTROKE_MAP.get(key_name)
+        if keycode is None:
+            logger.warning("Unknown keystroke: %s", key_name)
+            return
+        down = CGEventCreateKeyboardEvent(None, keycode, True)
+        up = CGEventCreateKeyboardEvent(None, keycode, False)
+        CGEventPost(kCGHIDEventTap, down)
+        CGEventPost(kCGHIDEventTap, up)
+        logger.info("Synthesized keystroke: %s (keycode %d)", key_name, keycode)
 
     def _on_handsfree_state_change(self, state: HandsFreeState) -> None:
         """Update UI when hands-free state changes."""
