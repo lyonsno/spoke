@@ -221,8 +221,9 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
         self._narrator_typewriter_timer: NSTimer | None = None
-        self._narrator_full_text = ""    # full summary to reveal
+        self._narrator_full_text = ""    # full accumulated text (all lines)
         self._narrator_revealed = 0      # chars revealed so far
+        self._narrator_lines: list[str] = []  # past summary lines
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -355,10 +356,12 @@ class CommandOverlay(NSObject):
         content.addSubview_(self._thinking_label)
 
         # Narrator summary label — below the thinking timer, left-aligned
-        # Slightly smaller than body text to feel like a subtitle/aside
-        from AppKit import NSTextAlignmentLeft, NSLineBreakByTruncatingTail
+        # Up to 3 lines of wrapping text; old summaries accumulate above new ones
+        from AppKit import NSTextAlignmentLeft, NSLineBreakByWordWrapping
         _NARRATOR_FONT_SIZE = 13.0
-        narrator_h = 18.0
+        _NARRATOR_LINE_HEIGHT = 16.0
+        _NARRATOR_MAX_LINES = 3
+        narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
         narrator_y = timer_y - narrator_h - 2
         narrator_w = _OVERLAY_WIDTH - 28
@@ -370,7 +373,8 @@ class CommandOverlay(NSObject):
         self._narrator_label.setBezeled_(False)
         self._narrator_label.setDrawsBackground_(False)
         self._narrator_label.setAlignment_(NSTextAlignmentLeft)
-        self._narrator_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
+        self._narrator_label.setLineBreakMode_(NSLineBreakByWordWrapping)
+        self._narrator_label.setMaximumNumberOfLines_(_NARRATOR_MAX_LINES)
         self._narrator_label.setFont_(
             NSFont.systemFontOfSize_weight_(_NARRATOR_FONT_SIZE, 0.0)
         )
@@ -1115,21 +1119,40 @@ class CommandOverlay(NSObject):
         self._hide_narrator()
 
     def set_narrator_summary(self, summary: str) -> None:
-        """Update the narrator summary with a typewriter reveal animation."""
+        """Append a new narrator summary with typewriter reveal.
+
+        Old summaries stay visible above the new one.  The label
+        keeps the most recent 3 lines worth of history.
+        """
         if self._narrator_label is None:
             return
-        # Cancel any in-progress typewriter
+        # Cancel any in-progress typewriter — finish the previous line instantly
         if self._narrator_typewriter_timer is not None:
             self._narrator_typewriter_timer.invalidate()
             self._narrator_typewriter_timer = None
+            # Complete the previous typewriter if it was mid-reveal
+            if self._narrator_full_text:
+                self._narrator_label.setStringValue_(self._narrator_full_text)
 
-        self._narrator_full_text = summary
+        # Accumulate: add the new summary to our line history
+        self._narrator_lines.append(summary)
+        # Keep only enough lines that fit in 3 display lines
+        # (each summary is roughly one line but can wrap)
+        while len(self._narrator_lines) > 3:
+            self._narrator_lines.pop(0)
+
+        # Build the prefix (old lines fully revealed) and the new line to typewrite
+        prefix = "\n".join(self._narrator_lines[:-1])
+        new_line = self._narrator_lines[-1]
+        self._narrator_prefix = (prefix + "\n") if prefix else ""
+        self._narrator_new_line = new_line
+        self._narrator_full_text = self._narrator_prefix + new_line
         self._narrator_revealed = 0
-        self._narrator_label.setStringValue_("")
+        self._narrator_label.setStringValue_(self._narrator_prefix)
         self._narrator_label.setHidden_(False)
         self._apply_narrator_theme()
 
-        # Start typewriter: ~30ms per character
+        # Start typewriter for the new line: ~30ms per character
         self._narrator_typewriter_timer = (
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 0.03, self, "narratorTypewriterTick:", None, True
@@ -1137,9 +1160,9 @@ class CommandOverlay(NSObject):
         )
 
     def narratorTypewriterTick_(self, timer) -> None:
-        """Reveal one character of the narrator summary."""
+        """Reveal one character of the newest narrator summary line."""
         self._narrator_revealed += 1
-        if self._narrator_revealed >= len(self._narrator_full_text):
+        if self._narrator_revealed >= len(self._narrator_new_line):
             # Done — show full text and stop
             if self._narrator_label is not None:
                 self._narrator_label.setStringValue_(self._narrator_full_text)
@@ -1149,7 +1172,7 @@ class CommandOverlay(NSObject):
             return
         if self._narrator_label is not None:
             self._narrator_label.setStringValue_(
-                self._narrator_full_text[:self._narrator_revealed]
+                self._narrator_prefix + self._narrator_new_line[:self._narrator_revealed]
             )
 
     def _apply_narrator_theme(self) -> None:
@@ -1166,6 +1189,8 @@ class CommandOverlay(NSObject):
         if self._narrator_typewriter_timer is not None:
             self._narrator_typewriter_timer.invalidate()
             self._narrator_typewriter_timer = None
+        self._narrator_lines = []
+        self._narrator_full_text = ""
         if self._narrator_label is not None:
             self._narrator_label.setHidden_(True)
             self._narrator_label.setStringValue_("")
