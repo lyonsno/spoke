@@ -67,6 +67,16 @@ def _make_overlay(mock_pyobjc):
     overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
+    overlay._narrator_label = None
+    overlay._narrator_typewriter_timer = None
+    overlay._narrator_full_text = ""
+    overlay._narrator_revealed = 0
+    overlay._narrator_lines = []
+    overlay._narrator_shimmer_timer = None
+    overlay._narrator_shimmer_phase = 0.0
+    overlay._narrator_shimmer_active = False
+    overlay._narrator_suppressed = False
+    overlay._collapsed_text = ""
     return overlay, mod
 
 
