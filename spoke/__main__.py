@@ -3256,6 +3256,10 @@ class SpokeAppDelegate(NSObject):
                     utterance=utterance, model_id=model_id
                 )
                 vamp_started = True
+                # Enable color shimmer on the narrator label during loading
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "narratorShimmer:", {"active": True}, False
+                )
 
             for event in self._command_client.stream_command_events(
                 utterance,
@@ -3386,6 +3390,15 @@ class SpokeAppDelegate(NSObject):
                 overlay._hide_narrator()
             except Exception:
                 logger.exception("Command overlay failed to hide narrator")
+
+    def narratorShimmer_(self, payload: dict) -> None:
+        """Main thread: enable/disable color shimmer on narrator label."""
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_narrator_shimmer(payload.get("active", False))
+            except Exception:
+                logger.exception("Command overlay failed to set narrator shimmer")
 
     def narratorCollapsed_(self, payload: dict) -> None:
         """Main thread: inject collapsed thinking summary into the overlay."""

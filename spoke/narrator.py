@@ -167,7 +167,7 @@ class ThinkingNarrator:
         """Begin a new narration session (new thinking phase)."""
         with self._lock:
             self._buffer = ""
-            self._thinking_start = time.monotonic()
+            self._thinking_start = 0.0  # set on first thinking token, not here
             self._last_dispatch = time.monotonic()
             self._messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
             self._active = True
@@ -191,7 +191,10 @@ class ThinkingNarrator:
         with self._lock:
             self._active = False
             self._buffer = ""
-            elapsed = time.monotonic() - self._thinking_start
+            if self._thinking_start > 0:
+                elapsed = time.monotonic() - self._thinking_start
+            else:
+                elapsed = 0.0  # no thinking tokens were received
             messages = list(self._messages)
 
         if not self._on_thinking_collapsed:
@@ -243,6 +246,10 @@ class ThinkingNarrator:
         with self._lock:
             if not self._active:
                 return
+            # Start the thinking clock on the first actual thinking token,
+            # not when start() was called (which may include model load time).
+            if self._thinking_start == 0.0:
+                self._thinking_start = time.monotonic()
             self._buffer += token
             now = time.monotonic()
             elapsed = now - self._last_dispatch

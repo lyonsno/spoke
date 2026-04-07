@@ -227,6 +227,9 @@ class CommandOverlay(NSObject):
         self._narrator_full_text = ""    # full accumulated text (all lines)
         self._narrator_revealed = 0      # chars revealed so far
         self._narrator_lines: list[str] = []  # past summary lines
+        self._narrator_shimmer_timer: NSTimer | None = None
+        self._narrator_shimmer_phase = 0.0  # 0–1 cycling hue phase
+        self._narrator_shimmer_active = False
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -1219,20 +1222,58 @@ class CommandOverlay(NSObject):
                 self._narrator_prefix + self._narrator_new_line[:self._narrator_revealed]
             )
 
+    def set_narrator_shimmer(self, active: bool) -> None:
+        """Enable/disable the color wave shimmer on the narrator label."""
+        self._narrator_shimmer_active = active
+        if active:
+            if self._narrator_shimmer_timer is None:
+                self._narrator_shimmer_phase = 0.0
+                self._narrator_shimmer_timer = (
+                    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                        0.05, self, "narratorShimmerTick:", None, True
+                    )
+                )
+        else:
+            if self._narrator_shimmer_timer is not None:
+                self._narrator_shimmer_timer.invalidate()
+                self._narrator_shimmer_timer = None
+            # Revert to default narrator theme
+            self._apply_narrator_theme()
+
+    def narratorShimmerTick_(self, timer) -> None:
+        """Cycle the narrator label through soft color waves."""
+        import colorsys
+        self._narrator_shimmer_phase = (self._narrator_shimmer_phase + 0.008) % 1.0
+        if self._narrator_label is None or self._narrator_label.isHidden():
+            return
+        # Soft pastel wave: low saturation, medium-high value
+        # Phase controls hue; we use a slow sine for saturation breathing
+        import math
+        hue = self._narrator_shimmer_phase
+        sat = 0.25 + 0.15 * math.sin(self._narrator_shimmer_phase * math.pi * 4)
+        val = 0.75 + 0.10 * math.sin(self._narrator_shimmer_phase * math.pi * 2.5)
+        r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+        self._narrator_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 0.45)
+        )
+
     def _apply_narrator_theme(self) -> None:
         """Match narrator label color to user utterance style."""
         if self._narrator_label is None or self._narrator_label.isHidden():
             return
+        if self._narrator_shimmer_active:
+            return  # shimmer is driving the color
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
         )
 
     def _hide_narrator(self) -> None:
-        """Hide the narrator summary label and stop any typewriter."""
+        """Hide the narrator summary label and stop any typewriter/shimmer."""
         if self._narrator_typewriter_timer is not None:
             self._narrator_typewriter_timer.invalidate()
             self._narrator_typewriter_timer = None
+        self.set_narrator_shimmer(False)
         self._narrator_lines = []
         self._narrator_full_text = ""
         if self._narrator_label is not None:
