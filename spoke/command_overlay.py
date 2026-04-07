@@ -645,11 +645,13 @@ class CommandOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
         is_topic_append = text.startswith(" · ")
+        # Track with newline separators for set_response_text rebuild
         if not is_topic_append and self._collapsed_text:
-            text = "\n" + text
-        # Track the full collapsed text for rebuild in set_response_text
-        self._collapsed_text += text
-        # Append styled text to the text view
+            self._collapsed_text += "\n" + text
+        else:
+            self._collapsed_text += text
+        # Append to live text view — no extra newline since tool
+        # indicators and response text already provide spacing
         collapsed_str = self._make_collapsed_attributed(text)
         self._text_view.textStorage().appendAttributedString_(collapsed_str)
         self._update_layout()
