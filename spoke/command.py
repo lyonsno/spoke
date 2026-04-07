@@ -464,7 +464,7 @@ class CommandClient:
             thinking_tag_buf = ""  # partial tag accumulator
 
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=300) as resp:
                     for raw_line in resp:
                         # Cancel check between SSE chunks
                         if cancel_check is not None and cancel_check():

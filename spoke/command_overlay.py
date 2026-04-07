@@ -358,9 +358,10 @@ class CommandOverlay(NSObject):
         content.addSubview_(self._thinking_label)
 
         # Narrator summary label — below the thinking timer, left-aligned
-        # Matches the user utterance text style (same font, adaptive color)
+        # Slightly smaller than body text to feel like a subtitle/aside
         from AppKit import NSTextAlignmentLeft, NSLineBreakByTruncatingTail
-        narrator_h = 22.0
+        _NARRATOR_FONT_SIZE = 13.0
+        narrator_h = 18.0
         narrator_x = 14.0
         narrator_y = timer_y - narrator_h - 2
         narrator_w = _OVERLAY_WIDTH - 28
@@ -374,12 +375,12 @@ class CommandOverlay(NSObject):
         self._narrator_label.setAlignment_(NSTextAlignmentLeft)
         self._narrator_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
         self._narrator_label.setFont_(
-            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0)
+            NSFont.systemFontOfSize_weight_(_NARRATOR_FONT_SIZE, 0.0)
         )
         # Initial color set; will be updated by _apply_narrator_theme()
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
         )
         self._narrator_label.setStringValue_("")
         self._narrator_label.setHidden_(True)
@@ -1158,7 +1159,7 @@ class CommandOverlay(NSObject):
             return
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
         )
 
     def _hide_narrator(self) -> None:

@@ -65,7 +65,7 @@ Examples of good lines:
 - Almost there — the model is doing its stretches before the big performance
 - Loading layer 34 of 80 — each one a little smarter than the last"""
 
-_LOADING_VAMP_INTERVAL_S = 6.0  # seconds between vamp lines
+_LOADING_VAMP_INTERVAL_S = 8.0  # seconds between subsequent vamp lines
 
 # ── chunking parameters ─────────────────────────────────────────────
 
@@ -269,7 +269,7 @@ class ThinkingNarrator:
     def _vamp_loop(self, utterance: str, model_id: str) -> None:
         """Background loop that generates vamp lines every few seconds."""
         # Wait before starting — don't vamp on fast responses
-        _VAMP_GRACE_PERIOD_S = 4.0
+        _VAMP_GRACE_PERIOD_S = 3.0
         grace_slept = 0.0
         while grace_slept < _VAMP_GRACE_PERIOD_S:
             time.sleep(0.5)
@@ -316,8 +316,14 @@ class ThinkingNarrator:
             except Exception:
                 logger.exception("Vamp dispatch failed")
 
-            # Wait before next vamp line
-            time.sleep(_LOADING_VAMP_INTERVAL_S)
+            # Wait before next vamp line (check for stop every 500ms)
+            waited = 0.0
+            while waited < _LOADING_VAMP_INTERVAL_S:
+                time.sleep(0.5)
+                waited += 0.5
+                with self._lock:
+                    if not self._vamp_active:
+                        return
 
     def _poll_loading_status(self) -> str:
         """Poll OMLX /api/status for loading context."""
