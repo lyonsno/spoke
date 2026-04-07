@@ -2950,6 +2950,9 @@ class SpokeAppDelegate(NSObject):
                         if not narrator_started:
                             self._narrator.start()
                             narrator_started = True
+                            # Unsuppress narrator display for this thinking phase
+                            if self._command_overlay is not None:
+                                self._command_overlay._narrator_suppressed = False
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
                     # Stop narrator when visible content starts — produce collapsed summary

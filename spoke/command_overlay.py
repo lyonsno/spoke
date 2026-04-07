@@ -227,6 +227,7 @@ class CommandOverlay(NSObject):
         self._narrator_shimmer_timer: NSTimer | None = None
         self._narrator_shimmer_phase = 0.0  # 0–1 cycling hue phase
         self._narrator_shimmer_active = False
+        self._narrator_suppressed = False  # True after hide, blocks late callbacks
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -408,6 +409,7 @@ class CommandOverlay(NSObject):
         self._streaming = True
         self._response_text = ""
         self._utterance_text = ""
+        self._narrator_suppressed = False  # allow narrator for new command
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -1167,10 +1169,13 @@ class CommandOverlay(NSObject):
     def set_narrator_summary(self, summary: str) -> None:
         """Append a new narrator summary with typewriter reveal.
 
+        Ignores late callbacks if the narrator has been suppressed
+        (e.g. vamp stopped but a queued summary arrives after).
+
         Old summaries stay visible above the new one.  The label
         keeps the most recent 3 lines worth of history.
         """
-        if self._narrator_label is None:
+        if self._narrator_label is None or self._narrator_suppressed:
             return
         # Cancel any in-progress typewriter — finish the previous line instantly
         if self._narrator_typewriter_timer is not None:
@@ -1269,6 +1274,7 @@ class CommandOverlay(NSObject):
 
     def _hide_narrator(self) -> None:
         """Hide the narrator summary label and stop any typewriter/shimmer."""
+        self._narrator_suppressed = True
         if self._narrator_typewriter_timer is not None:
             self._narrator_typewriter_timer.invalidate()
             self._narrator_typewriter_timer = None
