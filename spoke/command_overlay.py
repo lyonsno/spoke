@@ -666,8 +666,10 @@ class CommandOverlay(NSObject):
             self._text_view.textStorage().appendAttributedString_(sep)
 
         # Style tool call indicators smaller (like collapsed thinking)
+        stripped = token.lstrip("\n ")
         is_tool_indicator = (
-            token.startswith("\n[calling ") or token.startswith("  [")
+            stripped.startswith("[calling ") or stripped.startswith("[~")
+            or stripped.startswith("[screen ") or stripped.startswith("[\"")
         )
         if is_tool_indicator:
             frag = self._make_tool_indicator_fragment(token)
@@ -1446,6 +1448,12 @@ class CommandOverlay(NSObject):
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
+
+            # Hide narrator label when overlay has expanded beyond initial
+            # size — the fixed-position label would overlap scrolling content.
+            if new_height > _OVERLAY_HEIGHT + 10 and self._narrator_label is not None:
+                if not self._narrator_label.isHidden():
+                    self._hide_narrator()
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()
