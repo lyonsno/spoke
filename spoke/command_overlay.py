@@ -364,8 +364,8 @@ class CommandOverlay(NSObject):
         # Narrator summary label — below the thinking timer, left-aligned
         # Up to 3 lines of wrapping text; old summaries accumulate above new ones
         from AppKit import NSTextAlignmentLeft, NSLineBreakByWordWrapping
-        _NARRATOR_FONT_SIZE = 13.0
-        _NARRATOR_LINE_HEIGHT = 16.0
+        _NARRATOR_FONT_SIZE = 12.0
+        _NARRATOR_LINE_HEIGHT = 15.0
         _NARRATOR_MAX_LINES = 3
         narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
