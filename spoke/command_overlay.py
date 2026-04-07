@@ -368,7 +368,7 @@ class CommandOverlay(NSObject):
         from AppKit import NSTextAlignmentLeft, NSLineBreakByWordWrapping
         _NARRATOR_FONT_SIZE = 12.0
         _NARRATOR_LINE_HEIGHT = 15.0
-        _NARRATOR_MAX_LINES = 3
+        _NARRATOR_MAX_LINES = 2  # one line for loading indicator, one for vamp/summary
         narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
         narrator_y = timer_y - narrator_h - 10
@@ -570,7 +570,7 @@ class CommandOverlay(NSObject):
             NSShadow,
         )
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
-        _USER_FONT_SIZE = 22.0  # ~40% larger than body text
+        _USER_FONT_SIZE = 19.0  # ~40% larger than body text
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
@@ -634,13 +634,19 @@ class CommandOverlay(NSObject):
     def set_thinking_collapsed(self, text: str) -> None:
         """Inject or append to a collapsed thinking summary in the text view.
 
-        "Thought for Xs" starts a new collapsed entry (with newline if not first).
-        " · topic" appends to the current entry.
+        "Thought for Xs" starts a new collapsed entry.
+        " · topic" appends to the current entry — but only if no response
+        tokens have started streaming yet. Late topics are silently dropped
+        to avoid corrupting the response text.
         """
         if self._text_view is None or not self._visible:
             return
-        # New thinking phase needs a newline separator from previous content
         is_topic_append = text.startswith(" · ")
+        # Drop late topic arrivals that would splice into response text
+        if is_topic_append and self._response_text:
+            # Still track it for set_response_text rebuild
+            self._collapsed_text += text
+            return
         if not is_topic_append:
             # "Thought for Xs" replaces a preceding "Thinking" placeholder
             if self._collapsed_text.endswith("Thinking"):
@@ -722,7 +728,7 @@ class CommandOverlay(NSObject):
 
         if self._utterance_text:
             from AppKit import NSFontAttributeName
-            _USER_FONT_SIZE = 22.0
+            _USER_FONT_SIZE = 19.0
             user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
             utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
             utt.addAttribute_value_range_(
@@ -1250,39 +1256,23 @@ class CommandOverlay(NSObject):
         self._hide_narrator()
 
     def set_narrator_summary(self, summary: str) -> None:
-        """Append a new narrator summary with typewriter reveal.
+        """Show the most recent narrator summary with typewriter reveal.
 
         Ignores late callbacks if the narrator has been suppressed
         (e.g. vamp stopped but a queued summary arrives after).
-
-        Old summaries stay visible above the new one.  The label
-        keeps the most recent 3 lines worth of history.
+        Replaces any previous summary — only the latest is shown.
         """
         if self._narrator_label is None or self._narrator_suppressed:
             return
-        # Cancel any in-progress typewriter — finish the previous line instantly
+        # Cancel any in-progress typewriter
         if self._narrator_typewriter_timer is not None:
             self._narrator_typewriter_timer.invalidate()
             self._narrator_typewriter_timer = None
-            # Complete the previous typewriter if it was mid-reveal
-            if self._narrator_full_text:
-                self._narrator_label.setStringValue_(self._narrator_full_text)
 
-        # Accumulate: add the new summary to our line history
-        self._narrator_lines.append(summary)
-        # Keep only enough lines that fit in 3 display lines
-        # (each summary is roughly one line but can wrap)
-        while len(self._narrator_lines) > 3:
-            self._narrator_lines.pop(0)
-
-        # Build the prefix (old lines fully revealed) and the new line to typewrite
-        prefix = "\n".join(self._narrator_lines[:-1])
-        new_line = self._narrator_lines[-1]
-        self._narrator_prefix = (prefix + "\n") if prefix else ""
-        self._narrator_new_line = new_line
-        self._narrator_full_text = self._narrator_prefix + new_line
+        self._narrator_new_line = summary
+        self._narrator_full_text = summary
         self._narrator_revealed = 0
-        self._narrator_label.setStringValue_(self._narrator_prefix)
+        self._narrator_label.setStringValue_("")
         self._narrator_label.setHidden_(False)
         self._apply_narrator_theme()
 
@@ -1306,7 +1296,7 @@ class CommandOverlay(NSObject):
             return
         if self._narrator_label is not None:
             self._narrator_label.setStringValue_(
-                self._narrator_prefix + self._narrator_new_line[:self._narrator_revealed]
+                self._narrator_new_line[:self._narrator_revealed]
             )
 
     def set_narrator_shimmer(self, active: bool) -> None:
