@@ -849,3 +849,75 @@ class TestOutputCapping:
         ))
         assert "truncated" not in result
         assert "FINDME" in result["matches"]
+
+
+class TestCreateEpistaxisWorktree:
+    def test_schema_present(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "create_epistaxis_worktree" in names
+
+    def test_rejects_empty_name(self):
+        mod = _import_tools()
+        result = json.loads(mod.execute_tool("create_epistaxis_worktree", {"name": ""}))
+        assert "error" in result
+        assert "required" in result["error"]
+
+    def test_rejects_unsafe_name(self):
+        mod = _import_tools()
+        result = json.loads(mod.execute_tool("create_epistaxis_worktree", {"name": "../escape"}))
+        assert "error" in result
+        assert "alphanumeric" in result["error"]
+
+    def test_rejects_name_with_spaces(self):
+        mod = _import_tools()
+        result = json.loads(mod.execute_tool("create_epistaxis_worktree", {"name": "bad name"}))
+        assert "error" in result
+
+    def test_calls_create_worktree_script(self):
+        mod = _import_tools()
+        import subprocess
+        from pathlib import Path
+
+        expected_script = str(Path.home() / "dev" / "epistaxis" / "tools" / "create_worktree.sh")
+        expected_repo = str(Path.home() / "dev" / "epistaxis")
+
+        calls = []
+        def mock_run(cmd, capture_output, text, timeout):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="/private/tmp/epistaxis-test-wt\n", stderr=""
+            )
+
+        with unittest.mock.patch("subprocess.run", mock_run):
+            with unittest.mock.patch("pathlib.Path.exists", return_value=True):
+                result = json.loads(mod.execute_tool(
+                    "create_epistaxis_worktree", {"name": "test-wt"}
+                ))
+
+        assert result["status"] == "created"
+        assert result["worktree_path"] == "/private/tmp/epistaxis-test-wt"
+        assert result["branch"] == "cc/test-wt"
+        assert len(calls) == 1
+        assert calls[0] == ["bash", expected_script, expected_repo, "--name", "test-wt"]
+
+    def test_handles_script_failure(self):
+        mod = _import_tools()
+        import subprocess
+
+        def mock_run(cmd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1,
+                stdout="", stderr="already exists\n"
+            )
+
+        with unittest.mock.patch("subprocess.run", mock_run):
+            with unittest.mock.patch("pathlib.Path.exists", return_value=True):
+                result = json.loads(mod.execute_tool(
+                    "create_epistaxis_worktree", {"name": "existing-wt"}
+                ))
+
+        assert "error" in result
+        assert "already exists" in result["error"]

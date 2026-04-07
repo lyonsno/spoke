@@ -230,6 +230,32 @@ _FIND_FILE_SCHEMA = {
 _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 
+_CREATE_EPISTAXIS_WORKTREE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "create_epistaxis_worktree",
+        "description": (
+            "Create a dedicated Epistaxis worktree for writing state. "
+            "Returns the worktree path, which you then pass as "
+            "epistaxis_root to run_epistaxis_ops. Call this before "
+            "run_epistaxis_ops if you don't already have a worktree path."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Short slug for the worktree (e.g. 'live-review-0406'). "
+                        "Used in path and branch name."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
 
 def get_tool_schemas() -> list[dict]:
     """Return the tool schemas for the assistant."""
@@ -243,6 +269,7 @@ def get_tool_schemas() -> list[dict]:
         _SEARCH_FILE_SCHEMA,
         _FIND_FILE_SCHEMA,
         _RUN_EPISTAXIS_OPS_SCHEMA,
+        _CREATE_EPISTAXIS_WORKTREE_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
     ]
 
@@ -679,6 +706,45 @@ def _execute_epistaxis_ops(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+def _execute_create_epistaxis_worktree(arguments: dict) -> str:
+    """Create an Epistaxis worktree using the shared create_worktree.sh script."""
+    import re
+    import subprocess
+    from pathlib import Path
+
+    name = arguments.get("name", "").strip()
+    if not name:
+        return json.dumps({"error": "name is required"})
+    # Sanitize: only allow alphanumeric, hyphens, underscores
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        return json.dumps({"error": "name must be alphanumeric with hyphens/underscores only"})
+
+    script = Path.home() / "dev" / "epistaxis" / "tools" / "create_worktree.sh"
+    if not script.exists():
+        return json.dumps({"error": f"create_worktree.sh not found at {script}"})
+
+    epistaxis_repo = str(Path.home() / "dev" / "epistaxis")
+    try:
+        proc = subprocess.run(
+            ["bash", str(script), epistaxis_repo, "--name", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            return json.dumps({"error": proc.stderr.strip() or f"Script exited {proc.returncode}"})
+        worktree_path = proc.stdout.strip()
+        return json.dumps({
+            "worktree_path": worktree_path,
+            "branch": f"cc/{name}",
+            "status": "created",
+        })
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "Worktree creation timed out"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 def _execute_query_gmail(arguments: dict) -> str:
     """Execute the bounded Gmail query surface and return JSON."""
     query = arguments.get("query", "")
@@ -766,6 +832,8 @@ def execute_tool(
         return json.dumps(_execute_find_file(arguments))
     elif name == "run_epistaxis_ops":
         return _execute_epistaxis_ops(arguments)
+    elif name == "create_epistaxis_worktree":
+        return _execute_create_epistaxis_worktree(arguments)
 
     elif name == "query_gmail":
         return _execute_query_gmail(arguments)
