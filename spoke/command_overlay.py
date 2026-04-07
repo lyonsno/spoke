@@ -193,125 +193,161 @@ def _punch_permanent_hole(
     fill_alpha *= (1.0 - hole)
 
 
-def _build_spinner_tile(
-    radius: float,
-    elapsed: float,
-    scale: float,
-    bg_color: tuple[float, float, float],
-    bg_alpha: float,
-):
-    """Build a small CGImage tile for the spinner animation.
+class _SpinnerTileRenderer:
+    """Pre-allocates geometry and buffers for the spinner tile.
 
-    Renders sweep cutout, ring halos, and noise into a tiny square
-    (~radius*2 + margin). Called at 30Hz but only ~2500 pixels.
-
-    Returns (CGImage, NSData payload).
+    Call setup() once, then render(elapsed) at 30Hz. The coordinate
+    grids, distance fields, and RGBA buffer are allocated once and
+    reused every frame — no per-frame allocation except the CGImage.
     """
-    import numpy as np
-    from Quartz import (
-        CGColorSpaceCreateDeviceRGB,
-        CGDataProviderCreateWithCFData,
-        CGImageCreate,
-        kCGImageAlphaPremultipliedLast,
-        kCGRenderingIntentDefault,
-    )
-    from Foundation import NSData
 
-    margin = 4.0
-    tile_pts = radius * 2.0 + margin * 2.0
-    tile_px = int(tile_pts * scale)
-    cx = tile_px * 0.5
-    cy = tile_px * 0.5
-    r_px = radius * scale
-    TWO_PI = 2.0 * np.pi
+    def __init__(self, radius: float, scale: float):
+        import numpy as np
 
-    # Coordinate grids
-    x = np.arange(tile_px, dtype=np.float32)[None, :] + 0.5
-    y = np.arange(tile_px, dtype=np.float32)[:, None] + 0.5
-    dx = x - cx
-    dy = y - cy
-    dist = np.sqrt(dx * dx + dy * dy)
+        margin = 4.0
+        tile_pts = radius * 2.0 + margin * 2.0
+        self.tile_px = int(tile_pts * scale)
+        self.r_px = radius * scale
+        self.scale = scale
+        px = self.tile_px
+        cx = px * 0.5
+        cy = px * 0.5
 
-    # Circle mask
-    edge_softness = 1.5 * scale
-    circle = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
+        # Pre-compute static geometry
+        x = np.arange(px, dtype=np.float32)[None, :] + 0.5
+        y = np.arange(px, dtype=np.float32)[:, None] + 0.5
+        self.dx = x - cx
+        self.dy = y - cy
+        self.dist = np.sqrt(self.dx * self.dx + self.dy * self.dy)
 
-    # Pixel angles (CW from top)
-    pixel_angle = np.arctan2(dx, dy) % TWO_PI
+        edge_softness = 1.5 * scale
+        self.circle = np.clip((self.r_px - self.dist) / edge_softness, 0.0, 1.0)
+        self.pixel_angle = np.arctan2(self.dx, self.dy) % (2.0 * np.pi)
 
-    # ── Sweep state ──
-    _, sweep_fill = _spinner_state(elapsed)
-    fill_end = sweep_fill * TWO_PI
-    sweep_angle = (elapsed / _SPINNER_PERIOD) * TWO_PI
+        # Pre-compute ring distance fields
+        self.ring1_base = np.exp(
+            -(np.abs(self.dist - self.r_px) / max(1.5 * scale, 0.1)) ** 2
+        )
+        ring2_r = self.r_px * 0.6
+        self.ring2_base = np.exp(
+            -(np.abs(self.dist - ring2_r) / max(0.8 * scale, 0.1)) ** 2
+        )
 
-    # ── Base fill ──
-    alpha = circle * bg_alpha
+        # Noise coordinate grids (static)
+        self.nx = self.dx / max(self.r_px, 1.0) * 3.0
+        self.ny = self.dy / max(self.r_px, 1.0) * 3.0
 
-    # ── Sweep cutout ──
-    edge_width = 0.10
-    sweep_mask = np.clip((fill_end - pixel_angle) / edge_width, 0.0, 1.0)
-    alpha *= (1.0 - sweep_mask * circle)
+        # Pre-allocate output buffer
+        self.rgba = np.zeros((px, px, 4), dtype=np.uint8)
+        self.alpha = np.zeros((px, px), dtype=np.float32)
 
-    # ── Ring 1: synced to sweep, outer radius ──
-    ring1_dist = np.abs(dist - r_px)
-    ring1_width = 1.5 * scale
-    ring1 = np.exp(-(ring1_dist / max(ring1_width, 0.1)) ** 2)
-    ad1 = np.arctan2(np.sin(pixel_angle - sweep_angle),
-                     np.cos(pixel_angle - sweep_angle))
-    ring1_cut = ring1 * (0.05 + 0.95 * np.exp(-(ad1 / 0.4) ** 2)) * 0.9
-    alpha *= (1.0 - ring1_cut)
+        # Quartz imports (cache)
+        from Quartz import (
+            CGColorSpaceCreateDeviceRGB,
+            CGDataProviderCreateWithCFData,
+            CGImageCreate,
+            kCGImageAlphaPremultipliedLast,
+            kCGRenderingIntentDefault,
+        )
+        self._cg_funcs = (
+            CGColorSpaceCreateDeviceRGB,
+            CGDataProviderCreateWithCFData,
+            CGImageCreate,
+            kCGImageAlphaPremultipliedLast,
+            kCGRenderingIntentDefault,
+        )
+        self._colorspace = CGColorSpaceCreateDeviceRGB()
 
-    # ── Ring 2: inset, counter-rotating ──
-    ring2_r = r_px * 0.6
-    ring2_dist = np.abs(dist - ring2_r)
-    ring2_width = 0.8 * scale
-    ring2 = np.exp(-(ring2_dist / max(ring2_width, 0.1)) ** 2)
-    ring2_angle = -(elapsed / _SPINNER_PERIOD) * (7.0 / 5.0) * TWO_PI
-    ad2 = np.arctan2(np.sin(pixel_angle - ring2_angle),
-                     np.cos(pixel_angle - ring2_angle))
-    ring2_cut = ring2 * (0.05 + 0.95 * np.exp(-(ad2 / 0.5) ** 2)) * 0.8
-    alpha *= (1.0 - ring2_cut)
+    def render(
+        self,
+        elapsed: float,
+        bg_color: tuple[float, float, float],
+        bg_alpha: float,
+    ):
+        """Render one frame. Returns (CGImage, NSData payload)."""
+        import numpy as np
+        from Foundation import NSData
 
-    # ── Noise: domain-warped sinusoidal field ──
-    # The noise adds a faint smoky glow INTO the swept (transparent) region,
-    # so you see organic texture through the cutout instead of pure black.
-    t = elapsed
-    nx = dx / max(r_px, 1.0) * 3.0
-    ny = dy / max(r_px, 1.0) * 3.0
-    wnx = nx + 0.3 * np.sin(ny * 2.0 + t * 0.6)
-    wny = ny + 0.3 * np.cos(nx * 2.0 + t * 0.4)
-    noise = (
-        np.sin(wnx * 5.0 + t * 0.9) * np.cos(wny * 4.0 + t * 1.2)
-        + 0.5 * np.sin(wnx * 8.0 + wny * 6.0 + t * 1.5)
-    )
-    noise_field = ((noise * 0.35 + 0.5) * circle).clip(0.0, 1.0)
+        TWO_PI = 2.0 * np.pi
+        pa = self.pixel_angle
+        circle = self.circle
+        alpha = self.alpha
 
-    # Where swept (alpha near 0), add the noise as a faint smoke layer.
-    # Where unswept (alpha at fill level), subtract noise for texture.
-    swept_amount = sweep_mask * circle  # 1.0 in swept region, 0.0 outside
-    # Additive smoke in the cutout: faint bg_color glow shaped by noise
-    smoke_alpha = swept_amount * noise_field * 0.12 * bg_alpha
-    # Subtractive texture in the fill: noise eats into the fill slightly
-    fill_texture = (1.0 - swept_amount) * (1.0 - noise_field * 0.08)
-    alpha = alpha * fill_texture + smoke_alpha
+        # ── Sweep state ──
+        _, sweep_fill = _spinner_state(elapsed)
+        fill_end = sweep_fill * TWO_PI
+        sweep_angle = (elapsed / _SPINNER_PERIOD) * TWO_PI
 
-    # ── Build RGBA ──
-    rgba = np.zeros((tile_px, tile_px, 4), dtype=np.uint8)
-    rgba[..., 0] = np.clip(bg_color[0] * 255.0 * alpha, 0, 255).astype(np.uint8)
-    rgba[..., 1] = np.clip(bg_color[1] * 255.0 * alpha, 0, 255).astype(np.uint8)
-    rgba[..., 2] = np.clip(bg_color[2] * 255.0 * alpha, 0, 255).astype(np.uint8)
-    rgba[..., 3] = np.clip(alpha * 255.0, 0, 255).astype(np.uint8)
+        # ── Base fill ──
+        np.multiply(circle, bg_alpha, out=alpha)
 
-    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
-    provider = CGDataProviderCreateWithCFData(payload)
-    image = CGImageCreate(
-        tile_px, tile_px, 8, 32, tile_px * 4,
-        CGColorSpaceCreateDeviceRGB(),
-        kCGImageAlphaPremultipliedLast,
-        provider, None, False,
-        kCGRenderingIntentDefault,
-    )
-    return image, payload
+        # ── Sweep cutout ──
+        sweep_mask = np.clip((fill_end - pa) / 0.10, 0.0, 1.0)
+        alpha *= (1.0 - sweep_mask * circle)
+
+        # ── Ring 1: synced to sweep ──
+        ad1 = np.arctan2(np.sin(pa - sweep_angle), np.cos(pa - sweep_angle))
+        ring1_cut = self.ring1_base * (0.05 + 0.95 * np.exp(-(ad1 / 0.4) ** 2)) * 0.9
+        alpha *= (1.0 - ring1_cut)
+
+        # ── Ring 2: counter-rotating ──
+        ring2_angle = -(elapsed / _SPINNER_PERIOD) * (7.0 / 5.0) * TWO_PI
+        ad2 = np.arctan2(np.sin(pa - ring2_angle), np.cos(pa - ring2_angle))
+        ring2_cut = self.ring2_base * (0.05 + 0.95 * np.exp(-(ad2 / 0.5) ** 2)) * 0.8
+        alpha *= (1.0 - ring2_cut)
+
+        # ── Noise: visible smoke in the cutout ──
+        t = elapsed
+        nx, ny = self.nx, self.ny
+        wnx = nx + 0.3 * np.sin(ny * 2.0 + t * 0.6)
+        wny = ny + 0.3 * np.cos(nx * 2.0 + t * 0.4)
+        noise = (
+            np.sin(wnx * 5.0 + t * 0.9) * np.cos(wny * 4.0 + t * 1.2)
+            + 0.5 * np.sin(wnx * 8.0 + wny * 6.0 + t * 1.5)
+        )
+        noise_01 = ((noise * 0.35 + 0.5) * circle).clip(0.0, 1.0)
+
+        # Smoke in cutout: bright (white-ish) glow, not bg_color
+        swept = sweep_mask * circle
+        smoke_alpha = swept * noise_01 * 0.35
+        # Texture in fill: slight noise subtraction
+        alpha *= (1.0 - (1.0 - swept) * noise_01 * 0.06)
+        alpha += smoke_alpha
+
+        # ── Build RGBA (premultiplied) ──
+        # Smoke color: warm white for visibility against any background
+        smoke_r, smoke_g, smoke_b = 0.75, 0.72, 0.68
+        # Blend: fill region uses bg_color, smoke region uses smoke color
+        r = bg_color[0] * (1.0 - swept) + smoke_r * swept
+        g = bg_color[1] * (1.0 - swept) + smoke_g * swept
+        b = bg_color[2] * (1.0 - swept) + smoke_b * swept
+
+        rgba = self.rgba
+        px = self.tile_px
+        np.clip(r * 255.0 * alpha, 0, 255, out=rgba[..., 0].view(np.float32).reshape(px, px))
+        np.clip(g * 255.0 * alpha, 0, 255, out=rgba[..., 1].view(np.float32).reshape(px, px))
+        np.clip(b * 255.0 * alpha, 0, 255, out=rgba[..., 2].view(np.float32).reshape(px, px))
+        np.clip(alpha * 255.0, 0, 255, out=rgba[..., 3].view(np.float32).reshape(px, px))
+
+        # Actually the view trick won't work for uint8. Do it simply:
+        rgba[..., 0] = np.clip(r * 255.0 * alpha, 0, 255).astype(np.uint8)
+        rgba[..., 1] = np.clip(g * 255.0 * alpha, 0, 255).astype(np.uint8)
+        rgba[..., 2] = np.clip(b * 255.0 * alpha, 0, 255).astype(np.uint8)
+        rgba[..., 3] = np.clip(alpha * 255.0, 0, 255).astype(np.uint8)
+
+        (_, CGDataProviderCreateWithCFData, CGImageCreate,
+         kCGImageAlphaPremultipliedLast, kCGRenderingIntentDefault) = self._cg_funcs
+
+        payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+        provider = CGDataProviderCreateWithCFData(payload)
+        image = CGImageCreate(
+            px, px, 8, 32, px * 4,
+            self._colorspace,
+            kCGImageAlphaPremultipliedLast,
+            provider, None, False,
+            kCGRenderingIntentDefault,
+        )
+        return image, payload
 
 
 def _ease_in(progress: float) -> float:
@@ -1349,17 +1385,26 @@ class CommandOverlay(NSObject):
         """Render the small spinner tile. ~2500 pixels at 30Hz — fast."""
         if getattr(self, "_spinner_tile_layer", None) is None:
             return
+        # Lazy-init the renderer (pre-allocates geometry + buffers)
+        renderer = getattr(self, "_spinner_renderer", None)
+        if renderer is None:
+            try:
+                scale = getattr(self, "_ridge_scale", 2.0)
+                self._spinner_renderer = _SpinnerTileRenderer(_SPINNER_RADIUS, scale)
+                renderer = self._spinner_renderer
+            except Exception:
+                logger.debug("Spinner renderer init failed", exc_info=True)
+                return
+
         elapsed = getattr(self, "_spinner_elapsed", 0.0)
-        scale = getattr(self, "_ridge_scale", 2.0)
         bg = _background_color_for_brightness(self._brightness)
         try:
-            image, self._spinner_tile_payload = _build_spinner_tile(
-                _SPINNER_RADIUS, elapsed, scale,
-                bg_color=bg, bg_alpha=_BG_ALPHA,
+            image, self._spinner_tile_payload = renderer.render(
+                elapsed, bg_color=bg, bg_alpha=_BG_ALPHA,
             )
             self._spinner_tile_layer.setContents_(image)
         except Exception:
-            logger.debug("Spinner tile build failed", exc_info=True)
+            logger.debug("Spinner tile render failed", exc_info=True)
 
     def invert_thinking_timer(self) -> None:
         """Switch from glowing number to negative-space cutout mode.
