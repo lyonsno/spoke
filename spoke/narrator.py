@@ -180,9 +180,12 @@ class ThinkingNarrator:
         Fires one final call to the narrator model asking for a concise
         wrap-up of what was thought about.  The result is delivered via
         on_thinking_collapsed as "Thought for Xs · {summary}".
+        Always produces a topic summary for thinking >1s, even if no
+        live narrator summaries were dispatched during the session.
         """
         with self._lock:
             self._active = False
+            remaining_buffer = self._buffer
             self._buffer = ""
             if self._thinking_start > 0:
                 elapsed = time.monotonic() - self._thinking_start
@@ -194,12 +197,16 @@ class ThinkingNarrator:
             return
         if elapsed < 1.0:
             return  # sub-second thinking — not worth reporting
-        if len(messages) < 3:
-            # No summaries were produced — still show the bare duration
-            self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
-            return
 
-        # Fire async wrap-up
+        # Fire async wrap-up — always call Bonsai for the topic summary.
+        # If no live summaries were produced, feed the raw thinking buffer
+        # directly so the model has something to summarize.
+        if len(messages) < 3 and remaining_buffer:
+            messages.append({
+                "role": "user",
+                "content": f"Current reasoning excerpt:\n\n{remaining_buffer}",
+            })
+
         t = threading.Thread(
             target=self._produce_collapsed_summary,
             args=(messages, elapsed),
