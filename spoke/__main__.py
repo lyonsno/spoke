@@ -852,8 +852,8 @@ class SpokeAppDelegate(NSObject):
                 )
             else:
                 self._command_model_id = (
-                    os.environ.get("SPOKE_COMMAND_MODEL")
-                    or self._load_command_model_preference()
+                    self._load_command_model_preference()
+                    or os.environ.get("SPOKE_COMMAND_MODEL")
                     or _DEFAULT_COMMAND_MODEL
                 )
             client_kwargs = {
@@ -3618,14 +3618,14 @@ class SpokeAppDelegate(NSObject):
         prefs = self._load_model_preferences()
         legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
         raw_preview_model = (
-            os.environ.get("SPOKE_PREVIEW_MODEL")
-            or prefs.get("preview_model")
+            prefs.get("preview_model")
+            or os.environ.get("SPOKE_PREVIEW_MODEL")
             or legacy_model
             or _DEFAULT_PREVIEW_MODEL
         )
         raw_transcription_model = (
-            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
-            or prefs.get("transcription_model")
+            prefs.get("transcription_model")
+            or os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or legacy_model
             or self._default_transcription_model()
         )
