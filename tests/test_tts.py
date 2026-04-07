@@ -913,3 +913,227 @@ class TestCommandCompletionAutoplay:
 
         tts.toggle_audio.assert_called_once_with()
         delegate._menubar.set_status_text.assert_called_with("Audio muted")
+
+
+class TestCloudTTSClient:
+    """Tests for the Gemini-backed CloudTTSClient."""
+
+    def _make_gemini_response(self, b64_audio: str) -> bytes:
+        """Build a fake Gemini generateContent JSON response."""
+        import json
+        return json.dumps({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "inlineData": {
+                            "mimeType": "audio/wav",
+                            "data": b64_audio,
+                        }
+                    }]
+                }
+            }]
+        }).encode()
+
+    def _make_wav_bytes(self, *, sample_rate=24000, num_samples=100) -> bytes:
+        """Create minimal valid WAV bytes."""
+        import struct
+        import io
+        import wave
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(struct.pack(f"<{num_samples}h", *([1000] * num_samples)))
+        return buf.getvalue()
+
+    @patch("spoke.tts.sd")
+    def test_speak_calls_gemini_api_and_plays_audio(self, mock_sd):
+        """speak() should POST to Gemini generateContent and play decoded audio."""
+        import base64
+        from spoke.tts import CloudTTSClient
+
+        wav_data = self._make_wav_bytes()
+        b64 = base64.b64encode(wav_data).decode()
+        response_body = self._make_gemini_response(b64)
+
+        fake_stream = MagicMock()
+        mock_sd.OutputStream.return_value = fake_stream
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = response_body
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            client = CloudTTSClient(api_key="test-key", voice="Aoede")
+            client.speak("Hello")
+
+        # Verify the request was made
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert "generateContent" in req.full_url
+        assert req.get_header("X-goog-api-key") == "test-key"
+
+        # Verify audio was played
+        mock_sd.OutputStream.assert_called()
+        fake_stream.start.assert_called()
+        fake_stream.write.assert_called()
+
+    @patch("spoke.tts.sd")
+    def test_speak_sends_correct_voice_config(self, mock_sd):
+        """Request payload should include the selected voice name."""
+        import base64
+        import json
+        from spoke.tts import CloudTTSClient
+
+        wav_data = self._make_wav_bytes()
+        b64 = base64.b64encode(wav_data).decode()
+        response_body = self._make_gemini_response(b64)
+
+        mock_sd.OutputStream.return_value = MagicMock()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = response_body
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            client = CloudTTSClient(api_key="test-key", voice="Puck")
+            client.speak("Test")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data)
+        voice_name = body["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"]
+        assert voice_name == "Puck"
+
+    @patch("spoke.tts.sd")
+    def test_cancel_stops_subsequent_sentences(self, mock_sd):
+        """cancel() mid-speak should prevent subsequent sentences from playing."""
+        import base64
+        from spoke.tts import CloudTTSClient
+
+        wav_data = self._make_wav_bytes()
+        b64 = base64.b64encode(wav_data).decode()
+        response_body = self._make_gemini_response(b64)
+
+        mock_sd.OutputStream.return_value = MagicMock()
+        call_count = 0
+
+        def fake_urlopen(req, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                client.cancel()
+            resp = MagicMock()
+            resp.read.return_value = response_body
+            resp.__enter__ = MagicMock(return_value=resp)
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        client = CloudTTSClient(api_key="test-key", voice="Aoede")
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            # Two sentences — second should be cut short by cancel
+            client.speak("Hello world. How are you today.")
+        # Should have been called at most twice (cancel after second)
+        assert call_count <= 2
+
+    def test_is_loaded_always_true(self):
+        """Cloud client is always ready — no local model to load."""
+        from spoke.tts import CloudTTSClient
+        client = CloudTTSClient(api_key="test-key")
+        assert client.is_loaded is True
+
+    def test_warm_is_noop(self):
+        """warm() should return without error."""
+        from spoke.tts import CloudTTSClient
+        client = CloudTTSClient(api_key="test-key")
+        assert client.warm() is None
+
+    @patch("spoke.tts.sd")
+    def test_speak_async_runs_on_background_thread(self, mock_sd):
+        """speak_async() should run synthesis on a daemon thread."""
+        import base64
+        from spoke.tts import CloudTTSClient
+
+        wav_data = self._make_wav_bytes()
+        b64 = base64.b64encode(wav_data).decode()
+        response_body = self._make_gemini_response(b64)
+
+        mock_sd.OutputStream.return_value = MagicMock()
+        done = threading.Event()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = response_body
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            client = CloudTTSClient(api_key="test-key", voice="Aoede")
+            t = client.speak_async("Hello", done_callback=lambda: done.set())
+            assert t.daemon is True
+            done.wait(timeout=5)
+            assert done.is_set()
+
+    def test_synthesize_raises_on_http_error(self):
+        """HTTP errors from Gemini should surface as RuntimeError."""
+        import urllib.error
+        from spoke.tts import CloudTTSClient
+
+        client = CloudTTSClient(api_key="test-key")
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError(
+                url="https://example.com", code=403, msg="Forbidden",
+                hdrs=None, fp=MagicMock(read=MagicMock(return_value=b"bad key")),
+            )
+            with pytest.raises(RuntimeError, match="Gemini TTS HTTP 403"):
+                client._synthesize("hello")
+
+    def test_gemini_voices_list(self):
+        """GEMINI_VOICES should contain expected voices."""
+        from spoke.tts import GEMINI_VOICES
+        voice_names = [v for v, _ in GEMINI_VOICES]
+        assert "Aoede" in voice_names
+        assert "Puck" in voice_names
+        assert "Kore" in voice_names
+        assert len(GEMINI_VOICES) == 8
+
+    @patch("spoke.tts.sd")
+    def test_raw_pcm_fallback(self, mock_sd):
+        """If WAV decode fails, should try raw PCM interpretation."""
+        import base64
+        import struct
+        from spoke.tts import CloudTTSClient
+
+        # Raw PCM (not valid WAV) — 100 samples of 16-bit signed
+        raw_pcm = struct.pack("<100h", *([500] * 100))
+        b64 = base64.b64encode(raw_pcm).decode()
+        response_body = self._make_gemini_response(b64)
+
+        mock_sd.OutputStream.return_value = MagicMock()
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = response_body
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+
+            client = CloudTTSClient(api_key="test-key", voice="Aoede")
+            client.speak("Hello")
+
+        # Audio should still play via the PCM fallback path
+        mock_sd.OutputStream.assert_called()
+
+    def test_decode_wav_valid(self):
+        """_decode_wav should decode valid WAV bytes."""
+        from spoke.tts import CloudTTSClient
+        client = CloudTTSClient(api_key="test-key")
+        wav_bytes = self._make_wav_bytes(sample_rate=24000, num_samples=50)
+        audio, sr = client._decode_wav(wav_bytes)
+        assert sr == 24000
+        assert len(audio) == 50

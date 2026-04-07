@@ -108,7 +108,7 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
-from .tts import TTSClient, RemoteTTSClient, _DEFAULT_VOICE
+from .tts import TTSClient, RemoteTTSClient, CloudTTSClient, GEMINI_VOICES, _DEFAULT_VOICE
 from .heartbeat import (
     HeartbeatManager,
     zombie_sweep,
@@ -333,6 +333,7 @@ _MODEL_VOICE_PRESETS: list[tuple[str, list[tuple[str, str]]]] = [
     ("vibevoice", _VIBEVOICE_VOICES),
     ("qwen3-tts", _QWEN3_TTS_VOICES),
     ("omnivoice", _OMNIVOICE_PROMPT_PRESETS),
+    ("gemini", GEMINI_VOICES),
 ]
 
 _OMNIVOICE_PROMPT_LEXICON = {
@@ -879,7 +880,12 @@ class SpokeAppDelegate(NSObject):
         self._tts_server_unreachable = False
         self._command_tool_used_tts = False
         if self._tts_client is not None:
-            backend_label = "sidecar" if isinstance(self._tts_client, RemoteTTSClient) else "local"
+            if isinstance(self._tts_client, CloudTTSClient):
+                backend_label = "cloud"
+            elif isinstance(self._tts_client, RemoteTTSClient):
+                backend_label = "sidecar"
+            else:
+                backend_label = "local"
             logger.info("TTS enabled: backend=%s voice=%s", backend_label, self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
@@ -3098,20 +3104,26 @@ class SpokeAppDelegate(NSObject):
             tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
             tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
             saved_tts_model = (
-                self._load_preference("tts_sidecar_model")
+                self._load_preference("tts_cloud_model")
+                if tts_backend == "cloud"
+                else self._load_preference("tts_sidecar_model")
                 if tts_backend == "sidecar"
                 else self._load_preference("tts_model")
             ) or os.environ.get("SPOKE_TTS_MODEL", "")
-            if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend == "sidecar":
+            if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend in ("sidecar", "cloud"):
                 has_tts_sidecar_url = bool(tts_sidecar_url)
+                has_tts_cloud = bool(os.environ.get("GEMINI_API_KEY") or self._load_preference("tts_cloud_api_key"))
+                tts_backend_labels = {"local": "Local", "sidecar": "Sidecar", "cloud": "Cloud (Gemini)"}
                 tts_target = "not active"
                 if tts_client is not None:
-                    if isinstance(tts_client, RemoteTTSClient):
+                    if isinstance(tts_client, CloudTTSClient):
+                        tts_target = "Gemini"
+                    elif isinstance(tts_client, RemoteTTSClient):
                         tts_target = _url_host(getattr(tts_client, "_base_url", ""))
                     else:
                         tts_target = "local runtime"
                 state["tts_backend"] = {
-                    "title": f"TTS Backend: {'Sidecar' if tts_backend == 'sidecar' else 'Local'}",
+                    "title": f"TTS Backend: {tts_backend_labels.get(tts_backend, tts_backend)}",
                     "items": [
                         ("local", "Local runtime", tts_backend == "local"),
                         ("sidecar", (
@@ -3119,13 +3131,20 @@ class SpokeAppDelegate(NSObject):
                             if has_tts_sidecar_url
                             else "Sidecar (not configured)"
                         ), tts_backend == "sidecar", has_tts_sidecar_url),
+                        ("cloud", (
+                            "Cloud (Gemini)"
+                            if has_tts_cloud
+                            else "Cloud (no API key)"
+                        ), tts_backend == "cloud", has_tts_cloud),
                         ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
                     ],
                 }
                 state["tts_endpoint"] = {
                     "title": f"TTS Endpoint: {tts_target}",
                     "note": (
-                        "Routing source: saved sidecar URL"
+                        "Routing source: Gemini cloud API"
+                        if tts_backend == "cloud"
+                        else "Routing source: saved sidecar URL"
                         if tts_backend == "sidecar" and has_tts_sidecar_url
                         else "Routing source: local runtime"
                     ),
@@ -3208,13 +3227,17 @@ class SpokeAppDelegate(NSObject):
             tts = getattr(self, "_tts_client", None)
             show_tts_menus = (
                 tts is not None
-                or tts_backend == "sidecar"
+                or tts_backend in ("sidecar", "cloud")
                 or bool(tts_voice_pref)
                 or bool(saved_tts_model)
             )
             if show_tts_menus:
                 current_tts_model = getattr(tts, "_model_id", "") if tts else saved_tts_model
-                if tts_backend == "sidecar":
+                if tts_backend == "cloud":
+                    cloud_model = self._load_preference("tts_cloud_model") or "gemini-2.0-flash"
+                    current_tts_model = current_tts_model or cloud_model
+                    tts_models = [(cloud_model, f"Gemini ({cloud_model})", True)]
+                elif tts_backend == "sidecar":
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
                         tts_models = sidecar_models
@@ -3238,16 +3261,30 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
+                # Cloud voices come from the preset list
+                if tts_backend == "cloud":
+                    sidecar_voices = []
+                    local_choices = _voice_choices_for_model(current_tts_model, current_voice)
+                    # Fall back: if model key didn't match, use Gemini voices directly
+                    if local_choices is None:
+                        local_choices = [
+                            (v, label, v == current_voice) for v, label in GEMINI_VOICES
+                        ]
                 # Try sidecar discovery first, then local presets
-                if tts_backend == "sidecar":
+                elif tts_backend == "sidecar":
                     sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
+                    local_choices = (
+                        _voice_choices_for_model(current_tts_model, current_voice)
+                        if not sidecar_voices
+                        else None
+                    )
                 else:
                     sidecar_voices = []
-                local_choices = (
-                    _voice_choices_for_model(current_tts_model, current_voice)
-                    if not sidecar_voices
-                    else None
-                )
+                    local_choices = (
+                        _voice_choices_for_model(current_tts_model, current_voice)
+                        if not sidecar_voices
+                        else None
+                    )
                 if sidecar_voices:
                     voice_models = [
                         (v, v, v == current_voice) for v in sidecar_voices
@@ -3738,13 +3775,36 @@ class SpokeAppDelegate(NSObject):
         tts = self._build_tts_client(allow_default_voice=allow_default_voice)
         if tts is not None:
             self._tts_client = tts
-            backend_label = "sidecar" if isinstance(tts, RemoteTTSClient) else "local"
+            if isinstance(tts, CloudTTSClient):
+                backend_label = "cloud"
+            elif isinstance(tts, RemoteTTSClient):
+                backend_label = "sidecar"
+            else:
+                backend_label = "local"
             logger.info("TTS enabled: backend=%s voice=%s", backend_label, getattr(tts, "_voice", ""))
         return tts
 
     def _build_tts_client(self, *, allow_default_voice: bool = False):
         """Build a TTS client based on backend preference and env vars."""
         voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
+        if self._tts_backend == "cloud":
+            api_key = (
+                self._load_preference("tts_cloud_api_key")
+                or os.environ.get("GEMINI_API_KEY", "")
+            )
+            if not api_key:
+                logger.warning("Cannot build cloud TTS client: no API key")
+                return None
+            cloud_voice = voice or "Aoede"
+            cloud_model = (
+                self._load_preference("tts_cloud_model")
+                or "gemini-2.0-flash"
+            )
+            return CloudTTSClient(
+                api_key=api_key,
+                model=cloud_model,
+                voice=cloud_voice,
+            )
         if self._tts_backend == "sidecar" and self._tts_sidecar_url:
             if not voice:
                 return None
@@ -3825,7 +3885,7 @@ class SpokeAppDelegate(NSObject):
         return voices
 
     def _apply_tts_backend_selection(self, backend: str) -> None:
-        """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
+        """Switch TTS backend between 'local', 'sidecar', and 'cloud', then relaunch."""
         if backend == "configure_tts":
             self._configure_tts_sidecar_url()
             return
@@ -3836,6 +3896,20 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("No TTS sidecar URL configured")
             return
+        if backend == "cloud":
+            api_key = (
+                self._load_preference("tts_cloud_api_key")
+                or os.environ.get("GEMINI_API_KEY", "")
+            )
+            if not api_key:
+                logger.warning("Cannot switch to cloud TTS: no GEMINI_API_KEY")
+                if self._menubar is not None:
+                    self._menubar.set_status_text("No Gemini API key configured")
+                return
+            # Default to Aoede voice when switching to cloud for the first time
+            current_voice = self._load_preference("tts_voice")
+            if not current_voice or not any(v == current_voice for v, _ in GEMINI_VOICES):
+                self._save_preference("tts_voice", "Aoede")
         logger.info("Switching TTS backend: %s -> %s", self._tts_backend, backend)
         self._save_preference("tts_backend", backend)
         self._tts_backend = backend
@@ -4421,7 +4495,9 @@ class SpokeAppDelegate(NSObject):
         )
         payload = self._load_preferences()
         tts_backend = getattr(self, "_tts_backend", "local")
-        if tts_backend == "sidecar":
+        if tts_backend == "cloud":
+            payload["tts_cloud_model"] = model_id
+        elif tts_backend == "sidecar":
             payload["tts_sidecar_model"] = model_id
         else:
             payload["tts_model"] = model_id

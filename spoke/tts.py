@@ -1050,3 +1050,274 @@ class RemoteTTSClient:
     def cancel(self) -> None:
         """Cancel any in-flight or future speak() call."""
         self._cancelled = True
+
+
+# ---------------------------------------------------------------------------
+# Gemini cloud voices
+# ---------------------------------------------------------------------------
+
+GEMINI_VOICES: list[tuple[str, str]] = [
+    ("Aoede", "Aoede"),
+    ("Charon", "Charon"),
+    ("Fenrir", "Fenrir"),
+    ("Kore", "Kore"),
+    ("Leda", "Leda"),
+    ("Orus", "Orus"),
+    ("Puck", "Puck"),
+    ("Zephyr", "Zephyr"),
+]
+
+_DEFAULT_GEMINI_TTS_MODEL = "gemini-2.0-flash"
+_GEMINI_TTS_SAMPLE_RATE = 24000
+
+
+class CloudTTSClient:
+    """TTS client backed by the Gemini generateContent API with audio output.
+
+    Uses the ``responseModalities: ["AUDIO"]`` capability of Gemini 2.0 Flash
+    to synthesize speech.  The API returns base64-encoded WAV inline in JSON,
+    which this client decodes and plays locally via sounddevice.
+
+    Auth is via ``x-goog-api-key`` header (same ``GEMINI_API_KEY`` used by the
+    cloud assistant backend).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = _DEFAULT_GEMINI_TTS_MODEL,
+        voice: str = "Aoede",
+        timeout: float = 30.0,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._model_id = model  # compat with menu introspection
+        self._voice = voice
+        self._timeout = timeout
+        self._cancelled = False
+        self._stream: sd.OutputStream | None = None
+        self._last_chunk: np.ndarray | None = None
+
+    # -- public interface (same shape as TTSClient / RemoteTTSClient) -------
+
+    def warm(self) -> None:
+        """No local model to warm — cloud is always ready."""
+        return None
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    def speak(
+        self,
+        text: str,
+        amplitude_callback: Callable[[float], None] | None = None,
+    ) -> None:
+        if not text:
+            return
+        self._cancelled = False
+
+        sentences = _split_sentences(text)
+        if not sentences:
+            return
+
+        for idx, sentence in enumerate(sentences):
+            if self._cancelled:
+                break
+            wav_bytes = self._synthesize(sentence)
+            if self._cancelled or wav_bytes is None:
+                break
+            audio, sample_rate = self._decode_wav(wav_bytes)
+            # Apply sentence boundary fades
+            audio = _apply_sentence_fades(
+                audio, sample_rate,
+                fade_in=(idx == 0),
+                fade_out=(idx == len(sentences) - 1),
+            )
+            self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
+
+    def speak_async(
+        self,
+        text: str,
+        amplitude_callback: Callable[[float], None] | None = None,
+        done_callback: Callable[[], None] | None = None,
+        error_callback: Callable[[str], None] | None = None,
+    ) -> threading.Thread:
+        self._cancelled = False
+
+        def _run():
+            try:
+                self.speak(text, amplitude_callback=amplitude_callback)
+            except Exception as exc:
+                logger.exception("TTS cloud speak failed")
+                if error_callback is not None:
+                    error_callback(str(exc))
+            finally:
+                if done_callback is not None:
+                    done_callback()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return t
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    # -- internals ----------------------------------------------------------
+
+    def _synthesize(self, text: str) -> bytes | None:
+        """Call Gemini generateContent with audio output and return raw WAV bytes."""
+        import base64
+        import urllib.request
+        import urllib.error
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/"
+            f"models/{self._model}:generateContent"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": self._voice,
+                        }
+                    }
+                },
+            },
+        }
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self._api_key,
+            },
+            method="POST",
+        )
+        logger.info(
+            "TTS cloud request: model=%s voice=%s text=%d chars",
+            self._model, self._voice, len(text),
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"Gemini TTS HTTP {exc.code}: {detail or exc.reason} "
+                f"(model={self._model}, voice={self._voice})"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Gemini TTS unreachable: {exc.reason}"
+            ) from exc
+
+        response = _json.loads(body)
+
+        # Navigate: candidates[0].content.parts[0].inlineData
+        try:
+            candidates = response["candidates"]
+            parts = candidates[0]["content"]["parts"]
+            inline_data = parts[0]["inlineData"]
+            b64_audio = inline_data["data"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                f"Gemini TTS response missing audio data: {response!r:.500}"
+            ) from exc
+
+        wav_bytes = base64.b64decode(b64_audio)
+        logger.info("TTS cloud response: %d bytes audio", len(wav_bytes))
+        return wav_bytes
+
+    def _decode_wav(self, wav_bytes: bytes) -> tuple[np.ndarray, int]:
+        """Decode WAV bytes to float32 numpy array + sample rate."""
+        try:
+            with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                sample_rate = wav_file.getframerate()
+                frames = wav_file.readframes(wav_file.getnframes())
+        except Exception:
+            # Gemini may return raw PCM (L16) without WAV headers
+            # Assume 24kHz mono 16-bit signed
+            logger.info("TTS cloud: WAV decode failed, trying raw PCM")
+            audio = np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            return audio.reshape(-1, 1), _GEMINI_TTS_SAMPLE_RATE
+
+        if sample_width == 1:
+            audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+        elif sample_width == 2:
+            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sample_width == 4:
+            audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError(f"Unsupported WAV sample width: {sample_width}")
+
+        return audio.reshape(-1, channels), sample_rate
+
+    def _play_audio(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        amplitude_callback: Callable[[float], None] | None = None,
+    ) -> None:
+        if self._cancelled:
+            return
+        if audio.size == 0:
+            if amplitude_callback is not None:
+                amplitude_callback(0.0)
+            return
+        if audio.ndim == 1:
+            audio = audio.reshape(-1, 1)
+
+        chunk_size = int(sample_rate * 0.064)
+        output_device = _resolve_output_device()
+        stream = sd.OutputStream(
+            samplerate=sample_rate,
+            channels=audio.shape[1],
+            dtype="float32",
+            device=output_device,
+        )
+        self._stream = stream
+        self._last_chunk = None
+        stream.start()
+
+        try:
+            offset = 0
+            while offset < len(audio):
+                if self._cancelled:
+                    break
+                end = min(offset + chunk_size, len(audio))
+                chunk = audio[offset:end]
+                self._last_chunk = chunk
+                stream.write(chunk)
+                if amplitude_callback is not None:
+                    rms = float(np.sqrt(np.mean(chunk ** 2)))
+                    amplitude_callback(rms)
+                offset = end
+
+            if self._cancelled and self._last_chunk is not None:
+                fade_samples = int(sample_rate * 0.05)
+                last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                try:
+                    stream.write(fade_ramp)
+                except Exception:
+                    pass
+        finally:
+            stream.stop()
+            stream.close()
+            self._stream = None
+            self._last_chunk = None
+
+        if amplitude_callback is not None:
+            amplitude_callback(0.0)
