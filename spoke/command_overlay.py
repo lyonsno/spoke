@@ -624,14 +624,22 @@ class CommandOverlay(NSObject):
     def set_thinking_collapsed(self, text: str) -> None:
         """Inject or append to a collapsed thinking summary in the text view.
 
-        First call: appears after the user utterance, styled as a subtle
-        warm-toned aside. Subsequent calls (e.g. " · topic") are appended.
+        "Thought for Xs" starts a new collapsed entry (with newline if not first).
+        " · topic" appends to the current entry.
         """
         if self._text_view is None or not self._visible:
             return
+        # New thinking phase needs a newline separator from previous content
+        is_topic_append = text.startswith(" · ")
+        if not is_topic_append:
+            # "Thought for Xs" replaces a preceding "Thinking" placeholder
+            if self._collapsed_text.endswith("Thinking"):
+                self._collapsed_text = self._collapsed_text[:-len("Thinking")]
+            if self._collapsed_text:
+                text = "\n" + text
         # Track the full collapsed text for rebuild in set_response_text
         self._collapsed_text += text
-        # Simply append — set_response_text will rebuild in the right order
+        # Append styled text to the text view
         collapsed_str = self._make_collapsed_attributed(text)
         self._text_view.textStorage().appendAttributedString_(collapsed_str)
         self._update_layout()
