@@ -69,7 +69,7 @@ class HandsFreeController:
         self._lock = threading.Lock()
 
         # Resolve wake word configuration
-        self._access_key = os.environ.get("SPOKE_PORCUPINE_ACCESS_KEY", "")
+        self._access_key = os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
         self._listen_keyword = os.environ.get("SPOKE_WAKEWORD_LISTEN", "computer")
         self._sleep_keyword = os.environ.get("SPOKE_WAKEWORD_SLEEP", "terminator")
         self._listen_ppn = os.environ.get("SPOKE_WAKEWORD_LISTEN_PPN")
@@ -107,7 +107,7 @@ class HandsFreeController:
             return
 
         if not self._access_key:
-            logger.error("SPOKE_PORCUPINE_ACCESS_KEY not set — cannot enable hands-free")
+            logger.error("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY not set — cannot enable hands-free")
             return
 
         from .wakeword import WakeWordListener

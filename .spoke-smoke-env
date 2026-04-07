@@ -1,5 +1,6 @@
-# Smoke env for Project Concurrinsanity.
+# Smoke env for Slug-a-Bed (hands-free dictation).
 export SPOKE_COMMAND_URL="http://localhost:8001"
 export SPOKE_COMMAND_API_KEY="1234"
 export OMLX_SERVER_API_KEY="1234"
 export PYTHONPATH="/Users/noahlyons/dev/mlx-audio"
+export SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY="A+ka4pry7nzXxUL3q8YiOjbDn4i1xjdMYK3Qh1KS2CvPRZ7vvS08vg=="

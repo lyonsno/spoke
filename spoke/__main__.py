@@ -944,7 +944,7 @@ class SpokeAppDelegate(NSObject):
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
         # Hands-free mode — wire menubar toggle if Porcupine key is available
-        if os.environ.get("SPOKE_PORCUPINE_ACCESS_KEY"):
+        if os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
 
         # Step 1: Request mic permission with a test recording.
@@ -1203,6 +1203,8 @@ class SpokeAppDelegate(NSObject):
         if state == HandsFreeState.DORMANT:
             self._menubar.set_status_text("Ready — hold spacebar")
             self._menubar.set_recording(False)
+            if self._glow is not None:
+                self._glow.hide()
         elif state == HandsFreeState.LISTENING:
             self._menubar.set_status_text("Listening for wake word…")
             self._menubar.set_recording(False)
@@ -1210,6 +1212,9 @@ class SpokeAppDelegate(NSObject):
                 self._glow.hide()
         elif state == HandsFreeState.DICTATING:
             self._menubar.set_status_text("Hands-free — dictating…")
+            self._menubar.set_recording(True)
+            if self._glow is not None:
+                self._glow.show()
 
     def _warm_tts_in_background(self) -> None:
         tts = getattr(self, "_tts_client", None)
