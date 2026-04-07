@@ -944,6 +944,9 @@ class SpokeAppDelegate(NSObject):
                     on_summary=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "narratorSummary:", {"summary": s}, False
                     ),
+                    on_thinking_collapsed=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "narratorCollapsed:", {"text": s}, False
+                    ),
                 )
             else:
                 self._narrator = None
@@ -3123,9 +3126,9 @@ class SpokeAppDelegate(NSObject):
                     if self._narrator is not None:
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
-                    # Stop narrator when visible content starts
+                    # Stop narrator when visible content starts — produce collapsed summary
                     if narrator_started and self._narrator is not None:
-                        self._narrator.stop()
+                        self._narrator.stop_and_summarize()
                         narrator_started = False
                     if event.text:
                         full_response += event.text
@@ -3214,6 +3217,18 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorCollapsed_(self, payload: dict) -> None:
+        """Main thread: inject collapsed thinking summary into the overlay."""
+        text = payload.get("text", "")
+        if not text:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_thinking_collapsed(text)
+            except Exception:
+                logger.exception("Command overlay failed to set collapsed thinking")
 
     def narratorSummary_(self, payload: dict) -> None:
         """Main thread: update the overlay with a narrator thinking summary."""
