@@ -3087,14 +3087,15 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         stale_break = False
-        narrator_started = False
+        narrator_started = False  # tracks thinking narrator state, NOT vamp
         vamp_started = False
         first_event_received = False
         try:
-            # Start the narrator if available
+            # Start loading vamp if narrator is available.
+            # Note: narrator_started stays False — it tracks the thinking
+            # narrator lifecycle, not the vamp. The vamp uses the narrator's
+            # on_summary callback independently.
             if self._narrator is not None:
-                self._narrator.start()
-                narrator_started = True
                 # Start loading vamp — runs in background while the HTTP
                 # request blocks during model loading.  Stops when the
                 # first event arrives (model is loaded and generating).
@@ -3125,15 +3126,16 @@ class SpokeAppDelegate(NSObject):
                     if vamp_started and self._narrator is not None:
                         self._narrator.stop_loading_vamp()
                         vamp_started = False
-                    # Hide the narrator label — vamp text shouldn't linger
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "narratorHide:", {"token": token}, False
-                    )
+                    # Only hide narrator label if this ISN'T a thinking event —
+                    # thinking will use the label for live summaries.
+                    if event.kind != "thinking_delta":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "narratorHide:", {"token": token}, False
+                        )
 
                 if event.kind == "thinking_delta":
                     # Feed thinking tokens to the narrator sidecar
                     if self._narrator is not None:
-                        # Restart narrator if it was stopped (e.g. thinking between tool rounds)
                         if not narrator_started:
                             self._narrator.start()
                             narrator_started = True
@@ -3141,7 +3143,6 @@ class SpokeAppDelegate(NSObject):
                             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                                 "narratorUnsuppressAndShow:", {
                                     "token": token,
-                                    "inline": first_event_received,
                                 }, False
                             )
                         self._narrator.feed(event.text)
@@ -3253,12 +3254,7 @@ class SpokeAppDelegate(NSObject):
         overlay = self._command_overlay
         if overlay is not None:
             overlay._narrator_suppressed = False
-            if payload.get("inline"):
-                # Overlay already expanded — inject inline
-                overlay.set_thinking_collapsed("Thinking")
-            else:
-                # Overlay compact — use floating label
-                overlay.set_narrator_summary("Thinking")
+            overlay.set_narrator_summary("Thinking")
 
     def narratorHide_(self, payload: dict) -> None:
         """Main thread: hide the narrator label immediately."""
