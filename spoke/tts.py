@@ -1200,6 +1200,10 @@ class CloudTTSClient:
     def cancel(self) -> None:
         self._cancelled = True
 
+    def toggle_audio(self) -> bool:
+        """Cloud client doesn't support gain fade — always audible."""
+        return True
+
     # -- internals ----------------------------------------------------------
 
     def _synthesize(self, text: str) -> bytes | None:

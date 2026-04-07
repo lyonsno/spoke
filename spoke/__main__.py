@@ -3102,7 +3102,11 @@ class SpokeAppDelegate(NSObject):
             tts_client = getattr(self, "_tts_client", None)
             tts_backend = getattr(self, "_tts_backend", "local")
             tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
-            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+            tts_voice_pref = (
+                self._load_preference("tts_cloud_voice")
+                if tts_backend == "cloud"
+                else self._load_preference("tts_voice")
+            ) or os.environ.get("SPOKE_TTS_VOICE", "")
             saved_tts_model = (
                 self._load_preference("tts_cloud_model")
                 if tts_backend == "cloud"
@@ -3800,7 +3804,7 @@ class SpokeAppDelegate(NSObject):
             if not api_key:
                 logger.warning("Cannot build cloud TTS client: no API key")
                 return None
-            cloud_voice = voice or "Aoede"
+            cloud_voice = self._load_preference("tts_cloud_voice") or voice or "Aoede"
             cloud_model = (
                 self._load_preference("tts_cloud_model")
                 or "gemini-2.5-flash-preview-tts"
@@ -3912,10 +3916,11 @@ class SpokeAppDelegate(NSObject):
                 if self._menubar is not None:
                     self._menubar.set_status_text("No Gemini API key configured")
                 return
-            # Default to Aoede voice when switching to cloud for the first time
-            current_voice = self._load_preference("tts_voice")
-            if not current_voice or not any(v == current_voice for v, _ in GEMINI_VOICES):
-                self._save_preference("tts_voice", "Aoede")
+            # Default to Aoede voice when switching to cloud for the first time.
+            # Use a separate preference key so we don't clobber the local/sidecar voice.
+            cloud_voice = self._load_preference("tts_cloud_voice")
+            if not cloud_voice or not any(v == cloud_voice for v, _ in GEMINI_VOICES):
+                self._save_preference("tts_cloud_voice", "Aoede")
         logger.info("Switching TTS backend: %s -> %s", self._tts_backend, backend)
         self._save_preference("tts_backend", backend)
         self._tts_backend = backend
@@ -4545,8 +4550,10 @@ class SpokeAppDelegate(NSObject):
         current_voice = getattr(tts, "_voice", "") if tts else ""
         if selection == current_voice:
             return
-        self._save_preference("tts_voice", selection)
-        logger.info("TTS voice changed: %s -> %s", current_voice, selection)
+        # Write to backend-scoped key so cloud voice doesn't clobber local/sidecar
+        voice_key = "tts_cloud_voice" if getattr(self, "_tts_backend", "local") == "cloud" else "tts_voice"
+        self._save_preference(voice_key, selection)
+        logger.info("TTS voice changed: %s -> %s (key=%s)", current_voice, selection, voice_key)
         self._relaunch()
 
     def _configure_tts_voice(self) -> None:
