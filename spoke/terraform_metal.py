@@ -329,21 +329,32 @@ class TerraformCardRenderer:
                      brightness, dark_opacity, light_opacity)
 
     def draw_frame(self) -> bool:
-        """Render both layers in one call. Only called on data/scroll changes."""
-        ok = self._draw_to_layer(self._dark_layer, self._cards_dark, 0.55)
-        ok = self._draw_to_layer(self._light_layer, self._cards_light, 0.775) and ok
-        return ok
-
-    def _draw_to_layer(self, layer, cards: list[CardInfo], interior_floor: float) -> bool:
-        drawable = layer.nextDrawable()
-        if drawable is None:
+        """Render both layers atomically — one command buffer, both drawables
+        presented together so no frame shows stale scroll position."""
+        dark_drawable = self._dark_layer.nextDrawable()
+        light_drawable = self._light_layer.nextDrawable()
+        if dark_drawable is None or light_drawable is None:
             return False
 
+        now = float(time.monotonic() % 1000.0)
+        cmd = self._queue.commandBuffer()
+
+        # Dark layer pass (interior_floor=0.55)
+        self._encode_pass(cmd, dark_drawable, self._cards_dark, 0.55, now)
+        # Light layer pass (interior_floor=0.775)
+        self._encode_pass(cmd, light_drawable, self._cards_light, 0.775, now)
+
+        cmd.presentDrawable_(dark_drawable)
+        cmd.presentDrawable_(light_drawable)
+        cmd.commit()
+        return True
+
+    def _encode_pass(self, cmd, drawable, cards, interior_floor, now):
         values = [
             float(self._pixel_width), float(self._pixel_height),
             float(self._corner_radius), float(self._fill_width),
             float(interior_floor), float(self._scroll_offset_y),
-            float(time.monotonic() % 1000.0), float(len(cards)),
+            now, float(len(cards)),
         ]
         for i in range(_MAX_CARDS):
             if i < len(cards):
@@ -353,7 +364,8 @@ class TerraformCardRenderer:
                 values.extend([0.0] * _CARD_FLOATS)
 
         payload = struct.pack(_UNIFORM_LAYOUT, *values)
-        _copy_bytes_to_metal_buffer(self._uniform_buffer, payload)
+        # Need separate buffer for each pass since they run in same cmd buffer
+        buf = self._device.newBufferWithBytes_length_options_(payload, len(payload), 0)
 
         rpd = objc.lookUpClass("MTLRenderPassDescriptor").renderPassDescriptor()
         att = rpd.colorAttachments().objectAtIndexedSubscript_(0)
@@ -362,15 +374,11 @@ class TerraformCardRenderer:
         att.setStoreAction_(_MTL_STORE_ACTION_STORE)
         att.setClearColor_((0.0, 0.0, 0.0, 0.0))
 
-        cmd = self._queue.commandBuffer()
         enc = cmd.renderCommandEncoderWithDescriptor_(rpd)
         enc.setRenderPipelineState_(self._pipeline)
-        enc.setFragmentBuffer_offset_atIndex_(self._uniform_buffer, 0, 0)
+        enc.setFragmentBuffer_offset_atIndex_(buf, 0, 0)
         enc.drawPrimitives_vertexStart_vertexCount_(_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP, 0, 4)
         enc.endEncoding()
-        cmd.presentDrawable_(drawable)
-        cmd.commit()
-        return True
 
     # ── private ──
 
