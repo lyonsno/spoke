@@ -602,52 +602,41 @@ class CommandOverlay(NSObject):
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
 
-    def set_thinking_collapsed(self, text: str) -> None:
-        """Inject or append to a collapsed thinking summary in the text view.
-
-        First call: appears between the user utterance and the response,
-        styled as a subtle aside (smaller font, lower alpha).
-        Subsequent calls: appended to the existing collapsed text (used
-        for " · topic" arriving asynchronously from Bonsai).
-        """
-        if self._text_view is None or not self._visible:
-            return
+    def _make_collapsed_attributed(self, text: str):
+        """Build an attributed string for collapsed thinking text."""
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
             NSFontAttributeName,
         )
-        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
-        # Track the full collapsed text for rebuild in set_response_text
-        self._collapsed_text += text
-        # If this is the first collapsed text, add a newline prefix
-        is_append = text.startswith(" · ")
-        prefix = "" if is_append else ("\n" if self._utterance_text else "")
-        collapsed_str = NSMutableAttributedString.alloc().initWithString_(
-            prefix + text
-        )
-        full_range = (0, len(prefix + text))
-        collapsed_str.addAttribute_value_range_(
+        attr = NSMutableAttributedString.alloc().initWithString_(text)
+        rng = (0, len(text))
+        # Warm muted tone — visually distinct from tool indicators (cool/gray)
+        attr.addAttribute_value_range_(
             NSForegroundColorAttributeName,
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                user_r, user_g, user_b, 0.25
-            ),
-            full_range,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.65, 0.62, 0.55, 0.45),
+            rng,
         )
-        collapsed_str.addAttribute_value_range_(
+        attr.addAttribute_value_range_(
             NSFontAttributeName,
             NSFont.systemFontOfSize_weight_(12.0, 0.0),
-            full_range,
+            rng,
         )
-        if is_append and hasattr(self, '_collapsed_end_idx'):
-            # Insert the topic right after the initial "Thought for Xs"
-            storage = self._text_view.textStorage()
-            insert_at = min(self._collapsed_end_idx, storage.length())
-            storage.insertAttributedString_atIndex_(collapsed_str, insert_at)
-            self._collapsed_end_idx = insert_at + len(prefix + text)
-        else:
-            self._text_view.textStorage().appendAttributedString_(collapsed_str)
-            self._collapsed_end_idx = self._text_view.textStorage().length()
+        return attr
+
+    def set_thinking_collapsed(self, text: str) -> None:
+        """Inject or append to a collapsed thinking summary in the text view.
+
+        First call: appears after the user utterance, styled as a subtle
+        warm-toned aside. Subsequent calls (e.g. " · topic") are appended.
+        """
+        if self._text_view is None or not self._visible:
+            return
+        # Track the full collapsed text for rebuild in set_response_text
+        self._collapsed_text += text
+        # Simply append — set_response_text will rebuild in the right order
+        collapsed_str = self._make_collapsed_attributed(text)
+        self._text_view.textStorage().appendAttributedString_(collapsed_str)
         self._update_layout()
 
     def append_token(self, token: str) -> None:
@@ -737,20 +726,9 @@ class CommandOverlay(NSObject):
 
             # Re-inject collapsed thinking text if present
             if self._collapsed_text:
-                from AppKit import NSFontAttributeName
-                collapsed_full = "\n" + self._collapsed_text
-                collapsed_attr = NSMutableAttributedString.alloc().initWithString_(collapsed_full)
-                collapsed_attr.addAttribute_value_range_(
-                    NSForegroundColorAttributeName,
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.25),
-                    (0, len(collapsed_full)),
+                combined.appendAttributedString_(
+                    self._make_collapsed_attributed("\n" + self._collapsed_text)
                 )
-                collapsed_attr.addAttribute_value_range_(
-                    NSFontAttributeName,
-                    NSFont.systemFontOfSize_weight_(12.0, 0.0),
-                    (0, len(collapsed_full)),
-                )
-                combined.appendAttributedString_(collapsed_attr)
 
             if text:
                 sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
@@ -797,17 +775,17 @@ class CommandOverlay(NSObject):
             return (c + m, m, x + m)
 
     def _make_tool_indicator_fragment(self, token: str):
-        """Create a small, subtle attributed string for tool call indicators."""
+        """Create a small, cool-toned attributed string for tool call indicators."""
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
             NSFontAttributeName,
         )
-        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         frag = NSMutableAttributedString.alloc().initWithString_(token)
+        # Cool blue-gray — distinct from warm thinking collapsed text
         frag.addAttribute_value_range_(
             NSForegroundColorAttributeName,
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.25),
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.55, 0.58, 0.65, 0.40),
             (0, len(token)),
         )
         frag.addAttribute_value_range_(
