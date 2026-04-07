@@ -177,15 +177,13 @@ def _build_spinner_image(
     """Build a CGImage for the radar-sweep spinner.
 
     The spinner is a circle where:
-    - The region from angle 0 to (angle - fill*2*pi) is transparent (cutout — see through)
-    - The region from (angle - fill*2*pi) to angle is filled (opaque trail)
-    - A thin bright line at the sweep head (angle) for the radar hand
+    - The swept region (behind the hand) is transparent — a cutout you see through
+    - The unswept region (ahead of the hand) is opaque — matches the overlay fill
+    - A glowing edge at the sweep boundary gives the radar-hand feel
 
-    Actually simpler: the filled portion is the trail *behind* the sweep,
-    and the unfilled portion ahead of the sweep is transparent (cutout).
-
-    The filled trail uses bg_color at sweep_alpha. The cutout is fully transparent.
-    A bright edge at the sweep boundary gives the radar-hand feel.
+    As the sweep progresses, more of the circle becomes transparent (cutout),
+    so the opaque portion shrinks. After a full revolution the circle is
+    entirely cut out, then resets.
     """
     import numpy as np
     from Quartz import (
@@ -217,16 +215,14 @@ def _build_spinner_image(
     edge_softness = 1.5 * scale
     circle_alpha = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
 
-    # Angle of each pixel (atan2, 0 at right, CCW positive)
-    # Convert to CW from top (12 o'clock = 0)
-    pixel_angle = np.arctan2(dx, dy)  # note: (dx, dy) gives CW-from-top
+    # Angle of each pixel (CW from top / 12 o'clock = 0)
+    pixel_angle = np.arctan2(dx, dy)  # (dx, dy) gives CW-from-top
     pixel_angle = pixel_angle % (2.0 * np.pi)
 
-    # The filled trail goes from 0 to fill * 2*pi.
-    # The sweep hand is at angle = fill * 2*pi.
-    # Pixels in the trail are opaque; pixels ahead are transparent (cutout).
+    # The sweep hand is at fill * 2*pi. Everything behind it (swept)
+    # is transparent cutout. Everything ahead is opaque fill.
     fill_end = fill * 2.0 * np.pi
-    in_trail = pixel_angle <= fill_end
+    is_unswept = pixel_angle > fill_end  # ahead of sweep = opaque
 
     # Sweep head highlight — thin bright line at the leading edge
     sweep_hand_width = 0.08  # radians (~4.6 degrees)
@@ -238,22 +234,22 @@ def _build_spinner_image(
     # Build RGBA
     rgba = np.zeros((py, px, 4), dtype=np.uint8)
 
-    # Trail region: bg_color at sweep_alpha
-    trail_alpha = circle_alpha * sweep_alpha
-    trail_mask = in_trail.astype(np.float32) * trail_alpha
-    rgba[..., 0] = np.clip(bg_color[0] * 255.0 * trail_mask, 0, 255).astype(np.uint8)
-    rgba[..., 1] = np.clip(bg_color[1] * 255.0 * trail_mask, 0, 255).astype(np.uint8)
-    rgba[..., 2] = np.clip(bg_color[2] * 255.0 * trail_mask, 0, 255).astype(np.uint8)
-    rgba[..., 3] = np.clip(trail_mask * 255.0, 0, 255).astype(np.uint8)
+    # Unswept (opaque) region: bg_color at sweep_alpha
+    fill_alpha = circle_alpha * sweep_alpha
+    fill_mask = is_unswept.astype(np.float32) * fill_alpha
+    rgba[..., 0] = np.clip(bg_color[0] * 255.0 * fill_mask, 0, 255).astype(np.uint8)
+    rgba[..., 1] = np.clip(bg_color[1] * 255.0 * fill_mask, 0, 255).astype(np.uint8)
+    rgba[..., 2] = np.clip(bg_color[2] * 255.0 * fill_mask, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(fill_mask * 255.0, 0, 255).astype(np.uint8)
 
-    # Sweep hand glow: additive bright line
+    # Sweep hand glow: bright edge at the boundary
     hand_alpha = hand_glow * 0.9
     for ch_idx, ch_val in enumerate(sweep_color):
         existing = rgba[..., ch_idx].astype(np.float32) / 255.0
         blended = existing + ch_val * hand_alpha
         rgba[..., ch_idx] = np.clip(blended * 255.0, 0, 255).astype(np.uint8)
-    # Alpha: max of trail and hand
-    total_alpha = np.maximum(trail_mask, hand_alpha)
+    # Alpha: max of fill and hand
+    total_alpha = np.maximum(fill_mask, hand_alpha)
     rgba[..., 3] = np.clip(total_alpha * 255.0, 0, 255).astype(np.uint8)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
