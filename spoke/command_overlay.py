@@ -1469,8 +1469,7 @@ class CommandOverlay(NSObject):
                     fill_alpha, spinner_cx, spinner_cy,
                     _SPINNER_RADIUS, scale,
                 )
-                # Keep tile layer position in sync with the hole
-                self._reposition_spinner_tile(width, height)
+                # Tile repositioning happens in _update_layout to stay atomic
 
             self._bake_fill_image(fill_alpha, width, height)
         except (ImportError, Exception):
@@ -1506,6 +1505,9 @@ class CommandOverlay(NSObject):
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
+                # Reposition spinner tile atomically with the fill rebuild
+                if getattr(self, "_spinner_active", False):
+                    self._reposition_spinner_tile(_OVERLAY_WIDTH, new_height)
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')
