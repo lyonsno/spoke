@@ -3334,7 +3334,11 @@ class SpokeAppDelegate(NSObject):
             # Repair history only when a stale token break interrupts the
             # streaming loop before the command client can finalize the turn.
             if stale_break and full_response:
-                self._command_client._history.append((utterance, full_response))
+                # Stale break — no full message chain available, store minimal pair
+                self._command_client._history.append([
+                    {"role": "user", "content": utterance},
+                    {"role": "assistant", "content": full_response},
+                ])
                 max_h = self._command_client._max_history
                 if len(self._command_client._history) > max_h:
                     self._command_client._history.pop(0)
