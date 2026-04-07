@@ -1186,24 +1186,32 @@ class SpokeAppDelegate(NSObject):
     def handsFreeInject_(self, payload: dict) -> None:
         """Main-thread selector: inject hands-free transcription at cursor."""
         text = payload.get("text", "")
+        dest = payload.get("dest", "cursor")
         if not text:
             return
 
-        # Check for voice commands
-        cmd = match_voice_command(text)
-        if cmd is not None:
-            action, value = cmd
-            logger.info("Hands-free voice command: %r → %s(%r)", text, action, value)
-            if action == "keystroke":
-                self._synthesize_keystroke(value)
-            elif action == "chord":
-                self._synthesize_chord(value)
-            elif action == "tray_enter":
-                self._handsfree_tray_enter()
-            elif action == "tray_insert":
-                self._handsfree_tray_insert()
-            else:
-                inject_text(value)
+        # Check for voice commands (only for cursor-destined segments)
+        if dest == "cursor":
+            cmd = match_voice_command(text)
+            if cmd is not None:
+                action, value = cmd
+                logger.info("Hands-free voice command: %r → %s(%r)", text, action, value)
+                if action == "keystroke":
+                    self._synthesize_keystroke(value)
+                elif action == "chord":
+                    self._synthesize_chord(value)
+                elif action == "tray_enter":
+                    self._handsfree_tray_enter()
+                elif action == "tray_insert":
+                    self._handsfree_tray_insert()
+                else:
+                    inject_text(value)
+                return
+
+        # Route based on destination
+        if dest == "tray":
+            logger.info("Hands-free → tray: %r", text)
+            self._add_tray_entry(text, owner="handsfree", activate=False)
             return
 
         # Normal text — append trailing space for continuous flow
@@ -1266,20 +1274,12 @@ class SpokeAppDelegate(NSObject):
         logger.info("Synthesized chord: %s (keycode %d, flags %d)", chord, keycode, flags)
 
     def _handsfree_tray_enter(self) -> None:
-        """Voice command: switch hands-free to dictate into tray instead of cursor."""
+        """Voice command: route the next spoken segment to the tray."""
         hf = getattr(self, "_handsfree", None)
         if hf is None:
             return
-        # Stop current dictation capture, pause hands-free
-        if hf.is_dictating:
-            hf._stop_dictation_capture()
-        # Start a normal tray recording flow — hold_end with shift_held will
-        # route through the tray pathway. For now, just toggle tray mode on
-        # and let the next segment go to tray.
-        logger.info("Hands-free: entering tray dictation mode")
-        # TODO: implement tray dictation — for now log and resume
-        if hf.state != HandsFreeState.DORMANT:
-            hf._start_dictating()
+        logger.info("Hands-free: next segment → tray")
+        hf.route_next_segment("tray")
 
     def _handsfree_tray_insert(self) -> None:
         """Voice command: insert the current tray entry at cursor."""

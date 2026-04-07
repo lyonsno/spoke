@@ -90,6 +90,10 @@ class HandsFreeController:
         self._wakeword = None
         self._lock = threading.Lock()
 
+        # One-shot routing: if set, the next segment routes here then resets.
+        # Values: None (normal cursor inject), "tray"
+        self._next_segment_dest: str | None = None
+
         # Resolve wake word configuration
         self._access_key = os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
         self._listen_keyword = os.environ.get("SPOKE_WAKEWORD_LISTEN", "computer")
@@ -270,7 +274,11 @@ class HandsFreeController:
         if self._state != HandsFreeState.DICTATING:
             return
 
-        logger.info("Hands-free segment received (%d bytes)", len(wav_bytes))
+        # Capture and clear the one-shot routing destination
+        dest = self._next_segment_dest
+        self._next_segment_dest = None
+
+        logger.info("Hands-free segment received (%d bytes, dest=%s)", len(wav_bytes), dest or "cursor")
 
         # Transcribe on this thread (encode worker), marshal result to main
         def _work():
@@ -282,12 +290,21 @@ class HandsFreeController:
                 return
 
             if text and text.strip():
+                payload = {"text": text.strip(), "dest": dest or "cursor"}
                 self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "handsFreeInject:", {"text": text.strip()}, False,
+                    "handsFreeInject:", payload, False,
                 )
 
         thread = threading.Thread(target=_work, daemon=True, name="hf-transcribe")
         thread.start()
+
+    # ── One-shot routing ───────────────────────────────────────
+
+    def route_next_segment(self, dest: str) -> None:
+        """Tag the next segment to route to *dest* instead of cursor.
+        Resets to cursor after that segment is dispatched."""
+        logger.info("Hands-free: next segment → %s", dest)
+        self._next_segment_dest = dest
 
     # ── Manual entry (e.g. long-press spacebar) ──────────────
 
