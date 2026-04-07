@@ -371,8 +371,10 @@ class CommandOverlay(NSObject):
         _NARRATOR_MAX_LINES = 1
         narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
-        # Pin to bottom of content area so it doesn't overlap wrapped user text
-        narrator_y = 8.0
+        # Position below the thinking timer with generous gap.
+        # For long user text that wraps, the narrator label will overlap
+        # but that's acceptable during the brief thinking phase.
+        narrator_y = timer_y - narrator_h - 20
         narrator_w = _OVERLAY_WIDTH - 28
         self._narrator_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)
