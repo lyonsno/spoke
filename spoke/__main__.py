@@ -1424,10 +1424,17 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
             if self._overlay is not None:
-                self._overlay.hide()
+                self._overlay.flash_notice(
+                    "Audio unavailable — system under memory pressure.\n"
+                    "Free memory or use sidecar for transcription.",
+                    hold=4.0,
+                    fade=2.0,
+                )
             if self._menubar is not None:
                 self._menubar.set_recording(False)
-                self._menubar.set_status_text("Audio input error — try again")
+                self._menubar.set_status_text(
+                    "Audio unavailable — memory pressure"
+                )
             return
         if self._glow is not None:
             self._glow.show()

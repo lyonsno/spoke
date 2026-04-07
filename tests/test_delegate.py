@@ -3393,6 +3393,38 @@ class TestMicNotReady:
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
 
+class TestCaptureStartFailure:
+    """Capture failure at hold time shows memory-pressure guidance."""
+
+    def test_capture_failure_shows_overlay_notice(self, main_module, monkeypatch):
+        """When capture.start() throws, the overlay should flash a notice
+        explaining audio is unavailable due to memory pressure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = True
+        d._capture.start.side_effect = RuntimeError("PortAudio error -9986")
+
+        d._on_hold_start()
+
+        d._overlay.flash_notice.assert_called_once()
+        msg = d._overlay.flash_notice.call_args[0][0]
+        assert "audio" in msg.lower() or "microphone" in msg.lower()
+        assert "memory" in msg.lower() or "pressure" in msg.lower()
+
+    def test_capture_failure_updates_menubar(self, main_module, monkeypatch):
+        """Menubar status should mention memory pressure on capture failure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = True
+        d._capture.start.side_effect = RuntimeError("PortAudio error -9986")
+
+        d._on_hold_start()
+
+        d._menubar.set_recording.assert_called_with(False)
+        status_text = d._menubar.set_status_text.call_args[0][0]
+        assert "memory" in status_text.lower() or "pressure" in status_text.lower()
+
+
 class TestMicPermissionProbe:
     """Mic probe uses AVCaptureDevice permission check, not sd.rec()."""
 
