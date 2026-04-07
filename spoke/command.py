@@ -101,6 +101,11 @@ _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 20
 _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 
+
+def _rough_tool_result_tokens(text: str) -> int:
+    """Approximate token count for a tool result."""
+    return int(len(text.split()) * 1.3)
+
 _SYSTEM_PROMPT = (
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "
@@ -709,10 +714,36 @@ class CommandClient:
                         **tool_kwargs,
                     )
                     tool_content, tool_preview = self._normalize_tool_result(tool_result)
+                    result_tokens = _rough_tool_result_tokens(tool_preview)
                     logger.info(
-                        "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_preview), tool_preview[:200],
+                        "Tool %s result: %d chars (~%d tokens) (preview: %s)",
+                        fn_name, len(tool_preview), result_tokens, tool_preview[:200],
                     )
+
+                    # Emit a subtext line with tool result info
+                    info_parts = []
+                    if fn_name == "read_file" and fn_args.get("path"):
+                        info_parts.append(fn_args["path"])
+                    elif fn_name == "search_file":
+                        query = fn_args.get("query", "")
+                        path = fn_args.get("path", "")
+                        if query and path:
+                            info_parts.append(f'"{query}" in {path}')
+                        elif query:
+                            info_parts.append(f'"{query}"')
+                        elif path:
+                            info_parts.append(path)
+                    elif fn_name == "capture_context":
+                        info_parts.append("screen capture")
+                    if result_tokens > 0:
+                        info_parts.append(f"~{result_tokens} tokens")
+                    if info_parts:
+                        info_line = f"  [{' · '.join(info_parts)}]\n"
+                        round_content += info_line
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=info_line,
+                        )
 
                     messages.append({
                         "role": "tool",

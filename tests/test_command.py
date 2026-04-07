@@ -331,19 +331,22 @@ class TestStreamCommand:
             )
 
         assert call_count["n"] == 2
-        assert [
+        event_tuples = [
             (event.kind, event.text, event.tool_name)
             for event in events
-        ] == [
-            ("assistant_delta", "Let me check. ", None),
-            ("assistant_delta", "\n[calling capture_context…]\n", None),
-            ("tool_call", "", "capture_context"),
-            ("assistant_delta", "Done.", None),
-            ("assistant_final", "Done.", None),
         ]
-        assert client._history == [
-            ("check it", "Let me check. \n[calling capture_context…]\nDone.")
-        ]
+        assert event_tuples[0] == ("assistant_delta", "Let me check. ", None)
+        assert event_tuples[1] == ("assistant_delta", "\n[calling capture_context…]\n", None)
+        assert event_tuples[2] == ("tool_call", "", "capture_context")
+        assert event_tuples[3][0] == ("assistant_delta")
+        assert "screen capture" in event_tuples[3][1]
+        assert "tokens" in event_tuples[3][1]
+        assert event_tuples[4] == ("assistant_delta", "Done.", None)
+        assert event_tuples[5] == ("assistant_final", "Done.", None)
+        assert client._history[-1][0] == "check it"
+        assert "Let me check. " in client._history[-1][1]
+        assert "screen capture" in client._history[-1][1]
+        assert client._history[-1][1].endswith("Done.")
 
     def test_vlm_capture_tool_round_sends_multimodal_tool_content(self):
         """VLM backends should carry screenshot tool results as multimodal content."""
