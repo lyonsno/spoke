@@ -394,6 +394,14 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
+                        # Log first delta for debugging thinking detection
+                        if not first_token_logged and delta:
+                            logger.info(
+                                "First SSE delta keys on round %d: %s (preview: %s)",
+                                _round, list(delta.keys()),
+                                {k: str(v)[:80] for k, v in delta.items()},
+                            )
+
                         # Reasoning tokens (OpenAI reasoning_content field)
                         reasoning_token = delta.get("reasoning_content")
                         if reasoning_token is not None:
