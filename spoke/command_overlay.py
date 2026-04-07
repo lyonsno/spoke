@@ -625,11 +625,19 @@ class CommandOverlay(NSObject):
             from AppKit import (
                 NSMutableAttributedString,
                 NSForegroundColorAttributeName,
+                NSFontAttributeName,
             )
             sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
             sep.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
                 NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                (0, 2),
+            )
+            # Reset font to body size so the collapsed summary's 12pt
+            # doesn't bleed into the first response token.
+            sep.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
                 (0, 2),
             )
             self._text_view.textStorage().appendAttributedString_(sep)
