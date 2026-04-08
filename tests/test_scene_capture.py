@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 import sys
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -230,10 +230,10 @@ class TestCollectAXHints:
 
 
 class TestDownsampleSize:
-    def test_halves_dimensions_by_default(self):
+    def test_defaults_to_two_thirds_resolution(self):
         mod = _import_module()
         result = mod._downsample_size(2560, 1440)
-        assert result == (1280, 720)
+        assert result == (1707, 960)
 
     def test_skips_if_already_small(self):
         """Small windows should not be downsampled below a usable size."""
@@ -246,6 +246,43 @@ class TestDownsampleSize:
         mod = _import_module()
         result = mod._downsample_size(2560, 1440, scale=0.25)
         assert result == (640, 360)
+
+
+class TestCaptureContext:
+    def test_capture_context_saves_model_image_artifact(self, tmp_path):
+        mod = _import_module()
+        raw_image = object()
+        model_image = object()
+
+        with (
+            patch.object(mod, "_generate_scene_ref", return_value="scene-test"),
+            patch.object(
+                mod,
+                "_capture_active_window",
+                return_value=(
+                    raw_image,
+                    "Safari",
+                    "com.apple.Safari",
+                    "Test Page",
+                ),
+            ),
+            patch.object(mod, "_image_dimensions", return_value=(2560, 1440)),
+            patch.object(mod, "_downsample_image", return_value=model_image) as downsample,
+            patch.object(mod, "_save_image", return_value=True) as save_image,
+            patch.object(mod, "_run_ocr", return_value=("Hello", [])),
+            patch.object(mod, "_collect_ax_hints", return_value=[]),
+        ):
+            capture = mod.capture_context(cache_dir=str(tmp_path))
+
+        assert capture is not None
+        assert capture.image_path == str(tmp_path / "scene-test.png")
+        assert capture.model_image_path == str(tmp_path / "scene-test-model.png")
+        assert capture.model_image_size == (1707, 960)
+        downsample.assert_called_once_with(raw_image)
+        assert save_image.call_args_list == [
+            call(raw_image, str(tmp_path / "scene-test.png")),
+            call(model_image, str(tmp_path / "scene-test-model.png")),
+        ]
 
 
 # ── Artifact cache ───────────────────────────────────────────────

@@ -8,6 +8,7 @@ See docs/screen-context-v1.md for the design.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -72,6 +73,14 @@ _CAPTURE_CONTEXT_SCHEMA = {
                         "What to capture. 'active_window' captures only the "
                         "frontmost app's window (preferred). 'screen' captures "
                         "the entire main screen."
+                    ),
+                },
+                "include_image": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, include a downscaled model-facing screenshot "
+                        "artifact alongside the OCR refs. Prefer this on "
+                        "vision-capable backends."
                     ),
                 },
             },
@@ -311,6 +320,75 @@ def _execute_capture_context(
 
     scope = arguments.get("scope", "active_window")
     return capture_context(scope=scope, cache=scene_cache)
+
+
+def _capture_context_result_dict(
+    capture: Any,
+    *,
+    include_image: bool = False,
+) -> dict[str, Any]:
+    result = {
+        "scene_ref": capture.scene_ref,
+        "scope": capture.scope,
+        "app_name": capture.app_name,
+        "bundle_id": capture.bundle_id,
+        "window_title": capture.window_title,
+        "image_size": list(capture.image_size),
+        "model_image_size": list(capture.model_image_size),
+        "ocr_blocks": [
+            {
+                "ref": b.ref,
+                "text": b.text,
+                "bbox": list(b.bbox),
+            }
+            for b in capture.ocr_blocks
+        ],
+        "ax_hints": [
+            {
+                "ref": h.ref,
+                "role": h.role,
+                "label": h.label,
+            }
+            for h in capture.ax_hints
+        ],
+    }
+    if include_image and getattr(capture, "model_image_path", None):
+        result["model_image"] = {
+            "path": capture.model_image_path,
+            "media_type": capture.model_image_media_type or "image/png",
+            "size": list(capture.model_image_size),
+        }
+    return result
+
+
+def _capture_context_multimodal_result(capture: Any) -> dict[str, Any]:
+    summary = _capture_context_result_dict(capture, include_image=True)
+    parts: list[dict[str, Any]] = [
+        {"type": "text", "text": json.dumps(summary)}
+    ]
+    model_image = summary.get("model_image")
+    if model_image is not None:
+        try:
+            with open(model_image["path"], "rb") as fh:
+                encoded = base64.b64encode(fh.read()).decode("ascii")
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{model_image['media_type']};base64,{encoded}"
+                    },
+                }
+            )
+        except OSError:
+            logger.warning(
+                "Failed to inline capture_context model image from %s",
+                model_image["path"],
+                exc_info=True,
+            )
+    return {
+        "content": parts,
+        "log_text": json.dumps(summary),
+    }
 
 
 def _execute_read_aloud(
@@ -702,7 +780,8 @@ def execute_tool(
     last_response: str | None = None,
     tts_client: Any | None = None,
     tray_writer: Callable[[str], Any] | None = None,
-) -> str:
+    tool_output_mode: str = "text",
+) -> Any:
     """Execute a tool by name and return the result as a JSON string.
 
     Returns a JSON-encoded result for the model to consume.
@@ -711,31 +790,12 @@ def execute_tool(
         capture = _execute_capture_context(arguments, scene_cache=scene_cache)
         if capture is None:
             return json.dumps({"error": "Capture failed"})
-
-        # Build the return shape from the design doc
-        result = {
-            "scene_ref": capture.scene_ref,
-            "scope": capture.scope,
-            "app_name": capture.app_name,
-            "window_title": capture.window_title,
-            "ocr_blocks": [
-                {
-                    "ref": b.ref,
-                    "text": b.text,
-                    "bbox": list(b.bbox),
-                }
-                for b in capture.ocr_blocks
-            ],
-            "ax_hints": [
-                {
-                    "ref": h.ref,
-                    "role": h.role,
-                    "label": h.label,
-                }
-                for h in capture.ax_hints
-            ],
-        }
-        return json.dumps(result)
+        include_image = bool(arguments.get("include_image")) or tool_output_mode == "multimodal"
+        if tool_output_mode == "multimodal" and include_image:
+            return _capture_context_multimodal_result(capture)
+        return json.dumps(
+            _capture_context_result_dict(capture, include_image=include_image)
+        )
 
     elif name == "read_aloud":
         return _execute_read_aloud(
