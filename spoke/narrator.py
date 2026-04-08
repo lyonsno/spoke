@@ -393,12 +393,13 @@ class ThinkingNarrator:
                 user_content += "\n\n" + nudge
 
             vamp_messages.append({"role": "user", "content": user_content})
-            # Bump temperature when stuck in a rut
-            temp = min(0.9 + consecutive_rejects * 0.15, 1.5)
+            # Escalate temperature and widen top_k when stuck in a rut
+            temp = min(0.8 + consecutive_rejects * 0.15, 1.5)
+            tk = min(20 + consecutive_rejects * 10, 80)
 
             try:
                 summary = self._chat_completion(
-                    vamp_messages, temperature=temp, max_tokens=40
+                    vamp_messages, temperature=temp, max_tokens=40, top_k=tk
                 )
                 if summary:
                     # Deduplicate: skip if too similar to ANY previous line
@@ -479,13 +480,23 @@ class ThinkingNarrator:
             logger.debug("Failed to poll OMLX status", exc_info=True)
             return ""
 
-    def _chat_completion(self, messages: list[dict], *, temperature: float = 0.3, max_tokens: int = _MAX_TOKENS) -> str:
+    def _chat_completion(
+        self,
+        messages: list[dict],
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = _MAX_TOKENS,
+        top_p: float = 0.95,
+        top_k: int = 20,
+    ) -> str:
         """Synchronous chat completion call."""
         body = {
             "model": self._model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
             "stream": False,
         }
 
