@@ -1,8 +1,5 @@
-# Smoke env — hands-free dictation + thinking narrator.
-export SPOKE_COMMAND_URL="http://localhost:8001"
-export SPOKE_COMMAND_MODEL="step-3p5-flash-mixedp-final"
-export SPOKE_COMMAND_API_KEY="1234"
-export OMLX_SERVER_API_KEY="1234"
+# Smoke env — OpenRouter-backed command lane + thinking narrator.
+export SPOKE_MODEL_PREFERENCES_PATH="/private/tmp/spoke-step-reasoning-0408/.spoke-model-preferences.json"
 # Narrator sidecar: OMLX on M2 Pro (Bonsai 8B — fast summarizer)
 export SPOKE_NARRATOR_URL="http://nlm2pr.local:8001"
 export SPOKE_NARRATOR_API_KEY="1234"

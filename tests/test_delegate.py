@@ -2020,6 +2020,113 @@ class TestDualModelConfiguration:
         assert d._command_url == "http://other-box:8001"
         assert d._command_sidecar_url == "http://other-box:8001"
 
+    def test_init_cloud_backend_uses_stepfun_api_key_for_stepfun_url(
+        self, main_module, monkeypatch
+    ):
+        """Step cloud backend should bootstrap from STEPFUN_API_KEY when no key is persisted."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("SPOKE_COMMAND_CLOUD_API_KEY", raising=False)
+        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_url_preference",
+            lambda self: "https://api.stepfun.com/v1",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_api_key_preference",
+            lambda self: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self: "step-3.5-flash",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("step-3.5-flash", "step-3.5-flash", False)],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="https://api.stepfun.com/v1",
+            model="step-3.5-flash",
+            api_key="stepfun-test-key",
+        )
+
+    def test_init_cloud_backend_uses_openrouter_api_key_for_openrouter_url(
+        self, main_module, monkeypatch
+    ):
+        """OpenRouter cloud backend should bootstrap from OPENROUTER_API_KEY when no key is persisted."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("STEPFUN_API_KEY", raising=False)
+        monkeypatch.delenv("SPOKE_COMMAND_CLOUD_API_KEY", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_url_preference",
+            lambda self: "https://openrouter.ai/api/v1",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_api_key_preference",
+            lambda self: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self: "stepfun/step-3.5-flash:free",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[
+                    (
+                        "stepfun/step-3.5-flash:free",
+                        "stepfun/step-3.5-flash:free",
+                        False,
+                    )
+                ],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="https://openrouter.ai/api/v1",
+            model="stepfun/step-3.5-flash:free",
+            api_key="openrouter-test-key",
+        )
+        assert d._command_backend == "cloud"
+        assert d._command_url == "https://openrouter.ai/api/v1"
+        assert d._command_model_id == "stepfun/step-3.5-flash:free"
+
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch

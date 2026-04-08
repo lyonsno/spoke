@@ -847,10 +847,7 @@ class SpokeAppDelegate(NSObject):
                     or self._load_command_model_preference()
                     or _DEFAULT_CLOUD_MODEL
                 )
-                cloud_api_key = (
-                    self._load_cloud_api_key_preference()
-                    or os.environ.get("GEMINI_API_KEY", "")
-                )
+                cloud_api_key = self._resolve_command_cloud_api_key(command_url)
             else:
                 self._command_model_id = (
                     self._load_command_model_preference()
@@ -4026,6 +4023,22 @@ class SpokeAppDelegate(NSObject):
     def _load_cloud_model_preference(self) -> str | None:
         val = self._load_preferences().get("command_cloud_model")
         return str(val).strip() if val else None
+
+    def _resolve_command_cloud_api_key(self, cloud_url: str | None) -> str:
+        persisted = self._load_cloud_api_key_preference()
+        if persisted:
+            return persisted
+        generic = os.environ.get("SPOKE_COMMAND_CLOUD_API_KEY", "").strip()
+        if generic:
+            return generic
+        host = _url_host(cloud_url or "").lower()
+        if "openrouter.ai" in host:
+            return os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if "stepfun" in host:
+            return os.environ.get("STEPFUN_API_KEY", "").strip()
+        if "googleapis.com" in host or "generativelanguage.googleapis.com" in host:
+            return os.environ.get("GEMINI_API_KEY", "").strip()
+        return ""
 
     def _save_cloud_preferences(
         self, cloud_url: str, cloud_api_key: str, cloud_model: str
