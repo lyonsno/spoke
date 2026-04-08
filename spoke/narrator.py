@@ -197,16 +197,24 @@ class ThinkingNarrator:
         with self._lock:
             self._active = False
             remaining_buffer = self._buffer
+            buffer_tokens = _rough_token_count(remaining_buffer)
             self._buffer = ""
             if self._thinking_start > 0:
                 elapsed = time.monotonic() - self._thinking_start
             else:
                 elapsed = 0.0  # no thinking tokens were received
             messages = list(self._messages)
+            num_summaries = (len(messages) - 1) // 2  # system + pairs
+
+        logger.info(
+            "Narrator stop_and_summarize: elapsed=%.1fs buffer_tokens=%d summaries=%d",
+            elapsed, buffer_tokens, num_summaries,
+        )
 
         if not self._on_thinking_collapsed:
             return
         if elapsed < 1.0:
+            logger.info("Narrator: sub-second thinking, skipping collapsed summary")
             return  # sub-second thinking — not worth reporting
 
         # Immediately emit the bare duration so it's in the overlay
