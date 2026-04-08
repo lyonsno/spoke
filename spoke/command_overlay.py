@@ -605,7 +605,7 @@ class CommandOverlay(NSObject):
         )
         trailing.addAttribute_value_range_(
             NSFontAttributeName,
-            NSFont.systemFontOfSize_weight_(8.0, 0.0),
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
             (0, 1),
         )
         attr_str.appendAttributedString_(trailing)
@@ -650,8 +650,13 @@ class CommandOverlay(NSObject):
             self._collapsed_text += "\n" + text
         else:
             self._collapsed_text += text
-        # Append to live text view — no extra newline since tool
-        # indicators and response text already provide spacing
+        # If the final response has already been set, re-rebuild so the
+        # topic lands in the right position (after "Thought for Xs",
+        # before the response text).
+        if is_topic_append and self._response_text:
+            self.set_response_text(self._response_text)
+            return
+        # Append to live text view
         collapsed_str = self._make_collapsed_attributed(text)
         self._text_view.textStorage().appendAttributedString_(collapsed_str)
         self._update_layout()
