@@ -1278,23 +1278,48 @@ class CloudTTSClient:
             self._model, self._voice, len(text),
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                body = resp.read()
-        except urllib.error.HTTPError as exc:
-            detail = ""
+        last_exc = None
+        for attempt in range(3):
+            if self._cancelled:
+                return None
             try:
-                detail = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                    body = resp.read()
+                break  # success
+            except urllib.error.HTTPError as exc:
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                if exc.code in (500, 502, 503) and attempt < 2:
+                    wait = (attempt + 1) * 2
+                    logger.warning(
+                        "TTS cloud HTTP %d (attempt %d/3), retrying in %ds",
+                        exc.code, attempt + 1, wait,
+                    )
+                    time.sleep(wait)
+                    # Rebuild request — urllib consumes the data buffer
+                    req = urllib.request.Request(
+                        url, data=data,
+                        headers={"Content-Type": "application/json", "x-goog-api-key": self._api_key},
+                        method="POST",
+                    )
+                    last_exc = exc
+                    continue
+                raise RuntimeError(
+                    f"Gemini TTS HTTP {exc.code}: {detail or exc.reason} "
+                    f"(model={self._model}, voice={self._voice})"
+                ) from exc
+            except urllib.error.URLError as exc:
+                raise RuntimeError(
+                    f"Gemini TTS unreachable: {exc.reason}"
+                ) from exc
+        else:
+            # All 3 attempts failed with retryable errors
             raise RuntimeError(
-                f"Gemini TTS HTTP {exc.code}: {detail or exc.reason} "
-                f"(model={self._model}, voice={self._voice})"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(
-                f"Gemini TTS unreachable: {exc.reason}"
-            ) from exc
+                f"Gemini TTS failed after 3 attempts (last: HTTP {getattr(last_exc, 'code', '?')})"
+            ) from last_exc
 
         response = _json.loads(body)
 
