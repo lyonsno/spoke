@@ -122,8 +122,9 @@ _SYSTEM_PROMPT = (
     "When the user references epistaxis state, use run_epistaxis_ops.\n\n"
     "You have tools to resolve exact text and act on it:\n"
     "- capture_context: captures the frontmost window and returns OCR text "
-    "blocks with refs. Use when the user refers to something visible on screen "
-    '(e.g. "read that", "what does this say", "read the tab title").\n'
+    "blocks with refs. On vision-capable backends it can also attach a "
+    "downscaled screenshot for direct visual inspection. Use when the user "
+    'refers to something visible on screen (e.g. "read that", "what does this say", "read the tab title").\n'
     "- read_aloud: resolves a source ref to exact text and speaks it via TTS. "
     "Pass block refs from capture_context directly (e.g., 'scene-abc:block-1'). "
     "Other ref formats: 'clipboard:current', 'selection:frontmost', "
@@ -152,7 +153,8 @@ _SYSTEM_PROMPT = (
     "capture_context first, then read_aloud with a block ref. For selected text "
     "or the clipboard, use read_aloud directly with selection:frontmost or "
     "clipboard:current. For arbitrary phrases the user asks you to say, use "
-    "read_aloud with literal:<exact text>. Use add_to_tray when the user "
+    "read_aloud with literal:<exact text to speak>. Do not pretend read_aloud "
+    "is limited to visible text. Use add_to_tray when the user "
     "wants content kept for later use rather than spoken immediately.\n\n"
     "Named commands (MUST be executed via tool calls, NEVER as plain text):\n"
     "- WALLACE: This is a COMMAND, not a name. The user is NOT named Wallace. "
@@ -256,12 +258,39 @@ class CommandClient:
         messages.append({"role": "user", "content": utterance})
         return messages
 
+    def _supports_multimodal_tool_content(self) -> bool:
+        """Whether the current backend is likely to accept image tool content."""
+        model = self._model.lower()
+        base_url = self._base_url.lower()
+        return (
+            "googleapis.com" in base_url
+            or "gemini" in model
+            or "gpt-4.1" in model
+            or "gpt-4o" in model
+        )
+
+    def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:
+        """Return (message_content, log_preview_text) for a tool result."""
+        if isinstance(tool_result, dict) and "content" in tool_result:
+            content = tool_result["content"]
+            log_text = tool_result.get("log_text")
+            if not isinstance(log_text, str):
+                if isinstance(content, str):
+                    log_text = content
+                else:
+                    log_text = json.dumps(content)
+            return content, log_text
+        if isinstance(tool_result, str):
+            return tool_result, tool_result
+        serialized = json.dumps(tool_result)
+        return serialized, serialized
+
     def stream_command(
         self,
         utterance: str,
         *,
         tools: list[dict] | None = None,
-        tool_executor: Callable[..., str] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
     ) -> Generator[str, None, str]:
         """Compatibility wrapper yielding only assistant content deltas.
 
@@ -292,7 +321,7 @@ class CommandClient:
         utterance: str,
         *,
         tools: list[dict] | None = None,
-        tool_executor: Callable[..., str] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Generator[CommandStreamEvent, None, str]:
         """Send a command utterance and yield semantic stream events.
@@ -610,16 +639,25 @@ class CommandClient:
                         fn_args = {}
 
                     logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
-                    tool_result = tool_executor(name=fn_name, arguments=fn_args)
+                    tool_result = tool_executor(
+                        name=fn_name,
+                        arguments=fn_args,
+                        tool_output_mode=(
+                            "multimodal"
+                            if self._supports_multimodal_tool_content()
+                            else "text"
+                        ),
+                    )
+                    tool_content, tool_preview = self._normalize_tool_result(tool_result)
                     logger.info(
                         "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_result), tool_result[:200],
+                        fn_name, len(tool_preview), tool_preview[:200],
                     )
 
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": tool_result,
+                        "content": tool_content,
                     })
 
                 logger.info(
