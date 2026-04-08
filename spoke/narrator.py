@@ -76,9 +76,9 @@ _LOADING_VAMP_INTERVAL_S = 8.0  # seconds between subsequent vamp lines
 
 # ── chunking parameters ─────────────────────────────────────────────
 
-_TARGET_CHUNK_TOKENS = 300
-_MIN_INTERVAL_S = 5.0   # minimum seconds between narrator calls
-_MAX_INTERVAL_S = 15.0  # dispatch even with few tokens after this long
+_TARGET_CHUNK_TOKENS = 80   # lowered to catch short-reasoner bursts
+_MIN_INTERVAL_S = 3.0   # minimum seconds between narrator calls
+_MAX_INTERVAL_S = 6.0   # dispatch even with few tokens after this long
 _MAX_TOKENS = 30         # generation budget for each summary
 
 
