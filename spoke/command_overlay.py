@@ -573,7 +573,7 @@ class CommandOverlay(NSObject):
             NSShadow,
         )
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
-        _USER_FONT_SIZE = 19.0  # ~40% larger than body text
+        _USER_FONT_SIZE = 13.5  # ~40% larger than body text
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
@@ -728,7 +728,7 @@ class CommandOverlay(NSObject):
 
         if self._utterance_text:
             from AppKit import NSFontAttributeName
-            _USER_FONT_SIZE = 19.0
+            _USER_FONT_SIZE = 13.5
             user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
             utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
             utt.addAttribute_value_range_(
