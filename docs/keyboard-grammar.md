@@ -42,6 +42,21 @@ Each key has a consistent identity across the entire grammar:
 The hold threshold defaults to 200ms (configurable via `SPOKE_HOLD_MS`, which
 sets the threshold in the `SpacebarHoldDetector`).
 
+## Idle controls
+
+These gestures are available when you are not already in the tray and not in
+the middle of an active hold:
+
+| Gesture | Result |
+|---|---|
+| Shift tap while idle | Toggle TTS audibility |
+| Double-tap Shift while idle | Toggle Terror Form HUD |
+| Enter during `WAITING` (before the hold threshold fires) | Toggle assistant overlay visibility |
+
+These are secondary controls, not part of the core text/tray/assistant routing
+surface. They still stay inside the same three-key cluster, which keeps them
+compatible with the overall physical grammar.
+
 ## Disposition at release
 
 For the ordinary recording path, utterance disposition is decided when capture

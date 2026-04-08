@@ -1,16 +1,19 @@
 # spoke
 
-System-wide dictation, tray capture, and voice-operator control for macOS.
+Speech-native control surface for macOS.
 
 `spoke` is a menubar app built with PyObjC. Hold the spacebar anywhere on the
-system to dictate, route the utterance into a tray for review, send it to an
-assistant overlay, or keep recording hands-free. Preview/final transcription,
-assistant inference, and TTS each have their own backend selection and persist
-in `~/Library/Application Support/Spoke/model_preferences.json`.
+system to dictate, route the utterance into a tray for review, send it into a
+tool-calling assistant, or keep recording hands-free. It is not just
+"dictation with an AI mode": `spoke` treats direct text insertion, tray review,
+assistant dispatch, and spoken playback as separate surfaces with explicit
+transitions between them. Preview/final transcription, assistant inference, and
+TTS each have their own backend selection and persist in
+`~/Library/Application Support/Spoke/model_preferences.json`.
 
 <video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
 
-## What spoke is now
+## Current surface
 
 - System-wide hold-to-dictate with paste verification and tray fail-open
 - Live preview overlay and screen-edge glow while recording
@@ -35,6 +38,10 @@ Optional wake words -> start or stop hands-free dictation without touching the k
 Quick taps still produce a normal space. Longer holds trigger recording,
 preview text, and the overlay/glow surface. If insertion cannot be verified,
 `spoke` falls back to the tray instead of silently losing text.
+
+Outside active recording, a single idle Shift tap toggles TTS audibility,
+double-tap Shift toggles Terror Form, and pressing Enter during the pre-hold
+`WAITING` window toggles the assistant overlay.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
@@ -102,8 +109,9 @@ The current menu surface can independently control:
 - `TTS Backend`: local runtime, MLX-audio sidecar, or Gemini cloud
 
 Environment variables still matter, but mostly as seed values or smoke/test
-overrides. Once preferences exist, the app uses the saved backend/model state
-instead of pretending the env is the whole story.
+overrides. In particular, assistant and narrator URLs are still live env-driven
+inputs during bootstrap and smoke flows. Once preferences exist, the app uses
+the saved backend/model state instead of pretending the env is the whole story.
 
 ## Remote sidecars
 
@@ -161,7 +169,12 @@ to `model_preferences.json`; it is not currently driven by a dedicated env var.
 | `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` | unset | Enables wake-word hands-free mode. |
 | `SPOKE_WAKEWORD_LISTEN` | `computer` | Wake word that starts hands-free dictation. |
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
+| `SPOKE_WAKEWORD_LISTEN_PPN` | unset | Optional custom Porcupine model file for the listen wake word. |
+| `SPOKE_WAKEWORD_SLEEP_PPN` | unset | Optional custom Porcupine model file for the sleep wake word. |
 | `SPOKE_NARRATOR_URL` | unset | Optional separate OpenAI-compatible narrator sidecar URL. Defaults to the assistant endpoint. |
+| `SPOKE_NARRATOR_MODEL` | `Bonsai-8B-mlx-1bit` | Narrator model used for thinking summaries and loading-vamp lines. |
+| `SPOKE_NARRATOR_API_KEY` | unset | Optional narrator bearer token. Falls back to the assistant API key. |
+| `SPOKE_NARRATOR_ENABLED` | `1` | Set to `0` to disable narrator summaries entirely. |
 | `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
 | `SPOKE_GMAIL_CREDENTIALS_PATH` | `~/Library/Application Support/Spoke/gmail_credentials.json` | Local Gmail OAuth material for the bounded `query_gmail` tool. |
 | `SPOKE_GMAIL_CLIENT_ID` | unset | Optional Gmail OAuth client id override. |
