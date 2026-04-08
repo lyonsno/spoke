@@ -96,11 +96,12 @@ class TestHoldCallbacks:
         d._on_hold_start()
 
         d._glow.hide.assert_called_once_with()
-        d._overlay.hide.assert_called_once_with()
+        d._overlay.flash_notice.assert_called_once()
         d._menubar.set_recording.assert_any_call(True)
         d._menubar.set_recording.assert_any_call(False)
-        d._menubar.set_status_text.assert_called_with("Audio input error — try again")
-        assert d._preview_active is False
+        d._menubar.set_status_text.assert_called_with(
+            "Audio unavailable — memory pressure"
+        )
 
     def test_hold_end_stops_capture_and_spawns_thread(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

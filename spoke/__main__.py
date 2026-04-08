@@ -871,6 +871,9 @@ class SpokeAppDelegate(NSObject):
                     on_summary=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "narratorSummary:", {"summary": s}, False
                     ),
+                    on_thinking_collapsed=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "narratorCollapsed:", {"text": s}, False
+                    ),
                 )
             else:
                 self._narrator = None
@@ -2898,14 +2901,15 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         stale_break = False
-        narrator_started = False
+        narrator_started = False  # tracks thinking narrator state, NOT vamp
         vamp_started = False
         first_event_received = False
         try:
-            # Start the narrator if available
+            # Start loading vamp if narrator is available.
+            # Note: narrator_started stays False — it tracks the thinking
+            # narrator lifecycle, not the vamp. The vamp uses the narrator's
+            # on_summary callback independently.
             if self._narrator is not None:
-                self._narrator.start()
-                narrator_started = True
                 # Start loading vamp — runs in background while the HTTP
                 # request blocks during model loading.  Stops when the
                 # first event arrives (model is loaded and generating).
@@ -2914,6 +2918,11 @@ class SpokeAppDelegate(NSObject):
                     utterance=utterance, model_id=model_id
                 )
                 vamp_started = True
+                # Enable color shimmer — vamp lines will appear after
+                # the grace period if the model is genuinely loading.
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "narratorShimmer:", {"active": True}, False
+                )
 
             for event in self._command_client.stream_command_events(
                 utterance,
@@ -2931,16 +2940,35 @@ class SpokeAppDelegate(NSObject):
                     if vamp_started and self._narrator is not None:
                         self._narrator.stop_loading_vamp()
                         vamp_started = False
+                    # Only hide narrator label if this ISN'T a thinking event —
+                    # thinking will use the label for live summaries.
+                    if event.kind != "thinking_delta":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "narratorHide:", {"token": token}, False
+                        )
 
                 if event.kind == "thinking_delta":
                     # Feed thinking tokens to the narrator sidecar
                     if self._narrator is not None:
+                        if not narrator_started:
+                            self._narrator.start()
+                            narrator_started = True
+                            # Unsuppress and show "Thinking" on main thread
+                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                "narratorUnsuppressAndShow:", {
+                                    "token": token,
+                                }, False
+                            )
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
-                    # Stop narrator when visible content starts
+                    # Stop narrator when visible content starts — produce collapsed summary
                     if narrator_started and self._narrator is not None:
-                        self._narrator.stop()
+                        self._narrator.stop_and_summarize()
                         narrator_started = False
+                        # Hide narrator label immediately so it doesn't overlap response
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "narratorHide:", {"token": token}, False
+                        )
                     if event.text:
                         full_response += event.text
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2972,7 +3000,11 @@ class SpokeAppDelegate(NSObject):
             # Repair history only when a stale token break interrupts the
             # streaming loop before the command client can finalize the turn.
             if stale_break and full_response:
-                self._command_client._history.append((utterance, full_response))
+                # Stale break — no full message chain available, store minimal pair
+                self._command_client._history.append([
+                    {"role": "user", "content": utterance},
+                    {"role": "assistant", "content": full_response},
+                ])
                 max_h = self._command_client._max_history
                 if len(self._command_client._history) > max_h:
                     self._command_client._history.pop(0)
@@ -3020,6 +3052,47 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorUnsuppressAndShow_(self, payload: dict) -> None:
+        """Main thread: unsuppress narrator and show 'Thinking' indicator."""
+        if payload.get("token") != self._transcription_token:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            overlay._narrator_suppressed = False
+            overlay.set_narrator_summary("Thinking")
+
+    def narratorHide_(self, payload: dict) -> None:
+        """Main thread: hide the narrator label immediately."""
+        if payload.get("token") != self._transcription_token:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay._hide_narrator()
+            except Exception:
+                logger.exception("Command overlay failed to hide narrator")
+
+    def narratorShimmer_(self, payload: dict) -> None:
+        """Main thread: enable/disable color shimmer on narrator label."""
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_narrator_shimmer(payload.get("active", False))
+            except Exception:
+                logger.exception("Command overlay failed to set narrator shimmer")
+
+    def narratorCollapsed_(self, payload: dict) -> None:
+        """Main thread: inject collapsed thinking summary into the overlay."""
+        text = payload.get("text", "")
+        if not text:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_thinking_collapsed(text)
+            except Exception:
+                logger.exception("Command overlay failed to set collapsed thinking")
 
     def narratorSummary_(self, payload: dict) -> None:
         """Main thread: update the overlay with a narrator thinking summary."""

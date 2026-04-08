@@ -220,6 +220,15 @@ class CommandOverlay(NSObject):
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
+        self._narrator_typewriter_timer: NSTimer | None = None
+        self._narrator_full_text = ""    # full accumulated text (all lines)
+        self._narrator_revealed = 0      # chars revealed so far
+        self._narrator_lines: list[str] = []  # past summary lines
+        self._narrator_shimmer_timer: NSTimer | None = None
+        self._narrator_shimmer_phase = 0.0  # 0–1 cycling hue phase
+        self._narrator_shimmer_active = False
+        self._narrator_suppressed = False  # True after hide, blocks late callbacks
+        self._collapsed_text = ""  # accumulated collapsed thinking text
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -352,11 +361,17 @@ class CommandOverlay(NSObject):
         content.addSubview_(self._thinking_label)
 
         # Narrator summary label — below the thinking timer, left-aligned
-        # Matches the user utterance text style (same font, adaptive color)
-        from AppKit import NSTextAlignmentLeft, NSLineBreakByTruncatingTail
-        narrator_h = 22.0
+        # Up to 3 lines of wrapping text; old summaries accumulate above new ones
+        from AppKit import NSTextAlignmentLeft, NSLineBreakByWordWrapping
+        _NARRATOR_FONT_SIZE = 12.0
+        _NARRATOR_LINE_HEIGHT = 15.0
+        _NARRATOR_MAX_LINES = 1
+        narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
-        narrator_y = timer_y - narrator_h - 2
+        # Position below the thinking timer with generous gap.
+        # For long user text that wraps, the narrator label will overlap
+        # but that's acceptable during the brief thinking phase.
+        narrator_y = timer_y - narrator_h - 20
         narrator_w = _OVERLAY_WIDTH - 28
         self._narrator_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)
@@ -366,14 +381,15 @@ class CommandOverlay(NSObject):
         self._narrator_label.setBezeled_(False)
         self._narrator_label.setDrawsBackground_(False)
         self._narrator_label.setAlignment_(NSTextAlignmentLeft)
-        self._narrator_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
+        self._narrator_label.setLineBreakMode_(NSLineBreakByWordWrapping)
+        self._narrator_label.setMaximumNumberOfLines_(_NARRATOR_MAX_LINES)
         self._narrator_label.setFont_(
-            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0)
+            NSFont.systemFontOfSize_weight_(_NARRATOR_FONT_SIZE, 0.0)
         )
         # Initial color set; will be updated by _apply_narrator_theme()
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
         )
         self._narrator_label.setStringValue_("")
         self._narrator_label.setHidden_(True)
@@ -397,6 +413,8 @@ class CommandOverlay(NSObject):
         self._streaming = True
         self._response_text = ""
         self._utterance_text = ""
+        self._narrator_suppressed = False  # allow narrator for new command
+        self._collapsed_text = ""  # clear collapsed thinking for new command
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -552,10 +570,17 @@ class CommandOverlay(NSObject):
             NSShadow,
         )
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        _USER_FONT_SIZE = 13.5  # ~40% larger than body text
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
             NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+            (0, len(text)),
+        )
+        from AppKit import NSFontAttributeName
+        attr_str.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
             (0, len(text)),
         )
         glow = NSShadow.alloc().init()
@@ -567,7 +592,70 @@ class CommandOverlay(NSObject):
         attr_str.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(text))
         )
+        # Append a blank line after the utterance for visual breathing room
+        from AppKit import NSFontAttributeName
+        trailing = NSMutableAttributedString.alloc().initWithString_("\n")
+        trailing.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+            (0, 1),
+        )
+        trailing.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
+            (0, 1),
+        )
+        attr_str.appendAttributedString_(trailing)
         self._text_view.textStorage().setAttributedString_(attr_str)
+        self._update_layout()
+
+    def _make_collapsed_attributed(self, text: str):
+        """Build an attributed string for collapsed thinking text."""
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        attr = NSMutableAttributedString.alloc().initWithString_(text)
+        rng = (0, len(text))
+        # Warm muted tone — visually distinct from tool indicators (cool/gray)
+        attr.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.65, 0.62, 0.55, 0.45),
+            rng,
+        )
+        attr.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
+            rng,
+        )
+        return attr
+
+    def set_thinking_collapsed(self, text: str) -> None:
+        """Inject or append to a collapsed thinking summary in the text view.
+
+        "Thought for Xs" starts a new collapsed entry.
+        " · topic" appends to the current entry — but only if no response
+        tokens have started streaming yet. Late topics are silently dropped
+        to avoid corrupting the response text.
+        """
+        if self._text_view is None or not self._visible:
+            return
+        is_topic_append = text.startswith(" · ")
+        # Track with newline separators for set_response_text rebuild
+        if not is_topic_append and self._collapsed_text:
+            self._collapsed_text += "\n" + text
+        else:
+            self._collapsed_text += text
+        # If the final response has already been set, re-rebuild so the
+        # topic lands in the right position (after "Thought for Xs",
+        # before the response text).
+        if is_topic_append and self._response_text:
+            self.set_response_text(self._response_text)
+            return
+        # Append to live text view
+        collapsed_str = self._make_collapsed_attributed(text)
+        self._text_view.textStorage().appendAttributedString_(collapsed_str)
         self._update_layout()
 
     def append_token(self, token: str) -> None:
@@ -582,6 +670,7 @@ class CommandOverlay(NSObject):
             from AppKit import (
                 NSMutableAttributedString,
                 NSForegroundColorAttributeName,
+                NSFontAttributeName,
             )
             sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
             sep.addAttribute_value_range_(
@@ -589,9 +678,24 @@ class CommandOverlay(NSObject):
                 NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
                 (0, 2),
             )
+            # Reset font to body size so the collapsed summary's 12pt
+            # doesn't bleed into the first response token.
+            sep.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+                (0, 2),
+            )
             self._text_view.textStorage().appendAttributedString_(sep)
 
-        frag = self._make_response_fragment(token)
+        # Style tool call indicators smaller (like collapsed thinking)
+        # Covers: [calling tool…], [~N tokens], [screen capture · ~N tokens],
+        #         ["query" in path], [path · ~N tokens], [100%]
+        stripped = token.lstrip("\n ")
+        is_tool_indicator = stripped.startswith("[") and not stripped.startswith("[!")
+        if is_tool_indicator:
+            frag = self._make_tool_indicator_fragment(token)
+        else:
+            frag = self._make_response_fragment(token)
         self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
@@ -620,11 +724,18 @@ class CommandOverlay(NSObject):
         combined = NSMutableAttributedString.alloc().initWithString_("")
 
         if self._utterance_text:
+            from AppKit import NSFontAttributeName
+            _USER_FONT_SIZE = 13.5
             user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
             utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
             utt.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
                 NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+                (0, len(self._utterance_text)),
+            )
+            utt.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
                 (0, len(self._utterance_text)),
             )
             glow = NSShadow.alloc().init()
@@ -638,11 +749,23 @@ class CommandOverlay(NSObject):
             )
             combined.appendAttributedString_(utt)
 
+            # Re-inject collapsed thinking text if present
+            if self._collapsed_text:
+                combined.appendAttributedString_(
+                    self._make_collapsed_attributed("\n" + self._collapsed_text)
+                )
+
             if text:
                 sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
                 sep.addAttribute_value_range_(
                     NSForegroundColorAttributeName,
                     NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                    (0, 2),
+                )
+                from AppKit import NSFontAttributeName
+                sep.addAttribute_value_range_(
+                    NSFontAttributeName,
+                    NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
                     (0, 2),
                 )
                 combined.appendAttributedString_(sep)
@@ -675,6 +798,27 @@ class CommandOverlay(NSObject):
             return (x + m, m, c + m)
         else:
             return (c + m, m, x + m)
+
+    def _make_tool_indicator_fragment(self, token: str):
+        """Create a small, cool-toned attributed string for tool call indicators."""
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        frag = NSMutableAttributedString.alloc().initWithString_(token)
+        # Cool blue-gray — distinct from warm thinking collapsed text
+        frag.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.55, 0.58, 0.65, 0.40),
+            (0, len(token)),
+        )
+        frag.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
+            (0, len(token)),
+        )
+        return frag
 
     def _make_response_fragment(self, token: str):
         """Create an attributed string fragment for a response token.
@@ -1107,25 +1251,108 @@ class CommandOverlay(NSObject):
         """
         self._thinking_inverted = True
         self._apply_thinking_label_theme()
+        # Hide narrator summary — thinking phase is over
+        self._hide_narrator()
 
     def set_narrator_summary(self, summary: str) -> None:
-        """Update the narrator summary line displayed during thinking."""
+        """Show the most recent narrator summary with typewriter reveal.
+
+        Ignores late callbacks if the narrator has been suppressed
+        (e.g. vamp stopped but a queued summary arrives after).
+        Replaces any previous summary — only the latest is shown.
+        """
+        if self._narrator_label is None or self._narrator_suppressed:
+            return
+        # Cancel any in-progress typewriter
+        if self._narrator_typewriter_timer is not None:
+            self._narrator_typewriter_timer.invalidate()
+            self._narrator_typewriter_timer = None
+
+        self._narrator_new_line = summary
+        self._narrator_full_text = summary
+        self._narrator_revealed = 0
+        self._narrator_label.setStringValue_("")
+        self._narrator_label.setHidden_(False)
+        self._apply_narrator_theme()
+
+        # Start typewriter for the new line: ~30ms per character
+        self._narrator_typewriter_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.03, self, "narratorTypewriterTick:", None, True
+            )
+        )
+
+    def narratorTypewriterTick_(self, timer) -> None:
+        """Reveal one character of the newest narrator summary line."""
+        self._narrator_revealed += 1
+        if self._narrator_revealed >= len(self._narrator_new_line):
+            # Done — show full text and stop
+            if self._narrator_label is not None:
+                self._narrator_label.setStringValue_(self._narrator_full_text)
+            if self._narrator_typewriter_timer is not None:
+                self._narrator_typewriter_timer.invalidate()
+                self._narrator_typewriter_timer = None
+            return
         if self._narrator_label is not None:
-            self._narrator_label.setStringValue_(summary)
-            self._narrator_label.setHidden_(False)
+            self._narrator_label.setStringValue_(
+                self._narrator_new_line[:self._narrator_revealed]
+            )
+
+    def set_narrator_shimmer(self, active: bool) -> None:
+        """Enable/disable the color wave shimmer on the narrator label."""
+        self._narrator_shimmer_active = active
+        if active:
+            if self._narrator_shimmer_timer is None:
+                self._narrator_shimmer_phase = 0.0
+                self._narrator_shimmer_timer = (
+                    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                        0.05, self, "narratorShimmerTick:", None, True
+                    )
+                )
+        else:
+            if self._narrator_shimmer_timer is not None:
+                self._narrator_shimmer_timer.invalidate()
+                self._narrator_shimmer_timer = None
+            # Revert to default narrator theme
             self._apply_narrator_theme()
+
+    def narratorShimmerTick_(self, timer) -> None:
+        """Cycle the narrator label through soft color waves."""
+        import colorsys
+        self._narrator_shimmer_phase = (self._narrator_shimmer_phase + 0.008) % 1.0
+        if self._narrator_label is None or self._narrator_label.isHidden():
+            return
+        # Soft pastel wave: low saturation, medium-high value
+        # Phase controls hue; we use a slow sine for saturation breathing
+        import math
+        hue = self._narrator_shimmer_phase
+        sat = 0.25 + 0.15 * math.sin(self._narrator_shimmer_phase * math.pi * 4)
+        val = 0.75 + 0.10 * math.sin(self._narrator_shimmer_phase * math.pi * 2.5)
+        r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+        self._narrator_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 0.45)
+        )
 
     def _apply_narrator_theme(self) -> None:
         """Match narrator label color to user utterance style."""
         if self._narrator_label is None or self._narrator_label.isHidden():
             return
+        if self._narrator_shimmer_active:
+            return  # shimmer is driving the color
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
         )
 
     def _hide_narrator(self) -> None:
-        """Hide the narrator summary label."""
+        """Hide the narrator summary label and stop any typewriter/shimmer."""
+        self._narrator_suppressed = True
+        if self._narrator_typewriter_timer is not None:
+            self._narrator_typewriter_timer.invalidate()
+            self._narrator_typewriter_timer = None
+        self.set_narrator_shimmer(False)
+        self._narrator_lines = []
+        self._narrator_full_text = ""
         if self._narrator_label is not None:
             self._narrator_label.setHidden_(True)
             self._narrator_label.setStringValue_("")
@@ -1224,6 +1451,13 @@ class CommandOverlay(NSObject):
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
+
+            # Hide narrator label when response content is streaming —
+            # the fixed-position label would overlap scrolling content.
+            # Don't hide during loading (only collapsed/loading text present).
+            if self._response_text and self._narrator_label is not None:
+                if not self._narrator_label.isHidden():
+                    self._hide_narrator()
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()

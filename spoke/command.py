@@ -71,13 +71,19 @@ _DEFAULT_COMMAND_URL = "http://localhost:8001"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
 
+
+def _rough_tool_result_tokens(text: str) -> int:
+    """Approximate token count for a tool result."""
+    return int(len(text.split()) * 1.3)
+
 _SYSTEM_PROMPT = (
-    "Respond directly to the user's request. "
-    "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
+    "You are an assistant with access to tools for interacting with the user's "
+    "development environment, screen, clipboard, email, and project state. "
+    "Think carefully and use your tools when appropriate.\n\n"
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "
-    "'epistaxis/projects/spoke/epistaxis.md' or 'donttype/spoke/command.py'. "
-    "Key repos here include: spoke (this app — voice interface), omlx (local model server), "
+    "'epistaxis/projects/spoke/epistaxis.md' or 'spoke/spoke/command.py'. "
+    "Key repos here include: spoke (this app), omlx (local model server), "
     "mlx-audio (TTS/ASR sidecar), epanorthosis (automated review), and epistaxis "
     "(cross-session state and coordination).\n\n"
     "Epistaxis (~/dev/epistaxis/) is the user's durable off-repo state system. Layout:\n"
@@ -190,11 +196,14 @@ class CommandClient:
         )
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
-        # Ring buffer: list of (user_utterance, assistant_response) pairs
-        self._history: list[tuple[str, str]] = []
+        # Ring buffer: list of message chains (each a list[dict]).
+        # Each entry is the full sequence of messages for one turn:
+        # [user, assistant, tool_result, assistant, ...] preserving
+        # tool calls and results for multi-turn context.
+        self._history: list[list[dict]] = []
 
     @property
-    def history(self) -> list[tuple[str, str]]:
+    def history(self) -> list[list[dict]]:
         return list(self._history)
 
     def list_models(self) -> list[str]:
@@ -220,11 +229,12 @@ class CommandClient:
 
         The history is ordered oldest-first so the stable prefix stays
         KV-cache-friendly — new pairs are appended at the end.
+        Each history entry is a full message chain including tool calls
+        and results from that turn.
         """
         messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        for user_text, assistant_text in self._history:
-            messages.append({"role": "user", "content": user_text})
-            messages.append({"role": "assistant", "content": assistant_text})
+        for chain in self._history:
+            messages.extend(chain)
         messages.append({"role": "user", "content": utterance})
         return messages
 
@@ -254,9 +264,8 @@ class CommandClient:
             elif event.kind == "assistant_final":
                 final_response = event.text
 
-        if self._history and self._history[-1][0] == utterance:
-            self._history[-1] = (utterance, visible_response or final_response)
-
+        # History is now managed by stream_command_events() which stores
+        # the full message chain including tool calls and results.
         return visible_response or final_response
 
     def stream_command_events(
@@ -289,6 +298,8 @@ class CommandClient:
             Completed function call emitted by the model for the current round.
         """
         messages = self._build_messages(utterance)
+        # Track where this turn's messages start (after system + history)
+        turn_start_idx = len(messages) - 1  # points to the user message
         full_response = ""
 
         # Safety cap on tool call round-trips.  With cancel_check wired
@@ -337,6 +348,7 @@ class CommandClient:
 
             finish_reason = None
             first_token_logged = False
+            first_delta_logged = False
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
@@ -348,7 +360,7 @@ class CommandClient:
             thinking_tag_buf = ""  # partial tag accumulator
 
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=300) as resp:
                     for raw_line in resp:
                         # Cancel check between SSE chunks
                         if cancel_check is not None and cancel_check():
@@ -382,6 +394,15 @@ class CommandClient:
                         fr = choice.get("finish_reason")
                         if fr:
                             finish_reason = fr
+
+                        # Log first delta for debugging thinking detection (once per round)
+                        if not first_delta_logged and delta:
+                            first_delta_logged = True
+                            logger.info(
+                                "First SSE delta keys on round %d: %s (preview: %s)",
+                                _round, list(delta.keys()),
+                                {k: str(v)[:80] for k, v in delta.items()},
+                            )
 
                         # Reasoning tokens (OpenAI reasoning_content field)
                         reasoning_token = delta.get("reasoning_content")
@@ -570,10 +591,36 @@ class CommandClient:
 
                     logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
                     tool_result = tool_executor(name=fn_name, arguments=fn_args)
+                    result_tokens = _rough_tool_result_tokens(tool_result)
                     logger.info(
-                        "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_result), tool_result[:200],
+                        "Tool %s result: %d chars (~%d tokens) (preview: %s)",
+                        fn_name, len(tool_result), result_tokens, tool_result[:200],
                     )
+
+                    # Emit a subtext line with tool result info
+                    info_parts = []
+                    if fn_name == "read_file" and fn_args.get("path"):
+                        info_parts.append(fn_args["path"])
+                    elif fn_name == "search_file":
+                        query = fn_args.get("query", "")
+                        path = fn_args.get("path", "")
+                        if query and path:
+                            info_parts.append(f'"{query}" in {path}')
+                        elif query:
+                            info_parts.append(f'"{query}"')
+                        elif path:
+                            info_parts.append(path)
+                    elif fn_name == "capture_context":
+                        info_parts.append("screen capture")
+                    if result_tokens > 0:
+                        info_parts.append(f"~{result_tokens} tokens")
+                    if info_parts:
+                        info_line = f"  [{' · '.join(info_parts)}]\n"
+                        round_content += info_line
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=info_line,
+                        )
 
                     messages.append({
                         "role": "tool",
@@ -593,8 +640,18 @@ class CommandClient:
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        # Add to ring buffer (content only, no reasoning)
-        self._history.append((utterance, full_response))
+        # Add to ring buffer — only this turn's messages (from the user
+        # utterance onward), preserving tool calls and results.
+        # Strip reasoning content from assistant messages to save context.
+        turn_messages = []
+        for msg in messages[turn_start_idx:]:
+            if msg["role"] == "assistant" and msg.get("content"):
+                # Strip <think>...</think> blocks from assistant content
+                import re
+                cleaned = re.sub(r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL).strip()
+                msg = {**msg, "content": cleaned or None}
+            turn_messages.append(msg)
+        self._history.append(turn_messages)
         if len(self._history) > self._max_history:
             self._history.pop(0)
 

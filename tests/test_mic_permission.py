@@ -117,19 +117,16 @@ class TestMicPermissionAsync:
             "micPermissionDenied:", None, False
         )
 
-    def test_portaudio_runtime_failure_resets_and_dispatches_probe_failed(
+    def test_portaudio_runtime_failure_dispatches_probe_failed(
         self, main_module, monkeypatch
     ):
-        """A hardware/runtime failure should not be reported as permission denial."""
+        """A hardware/runtime failure should dispatch micProbeFailed, not permission denial."""
         delegate = _make_mic_delegate(main_module, monkeypatch)
 
-        rec_calls = 0
         rec_called = threading.Event()
         fake_sd = MagicMock()
 
         def failing_rec(*args, **kwargs):
-            nonlocal rec_calls
-            rec_calls += 1
             rec_called.set()
             raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
 
@@ -140,38 +137,9 @@ class TestMicPermissionAsync:
             rec_called.wait(timeout=2.0)
             time.sleep(0.05)
 
-        assert rec_calls == 2, "runtime failure should get one reset-backed retry"
-        fake_sd._terminate.assert_called_once()
-        fake_sd._initialize.assert_called_once()
+        fake_sd.rec.assert_called_once()
         delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_with(
             "micProbeFailed:", None, False
-        )
-
-    def test_portaudio_runtime_failure_can_recover_after_reset(
-        self, main_module, monkeypatch
-    ):
-        """A transient PortAudio failure should succeed after reset without
-        bouncing through the permission-denied path."""
-        delegate = _make_mic_delegate(main_module, monkeypatch)
-
-        calls = []
-        fake_sd = MagicMock()
-
-        def flaky_rec(*args, **kwargs):
-            calls.append("rec")
-            if len(calls) == 1:
-                raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
-
-        fake_sd.rec.side_effect = flaky_rec
-
-        with patch.dict("sys.modules", {"sounddevice": fake_sd}):
-            delegate._request_mic_permission()
-            time.sleep(0.1)
-
-        fake_sd._terminate.assert_called_once()
-        fake_sd._initialize.assert_called_once()
-        delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_with(
-            "micPermissionGranted:", None, False
         )
 
     def test_retry_mic_permission_does_not_block_main_thread(
