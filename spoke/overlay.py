@@ -53,6 +53,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
+_OVERLAY_WINDOW_LEVEL = 25
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_PREVIEW_OVERLAY_BOTTOM_MARGIN", 80.0)
 _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
@@ -402,7 +403,7 @@ class TranscriptionOverlay(NSObject):
         self._window = _ClickableWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered, False
         )
-        self._window.setLevel_(25)  # above other windows
+        self._window.setLevel_(_OVERLAY_WINDOW_LEVEL)  # above other windows
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         self._window.setIgnoresMouseEvents_(True)
@@ -1479,7 +1480,7 @@ class TranscriptionOverlay(NSObject):
         self._recovery_hint_window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             hint_frame, 0, NSBackingStoreBuffered, False
         )
-        self._recovery_hint_window.setLevel_(25)
+        self._recovery_hint_window.setLevel_(_OVERLAY_WINDOW_LEVEL)
         self._recovery_hint_window.setOpaque_(False)
         self._recovery_hint_window.setBackgroundColor_(NSColor.clearColor())
         self._recovery_hint_window.setIgnoresMouseEvents_(True)

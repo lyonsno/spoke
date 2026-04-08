@@ -34,6 +34,8 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
+from .overlay import _OVERLAY_WINDOW_LEVEL
+
 logger = logging.getLogger(__name__)
 
 def _env(name: str, default: float) -> float:
@@ -43,6 +45,7 @@ def _env(name: str, default: float) -> float:
 
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
+_COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
 _OVERLAY_CORNER_RADIUS = 16.0
@@ -242,7 +245,7 @@ class CommandOverlay(NSObject):
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, 0, NSBackingStoreBuffered, False
         )
-        self._window.setLevel_(25)
+        self._window.setLevel_(_COMMAND_OVERLAY_WINDOW_LEVEL)
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         self._window.setIgnoresMouseEvents_(True)

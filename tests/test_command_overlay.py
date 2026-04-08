@@ -219,6 +219,18 @@ class TestShowFinishHide:
         assert overlay._streaming is False
         assert overlay._thinking_timer is None
 
+
+class TestWindowLayering:
+    """Command overlay should stack independently from the preview overlay."""
+
+    def test_setup_places_command_overlay_above_preview_overlay_level(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        sys.modules.pop("spoke.command_overlay", None)
+        overlay_mod = importlib.import_module("spoke.overlay")
+        command_mod = importlib.import_module("spoke.command_overlay")
+
+        assert command_mod._COMMAND_OVERLAY_WINDOW_LEVEL == overlay_mod._OVERLAY_WINDOW_LEVEL + 1
+
     def test_hide_clears_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
