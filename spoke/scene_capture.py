@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 # ── Default configuration ────────────────────────────────────────
 
-# Linear scale factor for model-facing image (0.5 = half each dimension).
-_DEFAULT_SCALE = 0.5
+# Linear scale factor for model-facing image (2/3 keeps more UI detail for VLMs
+# while still shrinking retina desktop captures materially).
+_DEFAULT_SCALE = 2.0 / 3.0
 
 # Minimum dimension (px) below which we skip downsampling.
 _MIN_DOWNSAMPLE_DIM = 800
@@ -75,6 +76,8 @@ class SceneCapture:
     ocr_text: str
     ocr_blocks: list[OCRBlock]
     ax_hints: list[AXHint]
+    model_image_path: str | None = None
+    model_image_media_type: str | None = None
 
 
 # ── Scene ref generation ─────────────────────────────────────────
@@ -328,7 +331,7 @@ def _downsample_size(
     if width <= _MIN_DOWNSAMPLE_DIM and height <= _MIN_DOWNSAMPLE_DIM:
         return (width, height)
 
-    return (int(width * scale), int(height * scale))
+    return (max(1, round(width * scale)), max(1, round(height * scale)))
 
 
 def _downsample_image(cg_image, scale: float = _DEFAULT_SCALE):
@@ -560,6 +563,8 @@ class SceneCaptureCache:
             try:
                 if os.path.exists(evicted.image_path):
                     os.remove(evicted.image_path)
+                if evicted.model_image_path and os.path.exists(evicted.model_image_path):
+                    os.remove(evicted.model_image_path)
             except OSError:
                 pass
             logger.debug("Evicted scene capture %s", evicted_ref)
@@ -668,6 +673,19 @@ def capture_context(
     if not _save_image(cg_image, image_path):
         logger.warning("Failed to save capture image")
         return None
+
+    model_image_path = os.path.join(cache_dir, f"{scene_ref}-model.png")
+    model_image_media_type = "image/png"
+    try:
+        model_image = _downsample_image(cg_image)
+        if not _save_image(model_image, model_image_path):
+            logger.warning("Failed to save model-facing capture image")
+            model_image_path = None
+            model_image_media_type = None
+    except Exception:
+        logger.warning("Failed to build model-facing capture image", exc_info=True)
+        model_image_path = None
+        model_image_media_type = None
     t_save = time.perf_counter()
     logger.info("capture_context: image save %.0fms", (t_save - t_capture) * 1000)
 
@@ -694,6 +712,8 @@ def capture_context(
         ocr_text=ocr_text,
         ocr_blocks=ocr_blocks,
         ax_hints=ax_hints,
+        model_image_path=model_image_path,
+        model_image_media_type=model_image_media_type,
     )
 
     if cache is not None:
