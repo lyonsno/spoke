@@ -13,21 +13,26 @@ consistent with `spoke`.
 
 ## Branching
 
-**`main-next` is the active integration branch.** For `spoke`, all new
-feature branches, fix branches, worktrees, and temporary integration-carrier
-branches should be sliced from current remote `origin/main-next`, not from
-`main` or `dev`, unless the human explicitly asks for some other historical
-or non-trunk surface.
+**`main` is the integration branch.** `main-next` is retired — it was
+force-pushed onto `main` on 2026-04-04 and the two are now identical.
+For `spoke`, all new feature branches, fix branches, worktrees, and
+temporary integration-carrier branches must be sliced from current
+remote `origin/main`, not from `main-next`, `dev`, or any other branch,
+unless the human explicitly asks for some historical or non-trunk
+surface.
 
-Treat remote `origin/main-next` as the source of truth rather than any older
-local trunk witness or smoke worktree. A local surface such as `Main Next
-Trunk` is only a refreshed witness; do not call it the current tip unless it
-has been refreshed or recreated from current `origin/main-next`.
+Before creating a worktree: `git fetch origin main` and branch from
+`origin/main`.
 
-When the user asks to land work on the integration branch, that means remote
-`origin/main-next`. Any temporary carrier branch used for verification should
-be cut fresh from current `origin/main-next`, verified there, remote-merged,
-and then cleaned up.
+Treat remote `origin/main` as the source of truth rather than any older
+local trunk witness or smoke worktree. Do not call an older local
+worktree the current tip just because it was the last place a smoke run
+happened.
+
+When the user asks to land work on the integration branch, that means
+remote `origin/main`. Any temporary carrier branch used for verification
+should be cut fresh from current `origin/main`, verified there,
+remote-merged, and then cleaned up.
 
 ## Commits
 

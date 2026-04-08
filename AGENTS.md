@@ -43,48 +43,44 @@ If commit/push is the required next step, needing sandbox/escalation approval is
 
 ## Integration Tip
 
-For `spoke`, the canonical integration tip is remote `origin/main-next`, not
-whichever older local `main-next` carry or smoke worktree happens to exist.
-
+**`main` is the integration branch.** `main-next` is retired — it was
+force-pushed onto `main` on 2026-04-04 and the two are now identical.
 All new implementation worktrees, feature branches, fix branches, and
-integration-carrier branches for `spoke` should be cut from the then-current
-`origin/main-next` unless the human explicitly asks for some other historical
-or non-trunk surface.
+integration-carrier branches for `spoke` must be cut from `origin/main`.
+Do not use `main-next`, `dev`, or any other branch as a base unless the
+human explicitly asks for some historical or non-trunk surface.
 
-When a dedicated local trunk surface is in use, refer to it by its visible
-launcher label, `Main Next Trunk`, but only treat it as the current integration
-tip after it has been refreshed or recreated from current `origin/main-next`.
+Before creating a worktree: `git fetch origin main` and branch from
+`origin/main`.
 
-Do not present an older local `main-next` worktree as "the current tip" just
-because it is named like a trunk surface or was the last place a smoke run
-happened.
+Treat remote `origin/main` as the source of truth rather than any older
+local trunk witness or smoke worktree. Do not present an older local
+worktree as "the current tip" just because it was the last place a smoke
+run happened.
 
 ## Integration Landings
 
-When the user says to merge or land something on the integration branch, that
-means remote `origin/main-next`.
+When the user says to merge or land something on the integration branch,
+that means remote `origin/main`.
 
-An intermediate branch may still be used as a temporary landing carrier for
-verification, but it is only a short-lived transport surface:
+An intermediate branch may still be used as a temporary landing carrier
+for verification, but it is only a short-lived transport surface:
 
-- cut it fresh from the then-current `origin/main-next`
+- cut it fresh from the then-current `origin/main`
 - port the intended change there
 - run the relevant verification there
-- remote-merge it to `main-next`
+- remote-merge it to `main`
 - delete the branch and worktree immediately after merge
 
-Do not present an intermediate landing branch as a second integration branch,
-as a durable trunk variant, or as a user-facing launch target unless the human
-explicitly asked for that separate surface.
+Do not present an intermediate landing branch as a second integration
+branch, as a durable trunk variant, or as a user-facing launch target
+unless the human explicitly asked for that separate surface.
 
-If a feature branch was not directly smoke-ready on its own base and had to be
-rebased, cherry-picked, or otherwise carried onto trunk-compatible support
-work, the smoke-ready surface must itself be re-sliced from the then-current
-`origin/main-next` before being called ready. Do not smoke or hand off an older
-pre-carry surface as though it were current trunk.
-
-`Main Next Trunk` is the only ordinary local witness label for trunk. Extra
-launcher-visible trunk-like labels or surfaces need an explicit human request.
+If a feature branch was not directly smoke-ready on its own base and had
+to be rebased, cherry-picked, or otherwise carried onto trunk-compatible
+support work, the smoke-ready surface must itself be re-sliced from the
+then-current `origin/main` before being called ready. Do not smoke or
+hand off an older pre-carry surface as though it were current trunk.
 
 ## Smoke-test branch launches
 
