@@ -4356,8 +4356,9 @@ class TestSegmentAcceleratedTranscription:
         acc.dispatch(b"s2", d._client)
         acc.wait(timeout=5.0)
 
-        # The tail transcription call.
-        d._capture.get_tail_buffer.return_value = b"tail_wav"
+        # Simulate pre-stop tail capture (done by _on_hold_end before stop()).
+        d._pre_stop_tail_wav = b"tail_wav"
+        d._pre_stop_segment_count = acc.count  # 2 segments, no final flush
         d._client.transcribe.side_effect = ["tail text"]
 
         d._transcribe_worker(b"full_wav_unused", token=1)

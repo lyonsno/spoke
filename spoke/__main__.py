@@ -1939,6 +1939,19 @@ class SpokeAppDelegate(NSObject):
         logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
         self._preview_active = False
         self._preview_cancelled_on_release = True
+        # Capture the tail buffer BEFORE stop() clears segment state.
+        # After stop(), get_tail_buffer() falls through to get_buffer() (the
+        # entire recording) because _segment_cb is None — causing the final
+        # text to contain cached-segments + full-audio ≈ doubled output.
+        # Also snapshot the segment count so the worker can detect whether
+        # stop() flushed an extra final segment (which overlaps the tail).
+        acc = getattr(self, "_segment_accumulator", None)
+        if acc is not None and acc.count > 0:
+            self._pre_stop_tail_wav = self._capture.get_tail_buffer()
+            self._pre_stop_segment_count = acc.count
+        else:
+            self._pre_stop_tail_wav = None
+            self._pre_stop_segment_count = 0
         wav_bytes = self._capture.stop()
 
         # Short shift-hold (under 800ms of recording) = recall into tray
@@ -2027,6 +2040,19 @@ class SpokeAppDelegate(NSObject):
         if acc is None or acc.count == 0:
             return None
 
+        # Use the tail buffer captured before stop() cleared segment state.
+        # After stop(), capture.get_tail_buffer() falls through to get_buffer()
+        # (the entire recording) because _segment_cb is already None — which
+        # would produce cached-segments + full-audio ≈ doubled output.
+        pre_stop_tail = getattr(self, "_pre_stop_tail_wav", None)
+        self._pre_stop_tail_wav = None
+
+        # Check whether stop() flushed the final in-progress speech as an
+        # extra segment.  If the accumulator count grew beyond what was
+        # dispatched during recording, the tail audio is already covered.
+        pre_stop_count = getattr(self, "_pre_stop_segment_count", 0)
+        self._pre_stop_segment_count = 0
+
         # Wait for any in-flight segment transcriptions to land.
         # Cloud endpoints can take >10s on congested connections.
         if not acc.wait(timeout=30.0):
@@ -2037,10 +2063,14 @@ class SpokeAppDelegate(NSObject):
             return None
         cached = acc.text
 
+        # If stop() flushed the final segment (count grew after we captured
+        # the tail), that audio is already in the accumulator — skip tail.
+        final_flushed = acc.count > pre_stop_count
+
         # Transcribe the tail — audio recorded after the last segment boundary.
-        tail_wav = self._capture.get_tail_buffer()
+        tail_wav = pre_stop_tail if pre_stop_tail is not None else b""
         tail_text = ""
-        if tail_wav:
+        if tail_wav and not final_flushed:
             try:
                 tail_text = self._client.transcribe(tail_wav)
             except Exception:
@@ -2050,8 +2080,9 @@ class SpokeAppDelegate(NSObject):
         parts = [p for p in (cached, tail_text) if p]
         text = " ".join(parts)
         logger.info(
-            "Segment-accelerated transcription: %d segments cached, tail=%d bytes, result=%r",
-            acc.count, len(tail_wav) if tail_wav else 0, text[:80],
+            "Segment-accelerated transcription: %d segments cached, tail=%d bytes, "
+            "final_flushed=%s, result=%r",
+            acc.count, len(tail_wav) if tail_wav else 0, final_flushed, text[:80],
         )
         return text
 
