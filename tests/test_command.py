@@ -386,6 +386,12 @@ class TestStreamCommand:
             list(client.stream_command("hello"))
         assert len(client._history) == 1
         assert client._history[0][0] == {"role": "user", "content": "hello"}
+        assistant_contents = [
+            msg.get("content")
+            for msg in client._history[0]
+            if msg.get("role") == "assistant"
+        ]
+        assert assistant_contents == ["Hi there"]
 
     def test_stream_does_not_store_reasoning_in_history(self):
         """Only content should appear in history, not reasoning."""
@@ -404,6 +410,12 @@ class TestStreamCommand:
             list(client.stream_command("do it"))
         assert len(client._history) == 1
         assert client._history[0][0] == {"role": "user", "content": "do it"}
+        assistant_contents = [
+            msg.get("content")
+            for msg in client._history[0]
+            if msg.get("role") == "assistant"
+        ]
+        assert assistant_contents == ["done"]
 
     def test_stream_does_not_store_step_reasoning_in_history(self):
         """Step reasoning should not leak into the ring buffer history."""
@@ -420,7 +432,14 @@ class TestStreamCommand:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("do it"))
-        assert client._history == [("do it", "done")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "do it"}
+        assistant_contents = [
+            msg.get("content")
+            for msg in client._history[0]
+            if msg.get("role") == "assistant"
+        ]
+        assert assistant_contents == ["done"]
 
     def test_stream_history_eviction(self):
         """History should evict oldest entry when full."""

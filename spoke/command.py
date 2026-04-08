@@ -554,6 +554,10 @@ class CommandClient:
                     _round,
                 )
                 full_response = round_content
+                messages.append({
+                    "role": "assistant",
+                    "content": full_response or None,
+                })
                 yield CommandStreamEvent(kind="assistant_final", text=full_response)
                 break
 
@@ -637,6 +641,10 @@ class CommandClient:
 
             # No tool calls — this round's content is the final response
             full_response = round_content
+            messages.append({
+                "role": "assistant",
+                "content": full_response or None,
+            })
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
