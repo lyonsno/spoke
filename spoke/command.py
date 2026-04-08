@@ -385,6 +385,8 @@ class CommandClient:
 
                         # Reasoning tokens (OpenAI reasoning_content field)
                         reasoning_token = delta.get("reasoning_content")
+                        if reasoning_token is None:
+                            reasoning_token = delta.get("reasoning")
                         if reasoning_token is not None:
                             yield CommandStreamEvent(
                                 kind="thinking_delta",
