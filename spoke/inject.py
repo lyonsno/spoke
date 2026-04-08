@@ -149,6 +149,21 @@ def inject_text(text: str, on_restored: object = None) -> None:
     )
 
 
+def inject_text_raw(text: str) -> None:
+    """Paste *text* without saving/restoring the pasteboard.
+
+    For use in rapid-fire contexts (e.g. hands-free dictation) where the
+    caller manages clipboard lifecycle externally.
+    """
+    if not text:
+        return
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    pb.setString_forType_(text, NSPasteboardTypeString)
+    _post_cmd_v()
+    logger.info("Injected (raw) %d chars", len(text))
+
+
 def _post_cmd_v() -> None:
     """Post a synthetic Cmd+V keystroke."""
     src = None  # default event source

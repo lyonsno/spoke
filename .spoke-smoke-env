@@ -1,5 +1,4 @@
-# Smoke env for thinking narrator sidecar.
-# Command pathway: local OMLX on M4 Max (Step 3.5 Flash — thinking model)
+# Smoke env — hands-free dictation + thinking narrator.
 export SPOKE_COMMAND_URL="http://localhost:8001"
 export SPOKE_COMMAND_MODEL="step-3p5-flash-mixedp-final"
 export SPOKE_COMMAND_API_KEY="1234"
@@ -9,3 +8,4 @@ export SPOKE_NARRATOR_URL="http://nlm2pr.local:8001"
 export SPOKE_NARRATOR_API_KEY="1234"
 export SPOKE_NARRATOR_MODEL="Bonsai-8B-mlx-1bit"
 export PYTHONPATH="/Users/noahlyons/dev/mlx-audio"
+export SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY="A+ka4pry7nzXxUL3q8YiOjbDn4i1xjdMYK3Qh1KS2CvPRZ7vvS08vg=="

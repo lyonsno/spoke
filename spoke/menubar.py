@@ -88,6 +88,7 @@ class MenuBarIcon(NSObject):
         self._on_quit = on_quit
         self._on_select_model = on_select_model
         self._on_toggle_terraform = None
+        self._on_toggle_handsfree = None
         self._status_item = None
         self._status_text = "Idle"
         self._branch_label = _branch_menu_label()
@@ -342,6 +343,13 @@ class MenuBarIcon(NSObject):
         if added_menu_section:
             menu.addItem_(NSMenuItem.separatorItem())
 
+        if getattr(self, "_on_toggle_handsfree", None) is not None:
+            handsfree_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Hands-Free Mode", "toggleHandsFree:", "h"
+            )
+            handsfree_item.setTarget_(self)
+            menu.addItem_(handsfree_item)
+
         if getattr(self, "_on_toggle_terraform", None) is not None:
             terraform_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Terror Form", "toggleTerraform:", "t"
@@ -434,6 +442,10 @@ class MenuBarIcon(NSObject):
         if self._status_item is not None:
             NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
             self._status_item = None
+
+    def toggleHandsFree_(self, sender) -> None:
+        if self._on_toggle_handsfree is not None:
+            self._on_toggle_handsfree()
 
     def toggleTerraform_(self, sender) -> None:
         if self._on_toggle_terraform is not None:
