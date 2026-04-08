@@ -352,6 +352,17 @@ class ThinkingNarrator:
             {"role": "system", "content": _LOADING_VAMP_SYSTEM_PROMPT},
         ]
 
+        consecutive_rejects = 0
+        _DIVERSITY_NUDGES = [
+            "IMPORTANT: Your previous lines all mentioned memory/GPU stats. "
+            "Try a completely different angle: humor, fun facts, encouragement, "
+            "or observations about AI. Do NOT mention GB, memory, or loading progress.",
+            "IMPORTANT: Be creative! Try a joke, a fun analogy, or something "
+            "the user hasn't seen yet. Avoid technical stats entirely.",
+            "IMPORTANT: Pretend you can't see the GPU stats. Write something "
+            "entertaining that has nothing to do with memory or loading numbers.",
+        ]
+
         while True:
             with self._lock:
                 if not self._vamp_active:
@@ -363,32 +374,46 @@ class ThinkingNarrator:
             context_parts = []
             if model_id:
                 context_parts.append(f"Model being loaded: {model_id}")
-            if loading_context:
+            # Suppress stats context after repeated rejections to break the loop
+            if loading_context and consecutive_rejects < 2:
                 context_parts.append(loading_context)
             context_parts.append(f"Time waiting so far: {elapsed:.0f} seconds")
             if utterance:
                 context_parts.append(f"The user asked: \"{utterance}\"")
 
             user_content = "Generate the next loading status line.\n\n" + "\n".join(context_parts)
+            if consecutive_rejects > 0:
+                nudge = _DIVERSITY_NUDGES[
+                    min(consecutive_rejects - 1, len(_DIVERSITY_NUDGES) - 1)
+                ]
+                user_content += "\n\n" + nudge
+
             vamp_messages.append({"role": "user", "content": user_content})
+            # Bump temperature when stuck in a rut
+            temp = min(0.9 + consecutive_rejects * 0.15, 1.5)
 
             try:
                 summary = self._chat_completion(
-                    vamp_messages, temperature=0.9, max_tokens=40
+                    vamp_messages, temperature=temp, max_tokens=40
                 )
                 if summary:
-                    # Deduplicate: skip if too similar to previous line
+                    # Deduplicate: skip if too similar to ANY previous line
                     prev_assistants = [
                         m["content"] for m in vamp_messages
                         if m["role"] == "assistant"
                     ]
-                    if prev_assistants and self._lines_too_similar(
-                        summary, prev_assistants[-1]
-                    ):
-                        logger.info("Vamp line too similar, skipping: %s", summary)
+                    is_similar = any(
+                        self._lines_too_similar(summary, prev)
+                        for prev in prev_assistants
+                    )
+                    if is_similar:
+                        logger.info("Vamp line too similar (streak=%d), skipping: %s",
+                                    consecutive_rejects + 1, summary)
+                        consecutive_rejects += 1
                         # Remove the user message we just added so history stays clean
                         vamp_messages.pop()
                     else:
+                        consecutive_rejects = 0
                         vamp_messages.append({"role": "assistant", "content": summary})
                         with self._lock:
                             if not self._vamp_active:
