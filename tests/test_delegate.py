@@ -417,6 +417,37 @@ class TestPreviewFinalizationContract:
         assert call_args[0][0] == "transcriptionComplete:"
         assert call_args[0][1]["text"] == "batch final text"
 
+    def test_parallel_insert_release_cutover_cancels_shared_stt_stream_only(
+        self, main_module, monkeypatch
+    ):
+        """Parallel insert release cutover should finalize STT only and leave the assistant turn untouched."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_cancelled_on_release = True
+        d._preview_thread = MagicMock()
+        d._preview_done = MagicMock()
+        d._transcribing = True
+        d._transcription_token = 17
+        d._command_client = MagicMock()
+        streaming_client = MagicMock(supports_streaming=True, has_active_stream=True)
+        streaming_client.transcribe.return_value = "parallel insert text"
+        d._client = streaming_client
+        d._preview_client = streaming_client
+
+        d._parallel_insert_worker(b"wav", token=3)
+
+        d._preview_done.wait.assert_not_called()
+        d._preview_thread.join.assert_not_called()
+        streaming_client.cancel_stream.assert_called_once_with()
+        streaming_client.finish_stream.assert_not_called()
+        streaming_client.transcribe.assert_called_once_with(b"wav")
+        d._command_client.assert_not_called()
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "parallelTranscriptionComplete:"
+        assert call_args[0][1]["token"] == 3
+        assert call_args[0][1]["text"] == "parallel insert text"
+        assert d._transcribing is True
+        assert d._transcription_token == 17
+
 
 class TestPreviewStreamCleanup:
     """Test preview loop streaming cleanup paths (dual-model findings 4-6)."""
