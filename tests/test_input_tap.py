@@ -1005,10 +1005,10 @@ class TestTrayAwareness:
         assert det._state == mod._State.RECORDING
         on_start.assert_called_once()
 
-    def test_hold_timer_ignores_stale_waiting_after_physical_space_release(
+    def test_hold_timer_does_not_trust_space_key_state_probe_for_active_hold(
         self, input_tap_module
     ):
-        """A late timer must not start recording after the key is already physically up."""
+        """A live hold must still start even if Quartz reports Space as up."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -1027,9 +1027,9 @@ class TestTrayAwareness:
         Quartz.CGEventSourceKeyState.return_value = False
         det.holdTimerFired_(None)
 
-        assert det._state == mod._State.IDLE
-        assert det._awaiting_space_release is True
-        on_start.assert_not_called()
+        assert det._state == mod._State.RECORDING
+        assert det._awaiting_space_release is False
+        on_start.assert_called_once()
 
     def test_enter_during_tray_does_not_fire_callback(self, input_tap_module):
         """Tray visibility alone should not arm bare Enter as a Spoke command."""

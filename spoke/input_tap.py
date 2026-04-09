@@ -89,20 +89,6 @@ def _current_enter_key_state() -> bool | None:
         return None
 
 
-def _current_space_key_state() -> bool | None:
-    """Return the real current Space key state when Quartz exposes it."""
-    try:
-        return bool(
-            CGEventSourceKeyState(
-                kCGEventSourceStateCombinedSessionState,
-                SPACEBAR_KEYCODE,
-            )
-        )
-    except Exception:
-        logger.debug("Could not query current Space key state", exc_info=True)
-        return None
-
-
 def _event_timestamp_ns(event) -> int | None:
     """Return the Quartz event timestamp when available."""
     try:
@@ -493,16 +479,6 @@ class SpacebarHoldDetector(NSObject):
         self._hold_timer = None
         if self._state != _State.WAITING:
             return
-        if getattr(self, "_space_keydown_timestamp_ns", None) is not None:
-            space_down = _current_space_key_state()
-            if space_down is False:
-                logger.warning(
-                    "Hold timer fired after Space was already released — dropping stale hold"
-                )
-                self._state = _State.IDLE
-                self._awaiting_space_release = True
-                self._space_keydown_timestamp_ns = None
-                return
         self._promote_waiting_to_recording()
 
     def _cancel_hold_timer(self) -> None:
