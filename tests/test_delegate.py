@@ -3369,6 +3369,24 @@ class TestHoldStartDuringTranscription:
         d._command_overlay.hide.assert_not_called()
         assert d._detector.command_overlay_active is True
 
+    def test_plain_space_release_with_noise_only_does_not_supersede_active_turn(
+        self, main_module, monkeypatch
+    ):
+        """Noise-only plain holds during generation should leave the current turn alone."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._transcription_token = 5
+        d._capture.stop.return_value = b"ambient-noise"
+        d._record_start_time = time.monotonic() - 0.6
+        d._last_preview_text = ""
+        d._command_first_token = False
+
+        with patch.object(main_module.threading, "Thread") as mock_thread:
+            d._on_hold_end(shift_held=False, enter_held=False)
+
+        assert d._transcription_token == 5
+        mock_thread.assert_not_called()
+
 
 class TestMicNotReady:
     """Hold is rejected and status reflects mic unavailability."""

@@ -1996,6 +1996,21 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
 
+        if self._transcribing and not shift_held and not enter_held and not self._last_preview_text.strip():
+            logger.info(
+                "Plain hold produced no preview text during active turn — keeping current turn alive"
+            )
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            if self._menubar is not None:
+                if getattr(self, "_command_first_token", False):
+                    self._menubar.set_status_text("Thinking…")
+                else:
+                    self._menubar.set_status_text("Responding…")
+            return
+
         # Invalidate any in-flight transcription so its result is discarded
         self._transcription_token += 1
         token = self._transcription_token
