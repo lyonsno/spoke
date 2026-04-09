@@ -30,6 +30,7 @@ from Quartz import (
     CGEventCreateKeyboardEvent,
     CGEventGetFlags,
     CGEventGetIntegerValueField,
+    CGEventGetTimestamp,
     CGEventMaskBit,
     CGEventPost,
     CGEventSourceKeyState,
@@ -88,6 +89,29 @@ def _current_enter_key_state() -> bool | None:
         return None
 
 
+def _current_space_key_state() -> bool | None:
+    """Return the real current Space key state when Quartz exposes it."""
+    try:
+        return bool(
+            CGEventSourceKeyState(
+                kCGEventSourceStateCombinedSessionState,
+                SPACEBAR_KEYCODE,
+            )
+        )
+    except Exception:
+        logger.debug("Could not query current Space key state", exc_info=True)
+        return None
+
+
+def _event_timestamp_ns(event) -> int | None:
+    """Return the Quartz event timestamp when available."""
+    try:
+        return int(CGEventGetTimestamp(event))
+    except Exception:
+        logger.debug("Could not query event timestamp", exc_info=True)
+        return None
+
+
 class _State(Enum):
     IDLE = auto()
     WAITING = auto()
@@ -142,6 +166,7 @@ class SpacebarHoldDetector(NSObject):
         self._latched_space_released = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
+        self._space_keydown_timestamp_ns: int | None = None
 
         # Tray mode support — set by the delegate when tray is active.
         # When True, quick spacebar taps call on_hold_end instead of
@@ -262,6 +287,7 @@ class SpacebarHoldDetector(NSObject):
         self._latched_space_down = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
+        self._space_keydown_timestamp_ns = None
         self.tray_active = False
         self.command_overlay_active = False
         self._idle_shift_down = False
@@ -449,14 +475,35 @@ class SpacebarHoldDetector(NSObject):
             self._hold_s, self, "holdTimerFired:", None, False
         )
 
+    def _promote_waiting_to_recording(self) -> None:
+        """Transition WAITING -> RECORDING and invoke hold-start once."""
+        self._cancel_hold_timer()
+        self._state = _State.RECORDING
+        self._start_safety_timer()
+        self._on_hold_start()
+
+    def _waiting_elapsed_meets_threshold(self, event_timestamp_ns: int | None) -> bool:
+        start_ns = getattr(self, "_space_keydown_timestamp_ns", None)
+        if start_ns is None or event_timestamp_ns is None:
+            return False
+        return (event_timestamp_ns - start_ns) >= int(self._hold_s * 1_000_000_000)
+
     def holdTimerFired_(self, timer: NSTimer) -> None:
         """Called when spacebar has been held past the threshold."""
         self._hold_timer = None
         if self._state != _State.WAITING:
             return
-        self._state = _State.RECORDING
-        self._start_safety_timer()
-        self._on_hold_start()
+        if getattr(self, "_space_keydown_timestamp_ns", None) is not None:
+            space_down = _current_space_key_state()
+            if space_down is False:
+                logger.warning(
+                    "Hold timer fired after Space was already released — dropping stale hold"
+                )
+                self._state = _State.IDLE
+                self._awaiting_space_release = True
+                self._space_keydown_timestamp_ns = None
+                return
+        self._promote_waiting_to_recording()
 
     def _cancel_hold_timer(self) -> None:
         if self._hold_timer is not None:
@@ -596,6 +643,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
 
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
+        event_timestamp_ns = _event_timestamp_ns(event)
         # Track enter key state for command fast path
         if keycode in ENTER_KEYCODES:
             det._enter_held = True
@@ -644,6 +692,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 actual_enter_held = _current_enter_key_state()
                 if actual_enter_held is not None:
                     det._enter_held = actual_enter_held
+                det._space_keydown_timestamp_ns = event_timestamp_ns
+            elif det._state == _State.WAITING and det._waiting_elapsed_meets_threshold(
+                event_timestamp_ns
+            ):
+                logger.info("Delayed repeat crossed hold threshold — promoting to recording")
+                det._promote_waiting_to_recording()
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
@@ -684,6 +738,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyUp space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            det._space_keydown_timestamp_ns = None
         if det.handle_key_up(keycode, flags=flags):
             return None  # suppress
     elif event_type == kCGEventFlagsChanged:

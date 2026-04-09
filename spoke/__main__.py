@@ -2692,7 +2692,7 @@ class SpokeAppDelegate(NSObject):
             )
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
+                self._command_overlay.show(preserve_thinking_timer=True)
                 self._command_overlay.set_utterance(utterance)
                 if streaming:
                     self._command_overlay.set_response_text(streaming)

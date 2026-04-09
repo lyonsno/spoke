@@ -3583,6 +3583,25 @@ class TestResultInjection:
         d._overlay.order_out.assert_called()
 
 
+class TestCommandOverlayToggle:
+    def test_toggle_command_overlay_resumes_in_progress_timer_without_reset(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_overlay = MagicMock(_visible=False)
+        d._transcribing = True
+        d._last_command_utterance = "open file"
+        d._command_streaming_text = "still working"
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.show.assert_called_once_with(preserve_thinking_timer=True)
+        d._command_overlay.set_utterance.assert_called_once_with("open file")
+        d._command_overlay.set_response_text.assert_called_once_with("still working")
+        d._command_overlay.invert_thinking_timer.assert_called_once()
+
+
 class TestHoldStartDuringTranscription:
     """Test interrupt-and-restart when hold starts during active transcription."""
 
