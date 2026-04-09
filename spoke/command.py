@@ -17,6 +17,7 @@ from typing import Any, Callable, Generator, Literal
 
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -193,12 +194,13 @@ class CommandClient:
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
         # prefix in the base URL already.  Detect this so we don't double it
         # when building /v1/models and /v1/chat/completions paths.
-        from urllib.parse import urlparse
         path = urlparse(raw_url).path.rstrip("/")
+        host = urlparse(raw_url).netloc.lower()
         self._url_has_version_prefix = any(
             seg.startswith("v") and seg[1:].replace("beta", "").isdigit()
             for seg in path.split("/") if seg
         )
+        self._is_openrouter = "openrouter.ai" in host
         self._base_url = raw_url
         self._model = (
             model
@@ -331,6 +333,8 @@ class CommandClient:
                 "messages": messages,
                 "stream": True,
             }
+            if self._enable_thinking and self._is_openrouter:
+                body["reasoning"] = {"enabled": True}
             if not self._enable_thinking:
                 body["chat_template_kwargs"] = {"enable_thinking": False}
             if tools:
