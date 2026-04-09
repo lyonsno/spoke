@@ -49,6 +49,7 @@ def _make_fake_quartz():
     q.CGEventMaskBit = lambda x: 1 << x
     q.CGEventGetIntegerValueField = MagicMock(return_value=0)
     q.CGEventGetFlags = MagicMock(return_value=0)
+    q.CGEventSourceKeyState = MagicMock(return_value=False)
     q.CGEventCreateKeyboardEvent = MagicMock(return_value=MagicMock())
     q.CGEventSetFlags = MagicMock()
     q.CGEventPost = MagicMock()
@@ -72,6 +73,7 @@ def _make_fake_quartz():
     q.CGPathAddPath = MagicMock()
     q.CGAffineTransformIdentity = MagicMock()
     q.kCAFillRuleEvenOdd = "even-odd"
+    q.kCGEventSourceStateCombinedSessionState = 0
     return q
 
 

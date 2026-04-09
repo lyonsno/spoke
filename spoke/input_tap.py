@@ -32,6 +32,7 @@ from Quartz import (
     CGEventGetIntegerValueField,
     CGEventMaskBit,
     CGEventPost,
+    CGEventSourceKeyState,
     CGEventTapCreate,
     CGEventTapEnable,
     kCFRunLoopCommonModes,
@@ -46,6 +47,7 @@ from Quartz import (
     kCGHeadInsertEventTap,
     kCGHIDEventTap,
     kCGKeyboardEventKeycode,
+    kCGEventSourceStateCombinedSessionState,
     kCGSessionEventTap,
 )
 logger = logging.getLogger(__name__)
@@ -68,6 +70,22 @@ _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for trul
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
 _DOUBLE_TAP_WINDOW_S = 0.3  # 300ms window for double-tap detection
+
+
+def _current_enter_key_state() -> bool | None:
+    """Return the real current Enter key state when Quartz exposes it.
+
+    This lets a fresh space-rooted gesture correct stale `_enter_held` state if
+    we ever missed a trailing Enter keyUp from an earlier consumed chord.
+    """
+    try:
+        return any(
+            bool(CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, keycode))
+            for keycode in ENTER_KEYCODES
+        )
+    except Exception:
+        logger.debug("Could not query current Enter key state", exc_info=True)
+        return None
 
 
 class _State(Enum):
@@ -622,6 +640,10 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            if det._state == _State.IDLE:
+                actual_enter_held = _current_enter_key_state()
+                if actual_enter_held is not None:
+                    det._enter_held = actual_enter_held
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True

@@ -928,6 +928,53 @@ class TestTrayAwareness:
 
         assert det._enter_held is False
 
+    def test_space_keydown_refreshes_stale_enter_state_from_keyboard_state(
+        self, input_tap_module
+    ):
+        """A missed Enter keyUp must not poison the next plain space gesture."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det._enter_held = True  # stale from an earlier consumed chord
+        mod._active_detector = det
+
+        Quartz.CGEventSourceKeyState.return_value = False
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result_down is None
+        assert det._enter_held is False
+
+        det.holdTimerFired_(None)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
+    def test_space_keydown_preserves_real_enter_first_chord(
+        self, input_tap_module
+    ):
+        """A real Enter-first chord should still route as an assistant gesture."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        Quartz.CGEventSourceKeyState.return_value = True
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result_down is None
+        assert det._enter_held is True
+
+        det.holdTimerFired_(None)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
     def test_enter_during_tray_does_not_fire_callback(self, input_tap_module):
         """Tray visibility alone should not arm bare Enter as a Spoke command."""
         mod = input_tap_module
