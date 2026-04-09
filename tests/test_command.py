@@ -974,6 +974,78 @@ class TestCommandThinking:
         assert len(content) == 1
         assert content[0].text == "Use Step."
 
+    def test_step_reasoning_tool_round_not_stored_in_history(self):
+        """Step reasoning should stay out of stored assistant/tool rounds."""
+        from spoke.tool_dispatch import get_tool_schemas
+        client = self._make_client()
+        first_round = _make_sse_response(
+            [
+                self._step_reasoning_chunk("Check the screen first."),
+                self._content_chunk("Let me check. "),
+                {
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {"name": "capture_context", "arguments": ""},
+                            }]
+                        },
+                    }]
+                },
+                {
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "function": {"arguments": "{}"},
+                            }]
+                        },
+                    }]
+                },
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            ]
+        )
+        second_round = _make_sse_response(
+            [
+                self._step_reasoning_chunk("Now answer with the tool result."),
+                self._content_chunk("Done."),
+            ]
+        )
+        with patch("urllib.request.urlopen", side_effect=[first_round, second_round]):
+            events = list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=lambda **kwargs: '{"ok": true}',
+                )
+            )
+
+        thinking = [e.text for e in events if e.kind == "thinking_delta"]
+        assert thinking == [
+            "Check the screen first.",
+            "Now answer with the tool result.",
+        ]
+
+        assert len(client._history) == 1
+        chain = client._history[0]
+        assert chain[0] == {"role": "user", "content": "check it"}
+        assert chain[1]["role"] == "assistant"
+        assert chain[1]["content"].startswith("Let me check. ")
+        assert "[calling capture_context" in chain[1]["content"]
+        assert chain[1]["tool_calls"][0]["function"]["name"] == "capture_context"
+        assert chain[2] == {
+            "role": "tool",
+            "tool_call_id": "call_123",
+            "content": '{"ok": true}',
+        }
+        assert chain[3] == {"role": "assistant", "content": "Done."}
+        assert "Check the screen first." not in str(chain)
+        assert "Now answer with the tool result." not in str(chain)
+
     def test_think_tags_yield_thinking_delta(self):
         """<think>...</think> tags in content should produce thinking_delta events."""
         client = self._make_client()

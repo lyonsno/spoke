@@ -404,7 +404,12 @@ class CommandClient:
                                 {k: str(v)[:80] for k, v in delta.items()},
                             )
 
-                        # Reasoning tokens (OpenAI reasoning_content field)
+                        # Reasoning tokens are surfaced as thinking events for
+                        # display/observation only.  The replayed tool loop
+                        # still follows the provider's chat message contract:
+                        # assistant/tool turns go back into `messages`, but
+                        # raw reasoning tokens do not.
+                        # Step 3.5 Flash uses `delta.reasoning` here.
                         reasoning_token = delta.get("reasoning_content")
                         if reasoning_token is None:
                             reasoning_token = delta.get("reasoning")
@@ -649,8 +654,9 @@ class CommandClient:
             break
 
         # Add to ring buffer — only this turn's messages (from the user
-        # utterance onward), preserving tool calls and results.
-        # Strip reasoning content from assistant messages to save context.
+        # utterance onward), preserving assistant/tool turns for the next
+        # chat-completions round-trip.  We keep the message/tool chain but do
+        # not persist raw reasoning tokens as first-class replay state.
         turn_messages = []
         for msg in messages[turn_start_idx:]:
             if msg["role"] == "assistant" and msg.get("content"):
