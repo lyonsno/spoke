@@ -939,7 +939,9 @@ class TestTrayAwareness:
         det._enter_held = True  # stale from an earlier consumed chord
         mod._active_detector = det
 
-        Quartz.CGEventSourceKeyState.return_value = False
+        Quartz.CGEventSourceKeyState.side_effect = (
+            lambda _state, keycode: keycode == mod.SPACEBAR_KEYCODE
+        )
         Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         event = MagicMock()
@@ -974,6 +976,60 @@ class TestTrayAwareness:
         det.holdTimerFired_(None)
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_stale_repeat_keydown_promotes_waiting_to_recording_immediately(
+        self, input_tap_module
+    ):
+        """A delayed repeat should use event timestamps instead of waiting another hold window."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, _, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        Quartz.CGEventGetTimestamp.side_effect = [
+            1_000_000_000,
+            1_500_000_000,
+        ]
+
+        first = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert first is None
+        assert det._state == mod._State.WAITING
+        on_start.assert_not_called()
+
+        second = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert second is None
+        assert det._state == mod._State.RECORDING
+        on_start.assert_called_once()
+
+    def test_hold_timer_ignores_stale_waiting_after_physical_space_release(
+        self, input_tap_module
+    ):
+        """A late timer must not start recording after the key is already physically up."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, _, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        Quartz.CGEventGetTimestamp.return_value = 1_000_000_000
+
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result is None
+        assert det._state == mod._State.WAITING
+
+        Quartz.CGEventSourceKeyState.return_value = False
+        det.holdTimerFired_(None)
+
+        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is True
+        on_start.assert_not_called()
 
     def test_enter_during_tray_does_not_fire_callback(self, input_tap_module):
         """Tray visibility alone should not arm bare Enter as a Spoke command."""

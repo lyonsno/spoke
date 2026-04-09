@@ -391,8 +391,8 @@ class CommandOverlay(NSObject):
 
     # ── public interface ────────────────────────────────────
 
-    def show(self) -> None:
-        """Fade the overlay in and start the pulse."""
+    def show(self, *, preserve_thinking_timer: bool = False) -> None:
+        """Fade the overlay in and start or resume the thinking timer."""
         if self._window is None:
             return
         self._cancel_all_timers()
@@ -468,8 +468,8 @@ class CommandOverlay(NSObject):
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
 
-        # Start thinking timer (glowing number mode)
-        self._start_thinking_timer()
+        # Start or resume the thinking timer.
+        self._start_thinking_timer(reset=not preserve_thinking_timer)
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
@@ -1083,21 +1083,19 @@ class CommandOverlay(NSObject):
 
     # ── thinking timer ──────────────────────────────────────
 
-    def _start_thinking_timer(self) -> None:
-        """Start the thinking counter in glowing-number mode."""
-        self._thinking_seconds = 0.0
-        self._thinking_inverted = False
+    def _start_thinking_timer(self, *, reset: bool = True) -> None:
+        """Start or resume the thinking counter."""
+        if reset:
+            self._thinking_seconds = 0.0
+            self._thinking_inverted = False
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(False)
-            if self._tool_mode: self._thinking_label.setStringValue_("tool…")
-            else: self._thinking_label.setStringValue_("0.0s")
-            # Glowing number: violet text on transparent background
-            self._thinking_label.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.7
-                )
-            )
-        logger.info("Thinking timer started")
+            if self._tool_mode:
+                self._thinking_label.setStringValue_("tool…")
+            else:
+                self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+            self._apply_thinking_label_theme()
+        logger.info("Thinking timer %s", "started" if reset else "resumed")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )

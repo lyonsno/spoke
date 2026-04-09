@@ -35,6 +35,7 @@ def _make_overlay(mock_pyobjc):
     overlay._text_view.textStorage.return_value.length.return_value = 0
     overlay._thinking_label = MagicMock()
     overlay._thinking_label.isHidden.return_value = False
+    overlay._narrator_label = MagicMock()
     overlay._screen = MagicMock()
     overlay._screen.frame.return_value = MagicMock(
         size=MagicMock(width=1920, height=1080)
@@ -209,6 +210,20 @@ class TestShowFinishHide:
 
         assert overlay._thinking_timer is not None
         assert overlay._thinking_seconds == 0.0
+
+    def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._thinking_seconds = 4.2
+        overlay._thinking_inverted = True
+
+        overlay.show(preserve_thinking_timer=True)
+
+        assert overlay._thinking_timer is not None
+        assert overlay._thinking_seconds == 4.2
+        assert overlay._thinking_inverted is True
+        overlay._thinking_label.setStringValue_.assert_called_with("4.2s")
 
     def test_finish_clears_streaming_and_stops_thinking(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
