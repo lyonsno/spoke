@@ -1653,6 +1653,16 @@ class SpokeAppDelegate(NSObject):
             def segment_cb(wav_bytes: bytes):
                 self._segment_accumulator.dispatch(wav_bytes, self._client)
 
+        if self._glow is not None:
+            self._glow.show()
+        if self._overlay is not None:
+            if self._glow is not None:
+                self._overlay.set_brightness(
+                    getattr(self._glow, "_brightness", 0.0),
+                    immediate=True,
+                )
+            self._overlay.show()
+
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -1681,15 +1691,6 @@ class SpokeAppDelegate(NSObject):
                     "Audio unavailable — memory pressure"
                 )
             return
-        if self._glow is not None:
-            self._glow.show()
-        if self._overlay is not None:
-            if self._glow is not None:
-                self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
-                    immediate=True,
-                )
-            self._overlay.show()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
