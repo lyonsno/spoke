@@ -79,6 +79,16 @@ def _rough_token_count(text: str) -> int:
     return int(len(text.split()) * 1.3)
 
 
+def _fallback_summary(chunk: str) -> str:
+    """Return a compact visible fallback when the narrator backend is unavailable."""
+    normalized = " ".join(chunk.split()).strip()
+    if not normalized:
+        return ""
+    if len(normalized) <= 120:
+        return normalized
+    return normalized[:117].rstrip() + "..."
+
+
 class ThinkingNarrator:
     """Accumulates thinking tokens and periodically summarizes them.
 
@@ -199,14 +209,15 @@ class ThinkingNarrator:
             user_content = f"Current reasoning excerpt:\n\n{chunk}"
 
             with self._lock:
-                self._messages.append({"role": "user", "content": user_content})
                 messages = list(self._messages)
+            messages.append({"role": "user", "content": user_content})
 
             summary = self._chat_completion(messages)
 
             if summary:
                 # Add as assistant turn for continuity
                 with self._lock:
+                    self._messages.append({"role": "user", "content": user_content})
                     self._messages.append({"role": "assistant", "content": summary})
                     if not self._active:
                         return
@@ -215,6 +226,13 @@ class ThinkingNarrator:
 
         except Exception:
             logger.exception("Narrator dispatch failed")
+            fallback = _fallback_summary(chunk)
+            if fallback:
+                logger.warning("Narrator fallback summary: %s", fallback)
+                with self._lock:
+                    if not self._active:
+                        return
+                self._on_summary(fallback)
         finally:
             with self._lock:
                 self._pending_dispatch = False
