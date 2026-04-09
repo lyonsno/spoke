@@ -145,8 +145,8 @@ provider.
 This matters for backend selection. A provider's marketing around "reasoning"
 is not enough; what matters is whether the protocol we are actually speaking
 preserves the reasoning state the model needs on the next turn. If we want the
-stronger contract, we likely need a provider-specific integration surface
-rather than another OpenAI-compatible adapter.
+stronger contract, we likely need a reasoning-aware transport rather than
+another generic OpenAI-compatible adapter.
 
 ## Remote sidecars
 
@@ -263,11 +263,12 @@ The app bundle is written to `dist/Spoke.app`.
 - Local MLX backends may download model weights on first use.
 - The local runtime is Apple Silicon-oriented, but sidecar and cloud backends
   work independently of local model availability.
-- Anthropic-style extended thinking is a plausible future direction because its
-  Messages API explicitly requires replaying thinking blocks during tool use,
-  but that semantic win only applies if `spoke` speaks the Anthropic message
-  contract end to end. Routing Claude through a generic OpenAI-compatible
-  facade would not automatically preserve that behavior.
+- oMLX already exposes `POST /v1/messages` with Anthropic-compatible Messages
+  semantics and adaptive thinking. That makes an Anthropic-style transport a
+  plausible next step for `spoke` without changing providers. The important
+  distinction is transport, not branding: preserving the stronger tool-use
+  semantics requires `spoke` to speak the Messages contract end to end instead
+  of flattening everything back through generic `/v1/chat/completions`.
 
 ## License
 

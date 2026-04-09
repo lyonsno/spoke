@@ -45,10 +45,11 @@ cognitive fork at the exact point where cognition should remain continuous.
 2. Command dispatch module (`command.py`). Takes the transcribed command,
    sends it to an OMLX server endpoint (`/v1/chat/completions`), streams the
    response. Configuration via `SPOKE_COMMAND_URL` and `SPOKE_COMMAND_MODEL`.
-   Important caveat: this OpenAI-compatible transport preserves assistant/tool
-   message chains, but not first-class reasoning-state replay. Visible thinking
-   output can therefore be correct while multi-round tool-use semantics are
-   still weaker than protocols that explicitly replay reasoning blocks.
+   Important caveat: this current OpenAI-compatible transport preserves
+   assistant/tool message chains, but not first-class reasoning-state replay.
+   Visible thinking output can therefore be correct while multi-round tool-use
+   semantics are still weaker than transports that explicitly replay reasoning
+   blocks, such as an Anthropic-compatible Messages pathway.
 3. Output overlay. A second overlay surface, visually kin to the input overlay
    — same ethereal transparency, same floating treatment — but differentiated
    by color and rhythm. The input overlay breathes with amplitude (non-
