@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 import uuid
 
 import objc
@@ -44,6 +45,54 @@ _NS_KEY_DOWN_MASK = 1 << 10
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
+
+
+def _extract_command_error_detail(raw: bytes) -> str | None:
+    """Best-effort extraction of a useful provider error message."""
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+    def _walk(value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        if isinstance(value, dict):
+            for key in ("message", "detail", "error", "title"):
+                found = _walk(value.get(key))
+                if found:
+                    return found
+        if isinstance(value, list):
+            for item in value:
+                found = _walk(item)
+                if found:
+                    return found
+        return None
+
+    return _walk(payload)
+
+
+def _format_command_http_error(exc) -> str:
+    """Render HTTP provider failures into something the user can act on."""
+    reason = getattr(exc, "reason", None) or getattr(exc, "msg", None)
+    base = f"HTTP {exc.code}"
+    if reason:
+        base = f"{base} {reason}"
+
+    detail = None
+    try:
+        if getattr(exc, "fp", None) is not None:
+            detail = _extract_command_error_detail(exc.read())
+    except Exception:
+        logger.exception("Failed to read command HTTP error body")
+
+    if detail:
+        return f"{base} — {detail}"
+    return base
 
 
 def _run_modal_with_paste(alert) -> int:
@@ -2802,6 +2851,14 @@ class SpokeAppDelegate(NSObject):
                     elif event.kind == "assistant_final":
                         if not full_response:
                             full_response = event.text
+            except urllib.error.HTTPError as exc:
+                logger.exception("Command stream failed with HTTP error")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandFailed:",
+                    {"token": token, "error": _format_command_http_error(exc)},
+                    False,
+                )
+                return
             except Exception:
                 logger.exception("Command stream failed")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2981,6 +3038,14 @@ class SpokeAppDelegate(NSObject):
                 elif event.kind == "assistant_final":
                     if not full_response:
                         full_response = event.text
+        except urllib.error.HTTPError as exc:
+            logger.exception("Command stream failed with HTTP error")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:",
+                {"token": token, "error": _format_command_http_error(exc)},
+                False,
+            )
+            return
         except Exception:
             logger.exception("Command stream failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3158,7 +3223,11 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         error = payload.get("error", "Unknown error")
-        error_text = "couldn't reach the model — try again in a moment"
+        error_text = (
+            "couldn't reach the model — try again in a moment"
+            if error in {"Unknown error", "Command failed"}
+            else error
+        )
         logger.error("Command pathway error: %s", error)
         if self._glow is not None:
             self._glow.hide()

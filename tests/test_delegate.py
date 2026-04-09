@@ -7,8 +7,10 @@ generation-based stale result rejection, and env var validation.
 import logging
 import os
 import json
+import io
 import time
 import threading
+import urllib.error
 from unittest.mock import MagicMock, call, patch
 
 
@@ -2948,6 +2950,8 @@ class TestCommandTranscribeWorker:
         d._command_first_token = False
         d._scene_cache = None
         d._tool_schemas = None
+        d._narrator = None
+        d._ensure_tts_client = MagicMock(return_value=None)
         return d
 
     def test_successful_transcribe_and_stream(self, main_module, monkeypatch):
@@ -3015,6 +3019,36 @@ class TestCommandTranscribeWorker:
         assert "commandUtteranceReady:" in selectors
         assert "commandFailed:" in selectors
         assert "commandComplete:" not in selectors
+
+    def test_stream_http_error_dispatches_provider_status_detail(
+        self, main_module, monkeypatch
+    ):
+        """HTTP failures should preserve provider status/body detail for the UI."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.transcribe.return_value = "do something"
+        d._client.supports_streaming = False
+        error_body = json.dumps(
+            {"error": {"message": "This model is temporarily rate-limited."}}
+        ).encode()
+        d._command_client.stream_command_events.side_effect = urllib.error.HTTPError(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(error_body),
+        )
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        failure_call = next(
+            c
+            for c in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+            if c[0][0] == "commandFailed:"
+        )
+        assert (
+            failure_call[0][1]["error"]
+            == "HTTP 429 Too Many Requests — This model is temporarily rate-limited."
+        )
 
     def test_stale_token_breaks_stream(self, main_module, monkeypatch):
         """If transcription_token changes mid-stream, stop dispatching tokens."""
@@ -3298,6 +3332,32 @@ class TestCommandCallbacks:
         d._command_overlay.show.assert_called()
         d._command_overlay.append_token.assert_called()
         d._command_overlay.finish.assert_called()
+
+    def test_command_failed_preserves_specific_provider_error_in_overlay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._transcription_token = 1
+        d._transcribing = True
+        d._last_command_utterance = "test utterance"
+        d._last_command_response = ""
+
+        d.commandFailed_(
+            {
+                "token": 1,
+                "error": "HTTP 402 Payment Required — This model requires paid credits.",
+            }
+        )
+
+        d._command_overlay.append_token.assert_called_once_with(
+            "HTTP 402 Payment Required — This model requires paid credits."
+        )
+        assert (
+            d._last_command_response
+            == "HTTP 402 Payment Required — This model requires paid credits."
+        )
 
     def test_command_token_invert_failure_still_appends_token(
         self, main_module, monkeypatch, caplog
