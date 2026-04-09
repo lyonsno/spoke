@@ -850,6 +850,29 @@ class TestCommandThinking:
         assert "data" in captured_body, "urlopen was never called — request body not captured"
         assert "chat_template_kwargs" not in captured_body["data"]
 
+    def test_openrouter_thinking_enabled_adds_reasoning_config(self):
+        """OpenRouter requests should explicitly enable reasoning when thinking is on."""
+        client = self._make_client(base_url="https://openrouter.ai/api/v1")
+
+        import urllib.request
+        captured_body = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured_body["data"] = json.loads(req.data)
+            return MagicMock(
+                __enter__=lambda s: MagicMock(
+                    __iter__=lambda s: iter([]),
+                    read=lambda: b"",
+                ),
+                __exit__=lambda s, *a: None,
+            )
+
+        with patch.object(urllib.request, "urlopen", fake_urlopen):
+            for _ in client.stream_command("test"):
+                pass
+
+        assert captured_body["data"]["reasoning"] == {"enabled": True}
+
     def _content_chunk(self, token):
         return {"choices": [{"index": 0, "delta": {"content": token}}]}
 
