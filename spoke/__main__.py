@@ -882,6 +882,7 @@ class SpokeAppDelegate(NSObject):
         self._overlay: TranscriptionOverlay | None = None
         self._transcribing = False
         self._transcription_token = 0
+        self._parallel_insert_token = 0
         self._cancel_spring_active = False
         self._cancel_spring_start = 0.0
         self._preview_active = False
@@ -2069,6 +2070,24 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
 
+        if self._transcribing and not shift_held and not enter_held:
+            self._parallel_insert_token += 1
+            parallel_token = self._parallel_insert_token
+            logger.info(
+                "Plain hold during active turn — transcribing on parallel insert lane (token %d)",
+                parallel_token,
+            )
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            thread = threading.Thread(
+                target=self._parallel_insert_worker,
+                args=(wav_bytes, parallel_token),
+                daemon=True,
+            )
+            thread.start()
+            return
         # Invalidate any in-flight transcription so its result is discarded
         self._transcription_token += 1
         token = self._transcription_token
@@ -2212,6 +2231,53 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
+    def _parallel_insert_worker(self, wav_bytes: bytes, token: int) -> None:
+        """Background thread: transcribe a plain-space recording without disturbing
+        an active assistant turn."""
+        release_cutover = getattr(self, "_preview_cancelled_on_release", False)
+
+        if self._preview_thread is not None and not release_cutover:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.wait(timeout=2.0)
+            self._preview_thread.join(timeout=2.0)
+            self._preview_thread = None
+
+        try:
+            text = self._transcribe_segments_and_tail(wav_bytes)
+            if text is None:
+                with self._local_inference_context(self._client):
+                    if (
+                        release_cutover
+                        and getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        cancel_stream = getattr(self._client, "cancel_stream", None)
+                        if callable(cancel_stream):
+                            cancel_stream()
+                        text = self._client.transcribe(wav_bytes)
+                    elif (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        text = self._client.finish_stream()
+                    else:
+                        text = self._client.transcribe(wav_bytes)
+        except Exception:
+            logger.exception("Parallel insert transcription failed")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "parallelTranscriptionFailed:", {"token": token}, False
+            )
+            return
+
+        elapsed_ms = (time.monotonic() - self._transcribe_start) * 1000
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "parallelTranscriptionComplete:",
+            {"token": token, "text": text, "elapsed_ms": elapsed_ms},
+            False,
+        )
+
     _INSERT_GRACE_S = 0.35  # grace window before auto-insert after transcription
 
     def transcriptionComplete_(self, payload: dict) -> None:
@@ -2240,6 +2306,28 @@ class SpokeAppDelegate(NSObject):
             self._overlay.hide()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def parallelTranscriptionComplete_(self, payload: dict) -> None:
+        """Main thread: inject a parallel plain-space transcription at cursor."""
+        if payload["token"] != self._parallel_insert_token:
+            logger.info("Discarding stale parallel transcription (token %d)", payload["token"])
+            return
+        text = payload["text"]
+        if text:
+            elapsed_ms = payload.get("elapsed_ms", 0)
+            logger.info(
+                "Parallel transcription: %r (%.0fms) — starting insert grace window",
+                text,
+                elapsed_ms,
+            )
+            self._grace_pending_text = text
+            self._detector._on_enter_cancel_grace = self._cancel_grace_insert
+            if self._overlay is not None:
+                self._overlay.start_insert_windup()
+            from Foundation import NSTimer
+            self._grace_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                self._INSERT_GRACE_S, self, "graceTimerFired:", None, False
+            )
 
     def graceTimerFired_(self, timer) -> None:
         """Grace window expired — proceed with insert."""
@@ -2283,6 +2371,14 @@ class SpokeAppDelegate(NSObject):
             self._overlay.hide()
         if self._menubar is not None:
             self._menubar.set_status_text("Error — try again")
+
+    def parallelTranscriptionFailed_(self, payload: dict) -> None:
+        """Main thread: handle failure on the parallel insert lane."""
+        if payload["token"] != self._parallel_insert_token:
+            return
+        if self._last_preview_text:
+            logger.warning("Parallel transcription failed — falling back to latest preview text")
+            self._inject_result_text(self._last_preview_text, "Pasted preview")
 
     def hideOverlayAfterInject_(self, timer) -> None:
         """Hide the overlay after briefly showing the final transcription."""

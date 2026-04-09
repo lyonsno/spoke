@@ -45,6 +45,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._command_sidecar_url = None
     delegate._command_model_id = None
     delegate._command_model_options = []
+    delegate._parallel_insert_token = 0
     delegate._command_overlay = None
     delegate._scene_cache = None
     delegate._tts_client = None
@@ -209,6 +210,39 @@ class TestTranscriptionToken:
             d.transcriptionComplete_({"token": 1, "text": ""})
 
         mock_inject.assert_not_called()
+
+    def test_parallel_insert_result_is_accepted_without_touching_active_turn(
+        self, main_module, monkeypatch
+    ):
+        """Parallel plain-space insertions should inject text without clearing the assistant turn."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 2
+        d._transcription_token = 5
+        d._transcribing = True
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.parallelTranscriptionComplete_({"token": 2, "text": "hello world"})
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == "hello world"
+        assert d._transcribing is True
+        assert d._transcription_token == 5
+
+    def test_stale_parallel_insert_result_is_discarded(self, main_module, monkeypatch):
+        """Parallel insertion results should respect their own token lane."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 4
+        d._transcription_token = 7
+        d._transcribing = True
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.parallelTranscriptionComplete_({"token": 3, "text": "stale"})
+
+        mock_inject.assert_not_called()
+        assert d._transcribing is True
+        assert d._transcription_token == 7
 
 
 class TestServerCrashResilience:
@@ -3594,6 +3628,45 @@ class TestHoldStartDuringTranscription:
         d._command_overlay.hide.assert_not_called()
         assert d._detector.command_overlay_active is True
 
+    def test_plain_space_release_during_active_turn_uses_parallel_insert_lane(
+        self, main_module, monkeypatch
+    ):
+        """Plain space during generation should fork into its own insertion lane."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._transcription_token = 5
+        d._capture.stop.return_value = b"ambient-noise"
+        d._record_start_time = time.monotonic() - 0.6
+        d._last_preview_text = ""
+
+        with patch.object(main_module.threading, "Thread") as mock_thread:
+            d._on_hold_end(shift_held=False, enter_held=False)
+
+        assert d._transcription_token == 5
+        assert d._parallel_insert_token == 1
+        mock_thread.assert_called_once()
+        assert mock_thread.call_args.kwargs["target"] == d._parallel_insert_worker
+        assert mock_thread.call_args.kwargs["args"] == (b"ambient-noise", 1)
+
+    def test_plain_space_release_with_preview_text_does_not_use_assistant_or_tray_path(
+        self, main_module, monkeypatch
+    ):
+        """A real utterance during generation should stay off the assistant and tray paths."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._transcription_token = 5
+        d._capture.stop.return_value = b"spoken-audio"
+        d._record_start_time = time.monotonic() - 0.6
+        d._last_preview_text = "capture this after the file read"
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module.threading, "Thread") as mock_thread:
+            d._on_hold_end(shift_held=False, enter_held=False)
+
+        assert d._transcription_token == 5
+        assert d._parallel_insert_token == 1
+        mock_thread.assert_called_once()
+        d._add_tray_entry.assert_not_called()
 class TestMicNotReady:
     """Hold is rejected and status reflects mic unavailability."""
 
