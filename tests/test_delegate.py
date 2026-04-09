@@ -1725,6 +1725,77 @@ class TestDualModelConfiguration:
         assert d._load_cloud_api_key_preference("openrouter") == "openrouter-key"
         assert d._load_cloud_model_preference("openrouter") == "stepfun/step-3.5-flash:free"
 
+    def test_resolve_command_cloud_api_key_prefers_provider_specific_env_over_generic(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Provider-specific env keys should beat the generic cloud fallback."""
+        prefs_file = tmp_path / "model_preferences.json"
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.setenv("SPOKE_COMMAND_CLOUD_API_KEY", "generic-key")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_cloud_provider_preference = main_module.SpokeAppDelegate._load_cloud_provider_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_cloud_api_key_preference = main_module.SpokeAppDelegate._load_cloud_api_key_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._resolve_command_cloud_api_key = main_module.SpokeAppDelegate._resolve_command_cloud_api_key.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+
+        assert d._resolve_command_cloud_api_key(
+            "https://openrouter.ai/api/v1", "openrouter"
+        ) == "openrouter-key"
+        assert d._resolve_command_cloud_api_key(
+            "https://generativelanguage.googleapis.com/v1beta/openai", "google"
+        ) == "gemini-key"
+
+    def test_save_google_cloud_preferences_keeps_legacy_generic_keys_aligned(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Saving Google Cloud settings should continue updating the legacy generic keys."""
+        prefs_file = tmp_path / "model_preferences.json"
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_cloud_preferences = main_module.SpokeAppDelegate._save_cloud_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+
+        assert d._save_cloud_preferences(
+            "google",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "google-key",
+            "gemini-2.5-flash",
+        )
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["command_cloud_provider"] == "google"
+        assert loaded["command_cloud_google_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert loaded["command_cloud_google_api_key"] == "google-key"
+        assert loaded["command_cloud_google_model"] == "gemini-2.5-flash"
+        assert loaded["command_cloud_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert loaded["command_cloud_api_key"] == "google-key"
+        assert loaded["command_cloud_model"] == "gemini-2.5-flash"
+
     def test_init_shares_client_when_preview_and_transcription_models_match(
         self, main_module, monkeypatch
     ):
