@@ -131,8 +131,11 @@ _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
+_DEFAULT_CLOUD_PROVIDER = "google"
 _DEFAULT_CLOUD_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _DEFAULT_CLOUD_MODEL = "gemini-2.5-flash"
+_DEFAULT_OPENROUTER_CLOUD_URL = "https://openrouter.ai/api/v1"
+_DEFAULT_OPENROUTER_CLOUD_MODEL = "stepfun/step-3.5-flash:free"
 _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 _DEFAULT_WHISPER_SIDECAR_URL = ""
 _DEFAULT_WHISPER_CLOUD_URL = "https://api.openai.com"
@@ -144,6 +147,24 @@ def _url_host(url: str) -> str:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     return parsed.netloc or url
+
+
+def _cloud_provider_label(provider: str) -> str:
+    if provider == "openrouter":
+        return "OpenRouter"
+    return "Google Cloud"
+
+
+def _default_cloud_url_for_provider(provider: str) -> str:
+    if provider == "openrouter":
+        return _DEFAULT_OPENROUTER_CLOUD_URL
+    return _DEFAULT_CLOUD_URL
+
+
+def _default_cloud_model_for_provider(provider: str) -> str:
+    if provider == "openrouter":
+        return _DEFAULT_OPENROUTER_CLOUD_MODEL
+    return _DEFAULT_CLOUD_MODEL
 
 
 def _ensure_edit_menu() -> None:
@@ -832,6 +853,7 @@ class SpokeAppDelegate(NSObject):
 
         # Command pathway — always enabled, but can persist a sidecar URL.
         self._command_backend = None
+        self._command_cloud_provider = self._load_cloud_provider_preference()
         self._command_sidecar_url = self._load_command_sidecar_url_preference()
         self._command_url = None
         command_backend, command_url = self._resolve_command_backend()
@@ -842,14 +864,15 @@ class SpokeAppDelegate(NSObject):
                 self._command_sidecar_url = command_url
             cloud_api_key = None
             if command_backend == "cloud":
+                self._command_cloud_provider = self._load_cloud_provider_preference()
                 self._command_model_id = (
-                    self._load_cloud_model_preference()
+                    self._load_cloud_model_preference(self._command_cloud_provider)
                     or self._load_command_model_preference()
-                    or _DEFAULT_CLOUD_MODEL
+                    or _default_cloud_model_for_provider(self._command_cloud_provider)
                 )
-                cloud_api_key = (
-                    self._load_cloud_api_key_preference()
-                    or os.environ.get("GEMINI_API_KEY", "")
+                cloud_api_key = self._resolve_command_cloud_api_key(
+                    command_url,
+                    self._command_cloud_provider,
                 )
             else:
                 self._command_model_id = (
@@ -892,6 +915,7 @@ class SpokeAppDelegate(NSObject):
             self._command_client = None
             self._narrator = None
             self._command_backend = None
+            self._command_cloud_provider = self._load_cloud_provider_preference()
             self._command_url = None
             self._command_model_id = None
             self._command_model_options = []
@@ -3336,6 +3360,12 @@ class SpokeAppDelegate(NSObject):
             if self._command_client is not None:
                 assistant_title = "Assistant Model"
                 server_unreachable = getattr(self, "_command_server_unreachable", False)
+                command_backend = getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+                cloud_provider = getattr(
+                    self,
+                    "_command_cloud_provider",
+                    self._load_cloud_provider_preference(),
+                )
                 if server_unreachable:
                     assistant_title = "Assistant Model (server unreachable)"
                 state["assistant"] = {
@@ -3356,19 +3386,24 @@ class SpokeAppDelegate(NSObject):
                         (
                             "sidecar",
                             "Sidecar OMLX",
-                            getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
-                            == "sidecar",
+                            command_backend == "sidecar",
                             True,
                         ),
                         (
-                            "cloud",
-                            "Cloud",
-                            getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
-                            == "cloud",
+                            "cloud_google",
+                            "Google Cloud",
+                            command_backend == "cloud" and cloud_provider == "google",
+                            True,
+                        ),
+                        (
+                            "cloud_openrouter",
+                            "OpenRouter",
+                            command_backend == "cloud" and cloud_provider == "openrouter",
                             True,
                         ),
                         ("configure", "Set Sidecar URL…", False, True),
-                        ("configure_cloud", "Set Cloud Endpoint…", False, True),
+                        ("configure_cloud_google", "Set Google Cloud Endpoint…", False, True),
+                        ("configure_cloud_openrouter", "Set OpenRouter Endpoint…", False, True),
                     ],
                 }
             tts_client = getattr(self, "_tts_client", None)
@@ -3941,26 +3976,120 @@ class SpokeAppDelegate(NSObject):
             self._load_preferences().get("command_sidecar_url")
         )
 
-    def _load_cloud_url_preference(self) -> str | None:
+    @staticmethod
+    def _coerce_cloud_provider(value: str | None) -> str | None:
+        if value is None:
+            return None
+        provider = str(value).strip().lower()
+        if provider in {"google", "openrouter"}:
+            return provider
+        return None
+
+    def _load_cloud_provider_preference(self) -> str:
+        prefs = self._load_preferences()
+        provider = self._coerce_cloud_provider(prefs.get("command_cloud_provider"))
+        if provider:
+            return provider
+        legacy_url = self._normalize_command_url(prefs.get("command_cloud_url")) or ""
+        if "openrouter.ai" in _url_host(legacy_url).lower():
+            return "openrouter"
+        return _DEFAULT_CLOUD_PROVIDER
+
+    def _load_cloud_url_preference(self, provider: str | None = None) -> str | None:
+        provider = self._coerce_cloud_provider(provider) or self._load_cloud_provider_preference()
+        prefs = self._load_preferences()
+        if provider == "openrouter":
+            legacy_url = self._normalize_command_url(prefs.get("command_cloud_url"))
+            if legacy_url and "openrouter.ai" in _url_host(legacy_url).lower():
+                return self._normalize_command_url(
+                    prefs.get("command_cloud_openrouter_url") or legacy_url
+                )
+            return self._normalize_command_url(
+                prefs.get("command_cloud_openrouter_url")
+            )
         return self._normalize_command_url(
-            self._load_preferences().get("command_cloud_url")
+            prefs.get("command_cloud_google_url") or prefs.get("command_cloud_url")
         )
 
-    def _load_cloud_api_key_preference(self) -> str | None:
-        val = self._load_preferences().get("command_cloud_api_key")
+    def _load_cloud_api_key_preference(self, provider: str | None = None) -> str | None:
+        provider = self._coerce_cloud_provider(provider) or self._load_cloud_provider_preference()
+        prefs = self._load_preferences()
+        if provider == "openrouter":
+            legacy_url = self._normalize_command_url(prefs.get("command_cloud_url")) or ""
+            val = (
+                prefs.get("command_cloud_openrouter_api_key")
+                or (
+                    prefs.get("command_cloud_api_key")
+                    if "openrouter.ai" in _url_host(legacy_url).lower()
+                    else None
+                )
+            )
+        else:
+            val = prefs.get("command_cloud_google_api_key") or prefs.get("command_cloud_api_key")
         return str(val).strip() if val else None
 
-    def _load_cloud_model_preference(self) -> str | None:
-        val = self._load_preferences().get("command_cloud_model")
+    def _load_cloud_model_preference(self, provider: str | None = None) -> str | None:
+        provider = self._coerce_cloud_provider(provider) or self._load_cloud_provider_preference()
+        prefs = self._load_preferences()
+        if provider == "openrouter":
+            legacy_url = self._normalize_command_url(prefs.get("command_cloud_url")) or ""
+            val = (
+                prefs.get("command_cloud_openrouter_model")
+                or (
+                    prefs.get("command_cloud_model")
+                    if "openrouter.ai" in _url_host(legacy_url).lower()
+                    else None
+                )
+            )
+        else:
+            val = prefs.get("command_cloud_google_model") or prefs.get("command_cloud_model")
         return str(val).strip() if val else None
+
+    def _save_command_cloud_provider_preference(self, provider: str) -> bool:
+        provider = self._coerce_cloud_provider(provider)
+        if provider is None:
+            return False
+        payload = self._load_preferences()
+        payload["command_cloud_provider"] = provider
+        return self._save_preferences(payload)
 
     def _save_cloud_preferences(
-        self, cloud_url: str, cloud_api_key: str, cloud_model: str
+        self, provider: str, cloud_url: str, cloud_api_key: str, cloud_model: str
     ) -> bool:
+        provider = self._coerce_cloud_provider(provider)
+        if provider is None:
+            return False
         payload = self._load_preferences()
-        payload["command_cloud_url"] = self._normalize_command_url(cloud_url)
-        payload["command_cloud_api_key"] = cloud_api_key.strip() if cloud_api_key else ""
-        payload["command_cloud_model"] = cloud_model.strip() if cloud_model else ""
+        normalized_url = self._normalize_command_url(cloud_url)
+        normalized_key = cloud_api_key.strip() if cloud_api_key else ""
+        normalized_model = cloud_model.strip() if cloud_model else ""
+        payload["command_cloud_provider"] = provider
+        if provider == "openrouter":
+            payload["command_cloud_openrouter_url"] = normalized_url
+            payload["command_cloud_openrouter_api_key"] = normalized_key
+            payload["command_cloud_openrouter_model"] = normalized_model
+        else:
+            payload["command_cloud_google_url"] = normalized_url
+            payload["command_cloud_google_api_key"] = normalized_key
+            payload["command_cloud_google_model"] = normalized_model
+            # Keep legacy generic keys aligned with Google Cloud because
+            # adjacent Gemini/TTS plumbing still reads them.
+            payload["command_cloud_url"] = normalized_url
+            payload["command_cloud_api_key"] = normalized_key
+            payload["command_cloud_model"] = normalized_model
+        return self._save_preferences(payload)
+
+    def _save_cloud_model_preference(self, provider: str, model_id: str) -> bool:
+        provider = self._coerce_cloud_provider(provider)
+        if provider is None:
+            return False
+        payload = self._load_preferences()
+        model_id = model_id.strip()
+        if provider == "openrouter":
+            payload["command_cloud_openrouter_model"] = model_id
+        else:
+            payload["command_cloud_google_model"] = model_id
+            payload["command_cloud_model"] = model_id
         return self._save_preferences(payload)
 
     def _save_model_preferences(
@@ -4043,9 +4172,36 @@ class SpokeAppDelegate(NSObject):
                 "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
             )
         if pref_backend == "cloud":
-            cloud_url = self._load_cloud_url_preference() or _DEFAULT_CLOUD_URL
+            provider = self._load_cloud_provider_preference()
+            cloud_url = self._load_cloud_url_preference(provider) or _default_cloud_url_for_provider(provider)
             return "cloud", cloud_url
         return "local", _DEFAULT_COMMAND_URL
+
+    def _resolve_command_cloud_api_key(
+        self, cloud_url: str | None, provider: str | None = None
+    ) -> str:
+        provider = self._coerce_cloud_provider(provider) or self._load_cloud_provider_preference()
+        persisted = self._load_cloud_api_key_preference(provider)
+        if persisted:
+            return persisted
+        if provider == "openrouter":
+            provider_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+            if provider_key:
+                return provider_key
+        if provider == "google":
+            provider_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            if provider_key:
+                return provider_key
+        host = _url_host(cloud_url or "").lower()
+        if "openrouter.ai" in host:
+            provider_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+            if provider_key:
+                return provider_key
+        if "googleapis.com" in host or "generativelanguage.googleapis.com" in host:
+            provider_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            if provider_key:
+                return provider_key
+        return os.environ.get("SPOKE_COMMAND_CLOUD_API_KEY", "").strip()
 
     def _ensure_tts_client(self, *, allow_default_voice: bool = False):
         """Return the active TTS client, building it lazily when appropriate."""
@@ -4414,6 +4570,11 @@ class SpokeAppDelegate(NSObject):
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
         command_backend = getattr(self, "_command_backend", "local")
+        command_cloud_provider = getattr(
+            self,
+            "_command_cloud_provider",
+            self._load_cloud_provider_preference(),
+        )
         server_model_ids: list[str] = []
         server_reachable = True
         if self._command_client is not None:
@@ -4449,6 +4610,8 @@ class SpokeAppDelegate(NSObject):
                     )
                 else:
                     model_ids = server_model_ids
+        if command_backend == "cloud" and command_cloud_provider == "openrouter":
+            model_ids = sorted(model_ids, key=str.casefold)
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
@@ -4462,12 +4625,20 @@ class SpokeAppDelegate(NSObject):
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
         """Seed the Assistant menu — sidecar/cloud queries /v1/models, local uses disk."""
-        if getattr(self, "_command_backend", "local") in ("sidecar", "cloud"):
+        command_backend = getattr(self, "_command_backend", "local")
+        command_cloud_provider = getattr(
+            self,
+            "_command_cloud_provider",
+            self._load_cloud_provider_preference(),
+        )
+        if command_backend in ("sidecar", "cloud"):
             if self._command_client is not None:
                 try:
                     server_model_ids = self._command_client.list_models()
                     if server_model_ids:
                         self._command_server_unreachable = False
+                        if command_backend == "cloud" and command_cloud_provider == "openrouter":
+                            server_model_ids = sorted(server_model_ids, key=str.casefold)
                         return [
                             (mid, mid, mid == selected_model)
                             for mid in server_model_ids
@@ -4550,6 +4721,11 @@ class SpokeAppDelegate(NSObject):
                     "Failed to persist healed sidecar assistant model: %s",
                     healed_model_id,
                 )
+            if command_backend == "cloud":
+                self._save_cloud_model_preference(
+                    getattr(self, "_command_cloud_provider", self._load_cloud_provider_preference()),
+                    healed_model_id,
+                )
             self._command_model_options = [
                 (model_id, label, model_id == healed_model_id)
                 for model_id, label, _selected in options
@@ -4566,6 +4742,11 @@ class SpokeAppDelegate(NSObject):
                     model_id,
                 )
                 self._save_command_model_preference(model_id)
+            if getattr(self, "_command_backend", None) == "cloud":
+                self._save_cloud_model_preference(
+                    getattr(self, "_command_cloud_provider", self._load_cloud_provider_preference()),
+                    model_id,
+                )
             return
         logger.info(
             "Switching assistant model (relaunching): %s -> %s",
@@ -4579,12 +4760,11 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Couldn't save model selection")
             return
-        # Cloud backend reads command_cloud_model on startup — keep both keys
-        # in sync so the selection survives relaunch.
         if getattr(self, "_command_backend", None) == "cloud":
-            payload = self._load_preferences()
-            payload["command_cloud_model"] = model_id
-            self._save_preferences(payload)
+            self._save_cloud_model_preference(
+                getattr(self, "_command_cloud_provider", self._load_cloud_provider_preference()),
+                model_id,
+            )
         self._command_model_id = model_id
         self._relaunch()
 
@@ -4592,13 +4772,26 @@ class SpokeAppDelegate(NSObject):
         if selection == "configure":
             self._configure_command_sidecar_url()
             return
-        if selection == "configure_cloud":
-            self._configure_cloud_endpoint()
+        if selection == "configure_cloud_google":
+            self._configure_cloud_endpoint("google")
             return
+        if selection == "configure_cloud_openrouter":
+            self._configure_cloud_endpoint("openrouter")
+            return
+        target_cloud_provider = None
+        if selection == "cloud_google":
+            target_cloud_provider = "google"
+            selection = "cloud"
+        elif selection == "cloud_openrouter":
+            target_cloud_provider = "openrouter"
+            selection = "cloud"
         if selection not in {"local", "sidecar", "cloud"}:
             return
 
         current_backend = getattr(self, "_command_backend", _DEFAULT_COMMAND_BACKEND)
+        current_cloud_provider = getattr(
+            self, "_command_cloud_provider", self._load_cloud_provider_preference()
+        )
         current_url = self._normalize_command_url(getattr(self, "_command_url", None))
         current_sidecar_url = self._normalize_command_url(
             getattr(self, "_command_sidecar_url", None)
@@ -4613,10 +4806,14 @@ class SpokeAppDelegate(NSObject):
                 return
 
         if selection == "cloud":
-            cloud_url = self._load_cloud_url_preference()
-            if not cloud_url:
-                self._configure_cloud_endpoint()
-                return
+            target_cloud_provider = (
+                self._coerce_cloud_provider(target_cloud_provider)
+                or current_cloud_provider
+            )
+            cloud_url = (
+                self._load_cloud_url_preference(target_cloud_provider)
+                or _default_cloud_url_for_provider(target_cloud_provider)
+            )
             target_url = cloud_url
         elif selection == "sidecar":
             target_url = target_sidecar_url
@@ -4626,7 +4823,14 @@ class SpokeAppDelegate(NSObject):
             target_sidecar_url if selection == "sidecar" else current_sidecar_url
         )
 
-        if selection == current_backend and target_url == current_url:
+        if (
+            selection == current_backend
+            and target_url == current_url
+            and (
+                selection != "cloud"
+                or target_cloud_provider == current_cloud_provider
+            )
+        ):
             if (
                 self._load_command_backend_preference() != selection
                 or self._load_command_sidecar_url_preference() != persisted_sidecar_url
@@ -4634,6 +4838,8 @@ class SpokeAppDelegate(NSObject):
                 self._save_command_backend_preferences(
                     selection, persisted_sidecar_url
                 )
+            if selection == "cloud":
+                self._save_command_cloud_provider_preference(target_cloud_provider)
             return
 
         logger.info(
@@ -4652,7 +4858,12 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Couldn't save assistant backend")
             return
 
+        if selection == "cloud":
+            self._save_command_cloud_provider_preference(target_cloud_provider)
+
         self._command_backend = selection
+        if selection == "cloud":
+            self._command_cloud_provider = target_cloud_provider
         self._command_url = target_url
         self._command_sidecar_url = persisted_sidecar_url
         self._relaunch()
@@ -4700,17 +4911,27 @@ class SpokeAppDelegate(NSObject):
             return None
         return self._normalize_command_url(value)
 
-    def _configure_cloud_endpoint(self) -> None:
-        current_url = self._load_cloud_url_preference() or _DEFAULT_CLOUD_URL
-        current_key = self._load_cloud_api_key_preference() or ""
-        current_model = self._load_cloud_model_preference() or _DEFAULT_CLOUD_MODEL
+    def _configure_cloud_endpoint(self, provider: str | None = None) -> None:
+        provider = self._coerce_cloud_provider(provider) or getattr(
+            self, "_command_cloud_provider", self._load_cloud_provider_preference()
+        )
+        current_url = self._load_cloud_url_preference(provider) or _default_cloud_url_for_provider(provider)
+        current_key = self._load_cloud_api_key_preference(provider) or ""
+        current_model = self._load_cloud_model_preference(provider) or _default_cloud_model_for_provider(provider)
 
         alert = NSAlert.new()
-        alert.setMessageText_("Cloud Assistant Endpoint")
-        alert.setInformativeText_(
-            "OpenAI-compatible endpoint for cloud assistant.\n"
-            "Example: https://generativelanguage.googleapis.com/v1beta/openai"
-        )
+        provider_label = _cloud_provider_label(provider)
+        alert.setMessageText_(f"{provider_label} Assistant Endpoint")
+        if provider == "openrouter":
+            alert.setInformativeText_(
+                "OpenAI-compatible endpoint for OpenRouter assistant.\n"
+                "Example: https://openrouter.ai/api/v1"
+            )
+        else:
+            alert.setInformativeText_(
+                "OpenAI-compatible endpoint for Google Cloud assistant.\n"
+                "Example: https://generativelanguage.googleapis.com/v1beta/openai"
+            )
 
         from AppKit import NSView
         container = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 90))
@@ -4727,7 +4948,11 @@ class SpokeAppDelegate(NSObject):
 
         model_field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         model_field.setStringValue_(current_model)
-        model_field.setPlaceholderString_("Model (e.g. gemini-2.5-flash)")
+        model_field.setPlaceholderString_(
+            "Model (e.g. stepfun/step-3.5-flash:free)"
+            if provider == "openrouter"
+            else "Model (e.g. gemini-2.5-flash)"
+        )
         container.addSubview_(model_field)
 
         alert.setAccessoryView_(container)
@@ -4750,12 +4975,13 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Cloud endpoint URL required")
             return
 
-        if not self._save_cloud_preferences(cloud_url, cloud_key, cloud_model):
+        if not self._save_cloud_preferences(provider, cloud_url, cloud_key, cloud_model):
             logger.warning("Couldn't persist cloud endpoint config")
             if self._menubar is not None:
                 self._menubar.set_status_text("Couldn't save cloud config")
             return
 
+        self._save_command_cloud_provider_preference(provider)
         if not self._save_command_backend_preferences(
             "cloud", self._normalize_command_url(getattr(self, "_command_sidecar_url", None))
         ):
@@ -4763,6 +4989,7 @@ class SpokeAppDelegate(NSObject):
             return
 
         self._command_backend = "cloud"
+        self._command_cloud_provider = provider
         self._command_url = cloud_url
         self._relaunch()
 

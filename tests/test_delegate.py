@@ -969,9 +969,11 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local OMLX", False, True),
                 ("sidecar", "Sidecar OMLX", True, True),
-                ("cloud", "Cloud", False, True),
+                ("cloud_google", "Google Cloud", False, True),
+                ("cloud_openrouter", "OpenRouter", False, True),
                 ("configure", "Set Sidecar URL…", False, True),
-                ("configure_cloud", "Set Cloud Endpoint…", False, True),
+                ("configure_cloud_google", "Set Google Cloud Endpoint…", False, True),
+                ("configure_cloud_openrouter", "Set OpenRouter Endpoint…", False, True),
             ],
         }
 
@@ -1517,6 +1519,28 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", False),
         ]
 
+    def test_discover_command_models_alphabetizes_openrouter_inventory(
+        self, main_module, monkeypatch
+    ):
+        """OpenRouter cloud discovery should sort provider models alphabetically for menu usability."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "cloud"
+        d._command_cloud_provider = "openrouter"
+        d._command_client = MagicMock()
+        d._command_client.list_models.return_value = [
+            "z-ai/glm-4.5-air:free",
+            "anthropic/claude-3.7-sonnet",
+            "stepfun/step-3.5-flash:free",
+        ]
+
+        options = d._discover_command_models("stepfun/step-3.5-flash:free")
+
+        assert options == [
+            ("anthropic/claude-3.7-sonnet", "anthropic/claude-3.7-sonnet", False),
+            ("stepfun/step-3.5-flash:free", "stepfun/step-3.5-flash:free", True),
+            ("z-ai/glm-4.5-air:free", "z-ai/glm-4.5-air:free", False),
+        ]
+
     def test_discover_command_models_returns_empty_when_server_is_unavailable(
         self, main_module, monkeypatch, tmp_path
     ):
@@ -1648,6 +1672,56 @@ class TestDualModelConfiguration:
         loaded = json.loads(prefs_file.read_text())
         assert loaded["command_model"] == "qwen3p5-35B-A3B"
         d._relaunch.assert_not_called()
+
+    def test_provider_scoped_cloud_preferences_persist_independently(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Google Cloud and OpenRouter should keep separate saved URL/key/model state."""
+        prefs_file = tmp_path / "model_preferences.json"
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_cloud_preferences = main_module.SpokeAppDelegate._save_cloud_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_cloud_url_preference = main_module.SpokeAppDelegate._load_cloud_url_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_cloud_api_key_preference = main_module.SpokeAppDelegate._load_cloud_api_key_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_cloud_model_preference = main_module.SpokeAppDelegate._load_cloud_model_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+
+        assert d._save_cloud_preferences(
+            "google",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "google-key",
+            "gemini-2.5-flash",
+        )
+        assert d._save_cloud_preferences(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "openrouter-key",
+            "stepfun/step-3.5-flash:free",
+        )
+
+        assert d._load_cloud_url_preference("google") == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert d._load_cloud_api_key_preference("google") == "google-key"
+        assert d._load_cloud_model_preference("google") == "gemini-2.5-flash"
+        assert d._load_cloud_url_preference("openrouter") == "https://openrouter.ai/api/v1"
+        assert d._load_cloud_api_key_preference("openrouter") == "openrouter-key"
+        assert d._load_cloud_model_preference("openrouter") == "stepfun/step-3.5-flash:free"
 
     def test_init_shares_client_when_preview_and_transcription_models_match(
         self, main_module, monkeypatch
@@ -1906,6 +1980,28 @@ class TestDualModelConfiguration:
         d._save_command_backend_preferences.assert_called_once_with(
             "sidecar", "http://other-box:8001"
         )
+        d._relaunch.assert_called_once_with()
+
+    def test_selecting_assistant_backend_openrouter_persists_provider_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        """Choosing OpenRouter should persist the cloud provider and relaunch on its URL."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_backend = "local"
+        d._command_url = "http://localhost:8001"
+        d._save_command_backend_preferences = MagicMock(return_value=True)
+        d._save_command_cloud_provider_preference = MagicMock(return_value=True)
+        d._load_cloud_url_preference = MagicMock(return_value="https://openrouter.ai/api/v1")
+        d._relaunch = MagicMock()
+
+        d._handle_model_menu_action(("assistant_backend", "cloud_openrouter"))
+
+        d._save_command_backend_preferences.assert_called_once_with("cloud", None)
+        d._save_command_cloud_provider_preference.assert_called_once_with("openrouter")
+        assert d._command_backend == "cloud"
+        assert d._command_cloud_provider == "openrouter"
+        assert d._command_url == "https://openrouter.ai/api/v1"
         d._relaunch.assert_called_once_with()
 
     def test_configuring_assistant_sidecar_url_persists_without_relaunch_when_local_backend_active(
