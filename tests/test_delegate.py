@@ -2127,6 +2127,159 @@ class TestDualModelConfiguration:
         assert d._command_url == "https://openrouter.ai/api/v1"
         assert d._command_model_id == "stepfun/step-3.5-flash:free"
 
+    def test_init_cloud_backend_prefers_gemini_api_key_for_google_url(
+        self, main_module, monkeypatch
+    ):
+        """Google-hosted cloud URLs should keep GEMINI_API_KEY precedence over generic cloud env."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+        monkeypatch.setenv("SPOKE_COMMAND_CLOUD_API_KEY", "generic-test-key")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("STEPFUN_API_KEY", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_url_preference",
+            lambda self: "https://generativelanguage.googleapis.com/v1beta/openai",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_api_key_preference",
+            lambda self: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self: "gemini-2.5-flash",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("gemini-2.5-flash", "gemini-2.5-flash", False)],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="gemini-test-key",
+        )
+
+    def test_init_cloud_backend_prefers_persisted_key_over_env_fallbacks(
+        self, main_module, monkeypatch
+    ):
+        """Persisted cloud keys should remain authoritative over any env fallback."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+        monkeypatch.setenv("SPOKE_COMMAND_CLOUD_API_KEY", "generic-test-key")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_url_preference",
+            lambda self: "https://openrouter.ai/api/v1",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_api_key_preference",
+            lambda self: "persisted-test-key",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self: "stepfun/step-3.5-flash:free",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[
+                    (
+                        "stepfun/step-3.5-flash:free",
+                        "stepfun/step-3.5-flash:free",
+                        False,
+                    )
+                ],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="https://openrouter.ai/api/v1",
+            model="stepfun/step-3.5-flash:free",
+            api_key="persisted-test-key",
+        )
+
+    def test_init_cloud_backend_uses_generic_cloud_key_for_unknown_provider(
+        self, main_module, monkeypatch
+    ):
+        """Unknown cloud URLs should still be able to fall back to the generic cloud env key."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("STEPFUN_API_KEY", raising=False)
+        monkeypatch.setenv("SPOKE_COMMAND_CLOUD_API_KEY", "generic-test-key")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_url_preference",
+            lambda self: "https://example.com/v1",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_api_key_preference",
+            lambda self: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self: "custom-model",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("custom-model", "custom-model", False)],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="https://example.com/v1",
+            model="custom-model",
+            api_key="generic-test-key",
+        )
+
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch
