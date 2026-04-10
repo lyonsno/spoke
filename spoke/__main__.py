@@ -1276,11 +1276,6 @@ class SpokeAppDelegate(NSObject):
         self._register_loaded_models()
         self._start_heartbeat_timer()
 
-        # Auto-enable hands-free wake word listening if Porcupine key is available.
-        hf = getattr(self, "_handsfree", None)
-        if hf is not None and os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
-            hf.enable()
-
         # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
         # MLX lock transcription uses, which starves preview/final text on
         # OmniVoice surfaces until the TTS model finishes loading.

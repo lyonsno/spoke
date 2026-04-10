@@ -2643,6 +2643,17 @@ class TestWarmupContract:
 
         mock_thread_cls.assert_not_called()
 
+    def test_warmup_success_does_not_auto_enable_handsfree(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+
+        d.clientWarmupSucceeded_(None)
+
+        d._handsfree.enable.assert_not_called()
+
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""
 
