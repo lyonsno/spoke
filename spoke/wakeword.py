@@ -125,6 +125,16 @@ class WakeWordListener:
     def stop(self) -> None:
         """Stop the wake word listener and release resources."""
         self._running = False
+        stream = self._stream
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                logger.debug("WakeWordListener stream abort failed during stop", exc_info=True)
+            try:
+                stream.close()
+            except Exception:
+                logger.debug("WakeWordListener stream close failed during stop", exc_info=True)
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
