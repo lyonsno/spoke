@@ -77,6 +77,7 @@ def _make_overlay(mock_pyobjc):
     overlay._narrator_shimmer_active = False
     overlay._narrator_suppressed = False
     overlay._collapsed_text = ""
+    overlay._response_body_started = False
     return overlay, mod
 
 
@@ -355,6 +356,25 @@ class TestWindowLayering:
         assert "".join(token for _, token in fragments) == final_text
         assert any(kind == "tool" for kind, _ in fragments)
         assert any(kind == "response" for kind, _ in fragments)
+
+    def test_append_token_inserts_separator_before_first_response_after_tool_prelude(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "open config"
+        overlay._update_layout = MagicMock()
+
+        overlay.append_token("\n[calling read_file…]\n")
+        append_count_after_tool = overlay._text_view.textStorage().appendAttributedString_.call_count
+
+        overlay.append_token("Done.")
+
+        # First prose after tool-only prelude still needs the breathing-room separator.
+        assert (
+            overlay._text_view.textStorage().appendAttributedString_.call_count
+            == append_count_after_tool + 2
+        )
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

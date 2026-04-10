@@ -232,6 +232,7 @@ class CommandOverlay(NSObject):
         self._narrator_shimmer_active = False
         self._narrator_suppressed = False  # True after hide, blocks late callbacks
         self._collapsed_text = ""  # accumulated collapsed thinking text
+        self._response_body_started = False
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -418,6 +419,7 @@ class CommandOverlay(NSObject):
         self._utterance_text = ""
         self._narrator_suppressed = False  # allow narrator for new command
         self._collapsed_text = ""  # clear collapsed thinking for new command
+        self._response_body_started = False
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -665,6 +667,7 @@ class CommandOverlay(NSObject):
         """Append a streamed response token."""
         if self._text_view is None or not self._visible:
             return
+        previous_response = self._response_text
         first_token = len(self._response_text) == 0
         self._response_text += token
 
@@ -690,16 +693,21 @@ class CommandOverlay(NSObject):
             )
             self._text_view.textStorage().appendAttributedString_(sep)
 
-        # Style tool call indicators smaller (like collapsed thinking)
-        # Covers: [calling tool…], [~N tokens], [screen capture · ~N tokens],
-        #         ["query" in path], [path · ~N tokens], [100%]
-        stripped = token.lstrip("\n ")
-        is_tool_indicator = stripped.startswith("[") and not stripped.startswith("[!")
-        if is_tool_indicator:
-            frag = self._make_tool_indicator_fragment(token)
-        else:
-            frag = self._make_response_fragment(token)
-        self._text_view.textStorage().appendAttributedString_(frag)
+        for kind, fragment_text in self._iter_response_fragments(token):
+            if kind == "tool":
+                frag = self._make_tool_indicator_fragment(fragment_text)
+                self._text_view.textStorage().appendAttributedString_(frag)
+                continue
+
+            if not self._response_body_started:
+                fragment_text = fragment_text.lstrip("\n")
+                if not fragment_text:
+                    continue
+                if previous_response:
+                    self._append_response_separator()
+                self._response_body_started = True
+            frag = self._make_response_fragment(fragment_text)
+            self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
 
@@ -725,6 +733,8 @@ class CommandOverlay(NSObject):
         )
 
         combined = NSMutableAttributedString.alloc().initWithString_("")
+        saw_tool_prelude = False
+        self._response_body_started = False
 
         if self._utterance_text:
             from AppKit import NSFontAttributeName
@@ -759,28 +769,24 @@ class CommandOverlay(NSObject):
                 )
 
             if text:
-                sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
-                sep.addAttribute_value_range_(
-                    NSForegroundColorAttributeName,
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
-                    (0, 2),
-                )
-                from AppKit import NSFontAttributeName
-                sep.addAttribute_value_range_(
-                    NSFontAttributeName,
-                    NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                    (0, 2),
-                )
-                combined.appendAttributedString_(sep)
+                self._append_response_separator(combined)
 
         if text:
             self._response_text = text
             for kind, fragment_text in self._iter_response_fragments(text):
                 if kind == "tool":
+                    saw_tool_prelude = True
                     combined.appendAttributedString_(
                         self._make_tool_indicator_fragment(fragment_text)
                     )
                 else:
+                    if not self._response_body_started:
+                        fragment_text = fragment_text.lstrip("\n")
+                        if not fragment_text:
+                            continue
+                        if saw_tool_prelude:
+                            self._append_response_separator(combined)
+                        self._response_body_started = True
                     combined.appendAttributedString_(
                         self._make_response_fragment(fragment_text)
                     )
@@ -816,6 +822,31 @@ class CommandOverlay(NSObject):
             response_buffer.append(line)
         if response_buffer:
             yield ("response", "".join(response_buffer))
+
+    def _append_response_separator(self, target=None) -> None:
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+
+        if target is None:
+            if self._text_view is None:
+                return
+            target = self._text_view.textStorage()
+
+        sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+        sep.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+            (0, 2),
+        )
+        sep.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+            (0, 2),
+        )
+        target.appendAttributedString_(sep)
 
     def _current_hue_rgb(self):
         """Get the current hue rotation color as (r, g, b)."""

@@ -2427,6 +2427,14 @@ class SpokeAppDelegate(NSObject):
                 self._sync_command_overlay_brightness(immediate=True)
                 self._command_overlay.show()
                 self._command_overlay.set_utterance(last_utterance)
+                collapsed = ""
+                if (
+                    last_utterance == getattr(self, "_last_command_utterance", "")
+                    and last_response == getattr(self, "_last_command_response", "")
+                ):
+                    collapsed = getattr(self, "_last_command_collapsed_text", "")
+                if collapsed:
+                    self._command_overlay.set_thinking_collapsed(collapsed)
                 self._command_overlay.set_response_text(last_response)
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
@@ -2697,6 +2705,9 @@ class SpokeAppDelegate(NSObject):
                 self._sync_command_overlay_brightness(immediate=True)
                 self._command_overlay.show(preserve_thinking_timer=True)
                 self._command_overlay.set_utterance(utterance)
+                collapsed = getattr(self, "_command_collapsed_text", "")
+                if collapsed:
+                    self._command_overlay.set_thinking_collapsed(collapsed)
                 if streaming:
                     self._command_overlay.set_response_text(streaming)
                     self._command_overlay.invert_thinking_timer()
@@ -2713,6 +2724,14 @@ class SpokeAppDelegate(NSObject):
                         self._sync_command_overlay_brightness(immediate=True)
                         self._command_overlay.show()
                         self._command_overlay.set_utterance(last_utterance)
+                        collapsed = ""
+                        if (
+                            last_utterance == getattr(self, "_last_command_utterance", "")
+                            and last_response == getattr(self, "_last_command_response", "")
+                        ):
+                            collapsed = getattr(self, "_last_command_collapsed_text", "")
+                        if collapsed:
+                            self._command_overlay.set_thinking_collapsed(collapsed)
                         self._command_overlay.set_response_text(last_response)
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
@@ -3217,6 +3236,8 @@ class SpokeAppDelegate(NSObject):
         utterance = payload["utterance"]
         self._last_command_utterance = utterance
         self._last_command_response = ""
+        self._command_collapsed_text = ""
+        self._last_command_collapsed_text = ""
         self._command_streaming_text = ""
         # Hide the input overlay
         if self._overlay is not None:
@@ -3280,6 +3301,14 @@ class SpokeAppDelegate(NSObject):
         text = payload.get("text", "")
         if not text:
             return
+        existing = getattr(self, "_command_collapsed_text", "")
+        is_topic_append = text.startswith(" · ")
+        if not is_topic_append and existing:
+            combined = existing + "\n" + text
+        else:
+            combined = existing + text
+        self._command_collapsed_text = combined
+        self._last_command_collapsed_text = combined
         overlay = self._command_overlay
         if overlay is not None:
             try:
