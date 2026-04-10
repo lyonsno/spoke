@@ -2766,12 +2766,18 @@ class SpokeAppDelegate(NSObject):
                 replayed = self._replay_command_overlay_ops(
                     getattr(self, "_command_overlay_ops", [])
                 )
+                narrator_active = getattr(self, "_command_narrator_active", False)
+                narrator_summary = getattr(self, "_command_narrator_summary", "")
                 if streaming and not replayed:
                     collapsed = getattr(self, "_command_collapsed_text", "")
                     if collapsed:
                         self._command_overlay.set_thinking_collapsed(collapsed)
                     self._command_overlay.set_response_text(streaming)
-                if streaming:
+                if narrator_active:
+                    self._command_overlay.set_narrator_summary(
+                        narrator_summary or "Thinking"
+                    )
+                elif streaming:
                     self._command_overlay.invert_thinking_timer()
                 self._detector.command_overlay_active = True
             except Exception:
@@ -3309,6 +3315,8 @@ class SpokeAppDelegate(NSObject):
         self._last_command_response = ""
         self._command_collapsed_text = ""
         self._last_command_collapsed_text = ""
+        self._command_narrator_active = False
+        self._command_narrator_summary = ""
         self._command_streaming_text = ""
         self._command_overlay_ops = []
         # Hide the input overlay
@@ -3343,6 +3351,8 @@ class SpokeAppDelegate(NSObject):
         """Main thread: unsuppress narrator and show 'Thinking' indicator."""
         if payload.get("token") != self._transcription_token:
             return
+        self._command_narrator_active = True
+        self._command_narrator_summary = "Thinking"
         overlay = self._command_overlay
         if overlay is not None:
             overlay._narrator_suppressed = False
@@ -3352,6 +3362,7 @@ class SpokeAppDelegate(NSObject):
         """Main thread: hide the narrator label immediately."""
         if payload.get("token") != self._transcription_token:
             return
+        self._command_narrator_active = False
         overlay = self._command_overlay
         if overlay is not None:
             try:
@@ -3396,6 +3407,8 @@ class SpokeAppDelegate(NSObject):
         summary = payload.get("summary", "")
         if not summary:
             return
+        self._command_narrator_active = True
+        self._command_narrator_summary = summary
         overlay = self._command_overlay
         if overlay is not None:
             try:
@@ -3438,6 +3451,7 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        self._command_narrator_active = False
         # Reset cancel spring if generation finishes while spring is winding
         self._cancel_spring_active = False
         self._detector.cancel_spring_active = False

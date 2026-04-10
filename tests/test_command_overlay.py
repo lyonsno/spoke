@@ -394,6 +394,20 @@ class TestWindowLayering:
 
         overlay.set_response_text.assert_not_called()
 
+    def test_collapsed_thinking_starts_on_new_line_after_utterance(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "Okay, great. Thanks."
+        overlay._make_collapsed_attributed = MagicMock(return_value=MagicMock())
+
+        overlay.set_thinking_collapsed("Thought for 10s")
+
+        overlay._make_collapsed_attributed.assert_called_once_with(
+            "\nThought for 10s"
+        )
+
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None

@@ -854,7 +854,7 @@ class CommandOverlay(NSObject):
         for kind, text in self._render_ops:
             if kind == "collapsed":
                 collapsed_text = text
-                if emitted_any and not collapsed_text.startswith("\n"):
+                if (emitted_any or self._utterance_text) and not collapsed_text.startswith("\n"):
                     collapsed_text = "\n" + collapsed_text
                 combined.appendAttributedString_(
                     self._make_collapsed_attributed(collapsed_text)

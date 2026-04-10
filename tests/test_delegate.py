@@ -3716,6 +3716,39 @@ class TestCommandOverlayToggle:
         ])
         d._command_overlay.set_response_text.assert_not_called()
 
+    def test_toggle_command_overlay_preserves_active_narrator_on_resume(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_overlay = MagicMock(_visible=False)
+        d._transcribing = True
+        d._last_command_utterance = "open file"
+        d._command_streaming_text = "\n[calling read_file…]\nDone."
+        d._command_overlay_ops = [
+            ("collapsed", "Thought for 10s"),
+            ("token", "\n[calling read_file…]\n"),
+            ("token", "Done."),
+        ]
+        d._command_narrator_active = True
+        d._command_narrator_summary = (
+            "Understanding the user's commit log across multiple repositories"
+        )
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.assert_has_calls([
+            call.show(preserve_thinking_timer=True),
+            call.set_utterance("open file"),
+            call.set_thinking_collapsed("Thought for 10s"),
+            call.append_token("\n[calling read_file…]\n"),
+            call.append_token("Done."),
+            call.set_narrator_summary(
+                "Understanding the user's commit log across multiple repositories"
+            ),
+        ])
+        d._command_overlay.invert_thinking_timer.assert_not_called()
+
     def test_toggle_command_overlay_recalls_finished_response_via_rebuild_path(
         self, main_module, monkeypatch
     ):
