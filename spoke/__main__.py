@@ -1443,6 +1443,49 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.show()
 
+    def _suspend_handsfree_for_hold(self) -> None:
+        """Temporarily clear hands-free audio streams before a manual hold."""
+        self._handsfree_resume_state_for_hold = None
+        self._handsfree_paused_for_hold = False
+        hf = getattr(self, "_handsfree", None)
+        if hf is None:
+            return
+
+        state = getattr(hf, "state", None)
+        if state == HandsFreeState.LISTENING:
+            logger.info("Suspending wake-word listener for spacebar hold")
+            hf.disable()
+            self._handsfree_resume_state_for_hold = HandsFreeState.LISTENING
+            return
+
+        if getattr(hf, "is_dictating", False):
+            logger.info("Pausing hands-free for spacebar hold")
+            hf._stop_dictation_capture()
+            hf._set_state(HandsFreeState.LISTENING)
+            self._handsfree_paused_for_hold = True
+            self._handsfree_resume_state_for_hold = HandsFreeState.DICTATING
+
+    def _resume_handsfree_after_hold(self) -> bool:
+        """Restore hands-free after a manual hold completes."""
+        state = getattr(self, "_handsfree_resume_state_for_hold", None)
+        hf = getattr(self, "_handsfree", None)
+        self._handsfree_resume_state_for_hold = None
+        self._handsfree_paused_for_hold = False
+        if state is None or hf is None:
+            return False
+
+        if state == HandsFreeState.LISTENING:
+            logger.info("Restoring wake-word listener after spacebar hold")
+            hf.enable()
+            return True
+
+        if state == HandsFreeState.DICTATING:
+            logger.info("Resuming hands-free dictation after spacebar hold")
+            hf._start_dictating()
+            return True
+
+        return False
+
     def _warm_tts_in_background(self) -> None:
         tts = getattr(self, "_tts_client", None)
         if tts is None:
@@ -1634,14 +1677,8 @@ class SpokeAppDelegate(NSObject):
             getattr(self, "_verify_paste_text", None) is not None,
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
-        # Pause hands-free dictation if it's active — spacebar hold takes priority.
-        self._handsfree_paused_for_hold = False
-        hf = getattr(self, "_handsfree", None)
-        if hf is not None and hf.is_dictating:
-            logger.info("Pausing hands-free for spacebar hold")
-            hf._stop_dictation_capture()
-            hf._set_state(HandsFreeState.LISTENING)
-            self._handsfree_paused_for_hold = True
+        # Manual holds take precedence over any live hands-free audio path.
+        self._suspend_handsfree_for_hold()
 
         if self._menubar is not None:
             self._menubar.set_recording(True)
@@ -1693,6 +1730,7 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text(
                     "Audio unavailable — memory pressure"
                 )
+            self._resume_handsfree_after_hold()
             return
         self._record_start_time = time.monotonic()
         self._cap_fired = False
@@ -2070,7 +2108,7 @@ class SpokeAppDelegate(NSObject):
             else:
                 logger.info("Empty tap — no action")
 
-            if self._menubar is not None:
+            if not self._resume_handsfree_after_hold() and self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
 
@@ -2308,7 +2346,7 @@ class SpokeAppDelegate(NSObject):
             return
         if self._overlay is not None:
             self._overlay.hide()
-        if self._menubar is not None:
+        if not self._resume_handsfree_after_hold() and self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
     def parallelTranscriptionComplete_(self, payload: dict) -> None:
@@ -2358,6 +2396,7 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.cancel_insert_windup()
         self._toggle_command_overlay()
+        self._resume_handsfree_after_hold()
 
     def transcriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle transcription error."""
@@ -2373,7 +2412,7 @@ class SpokeAppDelegate(NSObject):
         logger.error("Transcription failed — no text injected")
         if self._overlay is not None:
             self._overlay.hide()
-        if self._menubar is not None:
+        if not self._resume_handsfree_after_hold() and self._menubar is not None:
             self._menubar.set_status_text("Error — try again")
 
     def parallelTranscriptionFailed_(self, payload: dict) -> None:
@@ -2383,6 +2422,8 @@ class SpokeAppDelegate(NSObject):
         if self._last_preview_text:
             logger.warning("Parallel transcription failed — falling back to latest preview text")
             self._inject_result_text(self._last_preview_text, "Pasted preview")
+            return
+        self._resume_handsfree_after_hold()
 
     def hideOverlayAfterInject_(self, timer) -> None:
         """Hide the overlay after briefly showing the final transcription."""
@@ -5705,12 +5746,7 @@ class SpokeAppDelegate(NSObject):
 
         def _on_clipboard_restored():
             if self._menubar is not None:
-                # Resume hands-free if it was paused for a spacebar hold
-                hf = getattr(self, "_handsfree", None)
-                if getattr(self, "_handsfree_paused_for_hold", False) and hf is not None:
-                    self._handsfree_paused_for_hold = False
-                    hf._start_dictating()
-                else:
+                if not self._resume_handsfree_after_hold():
                     self._menubar.set_status_text("Ready — hold spacebar")
 
         inject_text(text, on_restored=_on_clipboard_restored)

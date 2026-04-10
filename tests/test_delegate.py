@@ -108,6 +108,35 @@ class TestHoldCallbacks:
         )
         assert d._preview_active is False
 
+    def test_hold_start_suspends_wakeword_listener_before_capture_start(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.state = main_module.HandsFreeState.LISTENING
+        d._handsfree.is_dictating = False
+        call_order: list[str] = []
+        d._handsfree.disable.side_effect = lambda: call_order.append("disable")
+        d._capture.start.side_effect = lambda **kwargs: call_order.append("capture")
+
+        d._on_hold_start()
+
+        assert call_order[:2] == ["disable", "capture"]
+        assert d._handsfree_resume_state_for_hold == main_module.HandsFreeState.LISTENING
+
+    def test_hold_end_with_empty_audio_restores_wakeword_listener(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
+        d._capture.stop.return_value = b""
+
+        d._on_hold_end()
+
+        d._handsfree.enable.assert_called_once_with()
+        assert d._handsfree_resume_state_for_hold is None
+
     def test_hold_end_stops_capture_and_spawns_thread(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"fake-wav"
@@ -134,6 +163,25 @@ class TestHoldCallbacks:
         MockThread.assert_not_called()
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_result_inject_delayed_restores_wakeword_listener_after_hold(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
+        d._result_pending_inject = ("hello", "Pasted!")
+
+        def fake_inject_text(text, on_restored=None):
+            assert text == "hello"
+            if on_restored is not None:
+                on_restored()
+
+        with patch.object(main_module, "inject_text", side_effect=fake_inject_text):
+            d.resultInjectDelayed_(None)
+
+        d._handsfree.enable.assert_called_once_with()
+        assert d._handsfree_resume_state_for_hold is None
 
 
 class TestTranscriptionToken:
