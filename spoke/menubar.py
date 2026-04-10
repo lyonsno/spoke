@@ -89,6 +89,7 @@ class MenuBarIcon(NSObject):
         self._on_select_model = on_select_model
         self._on_toggle_terraform = None
         self._on_toggle_handsfree = None
+        self._handsfree_enabled = False
         self._status_item = None
         self._status_text = "Idle"
         self._branch_label = _branch_menu_label()
@@ -179,6 +180,10 @@ class MenuBarIcon(NSObject):
         if self._status_item is None:
             return
         self._build_menu()
+
+    def set_handsfree_enabled(self, enabled: bool) -> None:
+        self._handsfree_enabled = bool(enabled)
+        self.refresh_menu()
 
     # ── private ─────────────────────────────────────────────
 
@@ -348,6 +353,7 @@ class MenuBarIcon(NSObject):
                 "Hands-Free Mode", "toggleHandsFree:", "h"
             )
             handsfree_item.setTarget_(self)
+            handsfree_item.setState_(1 if getattr(self, "_handsfree_enabled", False) else 0)
             menu.addItem_(handsfree_item)
 
         if getattr(self, "_on_toggle_terraform", None) is not None:

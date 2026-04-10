@@ -2795,6 +2795,60 @@ class TestRuntimePhaseLogging:
 
         d._refresh_command_model_options_async.assert_called_once_with()
 
+    def test_application_launch_restores_persisted_handsfree_preference(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._quit = MagicMock()
+        d._command_client = None
+        d._request_mic_permission = MagicMock()
+        d._setup_event_tap = MagicMock()
+        d._handsfree = MagicMock()
+        d._load_handsfree_enabled_preference = MagicMock(return_value=True)
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+
+        menubar = MagicMock()
+        menubar.setup = MagicMock()
+        glow = MagicMock()
+        glow.setup = MagicMock()
+        overlay = MagicMock()
+        overlay.setup = MagicMock()
+        terraform_hud = MagicMock()
+        terraform_hud.restore_visibility = MagicMock()
+
+        with patch.object(main_module.MenuBarIcon, "alloc") as mock_menubar_alloc, \
+            patch.object(main_module.GlowOverlay, "alloc") as mock_glow_alloc, \
+            patch.object(main_module.TranscriptionOverlay, "alloc") as mock_overlay_alloc:
+            mock_menubar_alloc.return_value.initWithQuitCallback_selectModelCallback_.return_value = menubar
+            mock_glow_alloc.return_value.initWithScreen_.return_value = glow
+            mock_overlay_alloc.return_value.initWithScreen_.return_value = overlay
+            import sys
+            sys.modules["spoke.terraform_hud"] = MagicMock()
+            sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = terraform_hud
+
+            d.applicationDidFinishLaunching_(None)
+
+        menubar.set_handsfree_enabled.assert_called_once_with(True)
+        d._handsfree.enable.assert_called_once_with()
+
+    def test_toggle_handsfree_persists_enabled_preference(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        hf = MagicMock()
+        hf.is_active = False
+
+        def _enable():
+            hf.is_active = True
+
+        hf.enable.side_effect = _enable
+        d._handsfree = hf
+        d._menubar = MagicMock()
+        d._save_handsfree_enabled_preference = MagicMock(return_value=True)
+
+        d._toggle_handsfree()
+
+        d._save_handsfree_enabled_preference.assert_called_once_with(True)
+        d._menubar.set_handsfree_enabled.assert_called_once_with(True)
+
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch
     ):

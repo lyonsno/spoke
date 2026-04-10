@@ -1079,6 +1079,10 @@ class SpokeAppDelegate(NSObject):
         # Hands-free mode — wire menubar toggle if Porcupine key is available
         if os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
+            handsfree_enabled = self._load_handsfree_enabled_preference()
+            self._menubar.set_handsfree_enabled(handsfree_enabled)
+            if handsfree_enabled:
+                self._handsfree.enable()
 
         # Iron Giant: install event tap and probe mic in parallel.
         # The event tap (spacebar interception) only needs Accessibility permission,
@@ -1296,6 +1300,10 @@ class SpokeAppDelegate(NSObject):
             hf.disable()
         else:
             hf.enable()
+        enabled = hf.is_active
+        self._save_handsfree_enabled_preference(enabled)
+        if self._menubar is not None:
+            self._menubar.set_handsfree_enabled(enabled)
 
     def handleWakeWord_(self, payload: dict) -> None:
         """Main-thread selector called by HandsFreeController on wake word detection."""
@@ -1418,6 +1426,8 @@ class SpokeAppDelegate(NSObject):
         """Update UI when hands-free state changes."""
         if self._menubar is None:
             return
+
+        self._menubar.set_handsfree_enabled(state != HandsFreeState.DORMANT)
 
         if state == HandsFreeState.DORMANT:
             self._menubar.set_status_text("Ready — hold spacebar")
@@ -4173,6 +4183,9 @@ class SpokeAppDelegate(NSObject):
             "transcription_model": prefs.get("transcription_model"),
         }
 
+    def _load_handsfree_enabled_preference(self) -> bool:
+        return bool(self._load_preferences().get("handsfree_enabled", False))
+
     def _load_command_model_preference(self) -> str | None:
         return self._load_preferences().get("command_model")
 
@@ -4308,6 +4321,11 @@ class SpokeAppDelegate(NSObject):
         payload = self._load_preferences()
         payload["preview_model"] = preview_model
         payload["transcription_model"] = transcription_model
+        return self._save_preferences(payload)
+
+    def _save_handsfree_enabled_preference(self, enabled: bool) -> bool:
+        payload = self._load_preferences()
+        payload["handsfree_enabled"] = bool(enabled)
         return self._save_preferences(payload)
 
     def _save_command_model_preference(self, model_id: str) -> bool:

@@ -341,3 +341,37 @@ class TestMenuBarIcon:
         # Launch targets are now flat items at the bottom, no submenu header
         assert any(call.args == ("Main", "selectModel:", "") for call in calls)
         assert any(call.args == ("Smoke", "selectModel:", "") for call in calls)
+
+    def test_build_menu_marks_handsfree_item_when_enabled(self, menubar_module):
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        created_items = []
+
+        class _AllocProxy:
+            def initWithTitle_action_keyEquivalent_(self, title, action, key):
+                item = MagicMock(name=f"menu_item[{title}]")
+                item.title = title
+                created_items.append(item)
+                return item
+
+        AppKit.NSMenuItem.alloc.side_effect = lambda: _AllocProxy()
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._on_toggle_handsfree = MagicMock()
+        icon._handsfree_enabled = True
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        handsfree_item = next(item for item in created_items if getattr(item, "title", "") == "Hands-Free Mode")
+        handsfree_item.setState_.assert_called_once_with(1)
