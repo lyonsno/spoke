@@ -733,6 +733,10 @@ def _execute_create_epistaxis_worktree(arguments: dict) -> str:
         )
         if proc.returncode != 0:
             return json.dumps({"error": proc.stderr.strip() or f"Script exited {proc.returncode}"})
+        # create_worktree.sh contract: all progress/status lines go to
+        # stderr (>&2); only the final absolute worktree path is echoed
+        # to stdout. A single .strip() is therefore sufficient — no line
+        # splitting needed. See ~/dev/epistaxis/tools/create_worktree.sh.
         worktree_path = proc.stdout.strip()
         return json.dumps({
             "worktree_path": worktree_path,

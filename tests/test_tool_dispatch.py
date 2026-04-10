@@ -876,6 +876,11 @@ class TestCreateEpistaxisWorktree:
         assert "error" in result
 
     def test_calls_create_worktree_script(self):
+        # NOTE: We intentionally do NOT mock Path.exists here. The real
+        # create_worktree.sh is a precondition of this tool — if it's missing
+        # from ~/dev/epistaxis/tools/ the test should fail loudly, not pass
+        # under a global Path.exists patch that would also mask unrelated
+        # filesystem probes in the call tree.
         mod = _import_tools()
         import subprocess
         from pathlib import Path
@@ -886,16 +891,17 @@ class TestCreateEpistaxisWorktree:
         calls = []
         def mock_run(cmd, capture_output, text, timeout):
             calls.append(cmd)
+            # create_worktree.sh contract: progress lines go to stderr, only
+            # the final absolute worktree path goes to stdout (one line).
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0,
                 stdout="/private/tmp/epistaxis-test-wt\n", stderr=""
             )
 
         with unittest.mock.patch("subprocess.run", mock_run):
-            with unittest.mock.patch("pathlib.Path.exists", return_value=True):
-                result = json.loads(mod.execute_tool(
-                    "create_epistaxis_worktree", {"name": "test-wt"}
-                ))
+            result = json.loads(mod.execute_tool(
+                "create_epistaxis_worktree", {"name": "test-wt"}
+            ))
 
         assert result["status"] == "created"
         assert result["worktree_path"] == "/private/tmp/epistaxis-test-wt"
@@ -914,10 +920,25 @@ class TestCreateEpistaxisWorktree:
             )
 
         with unittest.mock.patch("subprocess.run", mock_run):
-            with unittest.mock.patch("pathlib.Path.exists", return_value=True):
-                result = json.loads(mod.execute_tool(
-                    "create_epistaxis_worktree", {"name": "existing-wt"}
-                ))
+            result = json.loads(mod.execute_tool(
+                "create_epistaxis_worktree", {"name": "existing-wt"}
+            ))
 
         assert "error" in result
         assert "already exists" in result["error"]
+
+    def test_handles_script_timeout(self):
+        """TimeoutExpired from subprocess.run must surface as a clear error."""
+        mod = _import_tools()
+        import subprocess
+
+        def mock_run(cmd, capture_output, text, timeout):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+        with unittest.mock.patch("subprocess.run", mock_run):
+            result = json.loads(mod.execute_tool(
+                "create_epistaxis_worktree", {"name": "slow-wt"}
+            ))
+
+        assert "error" in result
+        assert "timed out" in result["error"]
