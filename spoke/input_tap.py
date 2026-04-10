@@ -605,6 +605,20 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     if det is None:
         return event
 
+    Quartz = __import__("Quartz")
+    disabled_by_timeout = getattr(Quartz, "kCGEventTapDisabledByTimeout", None)
+    disabled_by_user_input = getattr(Quartz, "kCGEventTapDisabledByUserInput", None)
+    if event_type in (disabled_by_timeout, disabled_by_user_input):
+        if getattr(det, "_tap", None) is not None:
+            reason = (
+                "timeout"
+                if event_type == disabled_by_timeout
+                else "user input"
+            )
+            logger.warning("Event tap disabled by %s — re-enabling", reason)
+            CGEventTapEnable(det._tap, True)
+        return event
+
     # Let our own forwarded events pass through
     if det._forwarding:
         # Clear after keyUp so both down+up pass

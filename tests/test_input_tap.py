@@ -205,6 +205,44 @@ class TestEventTapCallback:
         mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert det._forwarding is False
 
+    def test_callback_reenables_tap_after_timeout_disable(self, input_tap_module):
+        """A timed-out event tap should be re-enabled instead of silently dying."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det = MagicMock()
+        det._forwarding = False
+        det._tap = object()
+        mod._active_detector = det
+        Quartz.kCGEventTapDisabledByTimeout = 0xFFFFFFFE
+
+        event = MagicMock()
+        result = mod._event_tap_callback(
+            None, Quartz.kCGEventTapDisabledByTimeout, event, None
+        )
+
+        Quartz.CGEventTapEnable.assert_called_once_with(det._tap, True)
+        assert result is event
+
+    def test_callback_reenables_tap_after_user_input_disable(self, input_tap_module):
+        """User-input-disables should also re-arm the event tap."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det = MagicMock()
+        det._forwarding = False
+        det._tap = object()
+        mod._active_detector = det
+        Quartz.kCGEventTapDisabledByUserInput = 0xFFFFFFFF
+
+        event = MagicMock()
+        result = mod._event_tap_callback(
+            None, Quartz.kCGEventTapDisabledByUserInput, event, None
+        )
+
+        Quartz.CGEventTapEnable.assert_called_once_with(det._tap, True)
+        assert result is event
+
 
 class TestForwardingRecovery:
     """Test that _forwarding recovers via timeout if synthetic events are lost."""
