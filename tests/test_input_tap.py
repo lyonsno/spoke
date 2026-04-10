@@ -954,6 +954,56 @@ class TestTrayAwareness:
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
+    def test_space_keydown_clears_stale_enter_when_keyboard_probe_unavailable(
+        self, input_tap_module
+    ):
+        """If Quartz cannot answer and no Enter keyDown was seen, stale Enter must clear."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det._enter_held = True
+        det._enter_observed = False
+        mod._active_detector = det
+
+        Quartz.CGEventSourceKeyState.side_effect = RuntimeError("boom")
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result_down is None
+        assert det._enter_held is False
+
+        det.holdTimerFired_(None)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
+    def test_space_keydown_preserves_observed_enter_when_keyboard_probe_unavailable(
+        self, input_tap_module
+    ):
+        """If we actually saw Enter keyDown, an unavailable probe must not erase the chord."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det._enter_held = True
+        det._enter_observed = True
+        mod._active_detector = det
+
+        Quartz.CGEventSourceKeyState.side_effect = RuntimeError("boom")
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result_down is None
+        assert det._enter_held is True
+
+        det.holdTimerFired_(None)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
     def test_space_keydown_preserves_real_enter_first_chord(
         self, input_tap_module
     ):
