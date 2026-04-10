@@ -4930,3 +4930,86 @@ class TestSegmentAcceleratedTranscription:
         d._preview_client.transcribe.assert_called_with(b"tail_wav")
         # Full buffer should NOT have been requested.
         d._capture.get_buffer.assert_not_called()
+
+
+class TestLiveConnectFailureRecovery:
+    """When Gemini Live connect fails, the delegate must return the UI and
+    state machine to a clean IDLE — otherwise the user's spacebar feels
+    trapped between arm-timer re-fires. Observed 2026-04-10 when an invalid
+    GEMINI_API_KEY_INACTIVE produced a WebSocket 1007 handshake rejection
+    and left the glow stuck on, menubar stuck on 'Connecting…', and the
+    capture still running.
+    """
+
+    def _make_live_delegate(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        # Live-mode fields the real enter path sets up.
+        d._live_mode = True
+        d._live_client = MagicMock()
+        d._live_player = MagicMock()
+        d._live_warning_timer = None
+        d._live_session_timer = None
+        return d
+
+    def test_connect_failure_clears_live_mode_flag(self, main_module, monkeypatch):
+        d = self._make_live_delegate(main_module, monkeypatch)
+        d._liveConnectFailed_("API key not valid")
+        assert d._live_mode is False
+
+    def test_connect_failure_releases_live_client_and_player(self, main_module, monkeypatch):
+        d = self._make_live_delegate(main_module, monkeypatch)
+        player = d._live_player
+        d._liveConnectFailed_("boom")
+        assert d._live_client is None
+        assert d._live_player is None
+        player.close.assert_called_once()
+
+    def test_connect_failure_stops_audio_capture(self, main_module, monkeypatch):
+        """Capture may have been started by the arm-path before connect ran.
+        It must be stopped or the recording state persists after failure."""
+        d = self._make_live_delegate(main_module, monkeypatch)
+        d._liveConnectFailed_("boom")
+        d._capture.stop.assert_called_once()
+
+    def test_connect_failure_hides_glow(self, main_module, monkeypatch):
+        """Glow was shown during arm; a failed connect must hide it."""
+        d = self._make_live_delegate(main_module, monkeypatch)
+        d._liveConnectFailed_("boom")
+        d._glow.hide.assert_called()
+
+    def test_connect_failure_clears_menubar_recording(self, main_module, monkeypatch):
+        d = self._make_live_delegate(main_module, monkeypatch)
+        d._liveConnectFailed_("boom")
+        # set_recording(False) returns the menubar to a non-recording state.
+        set_recording_calls = [
+            c for c in d._menubar.set_recording.call_args_list if c.args == (False,)
+        ]
+        assert set_recording_calls, "menubar.set_recording(False) was not called"
+
+    def test_connect_failure_surfaces_error_in_menubar_status(self, main_module, monkeypatch):
+        d = self._make_live_delegate(main_module, monkeypatch)
+        d._liveConnectFailed_("API key not valid")
+        # Some call to set_status_text should include the failure reason.
+        status_texts = [
+            c.args[0] for c in d._menubar.set_status_text.call_args_list if c.args
+        ]
+        assert any("API key not valid" in t for t in status_texts), status_texts
+
+    def test_connect_failure_cancels_session_timers(self, main_module, monkeypatch):
+        d = self._make_live_delegate(main_module, monkeypatch)
+        warn = MagicMock()
+        session = MagicMock()
+        d._live_warning_timer = warn
+        d._live_session_timer = session
+        d._liveConnectFailed_("boom")
+        warn.invalidate.assert_called_once()
+        session.invalidate.assert_called_once()
+        assert d._live_warning_timer is None
+        assert d._live_session_timer is None
+
+    def test_connect_failure_is_idempotent(self, main_module, monkeypatch):
+        """Second call must not raise even though client/player are already None."""
+        d = self._make_live_delegate(main_module, monkeypatch)
+        d._liveConnectFailed_("boom")
+        d._liveConnectFailed_("boom again")  # should be a no-op
+        assert d._live_mode is False

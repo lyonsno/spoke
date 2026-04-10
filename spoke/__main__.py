@@ -1832,13 +1832,52 @@ class SpokeAppDelegate(NSObject):
         )
 
     def _liveConnectFailed_(self, error_msg) -> None:
-        """Main thread: connection failed."""
+        """Main thread: connection failed — restore the UI and state
+        machine to the same clean IDLE that a deliberate exit would produce.
+
+        Observed 2026-04-10: leaving capture running, glow visible, and
+        session timers armed after a failed connect made subsequent
+        spacebar presses re-enter the arm path and fail identically,
+        giving the user the impression that the spacebar was locked.
+        A failed connect must therefore mirror ``_exit_live_mode``'s
+        cleanup, minus the client disconnect (never connected).
+        """
         self._live_mode = False
-        if self._live_player is not None:
-            self._live_player.close()
-            self._live_player = None
+
+        # Stop audio capture — the arm path may have started it before
+        # connect was attempted.
+        if self._capture is not None:
+            try:
+                self._capture.stop()
+            except Exception:
+                pass
+
+        # Release client and player.
         self._live_client = None
+        if self._live_player is not None:
+            try:
+                self._live_player.close()
+            except Exception:
+                pass
+            self._live_player = None
+
+        # Cancel any session timers that happened to be scheduled.
+        if getattr(self, "_live_session_timer", None) is not None:
+            self._live_session_timer.invalidate()
+            self._live_session_timer = None
+        if getattr(self, "_live_warning_timer", None) is not None:
+            self._live_warning_timer.invalidate()
+            self._live_warning_timer = None
+
+        # Restore visual state to match _exit_live_mode.
+        if self._glow is not None:
+            try:
+                self._glow.set_live_mode(False)
+            except Exception:
+                pass
+            self._glow.hide()
         if self._menubar is not None:
+            self._menubar.set_recording(False)
             self._menubar.set_status_text(f"Live mode failed: {error_msg}")
 
     def _exit_live_mode(self) -> None:
