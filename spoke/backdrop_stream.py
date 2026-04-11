@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import threading
 import warnings
@@ -29,6 +30,8 @@ _FRAME_INTERVAL_60_FPS = (1, 60, 0, 0)
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
+_LIBDISPATCH = None
+_LIBDISPATCH_LOCK = threading.Lock()
 
 
 def _make_rect(x, y, width, height):
@@ -85,7 +88,7 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
     config.setWidth_(pixel_width)
     config.setHeight_(pixel_height)
     if hasattr(config, "setQueueDepth_"):
-        config.setQueueDepth_(3)
+        config.setQueueDepth_(1)
     if hasattr(config, "setShowsCursor_"):
         config.setShowsCursor_(False)
     if hasattr(config, "setScalesToFit_"):
@@ -107,6 +110,33 @@ def make_backdrop_renderer(screen, fallback_factory):
         except Exception:
             logger.debug("Falling back to Quartz backdrop renderer after ScreenCaptureKit init failure", exc_info=True)
     return fallback_factory()
+
+
+def _libdispatch():
+    global _LIBDISPATCH
+    if _LIBDISPATCH is not None:
+        return _LIBDISPATCH
+    with _LIBDISPATCH_LOCK:
+        if _LIBDISPATCH is not None:
+            return _LIBDISPATCH
+        lib = ctypes.CDLL("/usr/lib/system/libdispatch.dylib")
+        lib.dispatch_queue_create.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
+        lib.dispatch_queue_create.restype = ctypes.c_void_p
+        _LIBDISPATCH = lib
+        return _LIBDISPATCH
+
+
+def _make_stream_handler_queue(label: str):
+    if objc is None:
+        return None
+    try:
+        ptr = _libdispatch().dispatch_queue_create(label.encode("utf-8"), None)
+        if not ptr:
+            return None
+        return objc.objc_object(c_void_p=ptr)
+    except Exception:
+        logger.debug("Failed to create dedicated ScreenCaptureKit sample handler queue", exc_info=True)
+        return None
 
 
 def _load_screencapturekit_bridge() -> dict[str, object] | None:
@@ -210,6 +240,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._window_number = None
         self._lock = threading.Lock()
         self._ci_context = None
+        self._stream_handler_queue = None
 
     def _fallback_renderer(self):
         if self._fallback is None:
@@ -232,6 +263,11 @@ class _ScreenCaptureKitBackdropRenderer:
 
     def set_frame_callback(self, callback) -> None:
         self._frame_callback = callback
+
+    def _sample_handler_queue(self):
+        if self._stream_handler_queue is None:
+            self._stream_handler_queue = _make_stream_handler_queue("ai.spoke.backdrop-stream")
+        return self._stream_handler_queue
 
     def _dispatch_frame_callback(self, image) -> None:
         callback = self._frame_callback
@@ -370,7 +406,7 @@ class _ScreenCaptureKitBackdropRenderer:
                 success, error = stream.addStreamOutput_type_sampleHandlerQueue_error_(
                     stream_output,
                     bridge["SCStreamOutputTypeScreen"],
-                    None,
+                    self._sample_handler_queue(),
                     None,
                 )
                 if not success:

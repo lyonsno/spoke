@@ -103,7 +103,7 @@ def test_configure_stream_geometry_uses_filter_content_rect_and_point_pixel_scal
 
     assert config.calls["width"] == 1020
     assert config.calls["height"] == 240
-    assert config.calls["queue_depth"] == 3
+    assert config.calls["queue_depth"] == 1
     assert config.calls["shows_cursor"] is False
     assert config.calls["source_rect"].origin.x == pytest.approx(480.0)
     assert config.calls["source_rect"].origin.y == pytest.approx(637.0)
@@ -123,3 +123,104 @@ def test_publish_live_image_caches_frame_and_invokes_callback():
 
     assert renderer._latest_image == "fresh-frame"
     callback.assert_called_once_with("fresh-frame")
+
+
+def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):
+    mod = _import_module()
+    sentinel_queue = object()
+    monkeypatch.setattr(mod, "_make_stream_handler_queue", lambda label: sentinel_queue)
+
+    class FakeDisplay:
+        def frame(self):
+            return _make_rect(0.0, 0.0, 1728.0, 1117.0)
+
+    fake_display = FakeDisplay()
+
+    class FakeContent:
+        def displays(self):
+            return [fake_display]
+
+        def windows(self):
+            return []
+
+    fake_content = FakeContent()
+    captured = {}
+
+    class FakeStream:
+        def addStreamOutput_type_sampleHandlerQueue_error_(self, output, output_type, queue, error):
+            captured["queue"] = queue
+            captured["output_type"] = output_type
+            return True, None
+
+        def startCaptureWithCompletionHandler_(self, callback):
+            captured["started"] = True
+
+    fake_stream = FakeStream()
+
+    class FakeSCStream:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFilter_configuration_delegate_(self, content_filter, config, delegate):
+            captured["content_filter"] = content_filter
+            captured["config"] = config
+            return fake_stream
+
+    class FakeSCShareableContent:
+        @staticmethod
+        def getShareableContentWithCompletionHandler_(callback):
+            callback(fake_content)
+
+    class FakeOutput:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithRenderer_(self, renderer):
+            captured["output_renderer"] = renderer
+            return self
+
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCShareableContent": FakeSCShareableContent,
+            "SCStream": FakeSCStream,
+            "SCStreamOutputTypeScreen": 7,
+        },
+    )
+    monkeypatch.setattr(mod, "_ScreenCaptureKitStreamOutput", FakeOutput)
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._screen = object()
+    renderer._fallback_factory = lambda: None
+    renderer._fallback = None
+    renderer._stream = None
+    renderer._stream_output = None
+    renderer._stream_started = False
+    renderer._startup_requested = False
+    renderer._pending_signature = None
+    renderer._applied_signature = None
+    renderer._latest_image = None
+    renderer._frame_callback = None
+    renderer._blur_radius_points = 0.0
+    renderer._current_display = None
+    renderer._current_display_frame = None
+    renderer._current_content = None
+    renderer._window_number = None
+    renderer._lock = mod.threading.Lock()
+    renderer._ci_context = None
+    renderer._stream_handler_queue = None
+    renderer._match_display = lambda content: fake_display
+    renderer._build_filter = lambda content, display, window_number: "filter"
+    renderer._build_configuration = lambda content_filter, capture_rect: "config"
+    renderer._current_backing_scale = lambda: 2.0
+    renderer._signature_for = lambda window_number, capture_rect, backing_scale: ("sig",)
+
+    renderer._request_stream_start(window_number=99, capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0))
+
+    assert captured["queue"] is sentinel_queue
+    assert captured["output_type"] == 7
+    assert captured["started"] is True
+    assert renderer._stream_handler_queue is sentinel_queue
