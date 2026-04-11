@@ -65,6 +65,9 @@ def _make_overlay(mock_pyobjc):
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
     overlay._fill_layer = MagicMock()
+    overlay._cancel_spring = 0.0
+    overlay._cancel_spring_target = 0.0
+    overlay._cancel_spring_fired = False
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     return overlay, mod
@@ -487,6 +490,28 @@ class TestAdaptiveCompositing:
             assert max(light) < 0.17
         finally:
             sys.modules.pop("spoke.command_overlay", None)
+
+    def test_peak_assistant_breath_drives_fill_into_preview_like_opacity_band(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+        assert fill_opacity >= 0.8, (
+            "Assistant overlay should enter the same materially opaque band "
+            "the preview overlay reaches when its amplitude is high."
+        )
 
 class TestGeometryCaps:
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
