@@ -58,10 +58,10 @@ def _screen_display_id(screen) -> int | None:
     return int(display_id) if display_id is not None else None
 
 
-def _display_local_capture_rect(display_frame, capture_rect):
+def _content_local_capture_rect(content_rect, capture_rect):
     return _make_rect(
-        capture_rect.origin.x - display_frame.origin.x,
-        capture_rect.origin.y - display_frame.origin.y,
+        capture_rect.origin.x - content_rect.origin.x,
+        capture_rect.origin.y - content_rect.origin.y,
         capture_rect.size.width,
         capture_rect.size.height,
     )
@@ -76,9 +76,9 @@ def _cgrect(rect):
         return rect
 
 
-def _configure_stream_geometry(config, *, display_frame, capture_rect, backing_scale: float) -> None:
-    local_rect = _display_local_capture_rect(display_frame, capture_rect)
-    scale = max(backing_scale, 1.0)
+def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixel_scale: float) -> None:
+    local_rect = _content_local_capture_rect(content_rect, capture_rect)
+    scale = max(point_pixel_scale, 1.0)
     pixel_width = max(1, int(round(capture_rect.size.width * scale)))
     pixel_height = max(1, int(round(capture_rect.size.height * scale)))
 
@@ -247,6 +247,27 @@ class _ScreenCaptureKitBackdropRenderer:
         except Exception:
             return 2.0
 
+    def _current_content_rect(self, content_filter):
+        if content_filter is None:
+            return self._current_display_frame
+        try:
+            rect = content_filter.contentRect()
+            if rect is not None:
+                return rect
+        except Exception:
+            pass
+        return self._current_display_frame
+
+    def _current_point_pixel_scale(self, content_filter) -> float:
+        if content_filter is not None:
+            try:
+                scale = float(content_filter.pointPixelScale())
+                if scale > 0.0:
+                    return scale
+            except Exception:
+                pass
+        return self._current_backing_scale()
+
     def _match_display(self, content):
         try:
             displays = list(content.displays())
@@ -288,15 +309,15 @@ class _ScreenCaptureKitBackdropRenderer:
         excluded_windows = self._excluded_windows(content, window_number)
         return SCContentFilter.alloc().initWithDisplay_excludingWindows_(display, excluded_windows)
 
-    def _build_configuration(self, capture_rect):
+    def _build_configuration(self, content_filter, capture_rect):
         bridge = _load_screencapturekit_bridge()
         SCStreamConfiguration = bridge["SCStreamConfiguration"]
         config = SCStreamConfiguration.alloc().init()
         _configure_stream_geometry(
             config,
-            display_frame=self._current_display_frame,
+            content_rect=self._current_content_rect(content_filter),
             capture_rect=capture_rect,
-            backing_scale=self._current_backing_scale(),
+            point_pixel_scale=self._current_point_pixel_scale(content_filter),
         )
         return config
 
@@ -320,7 +341,7 @@ class _ScreenCaptureKitBackdropRenderer:
                     return
                 self._current_display_frame = self._current_display.frame()
                 content_filter = self._build_filter(content, self._current_display, window_number)
-                config = self._build_configuration(capture_rect)
+                config = self._build_configuration(content_filter, capture_rect)
                 SCStream = bridge["SCStream"]
                 stream = SCStream.alloc().initWithFilter_configuration_delegate_(
                     content_filter,
@@ -369,12 +390,12 @@ class _ScreenCaptureKitBackdropRenderer:
             return
         self._pending_signature = signature
         try:
-            config = self._build_configuration(capture_rect)
             content_filter = self._build_filter(
                 self._current_content if self._current_content is not None else SimpleNamespace(windows=lambda: []),
                 self._current_display,
                 window_number,
             )
+            config = self._build_configuration(content_filter, capture_rect)
             self._window_number = window_number
 
             def updated_filter(error):
