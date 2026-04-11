@@ -159,6 +159,16 @@ class TestThinkingTimer:
 
         overlay._backdrop_layer.setContents_.assert_called_once_with("live-frame")
 
+    def test_install_backdrop_frame_callback_skips_image_path_for_sample_buffer_layer(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_layer = MagicMock()
+        overlay._backdrop_layer_is_sample_buffer_display = True
+
+        overlay._install_backdrop_frame_callback()
+
+        overlay._backdrop_renderer.set_frame_callback.assert_called_once_with(None)
+
     def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._backdrop_renderer = MagicMock()
@@ -274,6 +284,16 @@ class TestShowFinishHide:
 
         overlay._backdrop_layer.setContents_.assert_called_with(None)
         overlay._backdrop_layer.setMask_.assert_called_with(None)
+
+    def test_show_flushes_sample_buffer_backdrop_before_reuse(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.capture_blurred_image.return_value = None
+        overlay._backdrop_layer.flushAndRemoveImage = MagicMock()
+        overlay._backdrop_layer_is_sample_buffer_display = True
+
+        overlay.show()
+
+        overlay._backdrop_layer.flushAndRemoveImage.assert_called_once_with()
 
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -614,6 +634,15 @@ class TestBackdropGeometry:
         mod = importlib.import_module("spoke.command_overlay")
         try:
             assert mod._COMMAND_BACKDROP_REFRESH_S == pytest.approx(1.0 / 30.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_backdrop_mask_falloff_width_uses_configured_multiplier(self, mock_pyobjc, monkeypatch):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER", "9.0")
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._command_backdrop_mask_falloff_width(2.0) == pytest.approx(18.0)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 

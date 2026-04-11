@@ -263,6 +263,18 @@ def test_install_backdrop_frame_callback_pushes_live_frames_into_layer(mock_pyob
     overlay._backdrop_layer.setContents_.assert_called_once_with("live-frame")
 
 
+def test_install_backdrop_frame_callback_skips_image_path_for_sample_buffer_layer(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_layer = MagicMock()
+    overlay._backdrop_layer_is_sample_buffer_display = True
+
+    overlay._install_backdrop_frame_callback()
+
+    overlay._backdrop_renderer.set_frame_callback.assert_called_once_with(None)
+
+
 def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(mock_pyobjc):
     overlay_module = _import_overlay(mock_pyobjc)
     overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
@@ -275,6 +287,13 @@ def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(mock_pyob
     callback("live-sample")
 
     overlay._backdrop_layer.enqueueSampleBuffer_.assert_called_once_with("live-sample")
+
+
+def test_preview_backdrop_mask_falloff_width_uses_configured_multiplier(mock_pyobjc, monkeypatch):
+    monkeypatch.setenv("SPOKE_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER", "9.0")
+    overlay_module = _import_overlay(mock_pyobjc)
+
+    assert overlay_module._preview_backdrop_mask_falloff_width(2.0) == pytest.approx(18.0)
 
 
 def test_choose_backdrop_layer_uses_display_layer_when_renderer_supports_sample_buffers(mock_pyobjc, monkeypatch):
@@ -458,6 +477,44 @@ def test_show_clears_stale_preview_backdrop_before_reuse(mock_pyobjc, monkeypatc
     overlay._backdrop_layer.setContents_.assert_called_with(None)
     overlay._backdrop_layer.setMask_.assert_called_with(None)
     assert overlay._backdrop_timer is timer
+
+
+def test_show_flushes_sample_buffer_preview_backdrop_before_reuse(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "",
+    )
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._fill_layer = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+        )
+    )
+    overlay._backdrop_layer = MagicMock()
+    overlay._backdrop_layer.flushAndRemoveImage = MagicMock()
+    overlay._backdrop_layer_is_sample_buffer_display = True
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_renderer.capture_blurred_image.return_value = None
+    overlay._ridge_scale = 2.0
+
+    overlay.show()
+
+    overlay._backdrop_layer.flushAndRemoveImage.assert_called_once_with()
 
 
 def test_refresh_preview_backdrop_snapshot_updates_contents_frame_and_mask(mock_pyobjc):

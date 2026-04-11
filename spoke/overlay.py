@@ -114,6 +114,9 @@ _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 _POINTS_PER_CM = 72.0 / 2.54
 _PREVIEW_BACKDROP_OVERSCAN_CM = _env("SPOKE_PREVIEW_BACKDROP_OVERSCAN_CM", 1.5)
 _PREVIEW_BACKDROP_BLUR_RADIUS = _env("SPOKE_PREVIEW_BACKDROP_BLUR_RADIUS", 9.0)
+_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
+    "SPOKE_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER", 3.0
+)
 _PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
@@ -387,6 +390,10 @@ def _backdrop_mask_alpha(signed_distance, width: float):
     return np.where(signed_distance <= 0.0, 1.0, outside).astype(np.float32)
 
 
+def _preview_backdrop_mask_falloff_width(scale: float) -> float:
+    return max(scale, 1e-6) * max(_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
+
+
 class _QuartzBackdropRenderer:
     """Best-effort snapshot renderer for overlay backdrop blur prototypes."""
 
@@ -609,6 +616,9 @@ class TranscriptionOverlay(NSObject):
         # by rebuilding the image in update_text_amplitude.
         backdrop_layer_cls = self._choose_backdrop_layer_class()
         self._backdrop_layer = backdrop_layer_cls.alloc().init()
+        self._backdrop_layer_is_sample_buffer_display = (
+            backdrop_layer_cls is not CALayer and hasattr(self._backdrop_layer, "enqueueSampleBuffer_")
+        )
         if hasattr(self._backdrop_layer, "setContentsGravity_"):
             self._backdrop_layer.setContentsGravity_("resize")
         elif hasattr(self._backdrop_layer, "setVideoGravity_"):
@@ -688,6 +698,23 @@ class TranscriptionOverlay(NSObject):
                 logger.debug("Preview backdrop renderer sample-buffer capability check failed", exc_info=True)
         return CALayer
 
+    def _backdrop_layer_uses_sample_buffers(self) -> bool:
+        return bool(getattr(self, "_backdrop_layer_is_sample_buffer_display", False))
+
+    def _reset_backdrop_layer(self) -> None:
+        layer = getattr(self, "_backdrop_layer", None)
+        if layer is None:
+            return
+        if self._backdrop_layer_uses_sample_buffers() and hasattr(layer, "flushAndRemoveImage"):
+            try:
+                layer.flushAndRemoveImage()
+            except Exception:
+                logger.debug("Failed to flush preview backdrop display layer", exc_info=True)
+        if hasattr(layer, "setContents_"):
+            layer.setContents_(None)
+        if hasattr(layer, "setMask_"):
+            layer.setMask_(None)
+
     def show(self) -> None:
         """Fade the overlay in."""
         if self._window is None:
@@ -714,9 +741,7 @@ class TranscriptionOverlay(NSObject):
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
         self._window.setAlphaValue_(0.0)
-        if self._backdrop_layer is not None:
-            self._backdrop_layer.setContents_(None)
-            self._backdrop_layer.setMask_(None)
+        self._reset_backdrop_layer()
 
         # Reset to default size (window includes feather margin)
         screen_frame = self._screen.frame()
@@ -782,6 +807,7 @@ class TranscriptionOverlay(NSObject):
         self._cancel_fade()
         self._cancel_typewriter()
         self._window.setAlphaValue_(0.0)
+        self._reset_backdrop_layer()
         self._window.orderOut_(None)
         logger.info("Overlay ordered out")
 
@@ -818,6 +844,7 @@ class TranscriptionOverlay(NSObject):
             self._cancel_fade()
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
+                self._reset_backdrop_layer()
                 self._window.orderOut_(None)
             else:
                 self._window.setAlphaValue_(1.0)
@@ -1205,7 +1232,10 @@ class TranscriptionOverlay(NSObject):
                 _OVERLAY_CORNER_RADIUS,
                 scale,
             )
-            alpha = _backdrop_mask_alpha(sdf, width=3.0 * scale)
+            alpha = _backdrop_mask_alpha(
+                sdf,
+                width=_preview_backdrop_mask_falloff_width(scale),
+            )
             mask_image, self._backdrop_mask_payload = _fill_field_to_image(
                 alpha, 255, 255, 255
             )
@@ -1241,6 +1271,9 @@ class TranscriptionOverlay(NSObject):
     def _install_backdrop_frame_callback(self):
         renderer = getattr(self, "_backdrop_renderer", None)
         if renderer is None or not hasattr(renderer, "set_frame_callback"):
+            return
+        if self._backdrop_layer_uses_sample_buffers():
+            renderer.set_frame_callback(None)
             return
 
         def apply_live_frame(image) -> None:
