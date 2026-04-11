@@ -25,8 +25,12 @@ _SCK_DYLIB_PATH = f"{_SCK_FRAMEWORK_PATH}/ScreenCaptureKit"
 _SCK_BRIDGESUPPORT_PATH = (
     f"{_SCK_FRAMEWORK_PATH}/Versions/A/Resources/BridgeSupport/ScreenCaptureKit.bridgesupport"
 )
+_METAL_FRAMEWORK_PATH = "/System/Library/Frameworks/Metal.framework"
+_COREVIDEO_FRAMEWORK_PATH = "/System/Library/Frameworks/CoreVideo.framework"
 _COREMEDIA_FRAMEWORK_PATH = "/System/Library/Frameworks/CoreMedia.framework"
 _FRAME_INTERVAL_60_FPS = (1, 60, 0, 0)
+_CV_PIXEL_FORMAT_BGRA = 1111970369
+_CM_TIME_FLAGS_VALID = 1
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
@@ -139,6 +143,197 @@ def _make_stream_handler_queue(label: str):
         return None
 
 
+class _CMTimeStruct(ctypes.Structure):
+    _fields_ = [
+        ("value", ctypes.c_longlong),
+        ("timescale", ctypes.c_int32),
+        ("flags", ctypes.c_uint32),
+        ("epoch", ctypes.c_longlong),
+    ]
+
+
+class _CMSampleTimingInfoStruct(ctypes.Structure):
+    _fields_ = [
+        ("duration", _CMTimeStruct),
+        ("presentationTimeStamp", _CMTimeStruct),
+        ("decodeTimeStamp", _CMTimeStruct),
+    ]
+
+
+class _MetalBlurPipeline:
+    def __init__(self):
+        if objc is None:
+            raise RuntimeError("PyObjC is unavailable")
+        try:
+            from Foundation import NSBundle, NSDictionary
+            from Quartz import CIContext
+        except Exception as exc:  # pragma: no cover - exercised by runtime-only path
+            raise RuntimeError("Metal blur pipeline requires Foundation and Quartz") from exc
+
+        metal_bundle = NSBundle.bundleWithPath_(_METAL_FRAMEWORK_PATH)
+        objc.loadBundleFunctions(
+            metal_bundle,
+            globals(),
+            [("MTLCreateSystemDefaultDevice", b"@")],
+        )
+        self._device = MTLCreateSystemDefaultDevice()
+        if self._device is None:
+            raise RuntimeError("No Metal device available")
+        self._context = CIContext.contextWithMTLDevice_(self._device)
+        if self._context is None:
+            raise RuntimeError("Failed to create Metal-backed CIContext")
+
+        self._cv = ctypes.CDLL(f"{_COREVIDEO_FRAMEWORK_PATH}/CoreVideo")
+        self._cv.CVPixelBufferCreate.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._cv.CVPixelBufferCreate.restype = ctypes.c_int32
+
+        self._cm = ctypes.CDLL(f"{_COREMEDIA_FRAMEWORK_PATH}/CoreMedia")
+        self._cm.CMVideoFormatDescriptionCreateForImageBuffer.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._cm.CMVideoFormatDescriptionCreateForImageBuffer.restype = ctypes.c_int32
+        self._cm.CMSampleBufferCreateReadyWithImageBuffer.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(_CMSampleTimingInfoStruct),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._cm.CMSampleBufferCreateReadyWithImageBuffer.restype = ctypes.c_int32
+
+        self._pixel_buffer_attrs = NSDictionary.dictionaryWithDictionary_(
+            {
+                "IOSurfaceProperties": {},
+                "MetalCompatibility": True,
+            }
+        )
+
+    @staticmethod
+    def _objc_ptr(value) -> ctypes.c_void_p:
+        return ctypes.c_void_p(value.__c_void_p__().value)
+
+    @staticmethod
+    def _cm_time_struct(cm_time) -> _CMTimeStruct:
+        value, timescale, flags, epoch = cm_time
+        if int(timescale) == 0:
+            return _CMTimeStruct(0, 0, 0, 0)
+        return _CMTimeStruct(int(value), int(timescale), int(flags), int(epoch))
+
+    def _create_pixel_buffer(self, width: int, height: int):
+        pixel_buffer = ctypes.c_void_p()
+        status = self._cv.CVPixelBufferCreate(
+            None,
+            max(1, int(width)),
+            max(1, int(height)),
+            _CV_PIXEL_FORMAT_BGRA,
+            self._objc_ptr(self._pixel_buffer_attrs),
+            ctypes.byref(pixel_buffer),
+        )
+        if status != 0 or not pixel_buffer.value:
+            logger.debug("CVPixelBufferCreate failed for Metal blur output: %r", status)
+            return None
+        return objc.objc_object(c_void_p=pixel_buffer.value)
+
+    def _create_format_description(self, pixel_buffer):
+        format_desc = ctypes.c_void_p()
+        status = self._cm.CMVideoFormatDescriptionCreateForImageBuffer(
+            None,
+            self._objc_ptr(pixel_buffer),
+            ctypes.byref(format_desc),
+        )
+        if status != 0 or not format_desc.value:
+            logger.debug("CMVideoFormatDescriptionCreateForImageBuffer failed: %r", status)
+            return None
+        return objc.objc_object(c_void_p=format_desc.value)
+
+    def _create_sample_buffer(self, pixel_buffer, format_desc, *, source_sample, bridge):
+        presentation = bridge["CMSampleBufferGetPresentationTimeStamp"](source_sample)
+        duration = bridge["CMSampleBufferGetDuration"](source_sample)
+        if int(duration[1]) == 0:
+            duration = (1, 60, _CM_TIME_FLAGS_VALID, 0)
+        if int(presentation[1]) == 0:
+            presentation = duration
+        timing = _CMSampleTimingInfoStruct(
+            self._cm_time_struct(duration),
+            self._cm_time_struct(presentation),
+            self._cm_time_struct(presentation),
+        )
+        sample_buffer = ctypes.c_void_p()
+        status = self._cm.CMSampleBufferCreateReadyWithImageBuffer(
+            None,
+            self._objc_ptr(pixel_buffer),
+            self._objc_ptr(format_desc),
+            ctypes.byref(timing),
+            ctypes.byref(sample_buffer),
+        )
+        if status != 0 or not sample_buffer.value:
+            logger.debug("CMSampleBufferCreateReadyWithImageBuffer failed: %r", status)
+            return None
+        return objc.objc_object(c_void_p=sample_buffer.value)
+
+    def blurred_sample_buffer(self, sample_buffer, *, blur_radius_points: float, bridge):
+        pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
+        if pixel_buffer is None:
+            return None
+        try:
+            from Quartz import CIImage, CIFilter
+        except Exception:
+            return None
+
+        ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
+        if ci_image is None:
+            return None
+        extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+        if extent is None:
+            return None
+
+        output = ci_image
+        if blur_radius_points > 0.0:
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is not None:
+                blur.setDefaults()
+                blur.setValue_forKey_(ci_image, "inputImage")
+                blur.setValue_forKey_(blur_radius_points, "inputRadius")
+                candidate = blur.valueForKey_("outputImage")
+                if candidate is not None:
+                    output = candidate.imageByCroppingToRect_(extent)
+
+        width = max(1, int(round(extent.size.width)))
+        height = max(1, int(round(extent.size.height)))
+        blurred_pixel_buffer = self._create_pixel_buffer(width, height)
+        if blurred_pixel_buffer is None:
+            return None
+        try:
+            self._context.render_toCVPixelBuffer_bounds_colorSpace_(
+                output,
+                blurred_pixel_buffer,
+                extent,
+                None,
+            )
+        except Exception:
+            logger.debug("Metal-backed CI render to CVPixelBuffer failed", exc_info=True)
+            return None
+
+        format_desc = self._create_format_description(blurred_pixel_buffer)
+        if format_desc is None:
+            return None
+        return self._create_sample_buffer(
+            blurred_pixel_buffer,
+            format_desc,
+            source_sample=sample_buffer,
+            bridge=bridge,
+        )
+
+
 def _load_screencapturekit_bridge() -> dict[str, object] | None:
     global _BRIDGE_STATE
     if _BRIDGE_STATE is not None:
@@ -168,6 +363,8 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 globals(),
                 [
                     ("CMSampleBufferGetImageBuffer", b"^{__CVBuffer=}^{opaqueCMSampleBuffer=}"),
+                    ("CMSampleBufferGetPresentationTimeStamp", b"{_CMTime=qiIq}^{opaqueCMSampleBuffer}"),
+                    ("CMSampleBufferGetDuration", b"{_CMTime=qiIq}^{opaqueCMSampleBuffer}"),
                 ],
             )
 
@@ -180,6 +377,8 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "SCFrameStatusComplete": SCFrameStatusComplete,
                 "SCStreamFrameInfoStatus": SCStreamFrameInfoStatus,
                 "CMSampleBufferGetImageBuffer": CMSampleBufferGetImageBuffer,
+                "CMSampleBufferGetPresentationTimeStamp": CMSampleBufferGetPresentationTimeStamp,
+                "CMSampleBufferGetDuration": CMSampleBufferGetDuration,
             }
         except Exception:
             logger.debug("ScreenCaptureKit bridge load failed", exc_info=True)
@@ -242,6 +441,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._lock = threading.Lock()
         self._ci_context = None
         self._stream_handler_queue = None
+        self._metal_blur_pipeline_instance = None
 
     def _fallback_renderer(self):
         if self._fallback is None:
@@ -273,9 +473,40 @@ class _ScreenCaptureKitBackdropRenderer:
             self._stream_handler_queue = _make_stream_handler_queue("ai.spoke.backdrop-stream")
         return self._stream_handler_queue
 
+    def _metal_blur_pipeline(self):
+        if self._metal_blur_pipeline_instance is False:
+            return None
+        if self._metal_blur_pipeline_instance is not None:
+            return self._metal_blur_pipeline_instance
+        try:
+            self._metal_blur_pipeline_instance = _MetalBlurPipeline()
+        except Exception:
+            logger.debug("Metal blur pipeline unavailable", exc_info=True)
+            self._metal_blur_pipeline_instance = False
+        return self._metal_blur_pipeline_instance or None
+
+    def _blurred_sample_buffer(self, sample_buffer):
+        pipeline = self._metal_blur_pipeline()
+        if pipeline is None:
+            return None
+        bridge = _load_screencapturekit_bridge()
+        if bridge is None:
+            return None
+        return pipeline.blurred_sample_buffer(
+            sample_buffer,
+            blur_radius_points=self._blur_radius_points,
+            bridge=bridge,
+        )
+
+    def supports_sample_buffer_presentation(self, blur_radius_points: float | None = None) -> bool:
+        radius = self._blur_radius_points if blur_radius_points is None else max(blur_radius_points, 0.0)
+        if radius <= 0.0:
+            return True
+        return self._metal_blur_pipeline() is not None
+
     def uses_direct_sample_buffers(self, blur_radius_points: float | None = None) -> bool:
         radius = self._blur_radius_points if blur_radius_points is None else max(blur_radius_points, 0.0)
-        return self._sample_buffer_callback is not None and radius <= 0.0
+        return self._sample_buffer_callback is not None and self.supports_sample_buffer_presentation(radius)
 
     def _dispatch_frame_callback(self, image) -> None:
         callback = self._frame_callback
@@ -500,6 +731,14 @@ class _ScreenCaptureKitBackdropRenderer:
             output_type_value = output_type
         if output_type_value != bridge["SCStreamOutputTypeScreen"] or sample_buffer is None:
             return
+        if self._sample_buffer_callback is not None:
+            if self._blur_radius_points <= 0.0:
+                self._publish_live_sample_buffer(sample_buffer)
+                return
+            blurred_sample_buffer = self._blurred_sample_buffer(sample_buffer)
+            if blurred_sample_buffer is not None:
+                self._publish_live_sample_buffer(blurred_sample_buffer)
+                return
         if self.uses_direct_sample_buffers():
             self._publish_live_sample_buffer(sample_buffer)
             return

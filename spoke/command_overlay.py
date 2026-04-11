@@ -456,10 +456,7 @@ class CommandOverlay(NSObject):
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        display_layer_class = (
-            _backdrop_display_layer_class() if self._backdrop_blur_radius_points <= 0.0 else None
-        )
-        backdrop_layer_cls = display_layer_class or CALayer
+        backdrop_layer_cls = self._choose_backdrop_layer_class()
         self._backdrop_layer = backdrop_layer_cls.alloc().init()
         if hasattr(self._backdrop_layer, "setContentsGravity_"):
             self._backdrop_layer.setContentsGravity_("resize")
@@ -578,6 +575,19 @@ class CommandOverlay(NSObject):
         self._apply_surface_theme()
         self._set_overlay_scale(1.0)
         self._update_backdrop_capture_geometry()
+
+    def _choose_backdrop_layer_class(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
+        if renderer is not None and hasattr(renderer, "supports_sample_buffer_presentation"):
+            try:
+                if renderer.supports_sample_buffer_presentation(blur_radius_points):
+                    display_layer_class = _backdrop_display_layer_class()
+                    if display_layer_class is not None:
+                        return display_layer_class
+            except Exception:
+                logger.debug("Command backdrop renderer sample-buffer capability check failed", exc_info=True)
+        return CALayer
 
         logger.info("Command overlay created")
 

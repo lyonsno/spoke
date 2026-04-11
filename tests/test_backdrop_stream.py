@@ -162,6 +162,33 @@ def test_consume_sample_buffer_direct_path_skips_image_conversion(monkeypatch):
     renderer._context.assert_not_called()
 
 
+def test_consume_sample_buffer_blurred_sample_path_skips_image_conversion(monkeypatch):
+    mod = _import_module()
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCStreamOutputTypeScreen": 7,
+        },
+    )
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 5.4
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._frame_callback = None
+    renderer._blurred_sample_buffer = MagicMock(return_value="blurred-sample")
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    renderer._context = MagicMock()
+
+    renderer._consume_sample_buffer("live-sample", 7)
+
+    renderer._blurred_sample_buffer.assert_called_once_with("live-sample")
+    renderer._publish_live_sample_buffer.assert_called_once_with("blurred-sample")
+    renderer._publish_live_image.assert_not_called()
+    renderer._context.assert_not_called()
+
+
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):
     mod = _import_module()
     sentinel_queue = object()

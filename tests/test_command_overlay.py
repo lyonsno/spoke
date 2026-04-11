@@ -171,6 +171,16 @@ class TestThinkingTimer:
 
         overlay._backdrop_layer.enqueueSampleBuffer_.assert_called_once_with("live-sample")
 
+    def test_choose_backdrop_layer_uses_display_layer_when_renderer_supports_sample_buffers(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        sentinel_layer_class = MagicMock()
+        monkeypatch.setattr(mod, "_backdrop_display_layer_class", lambda: sentinel_layer_class)
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_renderer.supports_sample_buffer_presentation.return_value = True
+        overlay._backdrop_blur_radius_points = 5.4
+
+        assert overlay._choose_backdrop_layer_class() is sentinel_layer_class
+
 
 class TestDismissAnimation:
     """Test the pop-then-shrink dismiss animation state machine."""

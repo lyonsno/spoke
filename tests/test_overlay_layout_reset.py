@@ -277,6 +277,19 @@ def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(mock_pyob
     overlay._backdrop_layer.enqueueSampleBuffer_.assert_called_once_with("live-sample")
 
 
+def test_choose_backdrop_layer_uses_display_layer_when_renderer_supports_sample_buffers(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    sentinel_layer_class = MagicMock()
+    monkeypatch.setattr(overlay_module, "_backdrop_display_layer_class", lambda: sentinel_layer_class)
+
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_renderer.supports_sample_buffer_presentation.return_value = True
+    overlay._backdrop_blur_radius_points = 5.4
+
+    assert overlay._choose_backdrop_layer_class() is sentinel_layer_class
+
+
 def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
