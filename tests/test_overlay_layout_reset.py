@@ -3,6 +3,7 @@
 import importlib
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -358,6 +359,79 @@ def test_show_tray_keeps_content_background_clear(mock_pyobjc, monkeypatch):
     assert overlay._content_view.layer().backgroundColor() is None
     assert overlay._fill_override_rgb == pytest.approx((0.1, 0.1, 0.12))
     assert overlay._fill_layer.opacity() == pytest.approx(overlay_module._RECOVERY_BG_ALPHA)
+
+
+def test_show_clears_stale_preview_backdrop_before_reuse(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "",
+    )
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._fill_layer = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+        )
+    )
+    overlay._backdrop_layer = MagicMock()
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_renderer.capture_blurred_image.return_value = None
+    overlay._ridge_scale = 2.0
+
+    timer = object()
+
+    def _timer_factory(*args):
+        selector = args[2]
+        return timer if selector == "backdropRefreshTick:" else object()
+
+    overlay_module.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.side_effect = _timer_factory
+
+    overlay.show()
+
+    overlay._backdrop_layer.setContents_.assert_called_with(None)
+    overlay._backdrop_layer.setMask_.assert_called_with(None)
+    assert overlay._backdrop_timer is timer
+
+
+def test_refresh_preview_backdrop_snapshot_updates_contents_frame_and_mask(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._window = MagicMock()
+    overlay._window.frame.return_value = _make_rect(300.0, 80.0, 1040.0, 520.0)
+    overlay._window.windowNumber.return_value = 17
+    overlay._content_view = MagicMock()
+    overlay._content_view.frame.return_value = _make_rect(220.0, 220.0, 600.0, 80.0)
+    overlay._backdrop_layer = MagicMock()
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_renderer.capture_blurred_image.return_value = "preview-blur"
+    overlay._update_backdrop_mask = MagicMock()
+    overlay._ridge_scale = 2.0
+    overlay._backdrop_capture_overscan_points = 40.0
+    overlay._backdrop_blur_radius_points = 9.0
+
+    overlay._refresh_backdrop_snapshot()
+
+    call = overlay._backdrop_renderer.capture_blurred_image.call_args.kwargs
+    assert call["blur_radius_points"] == pytest.approx(9.0)
+    assert call["capture_rect"].size.width == pytest.approx(680.0)
+    assert call["capture_rect"].size.height == pytest.approx(160.0)
+    overlay._backdrop_layer.setFrame_.assert_called_with(((180.0, 180.0), (680.0, 160.0)))
+    overlay._backdrop_layer.setContents_.assert_called_with("preview-blur")
+    overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
 
 
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):

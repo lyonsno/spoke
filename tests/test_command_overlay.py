@@ -68,10 +68,11 @@ def _make_overlay(mock_pyobjc):
     overlay._backdrop_layer = MagicMock()
     overlay._backdrop_renderer = MagicMock()
     overlay._backdrop_renderer.capture_blurred_image.return_value = None
-    overlay._backdrop_blur_radius_points = 18.0
+    overlay._backdrop_blur_radius_points = 9.0
     overlay._backdrop_capture_overscan_points = 42.519685
     overlay._backdrop_capture_rect = None
     overlay._backdrop_capture_pixel_size = None
+    overlay._backdrop_timer = None
     overlay._cancel_spring = 0.0
     overlay._cancel_spring_target = 0.0
     overlay._cancel_spring_fired = False
@@ -221,6 +222,31 @@ class TestShowFinishHide:
         assert overlay._thinking_timer is not None
         assert overlay._thinking_seconds == 0.0
 
+    def test_show_clears_stale_backdrop_before_reuse(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.capture_blurred_image.return_value = None
+
+        overlay.show()
+
+        overlay._backdrop_layer.setContents_.assert_called_with(None)
+        overlay._backdrop_layer.setMask_.assert_called_with(None)
+
+    def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        backdrop_timer = object()
+        def _timer(*args):
+            selector = args[2]
+            if selector == "backdropRefreshTick:":
+                return backdrop_timer
+            return object()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.side_effect = _timer
+
+        overlay.show()
+
+        assert overlay._backdrop_timer is backdrop_timer
+
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
     ):
@@ -358,6 +384,7 @@ class TestTimerCancellation:
         assert overlay._pulse_timer is None
         assert overlay._linger_timer is None
         assert overlay._thinking_timer is None
+        assert overlay._backdrop_timer is None
 
     def test_cancel_fade_safe_when_none(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -596,7 +623,7 @@ class TestBackdropRefresh:
         overlay._backdrop_renderer.capture_blurred_image.assert_called_once()
         call = overlay._backdrop_renderer.capture_blurred_image.call_args.kwargs
         assert call["window_number"] == 17
-        assert call["blur_radius_points"] > 0.0
+        assert call["blur_radius_points"] == pytest.approx(9.0)
         assert call["capture_rect"].size.width == pytest.approx(680.0)
         assert call["capture_rect"].size.height == pytest.approx(160.0)
         overlay._backdrop_layer.setFrame_.assert_called_with(((180.0, 180.0), (680.0, 160.0)))

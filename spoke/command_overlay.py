@@ -89,7 +89,8 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
 _POINTS_PER_CM = 72.0 / 2.54
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
-_COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 18.0)
+_COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 9.0)
+_COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 0.2)
 
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
@@ -358,6 +359,7 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_overscan_points = _command_backdrop_capture_overscan_points()
         self._backdrop_capture_rect = None
         self._backdrop_capture_pixel_size = None
+        self._backdrop_timer: NSTimer | None = None
 
         return self
 
@@ -574,6 +576,9 @@ class CommandOverlay(NSObject):
         self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
         self._update_backdrop_capture_geometry()
+        if self._backdrop_layer is not None:
+            self._backdrop_layer.setContents_(None)
+            self._backdrop_layer.setMask_(None)
 
         self._window.orderFrontRegardless()
         self._refresh_backdrop_snapshot()
@@ -609,6 +614,7 @@ class CommandOverlay(NSObject):
 
         # Start or resume the thinking timer.
         self._start_thinking_timer(reset=not preserve_thinking_timer)
+        self._start_backdrop_refresh_timer()
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
@@ -1189,6 +1195,11 @@ class CommandOverlay(NSObject):
             self._linger_timer.invalidate()
             self._linger_timer = None
 
+    def _cancel_backdrop_refresh(self) -> None:
+        if self._backdrop_timer is not None:
+            self._backdrop_timer.invalidate()
+            self._backdrop_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -1205,6 +1216,7 @@ class CommandOverlay(NSObject):
         self._cancel_fade()
         self._cancel_pulse()
         self._cancel_linger()
+        self._cancel_backdrop_refresh()
         self._stop_thinking_timer()
 
     def _set_overlay_scale(self, scale: float) -> None:
@@ -1415,6 +1427,24 @@ class CommandOverlay(NSObject):
         mask.setContents_(mask_image)
         mask.setContentsGravity_("resize")
         self._backdrop_layer.setMask_(mask)
+
+    def _start_backdrop_refresh_timer(self):
+        self._cancel_backdrop_refresh()
+        if self._backdrop_renderer is None or self._backdrop_layer is None:
+            return
+        self._backdrop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _COMMAND_BACKDROP_REFRESH_S,
+            self,
+            "backdropRefreshTick:",
+            None,
+            True,
+        )
+
+    def backdropRefreshTick_(self, timer) -> None:
+        if not self._visible:
+            self._cancel_backdrop_refresh()
+            return
+        self._refresh_backdrop_snapshot()
 
     def _refresh_backdrop_snapshot(self):
         if (

@@ -12,6 +12,7 @@ import colorsys
 import logging
 import math
 import os
+from types import SimpleNamespace
 
 import objc
 from AppKit import (
@@ -108,6 +109,10 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
+_POINTS_PER_CM = 72.0 / 2.54
+_PREVIEW_BACKDROP_OVERSCAN_CM = _env("SPOKE_PREVIEW_BACKDROP_OVERSCAN_CM", 1.5)
+_PREVIEW_BACKDROP_BLUR_RADIUS = _env("SPOKE_PREVIEW_BACKDROP_BLUR_RADIUS", 9.0)
+_PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 0.2)
 
 
 # Recovery mode constants
@@ -314,6 +319,112 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     return image, payload
 
 
+def _cm_to_points(cm: float) -> float:
+    return max(cm, 0.0) * _POINTS_PER_CM
+
+
+def _preview_backdrop_capture_overscan_points() -> float:
+    return _cm_to_points(_PREVIEW_BACKDROP_OVERSCAN_CM)
+
+
+def _preview_backdrop_capture_rect(window_frame, content_frame, overscan_points: float):
+    overscan = max(overscan_points, 0.0)
+    x = window_frame.origin.x + content_frame.origin.x - overscan
+    y = window_frame.origin.y + content_frame.origin.y - overscan
+    width = content_frame.size.width + 2 * overscan
+    height = content_frame.size.height + 2 * overscan
+    return SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=width, height=height),
+    )
+
+
+def _backdrop_mask_alpha(signed_distance, width: float):
+    import numpy as np
+
+    outside = np.exp(-np.sqrt(np.maximum(signed_distance, 0.0) / max(width, 1e-6)))
+    return np.where(signed_distance <= 0.0, 1.0, outside).astype(np.float32)
+
+
+class _QuartzBackdropRenderer:
+    """Best-effort snapshot renderer for overlay backdrop blur prototypes."""
+
+    def __init__(self) -> None:
+        self._ci_context = None
+
+    def _context(self):
+        if self._ci_context is not None:
+            return self._ci_context
+        try:
+            from Quartz import CIContext
+        except Exception:
+            return None
+        try:
+            self._ci_context = CIContext.contextWithOptions_(None)
+        except Exception:
+            logger.debug("Failed to create CIContext for preview backdrop", exc_info=True)
+            self._ci_context = None
+        return self._ci_context
+
+    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        try:
+            from Quartz import (
+                CGWindowListCreateImage,
+                kCGWindowListOptionOnScreenBelowWindow,
+            )
+        except Exception:
+            return None
+
+        rect = (
+            (capture_rect.origin.x, capture_rect.origin.y),
+            (capture_rect.size.width, capture_rect.size.height),
+        )
+        try:
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                window_number,
+                0,
+            )
+        except Exception:
+            logger.debug("Preview backdrop snapshot capture failed", exc_info=True)
+            return None
+        if image is None or blur_radius_points <= 0.0:
+            return image
+
+        try:
+            from Quartz import CIImage, CIFilter
+        except Exception:
+            return image
+
+        try:
+            context = self._context()
+            if context is None:
+                return image
+            ci_image = CIImage.imageWithCGImage_(image)
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is None:
+                return image
+            blur.setDefaults()
+            blur.setValue_forKey_(ci_image, "inputImage")
+            blur.setValue_forKey_(blur_radius_points, "inputRadius")
+            output = blur.valueForKey_("outputImage")
+            if output is None:
+                return image
+            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
+                output = output.imageByCroppingToRect_(extent)
+            if extent is None and hasattr(output, "extent"):
+                extent = output.extent()
+            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
+                return image
+            blurred = context.createCGImage_fromRect_(output, extent)
+            return blurred or image
+        except Exception:
+            logger.debug("Preview backdrop blur pass failed; using unblurred snapshot", exc_info=True)
+            return image
+
+
 def _build_ridge_image(field_width: float, field_height: float,
                        rect_width: float, rect_height: float,
                        corner_radius: float, scale: float,
@@ -373,6 +484,12 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._backdrop_blur_radius_points = _PREVIEW_BACKDROP_BLUR_RADIUS
+        self._backdrop_renderer = _QuartzBackdropRenderer()
+        self._backdrop_layer = None
+        self._backdrop_capture_overscan_points = _preview_backdrop_capture_overscan_points()
+        self._backdrop_capture_rect = None
+        self._backdrop_timer: NSTimer | None = None
 
         # Recovery mode state
         self._recovery_mode = False
@@ -446,6 +563,10 @@ class TranscriptionOverlay(NSObject):
         # per-pixel alpha from the SDF smoothstep.  No mask layer needed —
         # the alpha falloff is in the image itself.  The fill color is updated
         # by rebuilding the image in update_text_amplitude.
+        self._backdrop_layer = CALayer.alloc().init()
+        self._backdrop_layer.setContentsGravity_("resize")
+        self._backdrop_layer.setOpacity_(1.0)
+
         self._fill_layer = CALayer.alloc().init()
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
@@ -453,6 +574,7 @@ class TranscriptionOverlay(NSObject):
         # Build initial SDF fill image
         self._apply_ridge_masks(w, h)
 
+        wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
         wrapper.addSubview_(content)
@@ -499,6 +621,7 @@ class TranscriptionOverlay(NSObject):
         self._window.setContentView_(wrapper)
 
         self._window.setAlphaValue_(0.0)
+        self._update_backdrop_capture_geometry()
 
         logger.info("Transcription overlay created")
 
@@ -528,6 +651,9 @@ class TranscriptionOverlay(NSObject):
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
         self._window.setAlphaValue_(0.0)
+        if self._backdrop_layer is not None:
+            self._backdrop_layer.setContents_(None)
+            self._backdrop_layer.setMask_(None)
 
         # Reset to default size (window includes feather margin)
         screen_frame = self._screen.frame()
@@ -548,6 +674,8 @@ class TranscriptionOverlay(NSObject):
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
+        self._refresh_backdrop_snapshot()
+        self._start_backdrop_refresh_timer()
 
         # Fade in using stepped timer
         self._fade_step = 0
@@ -572,6 +700,7 @@ class TranscriptionOverlay(NSObject):
             return
         self._cancel_tray_capture_flash()
         self._visible = False
+        self._cancel_backdrop_refresh()
         self._cancel_typewriter()
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
@@ -586,6 +715,7 @@ class TranscriptionOverlay(NSObject):
             return
         self._visible = False
         self._cancel_tray_capture_flash()
+        self._cancel_backdrop_refresh()
         self._cancel_fade()
         self._cancel_typewriter()
         self._window.setAlphaValue_(0.0)
@@ -633,6 +763,11 @@ class TranscriptionOverlay(NSObject):
         if self._fade_timer is not None:
             self._fade_timer.invalidate()
             self._fade_timer = None
+
+    def _cancel_backdrop_refresh(self) -> None:
+        if getattr(self, "_backdrop_timer", None) is not None:
+            self._backdrop_timer.invalidate()
+            self._backdrop_timer = None
 
     def _set_text_view_content(
         self,
@@ -973,10 +1108,107 @@ class TranscriptionOverlay(NSObject):
         except (ImportError, Exception):
             pass
 
+    def _update_backdrop_capture_geometry(self):
+        if self._window is None or self._content_view is None:
+            return None
+        try:
+            win_frame = self._window.frame()
+            content_frame = self._content_view.frame()
+        except Exception:
+            return None
+        capture_rect = _preview_backdrop_capture_rect(
+            win_frame,
+            content_frame,
+            getattr(self, "_backdrop_capture_overscan_points", _preview_backdrop_capture_overscan_points()),
+        )
+        self._backdrop_capture_rect = capture_rect
+        return capture_rect
+
+    def _update_backdrop_mask(self, width: float, height: float):
+        if self._backdrop_layer is None:
+            return
+        try:
+            overscan = getattr(self, "_backdrop_capture_overscan_points", _preview_backdrop_capture_overscan_points())
+            scale = getattr(self, "_ridge_scale", 2.0)
+            inner_width = max(width - 2 * overscan, 1.0)
+            inner_height = max(height - 2 * overscan, 1.0)
+            sdf = _overlay_rounded_rect_sdf(
+                width,
+                height,
+                inner_width,
+                inner_height,
+                _OVERLAY_CORNER_RADIUS,
+                scale,
+            )
+            alpha = _backdrop_mask_alpha(sdf, width=3.0 * scale)
+            mask_image, self._backdrop_mask_payload = _fill_field_to_image(
+                alpha, 255, 255, 255
+            )
+        except Exception:
+            return
+        mask = CALayer.alloc().init()
+        mask.setFrame_(((0, 0), (width, height)))
+        mask.setContents_(mask_image)
+        mask.setContentsGravity_("resize")
+        self._backdrop_layer.setMask_(mask)
+
+    def _start_backdrop_refresh_timer(self):
+        self._cancel_backdrop_refresh()
+        if self._backdrop_renderer is None or self._backdrop_layer is None:
+            return
+        self._backdrop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _PREVIEW_BACKDROP_REFRESH_S,
+            self,
+            "backdropRefreshTick:",
+            None,
+            True,
+        )
+
+    def backdropRefreshTick_(self, timer) -> None:
+        if not self._visible:
+            self._cancel_backdrop_refresh()
+            return
+        self._refresh_backdrop_snapshot()
+
+    def _refresh_backdrop_snapshot(self):
+        if (
+            self._backdrop_renderer is None
+            or self._backdrop_layer is None
+            or self._window is None
+            or self._content_view is None
+        ):
+            return None
+        capture_rect = self._update_backdrop_capture_geometry()
+        if capture_rect is None:
+            return None
+        try:
+            window_number = self._window.windowNumber()
+        except Exception:
+            return None
+        image = self._backdrop_renderer.capture_blurred_image(
+            window_number=window_number,
+            capture_rect=capture_rect,
+            blur_radius_points=getattr(self, "_backdrop_blur_radius_points", _PREVIEW_BACKDROP_BLUR_RADIUS),
+        )
+        if image is None:
+            return None
+        overscan = getattr(self, "_backdrop_capture_overscan_points", _preview_backdrop_capture_overscan_points())
+        content_frame = self._content_view.frame()
+        local_x = content_frame.origin.x - overscan
+        local_y = content_frame.origin.y - overscan
+        local_w = capture_rect.size.width
+        local_h = capture_rect.size.height
+        self._backdrop_layer.setFrame_(((local_x, local_y), (local_w, local_h)))
+        self._backdrop_layer.setContents_(image)
+        self._update_backdrop_mask(local_w, local_h)
+        return image
+
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""
         w = _OVERLAY_WIDTH
         self._apply_ridge_masks(w, visible_height)
+        if self._visible:
+            self._refresh_backdrop_snapshot()
 
     def _set_fill_override(
         self,
