@@ -122,18 +122,32 @@ if repo_root is None:
     repo_root = fallback_repo_root
     target_source = f"fallback:{fallback_repo_root}"
 
-# Build child env: clear inherited overrides, then apply per-worktree
-# .spoke-smoke-env so the worktree's own values win (matches launch-target.sh).
+# Build child env: clear inherited overrides, then apply machine-wide
+# ~/.config/spoke/secrets.env (sourced first so per-worktree values can
+# override it), then per-worktree .spoke-smoke-env so the worktree's
+# own values win (matches launch-target.sh).
+#
+# The secrets file exists so that Automator-launched spoke processes
+# receive API keys that live only in the user's shell profile
+# (e.g. ~/.zshenv). Automator runs this launcher under non-interactive
+# /bin/bash which does not source any zsh profile, so without this
+# block secrets placed in shell profiles never reach spoke.
+# See ~/dev/epistaxis/system/secrets.md for the cross-project pattern.
 child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
 child_env.pop("SPOKE_WHISPER_MODEL", None)
 child_env.pop("SPOKE_VENV_PYTHON", None)
 child_env.pop("PYTHONPATH", None)
-smoke_env = repo_root / ".spoke-smoke-env"
-if smoke_env.is_file():
+
+def _apply_env_file(path: Path) -> None:
+    """Apply KEY=value (or 'export KEY=value') overrides from path into
+    child_env. Silent no-op if the file is missing or unreadable —
+    launching must not crash on a fresh box or a permission glitch."""
+    if not path.is_file():
+        return
     try:
-        for line in smoke_env.read_text().splitlines():
+        for line in path.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -146,6 +160,15 @@ if smoke_env.is_file():
                 child_env[key] = val
     except Exception:
         pass
+
+# Machine-wide secrets (populated once per box from the example
+# template at scripts/secrets.env.example).
+secrets_env = Path.home() / ".config" / "spoke" / "secrets.env"
+_apply_env_file(secrets_env)
+
+# Per-worktree overrides — win over machine-wide secrets.
+smoke_env = repo_root / ".spoke-smoke-env"
+_apply_env_file(smoke_env)
 if target is not None:
     child_env["SPOKE_LAUNCH_TARGET_ID"] = target.get("id", "")
 

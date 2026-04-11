@@ -195,3 +195,115 @@ class TestOldArchitectureRetired:
     def test_launch_main_sh_has_fallback(self):
         text = _main_script_text()
         assert "FALLBACK_REPO_ROOT" in text
+
+
+# ── Secrets env loading ─────────────────────────────────────────
+
+
+class TestSecretsEnvLoading:
+    """The launcher must source ~/.config/spoke/secrets.env into the child
+    env before it applies per-worktree .spoke-smoke-env overrides, so that
+    machine-wide secrets are available to Automator-launched processes
+    that never see the user's shell profile, while still allowing a
+    per-worktree smoke env to override a specific key if needed.
+    """
+
+    def test_launch_main_sh_reads_secrets_env(self):
+        text = _main_script_text()
+        assert ".config/spoke/secrets.env" in text, (
+            "launch-main.sh must load ~/.config/spoke/secrets.env so "
+            "Automator-launched processes receive machine-wide secrets"
+        )
+
+    def test_launch_main_sh_loads_secrets_before_smoke_env(self):
+        """Per-worktree .spoke-smoke-env must be able to override a secret
+        value, so it must be loaded AFTER the machine-wide secrets file."""
+        text = _main_script_text()
+        secrets_idx = text.find(".config/spoke/secrets.env")
+        smoke_idx = text.find(".spoke-smoke-env")
+        assert secrets_idx != -1, "secrets.env reference not found"
+        assert smoke_idx != -1, ".spoke-smoke-env reference not found"
+        assert secrets_idx < smoke_idx, (
+            "secrets.env must be loaded before .spoke-smoke-env so that "
+            "per-worktree overrides win over machine-wide secrets"
+        )
+
+    def test_launch_main_sh_tolerates_missing_secrets_env(self):
+        """A box without ~/.config/spoke/secrets.env must still launch —
+        the env-file loader must be guarded by an is_file() check and
+        the secrets load must route through that loader."""
+        text = _main_script_text()
+        # The env-file helper must exist and must guard with is_file.
+        assert "def _apply_env_file" in text, (
+            "launcher must define an _apply_env_file helper so both the "
+            "secrets and smoke env blocks share a single guarded loader"
+        )
+        helper_start = text.find("def _apply_env_file")
+        # Inspect the helper body (next ~500 chars is generous).
+        helper_body = text[helper_start : helper_start + 500]
+        assert "is_file()" in helper_body, (
+            "_apply_env_file must guard on path.is_file() so missing "
+            "env files don't crash the launcher on fresh boxes"
+        )
+        # And the secrets file must actually go through that helper.
+        assert "_apply_env_file(secrets_env)" in text, (
+            "secrets.env must be loaded via _apply_env_file so it "
+            "inherits the is_file() guard and shared parser"
+        )
+
+    def test_parse_env_overrides_handles_secrets_shape(self, tmp_path):
+        """The same parser used for .spoke-smoke-env must handle the shape
+        we specify for ~/.config/spoke/secrets.env: bare exports, quoted
+        values, comments, blank lines."""
+        secrets_file = tmp_path / "secrets.env"
+        secrets_file.write_text(
+            '# Spoke secrets — never committed\n'
+            '\n'
+            'export GEMINI_API_KEY_INACTIVE="AIzaTESTVALUE"\n'
+            'SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY=bare-value-123\n'
+            "# trailing comment\n"
+            "OPENROUTER_API_KEY='single-quoted'\n"
+        )
+        overrides = parse_env_overrides(secrets_file)
+        assert overrides["GEMINI_API_KEY_INACTIVE"] == "AIzaTESTVALUE"
+        assert overrides["SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"] == "bare-value-123"
+        assert overrides["OPENROUTER_API_KEY"] == "single-quoted"
+
+
+class TestSecretsEnvExampleTemplate:
+    """A committed .example template documents the expected shape without
+    leaking real values. This is the discoverability contract on new boxes."""
+
+    def _template_path(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "scripts" / "secrets.env.example"
+
+    def test_template_exists(self):
+        assert self._template_path().exists(), (
+            "scripts/secrets.env.example must exist as a tracked template "
+            "for ~/.config/spoke/secrets.env"
+        )
+
+    def test_template_lists_gemini_alias(self):
+        text = self._template_path().read_text()
+        assert "GEMINI_API_KEY_INACTIVE" in text, (
+            "template must document the pseudonym alias so users know "
+            "to populate the spoke-only Gemini key"
+        )
+
+    def test_template_has_no_real_values(self):
+        """Every export in the template must have an empty value."""
+        text = self._template_path().read_text()
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            _key, value = line.split("=", 1)
+            value = value.strip().strip('"').strip("'")
+            assert value == "", (
+                f"template line '{raw_line}' has a non-empty value; "
+                "templates must ship empty to prevent accidental secret commits"
+            )

@@ -49,6 +49,49 @@ code is running. Select the target in the registry's `selected` field.
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
 
+## Secrets
+
+Machine-local secrets (API keys, access tokens) for every spoke
+surface on a box live in a single file at `~/.config/spoke/secrets.env`.
+The launcher (`scripts/launch-main.sh`) sources this file into the
+child environment before applying per-worktree `.spoke-smoke-env`
+overrides. That means Automator-launched spoke processes receive
+secrets even though Automator's non-interactive `/bin/bash` never
+sources any shell profile.
+
+**Never commit real secret values anywhere.** `~/.config/spoke/secrets.env`
+lives outside the repo on purpose. A tracked template at
+`scripts/secrets.env.example` documents the expected shape with empty
+values — copy it to the real location on each new box:
+
+```sh
+mkdir -p ~/.config/spoke
+cp scripts/secrets.env.example ~/.config/spoke/secrets.env
+chmod 600 ~/.config/spoke/secrets.env
+# then edit ~/.config/spoke/secrets.env and populate from your
+# offline source of truth
+```
+
+The single cross-project registry that lists secret-file locations,
+provenance, and rotation history (never values) lives at
+`~/dev/epistaxis/system/secrets.md`. Consult that rather than
+re-deriving where to put things. When adding a new secret to spoke,
+update both `scripts/secrets.env.example` and that registry.
+
+Gemini API key specifics: spoke reads `GEMINI_API_KEY_INACTIVE` before
+`GEMINI_API_KEY` via `spoke/__main__.py::_gemini_api_key_env()`. The
+`_INACTIVE` alias exists so a spoke-only key can sit in the same shell
+or secrets file without colliding with the Gemini CLI, which prefers
+API-key auth over an active subscription login when it sees
+`GEMINI_API_KEY` set. Put the key under the alias in
+`~/.config/spoke/secrets.env` and the CLI stays on your subscription.
+
+**Known deferral:** `.spoke-smoke-env` currently holds a real
+`SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` in committed history. Migrating
+that key out is a separate cleanup (requires key rotation + history
+rewrite) and is intentionally out of scope for this pattern's initial
+landing. See `~/dev/epistaxis/system/secrets.md` for status.
+
 Do not tell the user a surface is "smoke-ready" unless the launcher path is
 ready too. For `spoke`, that means:
 
