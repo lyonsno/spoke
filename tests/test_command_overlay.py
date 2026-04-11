@@ -37,9 +37,7 @@ def _make_overlay(mock_pyobjc):
     overlay._thinking_label.isHidden.return_value = False
     overlay._narrator_label = MagicMock()
     overlay._screen = MagicMock()
-    overlay._screen.frame.return_value = MagicMock(
-        size=MagicMock(width=1920, height=1080)
-    )
+    overlay._screen.frame.return_value = _make_rect(0.0, 0.0, 1920.0, 1080.0)
     overlay._visible = False
     overlay._streaming = False
     overlay._response_text = ""
@@ -569,17 +567,19 @@ class TestBackdropGeometry:
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
+            screen_frame = _make_rect(0.0, 0.0, 1920.0, 1080.0)
             win_frame = _make_rect(300.0, 80.0, 1040.0, 520.0)
             content_frame = _make_rect(220.0, 220.0, 600.0, 80.0)
 
             rect = mod._backdrop_capture_rect(
+                screen_frame,
                 win_frame,
                 content_frame,
                 overscan_points=40.0,
             )
 
             assert rect.origin.x == pytest.approx(480.0)
-            assert rect.origin.y == pytest.approx(260.0)
+            assert rect.origin.y == pytest.approx(660.0)
             assert rect.size.width == pytest.approx(680.0)
             assert rect.size.height == pytest.approx(160.0)
         finally:
@@ -597,6 +597,7 @@ class TestBackdropGeometry:
 
         rect = overlay._backdrop_capture_rect
         px_w, px_h = overlay._backdrop_capture_pixel_size
+        assert rect.origin.y == pytest.approx(657.480315, abs=1e-6)
         assert rect.size.width > 600.0
         assert rect.size.width < 720.0
         assert px_w == pytest.approx(rect.size.width * 2.0)
@@ -624,6 +625,7 @@ class TestBackdropRefresh:
         call = overlay._backdrop_renderer.capture_blurred_image.call_args.kwargs
         assert call["window_number"] == 17
         assert call["blur_radius_points"] == pytest.approx(9.0)
+        assert call["capture_rect"].origin.y == pytest.approx(660.0)
         assert call["capture_rect"].size.width == pytest.approx(680.0)
         assert call["capture_rect"].size.height == pytest.approx(160.0)
         overlay._backdrop_layer.setFrame_.assert_called_with(((180.0, 180.0), (680.0, 160.0)))

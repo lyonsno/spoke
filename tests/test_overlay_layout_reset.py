@@ -410,6 +410,7 @@ def test_show_clears_stale_preview_backdrop_before_reuse(mock_pyobjc, monkeypatc
 def test_refresh_preview_backdrop_snapshot_updates_contents_frame_and_mask(mock_pyobjc):
     overlay_module = _import_overlay(mock_pyobjc)
     overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._screen = _FakeScreen(width=1920.0, height=1080.0)
     overlay._window = MagicMock()
     overlay._window.frame.return_value = _make_rect(300.0, 80.0, 1040.0, 520.0)
     overlay._window.windowNumber.return_value = 17
@@ -427,6 +428,7 @@ def test_refresh_preview_backdrop_snapshot_updates_contents_frame_and_mask(mock_
 
     call = overlay._backdrop_renderer.capture_blurred_image.call_args.kwargs
     assert call["blur_radius_points"] == pytest.approx(9.0)
+    assert call["capture_rect"].origin.y == pytest.approx(660.0)
     assert call["capture_rect"].size.width == pytest.approx(680.0)
     assert call["capture_rect"].size.height == pytest.approx(160.0)
     overlay._backdrop_layer.setFrame_.assert_called_with(((180.0, 180.0), (680.0, 160.0)))

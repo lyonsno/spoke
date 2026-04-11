@@ -170,12 +170,15 @@ def _command_backdrop_capture_overscan_pixels(backing_scale: float) -> float:
     return _command_backdrop_capture_overscan_points() * max(backing_scale, 0.0)
 
 
-def _backdrop_capture_rect(window_frame, content_frame, overscan_points: float):
+def _backdrop_capture_rect(screen_frame, window_frame, content_frame, overscan_points: float):
     overscan = max(overscan_points, 0.0)
     x = window_frame.origin.x + content_frame.origin.x - overscan
-    y = window_frame.origin.y + content_frame.origin.y - overscan
     width = content_frame.size.width + 2 * overscan
     height = content_frame.size.height + 2 * overscan
+    cocoa_y = window_frame.origin.y + content_frame.origin.y - overscan
+    screen_origin_y = getattr(screen_frame.origin, "y", 0.0)
+    screen_height = getattr(screen_frame.size, "height", 0.0)
+    y = screen_origin_y + screen_height - (cocoa_y - screen_origin_y) - height
     return SimpleNamespace(
         origin=SimpleNamespace(x=x, y=y),
         size=SimpleNamespace(width=width, height=height),
@@ -1367,15 +1370,17 @@ class CommandOverlay(NSObject):
             self._spring_tint_layer.setMask_(mask)
 
     def _update_backdrop_capture_geometry(self):
-        if self._window is None or self._content_view is None:
+        if self._window is None or self._content_view is None or self._screen is None:
             return None
         try:
+            screen_frame = self._screen.frame()
             win_frame = self._window.frame()
             content_frame = self._content_view.frame()
         except Exception:
             return None
 
         capture_rect = _backdrop_capture_rect(
+            screen_frame,
             win_frame,
             content_frame,
             getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points()),
