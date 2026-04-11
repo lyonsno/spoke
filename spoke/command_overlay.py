@@ -35,6 +35,7 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
+from .backdrop_stream import make_backdrop_renderer
 from .overlay import _OVERLAY_WINDOW_LEVEL
 
 logger = logging.getLogger(__name__)
@@ -373,7 +374,10 @@ class CommandOverlay(NSObject):
         self._brightness = 0.0
         self._brightness_target = 0.0
         self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
-        self._backdrop_renderer = _QuartzBackdropRenderer()
+        self._backdrop_renderer = make_backdrop_renderer(
+            self._screen,
+            lambda: _QuartzBackdropRenderer(),
+        )
         self._backdrop_layer = None
         self._backdrop_capture_overscan_points = _command_backdrop_capture_overscan_points()
         self._backdrop_capture_rect = None

@@ -237,6 +237,18 @@ def test_show_resets_stale_scroll_and_document_height(mock_pyobjc, monkeypatch):
     assert overlay._scroll_view.contentView().bounds().origin.y == 0.0
 
 
+def test_init_uses_shared_backdrop_renderer_factory(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    sentinel = object()
+    factory = MagicMock(return_value=sentinel)
+    monkeypatch.setattr(overlay_module, "make_backdrop_renderer", factory)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+
+    assert overlay._backdrop_renderer is sentinel
+    factory.assert_called_once()
+
+
 def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)

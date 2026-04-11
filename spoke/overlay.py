@@ -36,6 +36,7 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
+from .backdrop_stream import make_backdrop_renderer
 from .dedup import ontology_term_spans
 
 logger = logging.getLogger(__name__)
@@ -504,7 +505,10 @@ class TranscriptionOverlay(NSObject):
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
         self._backdrop_blur_radius_points = _PREVIEW_BACKDROP_BLUR_RADIUS
-        self._backdrop_renderer = _QuartzBackdropRenderer()
+        self._backdrop_renderer = make_backdrop_renderer(
+            self._screen,
+            lambda: _QuartzBackdropRenderer(),
+        )
         self._backdrop_layer = None
         self._backdrop_capture_overscan_points = _preview_backdrop_capture_overscan_points()
         self._backdrop_capture_rect = None

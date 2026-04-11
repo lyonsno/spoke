@@ -135,6 +135,18 @@ class TestThinkingTimer:
         assert overlay._thinking_timer is None
         overlay._stop_thinking_timer()  # should not raise
 
+    def test_init_uses_shared_backdrop_renderer_factory(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        sentinel = object()
+        factory = MagicMock(return_value=sentinel)
+        monkeypatch.setattr(mod, "make_backdrop_renderer", factory)
+
+        overlay = mod.CommandOverlay.alloc().initWithScreen_(MagicMock())
+
+        assert overlay._backdrop_renderer is sentinel
+        factory.assert_called_once()
+
 
 class TestDismissAnimation:
     """Test the pop-then-shrink dismiss animation state machine."""
