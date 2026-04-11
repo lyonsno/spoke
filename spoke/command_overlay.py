@@ -32,7 +32,7 @@ from AppKit import (
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer
+from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
 from .overlay import _OVERLAY_WINDOW_LEVEL
@@ -90,7 +90,9 @@ _BRIGHTNESS_CHASE = 0.08
 _POINTS_PER_CM = 72.0 / 2.54
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
 _COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 9.0)
-_COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 0.2)
+_COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
+_EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
@@ -191,6 +193,20 @@ def _backdrop_capture_pixel_size(capture_rect, backing_scale: float) -> tuple[fl
         capture_rect.size.width * scale,
         capture_rect.size.height * scale,
     )
+
+
+def _pin_timer_to_active_run_loop_modes(timer) -> None:
+    if timer is None:
+        return
+    try:
+        run_loop = NSRunLoop.currentRunLoop()
+    except Exception:
+        return
+    for mode in (_RUN_LOOP_COMMON_MODE, _EVENT_TRACKING_RUN_LOOP_MODE):
+        try:
+            run_loop.addTimer_forMode_(timer, mode)
+        except Exception:
+            logger.debug("Failed to add command backdrop timer to run loop mode %s", mode, exc_info=True)
 
 
 def _backdrop_mask_alpha(signed_distance, width: float):
@@ -1444,6 +1460,7 @@ class CommandOverlay(NSObject):
             None,
             True,
         )
+        _pin_timer_to_active_run_loop_modes(self._backdrop_timer)
 
     def backdropRefreshTick_(self, timer) -> None:
         if not self._visible:

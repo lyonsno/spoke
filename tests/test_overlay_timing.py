@@ -11,6 +11,16 @@ import pytest
 class TestOverlayTiming:
     """Keep the overlay tuned to the current fast-handoff UX."""
 
+    def test_preview_backdrop_refresh_default_targets_live_scroll_cadence(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._PREVIEW_BACKDROP_REFRESH_S == pytest.approx(1.0 / 30.0)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_text_alpha_ceiling_stays_below_full_white(self, mock_pyobjc):
         """Text should stay legible without ever reaching fully opaque white."""
         sys.modules.pop("spoke.overlay", None)
@@ -68,6 +78,30 @@ class TestOverlayTiming:
                 0.02, overlay, "typewriterStep:", None, True
             )
             assert overlay._typewriter_timer is timer
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_preview_backdrop_refresh_timer_is_added_to_scroll_surviving_run_loop_modes(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._backdrop_timer = None
+            overlay._backdrop_renderer = MagicMock()
+            overlay._backdrop_layer = MagicMock()
+            overlay._cancel_backdrop_refresh = MagicMock()
+
+            timer = object()
+            run_loop = MagicMock()
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = timer
+            mod.NSRunLoop.currentRunLoop.return_value = run_loop
+
+            overlay._start_backdrop_refresh_timer()
+
+            run_loop.addTimer_forMode_.assert_any_call(timer, mod._RUN_LOOP_COMMON_MODE)
+            run_loop.addTimer_forMode_.assert_any_call(timer, mod._EVENT_TRACKING_RUN_LOOP_MODE)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

@@ -245,6 +245,20 @@ class TestShowFinishHide:
 
         assert overlay._backdrop_timer is backdrop_timer
 
+    def test_backdrop_refresh_timer_is_added_to_scroll_surviving_run_loop_modes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        run_loop = MagicMock()
+        mod.NSRunLoop.currentRunLoop.return_value = run_loop
+        timer = object()
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = timer
+
+        overlay._start_backdrop_refresh_timer()
+
+        run_loop.addTimer_forMode_.assert_any_call(timer, mod._RUN_LOOP_COMMON_MODE)
+        run_loop.addTimer_forMode_.assert_any_call(timer, mod._EVENT_TRACKING_RUN_LOOP_MODE)
+
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
     ):
@@ -548,6 +562,14 @@ class TestAdaptiveCompositing:
 
 class TestBackdropGeometry:
     """Backdrop blur capture should use a bounded overscan, not the full SDF feather."""
+
+    def test_backdrop_refresh_default_targets_live_scroll_cadence(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._COMMAND_BACKDROP_REFRESH_S == pytest.approx(1.0 / 30.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
 
     def test_backdrop_overscan_default_tracks_centimeter_budget(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)

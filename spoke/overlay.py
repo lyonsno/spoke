@@ -33,7 +33,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskNonactivatingPanel,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer
+from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
 from .dedup import ontology_term_spans
@@ -112,7 +112,9 @@ _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 _POINTS_PER_CM = 72.0 / 2.54
 _PREVIEW_BACKDROP_OVERSCAN_CM = _env("SPOKE_PREVIEW_BACKDROP_OVERSCAN_CM", 1.5)
 _PREVIEW_BACKDROP_BLUR_RADIUS = _env("SPOKE_PREVIEW_BACKDROP_BLUR_RADIUS", 9.0)
-_PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 0.2)
+_PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
+_EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 
 # Recovery mode constants
@@ -340,6 +342,20 @@ def _preview_backdrop_capture_rect(screen_frame, window_frame, content_frame, ov
         origin=SimpleNamespace(x=x, y=y),
         size=SimpleNamespace(width=width, height=height),
     )
+
+
+def _pin_timer_to_active_run_loop_modes(timer) -> None:
+    if timer is None:
+        return
+    try:
+        run_loop = NSRunLoop.currentRunLoop()
+    except Exception:
+        return
+    for mode in (_RUN_LOOP_COMMON_MODE, _EVENT_TRACKING_RUN_LOOP_MODE):
+        try:
+            run_loop.addTimer_forMode_(timer, mode)
+        except Exception:
+            logger.debug("Failed to add backdrop timer to run loop mode %s", mode, exc_info=True)
 
 
 def _backdrop_mask_alpha(signed_distance, width: float):
@@ -1168,6 +1184,7 @@ class TranscriptionOverlay(NSObject):
             None,
             True,
         )
+        _pin_timer_to_active_run_loop_modes(self._backdrop_timer)
 
     def backdropRefreshTick_(self, timer) -> None:
         if not self._visible:
