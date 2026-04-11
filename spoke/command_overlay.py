@@ -16,6 +16,7 @@ import logging
 import math
 import os
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import objc
 from AppKit import (
@@ -86,6 +87,8 @@ _OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp t
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
+_POINTS_PER_CM = 72.0 / 2.54
+_COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
 
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
@@ -148,6 +151,41 @@ def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
 def _ease_in(progress: float) -> float:
     clamped = _clamp01(progress)
     return clamped * clamped
+
+
+def _cm_to_points(cm: float) -> float:
+    return max(cm, 0.0) * _POINTS_PER_CM
+
+
+def _command_backdrop_capture_overscan_points() -> float:
+    # The blur neighborhood only needs enough extra image to support a
+    # graceful fade beyond the bubble perimeter; it should stay much tighter
+    # than the full SDF feather/glow margin.
+    return _cm_to_points(_COMMAND_BACKDROP_OVERSCAN_CM)
+
+
+def _command_backdrop_capture_overscan_pixels(backing_scale: float) -> float:
+    return _command_backdrop_capture_overscan_points() * max(backing_scale, 0.0)
+
+
+def _backdrop_capture_rect(window_frame, content_frame, overscan_points: float):
+    overscan = max(overscan_points, 0.0)
+    x = window_frame.origin.x + content_frame.origin.x - overscan
+    y = window_frame.origin.y + content_frame.origin.y - overscan
+    width = content_frame.size.width + 2 * overscan
+    height = content_frame.size.height + 2 * overscan
+    return SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=width, height=height),
+    )
+
+
+def _backdrop_capture_pixel_size(capture_rect, backing_scale: float) -> tuple[float, float]:
+    scale = max(backing_scale, 0.0)
+    return (
+        capture_rect.size.width * scale,
+        capture_rect.size.height * scale,
+    )
 
 
 def _dismiss_animation_state(elapsed_s: float) -> tuple[str, float, float, bool]:
@@ -227,6 +265,9 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._backdrop_capture_overscan_points = _command_backdrop_capture_overscan_points()
+        self._backdrop_capture_rect = None
+        self._backdrop_capture_pixel_size = None
 
         return self
 
@@ -386,6 +427,7 @@ class CommandOverlay(NSObject):
         self._window.setAlphaValue_(0.0)
         self._apply_surface_theme()
         self._set_overlay_scale(1.0)
+        self._update_backdrop_capture_geometry()
 
         logger.info("Command overlay created")
 
@@ -436,6 +478,7 @@ class CommandOverlay(NSObject):
         self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
+        self._update_backdrop_capture_geometry()
 
         self._window.orderFrontRegardless()
 
@@ -1215,6 +1258,28 @@ class CommandOverlay(NSObject):
             mask.setContentsGravity_("resize")
             self._spring_tint_layer.setMask_(mask)
 
+    def _update_backdrop_capture_geometry(self):
+        if self._window is None or self._content_view is None:
+            return None
+        try:
+            win_frame = self._window.frame()
+            content_frame = self._content_view.frame()
+        except Exception:
+            return None
+
+        capture_rect = _backdrop_capture_rect(
+            win_frame,
+            content_frame,
+            getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points()),
+        )
+        pixel_size = _backdrop_capture_pixel_size(
+            capture_rect,
+            getattr(self, "_ridge_scale", 1.0),
+        )
+        self._backdrop_capture_rect = capture_rect
+        self._backdrop_capture_pixel_size = pixel_size
+        return capture_rect, pixel_size
+
     # ── layout ──────────────────────────────────────────────
 
     def _update_layout(self) -> None:
@@ -1245,6 +1310,7 @@ class CommandOverlay(NSObject):
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
+                self._update_backdrop_capture_geometry()
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')

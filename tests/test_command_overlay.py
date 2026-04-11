@@ -513,6 +513,62 @@ class TestAdaptiveCompositing:
             "the preview overlay reaches when its amplitude is high."
         )
 
+
+class TestBackdropGeometry:
+    """Backdrop blur capture should use a bounded overscan, not the full SDF feather."""
+
+    def test_backdrop_overscan_default_tracks_centimeter_budget(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._command_backdrop_capture_overscan_points() == pytest.approx(
+                42.519685, abs=1e-6
+            )
+            assert mod._command_backdrop_capture_overscan_pixels(2.0) == pytest.approx(
+                85.03937, abs=1e-5
+            )
+            assert mod._command_backdrop_capture_overscan_points() < mod._OUTER_FEATHER
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_backdrop_capture_rect_expands_content_frame_by_overscan(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            win_frame = _make_rect(300.0, 80.0, 1040.0, 520.0)
+            content_frame = _make_rect(220.0, 220.0, 600.0, 80.0)
+
+            rect = mod._backdrop_capture_rect(
+                win_frame,
+                content_frame,
+                overscan_points=40.0,
+            )
+
+            assert rect.origin.x == pytest.approx(480.0)
+            assert rect.origin.y == pytest.approx(260.0)
+            assert rect.size.width == pytest.approx(680.0)
+            assert rect.size.height == pytest.approx(160.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_update_backdrop_capture_geometry_records_point_and_pixel_bounds(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._window.frame.return_value = _make_rect(300.0, 80.0, 1040.0, 520.0)
+        overlay._content_view.frame.return_value = _make_rect(220.0, 220.0, 600.0, 80.0)
+        overlay._ridge_scale = 2.0
+
+        overlay._update_backdrop_capture_geometry()
+
+        rect = overlay._backdrop_capture_rect
+        px_w, px_h = overlay._backdrop_capture_pixel_size
+        assert rect.size.width > 600.0
+        assert rect.size.width < 720.0
+        assert px_w == pytest.approx(rect.size.width * 2.0)
+        assert px_h == pytest.approx(rect.size.height * 2.0)
+
+
 class TestGeometryCaps:
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
