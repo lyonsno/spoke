@@ -104,6 +104,17 @@ class TestRecoveryFlowBranching:
         assert call_args[0][2] == "verifyPaste:"
         assert d._verify_paste_text == "hello world"
 
+    def test_records_preexisting_focus_match_before_paste(self, main_module, monkeypatch):
+        """Delayed insert should snapshot cheap pre-paste evidence before injection."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._result_pending_inject = ("hello world", "Pasted!")
+
+        with patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.inject_text"):
+            d.resultInjectDelayed_(None)
+
+        assert d._verify_paste_preexisting_match is True
+
     def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
         """A normal-path OCR miss should fail open into a silent tray save."""
         d = _make_delegate(main_module, monkeypatch)
@@ -155,6 +166,28 @@ class TestRecoveryFlowBranching:
         d.verifyPasteResult_({"found": True, "text": "hello world", "attempt": 0})
 
         assert d._verify_paste_text is None
+
+    def test_ambiguous_result_stashes_to_bottom_without_popping(self, main_module, monkeypatch):
+        """Ambiguous verification should preserve the text without claiming success."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tray_stack = [main_module.TrayEntry("existing newer text")]
+        d._tray_index = 0
+        d._verify_paste_text = "hello world"
+        d._verify_paste_preexisting_match = True
+        d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.set_pasteboard_only"), \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
+            d.verifyPasteResult_(
+                {"found": False, "status": "ambiguous", "text": "hello world", "attempt": 1}
+            )
+
+        assert d._verify_paste_text is None
+        assert d._tray_active is False
+        d._overlay.show_tray.assert_not_called()
+        d._overlay.flash_tray_capture.assert_called_once_with("hello world", owner="user")
+        assert [entry.text for entry in d._tray_stack] == ["hello world", "existing newer text"]
 
 
 class TestRecoveryDismiss:
@@ -445,6 +478,7 @@ class TestOCRVerifyRetry:
         """A focused AX substring hit alone must not bypass OCR verification."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "dictated text"
+        d._verify_paste_preexisting_match = True
         dispatched = []
 
         def _dispatch(selector, payload, wait):
@@ -462,17 +496,19 @@ class TestOCRVerifyRetry:
 
         with patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
              patch("spoke.paste_verify.capture_screen_text", return_value="screen text") as mock_capture, \
-             patch("spoke.paste_verify.classify_paste_result", return_value="missing") as mock_classify:
+             patch("spoke.paste_verify.classify_paste_result", return_value="ambiguous") as mock_classify:
             d.verifyPaste_(None)
 
         mock_capture.assert_called_once_with()
-        mock_classify.assert_called_once_with("dictated text", "screen text")
+        mock_classify.assert_called_once_with(
+            "dictated text", "screen text", preexisting_match=True
+        )
         assert dispatched == [
             (
                 "verifyPasteResult:",
                 {
                     "found": False,
-                    "status": "missing",
+                    "status": "ambiguous",
                     "text": "dictated text",
                     "attempt": 0,
                 },

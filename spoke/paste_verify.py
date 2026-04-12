@@ -207,11 +207,18 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
     return _has_strong_distinctive_match(expected_norm, screen_norm)
 
 
-def classify_paste_result(expected: str, screen_text: str) -> str:
-    """Classify OCR verification as confirmed, missing, or unavailable."""
+def classify_paste_result(
+    expected: str,
+    screen_text: str,
+    *,
+    preexisting_match: bool | None = None,
+) -> str:
+    """Classify OCR verification as confirmed, ambiguous, missing, or unavailable."""
     if not " ".join(screen_text.split()):
         return "unavailable"
     if text_appears_on_screen(expected, screen_text):
+        if preexisting_match is True:
+            return "ambiguous"
         return "confirmed"
     return "missing"
 

@@ -139,7 +139,7 @@ def _run_modal_with_paste(alert) -> int:
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .narrator import ThinkingNarrator
-from .focus_check import has_focused_text_input
+from .focus_check import has_focused_text_input, focused_text_contains
 from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
@@ -1016,6 +1016,7 @@ class SpokeAppDelegate(NSObject):
         # "captured but clipboard was empty (None)".
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
         self._verify_paste_text: str | None = None
+        self._verify_paste_preexisting_match: bool | None = None
         self._verify_paste_attempt: int = 0
         self._result_pending_inject = None
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
@@ -1639,6 +1640,7 @@ class SpokeAppDelegate(NSObject):
 
         # Tray intercept: shift+space from tray = navigation, plain space = record.
         self._verify_paste_text = None
+        self._verify_paste_preexisting_match = None
         if getattr(self, "_tray_active", False):
             shift_at_press = getattr(self._detector, '_shift_at_press', False)
             logger.info("Tray hold: shift_at_press=%s, shift_latched=%s",
@@ -3410,7 +3412,13 @@ class SpokeAppDelegate(NSObject):
         def _verify():
             from .paste_verify import capture_screen_text, classify_paste_result
             screen_text = capture_screen_text()
-            status = classify_paste_result(text, screen_text)
+            status = classify_paste_result(
+                text,
+                screen_text,
+                preexisting_match=getattr(
+                    self, "_verify_paste_preexisting_match", None
+                ),
+            )
             found = status == "confirmed"
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "verifyPasteResult:",
@@ -3441,6 +3449,7 @@ class SpokeAppDelegate(NSObject):
         if found:
             logger.info("Paste verified by OCR (attempt %d)", attempt + 1)
             self._verify_paste_text = None
+            self._verify_paste_preexisting_match = None
             if is_retry:
                 # Retry succeeded — clear recovery state
                 self._recovery_retry_pending = False
@@ -3461,6 +3470,7 @@ class SpokeAppDelegate(NSObject):
 
         # Second check also failed
         self._verify_paste_text = None
+        self._verify_paste_preexisting_match = None
         if is_retry:
             # Retry from recovery failed — bounce the overlay back
             logger.warning("Recovery retry not verified by OCR — bouncing back")
@@ -5587,6 +5597,7 @@ class SpokeAppDelegate(NSObject):
                 if not self._resume_handsfree_after_hold():
                     self._menubar.set_status_text("Ready — hold spacebar")
 
+        self._verify_paste_preexisting_match = focused_text_contains(text)
         inject_text(text, on_restored=_on_clipboard_restored)
         if self._menubar is not None:
             self._menubar.set_status_text(status_text)
@@ -5644,6 +5655,7 @@ class SpokeAppDelegate(NSObject):
             self._overlay.order_out()
 
         # Paste
+        self._verify_paste_preexisting_match = focused_text_contains(text)
         inject_text(text)
 
         # OCR verify — reuse the same verification pipeline

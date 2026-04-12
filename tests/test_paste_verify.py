@@ -403,3 +403,15 @@ class TestClassifyPasteResult:
             )
             == "missing"
         )
+
+    def test_match_with_preexisting_signal_is_ambiguous(self):
+        mod = _import_module()
+
+        assert (
+            mod.classify_paste_result(
+                "Hello world this is a test sentence",
+                "Some UI chrome Hello world this is a test sentence more stuff",
+                preexisting_match=True,
+            )
+            == "ambiguous"
+        )
