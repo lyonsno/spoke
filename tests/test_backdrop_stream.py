@@ -431,7 +431,18 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
     kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
     args = kernel.applyWithExtent_roiCallback_inputImage_arguments_.call_args.args[3]
     assert args == pytest.approx(
-        [680.0, 160.0, 600.0, 80.0, 16.0, 2.5, 12.0, 10.0, 72.0, 18.0]
+        [
+            680.0,
+            160.0,
+            600.0,
+            80.0,
+            mod._optical_shell_effective_corner_radius(16.0, 12.0),
+            2.5,
+            12.0,
+            10.0,
+            72.0,
+            18.0,
+        ]
     )
 
 
@@ -827,6 +838,37 @@ def test_optical_shell_center_envelope_saturates_in_center_and_fades_at_rim():
     assert center > 0.97
     assert 0.15 < shoulder < 0.85
     assert near_edge < 0.05
+
+
+def test_apply_optical_shell_warp_inflates_corner_radius_for_smoother_field(monkeypatch):
+    mod = _import_module()
+
+    class FakeImage:
+        pass
+
+    image = FakeImage()
+    extent = _make_rect(0.0, 0.0, 680.0, 160.0)
+    kernel = MagicMock()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.return_value = image
+    monkeypatch.setattr(mod, "_shell_warp_kernel", lambda: kernel)
+
+    mod._apply_optical_shell_warp_ci_image(
+        image,
+        extent,
+        {
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "core_magnification": 2.8,
+            "band_width_points": 11.338583,
+            "tail_width_points": 7.086614,
+            "ring_amplitude_points": 132.0,
+            "tail_amplitude_points": 4.0,
+        },
+    )
+
+    args = kernel.applyWithExtent_roiCallback_inputImage_arguments_.call_args[0][3]
+    assert args[4] > 16.0
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):

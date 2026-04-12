@@ -144,6 +144,10 @@ def _optical_shell_center_envelope(
     return t * t * (3.0 - 2.0 * t)
 
 
+def _optical_shell_effective_corner_radius(corner_radius: float, band_width: float) -> float:
+    return max(float(corner_radius), 0.0) + max(float(band_width), 0.0) * 0.65
+
+
 def _shell_warp_kernel():
     global _SHELL_WARP_KERNEL
     if _SHELL_WARP_KERNEL is not None:
@@ -274,7 +278,10 @@ def _apply_optical_shell_warp_ci_image(ci_image, extent, shell_config):
         float(extent.size.height),
         float(shell_config.get("content_width_points", extent.size.width)),
         float(shell_config.get("content_height_points", extent.size.height)),
-        float(shell_config.get("corner_radius_points", 16.0)),
+        _optical_shell_effective_corner_radius(
+            float(shell_config.get("corner_radius_points", 16.0)),
+            float(shell_config.get("band_width_points", 12.0)),
+        ),
         float(shell_config.get("core_magnification", 1.0)),
         float(shell_config.get("band_width_points", 12.0)),
         float(shell_config.get("tail_width_points", 9.0)),
