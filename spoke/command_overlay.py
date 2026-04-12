@@ -161,6 +161,9 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT = _env(
 _COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE", 0.16
 )
+_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL = _env_bool(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL", False
+)
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
@@ -1450,6 +1453,9 @@ class CommandOverlay(NSObject):
                     _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT,
                     t,
                 )
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
+                    fill_min *= 0.2
+                    fill_max *= 0.2
             else:
                 fill_min = _lerp(0.30, 0.84, t)
                 fill_max = _lerp(0.92, 0.99, t)
@@ -1466,6 +1472,8 @@ class CommandOverlay(NSObject):
                     if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
                     else 0.5
                 )
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
+                    spring_scale *= 0.25
                 self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
