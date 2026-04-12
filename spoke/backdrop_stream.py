@@ -305,6 +305,48 @@ class _MetalBlurPipeline:
         _mark_sample_buffer_for_immediate_display(wrapped_sample, bridge)
         return wrapped_sample
 
+    def _render_ci_image_to_sample_buffer(self, output, extent, *, source_sample, bridge):
+        width = max(1, int(round(extent.size.width)))
+        height = max(1, int(round(extent.size.height)))
+        pixel_buffer = self._create_pixel_buffer(width, height)
+        if pixel_buffer is None:
+            return None
+        try:
+            self._context.render_toCVPixelBuffer_bounds_colorSpace_(
+                output,
+                pixel_buffer,
+                extent,
+                None,
+            )
+        except Exception:
+            logger.debug("Metal-backed CI render to CVPixelBuffer failed", exc_info=True)
+            return None
+
+        format_desc = self._create_format_description(pixel_buffer)
+        if format_desc is None:
+            return None
+        return self._create_sample_buffer(
+            pixel_buffer,
+            format_desc,
+            source_sample=source_sample,
+            bridge=bridge,
+        )
+
+    @staticmethod
+    def _centered_scale_transform(extent, scale_x: float, scale_y: float):
+        from Quartz import (
+            CGAffineTransformIdentity,
+            CGAffineTransformScale,
+            CGAffineTransformTranslate,
+        )
+
+        center_x = extent.origin.x + (extent.size.width / 2.0)
+        center_y = extent.origin.y + (extent.size.height / 2.0)
+        transform = CGAffineTransformTranslate(CGAffineTransformIdentity, -center_x, -center_y)
+        transform = CGAffineTransformScale(transform, scale_x, scale_y)
+        transform = CGAffineTransformTranslate(transform, center_x, center_y)
+        return transform
+
     def blurred_sample_buffer(self, sample_buffer, *, blur_radius_points: float, bridge):
         pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
         if pixel_buffer is None:
@@ -343,28 +385,141 @@ class _MetalBlurPipeline:
                 if candidate is not None:
                     output = candidate.imageByCroppingToRect_(working_extent)
 
-        width = max(1, int(round(working_extent.size.width)))
-        height = max(1, int(round(working_extent.size.height)))
-        blurred_pixel_buffer = self._create_pixel_buffer(width, height)
-        if blurred_pixel_buffer is None:
+        return self._render_ci_image_to_sample_buffer(
+            output,
+            working_extent,
+            source_sample=sample_buffer,
+            bridge=bridge,
+        )
+
+    def optical_shell_sample_buffer(
+        self,
+        sample_buffer,
+        *,
+        shell_config,
+        cleanup_blur_radius_points: float,
+        bridge,
+    ):
+        pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
+        if pixel_buffer is None:
             return None
         try:
-            self._context.render_toCVPixelBuffer_bounds_colorSpace_(
-                output,
-                blurred_pixel_buffer,
-                working_extent,
-                None,
-            )
+            from Quartz import CIImage, CIFilter
         except Exception:
-            logger.debug("Metal-backed CI render to CVPixelBuffer failed", exc_info=True)
+            return None
+        ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
+        if ci_image is None:
+            return None
+        extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+        if extent is None:
             return None
 
-        format_desc = self._create_format_description(blurred_pixel_buffer)
-        if format_desc is None:
-            return None
-        return self._create_sample_buffer(
-            blurred_pixel_buffer,
-            format_desc,
+        working_image = ci_image
+        working_extent = extent
+        cleanup_blur = max(float(cleanup_blur_radius_points), 0.0)
+        if _METAL_BLUR_DOWNSAMPLE < 0.999:
+            transform = self._centered_scale_transform(
+                extent,
+                _METAL_BLUR_DOWNSAMPLE,
+                _METAL_BLUR_DOWNSAMPLE,
+            )
+            candidate = ci_image.imageByApplyingTransform_(transform)
+            if candidate is not None:
+                working_image = candidate
+                working_extent = candidate.extent() if hasattr(candidate, "extent") else extent
+                cleanup_blur *= _METAL_BLUR_DOWNSAMPLE
+
+        clamped = (
+            working_image.imageByClampingToExtent()
+            if hasattr(working_image, "imageByClampingToExtent")
+            else working_image
+        )
+        content_width = max(float(shell_config.get("content_width_points", working_extent.size.width)), 1.0)
+        content_height = max(float(shell_config.get("content_height_points", working_extent.size.height)), 1.0)
+        aspect_scale_x = min(max(content_height / content_width, 0.08), 1.0)
+        normalized = clamped
+        if abs(aspect_scale_x - 1.0) > 1e-6:
+            transform = self._centered_scale_transform(working_extent, aspect_scale_x, 1.0)
+            candidate = clamped.imageByApplyingTransform_(transform)
+            if candidate is not None:
+                normalized = candidate
+
+        core_magnification = max(float(shell_config.get("core_magnification", 1.0)), 1.0)
+        if core_magnification > 1.0:
+            transform = self._centered_scale_transform(
+                working_extent,
+                core_magnification,
+                core_magnification,
+            )
+            candidate = normalized.imageByApplyingTransform_(transform)
+            if candidate is not None:
+                normalized = candidate
+
+        center_x = working_extent.origin.x + (working_extent.size.width / 2.0)
+        center_y = working_extent.origin.y + (working_extent.size.height / 2.0)
+        normalized_content_width = content_width * _METAL_BLUR_DOWNSAMPLE * aspect_scale_x
+        normalized_content_height = content_height * _METAL_BLUR_DOWNSAMPLE
+        shell_radius = max(
+            2.0,
+            min(normalized_content_width, normalized_content_height) * 0.5
+            - 0.5 * float(shell_config.get("band_width_points", 12.0)),
+        )
+        band_width = max(
+            1.0,
+            float(shell_config.get("band_width_points", 12.0)) * _METAL_BLUR_DOWNSAMPLE,
+        )
+        tail_width = max(
+            band_width,
+            float(shell_config.get("tail_width_points", 9.0)) * _METAL_BLUR_DOWNSAMPLE,
+        )
+
+        output = normalized
+        torus = CIFilter.filterWithName_("CITorusLensDistortion")
+        if torus is not None:
+            torus.setDefaults()
+            torus.setValue_forKey_(output, "inputImage")
+            torus.setValue_forKey_((center_x, center_y), "inputCenter")
+            torus.setValue_forKey_(shell_radius, "inputRadius")
+            torus.setValue_forKey_(band_width, "inputWidth")
+            torus.setValue_forKey_(float(shell_config.get("ring_refraction", 2.0)), "inputRefraction")
+            candidate = torus.valueForKey_("outputImage")
+            if candidate is not None:
+                output = candidate
+
+        tail = CIFilter.filterWithName_("CITorusLensDistortion")
+        if tail is not None:
+            tail.setDefaults()
+            tail.setValue_forKey_(output, "inputImage")
+            tail.setValue_forKey_((center_x, center_y), "inputCenter")
+            tail.setValue_forKey_(shell_radius + 0.25 * band_width, "inputRadius")
+            tail.setValue_forKey_(tail_width, "inputWidth")
+            tail.setValue_forKey_(float(shell_config.get("tail_refraction", 0.6)), "inputRefraction")
+            candidate = tail.valueForKey_("outputImage")
+            if candidate is not None:
+                output = candidate
+
+        if abs(aspect_scale_x - 1.0) > 1e-6:
+            transform = self._centered_scale_transform(working_extent, 1.0 / aspect_scale_x, 1.0)
+            candidate = output.imageByApplyingTransform_(transform)
+            if candidate is not None:
+                output = candidate
+
+        if hasattr(output, "imageByCroppingToRect_"):
+            output = output.imageByCroppingToRect_(working_extent)
+
+        if cleanup_blur > 0.0:
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is not None:
+                blur.setDefaults()
+                blur.setValue_forKey_(output, "inputImage")
+                blur.setValue_forKey_(cleanup_blur, "inputRadius")
+                candidate = blur.valueForKey_("outputImage")
+                if candidate is not None and hasattr(candidate, "imageByCroppingToRect_"):
+                    output = candidate.imageByCroppingToRect_(working_extent)
+
+        return self._render_ci_image_to_sample_buffer(
+            output,
+            working_extent,
             source_sample=sample_buffer,
             bridge=bridge,
         )
@@ -473,6 +628,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._frame_callback = None
         self._sample_buffer_callback = None
         self._blur_radius_points = 0.0
+        self._optical_shell_config = None
         self._current_display = None
         self._current_display_frame = None
         self._current_content = None
@@ -510,6 +666,12 @@ class _ScreenCaptureKitBackdropRenderer:
     def set_live_blur_radius_points(self, blur_radius_points: float) -> None:
         self._blur_radius_points = max(float(blur_radius_points), 0.0)
 
+    def set_live_optical_shell_config(self, config) -> None:
+        if not config or config.get("enabled") is not True:
+            self._optical_shell_config = None
+            return
+        self._optical_shell_config = dict(config)
+
     def _sample_handler_queue(self):
         if self._stream_handler_queue is None:
             self._stream_handler_queue = _make_stream_handler_queue("ai.spoke.backdrop-stream")
@@ -541,7 +703,23 @@ class _ScreenCaptureKitBackdropRenderer:
             bridge=bridge,
         )
 
+    def _optical_shell_sample_buffer(self, sample_buffer):
+        pipeline = self._metal_blur_pipeline()
+        if pipeline is None or self._optical_shell_config is None:
+            return None
+        bridge = _load_screencapturekit_bridge()
+        if bridge is None:
+            return None
+        return pipeline.optical_shell_sample_buffer(
+            sample_buffer,
+            shell_config=self._optical_shell_config,
+            cleanup_blur_radius_points=self._blur_radius_points,
+            bridge=bridge,
+        )
+
     def supports_sample_buffer_presentation(self, blur_radius_points: float | None = None) -> bool:
+        if self._optical_shell_config is not None:
+            return self._metal_blur_pipeline() is not None
         radius = self._blur_radius_points if blur_radius_points is None else max(blur_radius_points, 0.0)
         if radius <= 0.0:
             return True
@@ -774,15 +952,22 @@ class _ScreenCaptureKitBackdropRenderer:
             output_type_value = output_type
         if output_type_value != bridge["SCStreamOutputTypeScreen"] or sample_buffer is None:
             return
+        optical_shell_config = getattr(self, "_optical_shell_config", None)
         if self._sample_buffer_callback is not None:
-            if self._blur_radius_points <= 0.0:
+            if optical_shell_config is not None:
+                shell_sample_buffer = self._optical_shell_sample_buffer(sample_buffer)
+                if shell_sample_buffer is not None:
+                    self._publish_live_sample_buffer(shell_sample_buffer)
+                    return
+            elif self._blur_radius_points <= 0.0:
                 self._publish_live_sample_buffer(sample_buffer)
                 return
-            blurred_sample_buffer = self._blurred_sample_buffer(sample_buffer)
-            if blurred_sample_buffer is not None:
-                self._publish_live_sample_buffer(blurred_sample_buffer)
-                return
-        if self._blur_radius_points <= 0.0 and self.uses_direct_sample_buffers():
+            else:
+                blurred_sample_buffer = self._blurred_sample_buffer(sample_buffer)
+                if blurred_sample_buffer is not None:
+                    self._publish_live_sample_buffer(blurred_sample_buffer)
+                    return
+        if optical_shell_config is None and self._blur_radius_points <= 0.0 and self.uses_direct_sample_buffers():
             self._publish_live_sample_buffer(sample_buffer)
             return
         try:

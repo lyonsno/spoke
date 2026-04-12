@@ -46,6 +46,13 @@ def _env(name: str, default: float) -> float:
     return float(v) if v is not None else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v not in {"0", "false", "False", "no", "off"}
+
+
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
 _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
@@ -117,6 +124,27 @@ _COMMAND_BACKDROP_PULSE_OPACITY_MIN = _env(
 )
 _COMMAND_BACKDROP_PULSE_OPACITY_MAX = _env(
     "SPOKE_COMMAND_BACKDROP_PULSE_OPACITY_MAX", 1.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED = _env_bool(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", False
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION", 1.55
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM", 4.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM", 3.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_REFRACTION = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_REFRACTION", 2.6
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION", 0.75
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
 )
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
@@ -239,6 +267,22 @@ def _command_backdrop_pulse_style(
 
 def _command_backdrop_blur_target_for_presence(presence: float) -> float:
     return 1.0 - _clamp01(presence)
+
+
+def _command_optical_shell_config() -> dict[str, float | bool] | None:
+    if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+        return None
+    return {
+        "enabled": True,
+        "content_width_points": _OVERLAY_WIDTH,
+        "content_height_points": _OVERLAY_HEIGHT,
+        "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
+        "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
+        "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
+        "ring_refraction": _COMMAND_BACKDROP_OPTICAL_SHELL_REFRACTION,
+        "tail_refraction": _COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION,
+        "cleanup_blur_radius_points": _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
+    }
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -720,13 +764,24 @@ class CommandOverlay(NSObject):
             base_mask_width_multiplier,
             self._backdrop_blur_drive,
         )
-        self._backdrop_blur_radius_points = blur_radius_points
         renderer = getattr(self, "_backdrop_renderer", None)
+        shell_config = _command_optical_shell_config()
+        effective_blur_radius_points = blur_radius_points
+        if shell_config is not None:
+            effective_blur_radius_points = float(
+                shell_config["cleanup_blur_radius_points"]
+            )
+        self._backdrop_blur_radius_points = effective_blur_radius_points
         if renderer is not None and hasattr(renderer, "set_live_blur_radius_points"):
             try:
-                renderer.set_live_blur_radius_points(blur_radius_points)
+                renderer.set_live_blur_radius_points(effective_blur_radius_points)
             except Exception:
                 logger.debug("Failed to push live command backdrop blur radius", exc_info=True)
+        if renderer is not None and hasattr(renderer, "set_live_optical_shell_config"):
+            try:
+                renderer.set_live_optical_shell_config(shell_config)
+            except Exception:
+                logger.debug("Failed to push command optical-shell config", exc_info=True)
         last_mask_width_multiplier = getattr(
             self,
             "_backdrop_mask_width_multiplier",

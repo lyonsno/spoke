@@ -329,6 +329,30 @@ class TestShowFinishHide:
 
         overlay._backdrop_layer.setOpacity_.assert_called_with(1.0)
 
+    def test_apply_backdrop_pulse_style_pushes_optical_shell_config_when_enabled(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
+        assert config["enabled"] is True
+        assert config["content_width_points"] == pytest.approx(mod._OVERLAY_WIDTH)
+        assert config["content_height_points"] == pytest.approx(mod._OVERLAY_HEIGHT)
+        assert config["cleanup_blur_radius_points"] == pytest.approx(
+            mod._COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS
+        )
+
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
 

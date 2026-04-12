@@ -189,6 +189,34 @@ def test_consume_sample_buffer_blurred_sample_path_skips_image_conversion(monkey
     renderer._context.assert_not_called()
 
 
+def test_consume_sample_buffer_optical_shell_path_skips_image_conversion(monkeypatch):
+    mod = _import_module()
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCStreamOutputTypeScreen": 7,
+        },
+    )
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 0.0
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._frame_callback = None
+    renderer._optical_shell_config = {"enabled": True}
+    renderer._optical_shell_sample_buffer = MagicMock(return_value="shell-sample")
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    renderer._context = MagicMock()
+
+    renderer._consume_sample_buffer("live-sample", 7)
+
+    renderer._optical_shell_sample_buffer.assert_called_once_with("live-sample")
+    renderer._publish_live_sample_buffer.assert_called_once_with("shell-sample")
+    renderer._publish_live_image.assert_not_called()
+    renderer._context.assert_not_called()
+
+
 def test_consume_sample_buffer_blurred_sample_failure_falls_back_to_image_path(monkeypatch):
     mod = _import_module()
     fake_quartz = types.ModuleType("Quartz")
