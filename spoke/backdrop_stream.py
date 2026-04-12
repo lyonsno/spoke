@@ -36,6 +36,48 @@ _METAL_BLUR_DOWNSAMPLE = min(
     max(float(os.environ.get("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")), 0.25),
     1.0,
 )
+_SHELL_WARP_KERNEL = None
+_SHELL_WARP_KERNEL_SOURCE = """
+float sdRoundRect(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + vec2(r);
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+kernel vec2 opticalShellWarp(
+    float width,
+    float height,
+    float rectWidth,
+    float rectHeight,
+    float cornerRadius,
+    float coreMagnification,
+    float bandWidth,
+    float tailWidth
+) {
+    vec2 d = destCoord();
+    vec2 c = vec2(width * 0.5, height * 0.5);
+    vec2 p = d - c;
+    vec2 halfRect = vec2(rectWidth * 0.5, rectHeight * 0.5);
+    float sdf = sdRoundRect(p, halfRect, cornerRadius);
+    float eps = 1.0;
+    float sdfx = sdRoundRect(p + vec2(eps, 0.0), halfRect, cornerRadius)
+        - sdRoundRect(p - vec2(eps, 0.0), halfRect, cornerRadius);
+    float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
+        - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
+    vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
+    float coreRadius = max(min(rectWidth, rectHeight) * 0.5 - bandWidth, 1.0);
+    float insidePush = smoothstep(0.0, 1.0, clamp((-sdf - bandWidth) / coreRadius, 0.0, 1.0));
+    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
+    float outside = step(0.0, sdf);
+    float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
+    float zoom = mix(1.0, coreMagnification, insidePush);
+    vec2 src = c + (d - c) / zoom;
+    float disp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.18, 8.0) * insidePush
+        + max(bandWidth * 1.8, 12.0) * ringPeak
+        + max(tailWidth * 0.65, 4.0) * outerTail;
+    src -= n * disp;
+    return src;
+}
+"""
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
@@ -72,6 +114,23 @@ def _smoothstep01(value):
 
     clamped = np.clip(value, 0.0, 1.0)
     return (clamped * clamped * (3.0 - 2.0 * clamped)).astype(np.float32)
+
+
+def _shell_warp_kernel():
+    global _SHELL_WARP_KERNEL
+    if _SHELL_WARP_KERNEL is not None:
+        return _SHELL_WARP_KERNEL or None
+    try:
+        from Quartz import CIWarpKernel
+    except Exception:
+        _SHELL_WARP_KERNEL = False
+        return None
+    try:
+        _SHELL_WARP_KERNEL = CIWarpKernel.alloc().initWithString_(_SHELL_WARP_KERNEL_SOURCE)
+    except Exception:
+        logger.debug("Failed to compile optical-shell warp kernel", exc_info=True)
+        _SHELL_WARP_KERNEL = False
+    return _SHELL_WARP_KERNEL or None
 
 
 def _screen_capture_kit_available() -> bool:
@@ -371,73 +430,6 @@ class _MetalBlurPipeline:
         transform = CGAffineTransformTranslate(transform, center_x, center_y)
         return transform
 
-    def _displacement_image_for_shell(self, extent, shell_config):
-        import numpy as np
-        from Foundation import NSData
-        from Quartz import (
-            CGColorSpaceCreateDeviceRGB,
-            CGDataProviderCreateWithCFData,
-            CGImageCreate,
-            kCGImageAlphaPremultipliedLast,
-            kCGRenderingIntentDefault,
-        )
-
-        width = max(1, int(round(extent.size.width)))
-        height = max(1, int(round(extent.size.height)))
-        content_width = min(max(float(shell_config.get("content_width_points", width)), 1.0), float(width))
-        content_height = min(max(float(shell_config.get("content_height_points", height)), 1.0), float(height))
-        corner_radius = min(
-            max(float(shell_config.get("corner_radius_points", 16.0)), 0.0),
-            max(min(content_width, content_height) * 0.5 - 1.0, 0.0),
-        )
-        sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
-        grad_y, grad_x = np.gradient(sdf)
-        norm = np.hypot(grad_x, grad_y)
-        norm = np.maximum(norm, 1e-4)
-        unit_x = grad_x / norm
-        unit_y = grad_y / norm
-
-        band = max(float(shell_config.get("band_width_points", 12.0)), 1.0)
-        tail = max(float(shell_config.get("tail_width_points", 9.0)), 1.0)
-        core_mag = max(float(shell_config.get("core_magnification", 1.0)) - 1.0, 0.0)
-        core_radius = max(min(content_width, content_height) * 0.5 - band, 1.0)
-
-        inside_push = _smoothstep01((-sdf - band) / core_radius)
-        ring_peak = np.exp(-np.square(sdf / max(band * 0.35, 1e-4))).astype(np.float32)
-        outer_tail = np.exp(-np.maximum(sdf, 0.0) / tail).astype(np.float32)
-        outside_mask = (sdf > 0.0).astype(np.float32)
-
-        displacement_points = (
-            (core_mag * max(min(content_width, content_height) * 0.18, 8.0)) * inside_push
-            + max(band * 1.8, 12.0) * ring_peak
-            + max(tail * 0.65, 4.0) * outer_tail * outside_mask
-        ).astype(np.float32)
-        max_displacement = float(max(np.max(displacement_points), 1.0))
-
-        encoded_x = np.clip(0.5 + 0.5 * ((unit_x * displacement_points) / max_displacement), 0.0, 1.0)
-        encoded_y = np.clip(0.5 + 0.5 * ((unit_y * displacement_points) / max_displacement), 0.0, 1.0)
-        rgba = np.empty((height, width, 4), dtype=np.uint8)
-        rgba[..., 0] = np.clip(encoded_x * 255.0, 0.0, 255.0).astype(np.uint8)
-        rgba[..., 1] = np.clip(encoded_y * 255.0, 0.0, 255.0).astype(np.uint8)
-        rgba[..., 2] = 127
-        rgba[..., 3] = 255
-        payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
-        provider = CGDataProviderCreateWithCFData(payload)
-        image = CGImageCreate(
-            width,
-            height,
-            8,
-            32,
-            width * 4,
-            CGColorSpaceCreateDeviceRGB(),
-            kCGImageAlphaPremultipliedLast,
-            provider,
-            None,
-            False,
-            kCGRenderingIntentDefault,
-        )
-        return image, payload, max_displacement
-
     def blurred_sample_buffer(self, sample_buffer, *, blur_radius_points: float, bridge):
         pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
         if pixel_buffer is None:
@@ -525,33 +517,36 @@ class _MetalBlurPipeline:
             if hasattr(working_image, "imageByClampingToExtent")
             else working_image
         )
-        displacement_image, _payload, displacement_scale = self._displacement_image_for_shell(
-            working_extent,
-            {
-                **shell_config,
-                "content_width_points": float(shell_config.get("content_width_points", working_extent.size.width))
-                * _METAL_BLUR_DOWNSAMPLE,
-                "content_height_points": float(shell_config.get("content_height_points", working_extent.size.height))
-                * _METAL_BLUR_DOWNSAMPLE,
-                "corner_radius_points": float(shell_config.get("corner_radius_points", 16.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                "band_width_points": float(shell_config.get("band_width_points", 12.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                "tail_width_points": float(shell_config.get("tail_width_points", 9.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-            },
-        )
         output = clamped
-        if displacement_image is not None:
-            displacement = CIFilter.filterWithName_("CIDisplacementDistortion")
-            if displacement is not None and hasattr(CIImage, "imageWithCGImage_"):
-                displacement.setDefaults()
-                displacement.setValue_forKey_(output, "inputImage")
-                displacement.setValue_forKey_(CIImage.imageWithCGImage_(displacement_image), "inputDisplacementImage")
-                displacement.setValue_forKey_(displacement_scale, "inputScale")
-                candidate = displacement.valueForKey_("outputImage")
-                if candidate is not None:
-                    output = candidate
+        warp_kernel = _shell_warp_kernel()
+        if warp_kernel is not None:
+            args = [
+                float(working_extent.size.width),
+                float(working_extent.size.height),
+                float(shell_config.get("content_width_points", working_extent.size.width))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("content_height_points", working_extent.size.height))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("corner_radius_points", 16.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("core_magnification", 1.0)),
+                float(shell_config.get("band_width_points", 12.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("tail_width_points", 9.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+            ]
+            try:
+                candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
+                    working_extent,
+                    lambda _index, rect: rect,
+                    output,
+                    args,
+                )
+            except Exception:
+                logger.debug("Optical-shell warp kernel application failed", exc_info=True)
+                candidate = None
+            if candidate is not None:
+                output = candidate
 
         if hasattr(output, "imageByCroppingToRect_"):
             output = output.imageByCroppingToRect_(working_extent)

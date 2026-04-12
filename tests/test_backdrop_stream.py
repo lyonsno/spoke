@@ -358,12 +358,11 @@ def test_metal_blur_pipeline_renders_into_downsampled_pixel_buffer(monkeypatch):
     assert render_extent.size.height == pytest.approx(120.0)
 
 
-def test_optical_shell_pipeline_uses_displacement_field_filter(monkeypatch):
+def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
     monkeypatch.setenv("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")
     mod = _import_module()
 
     fake_quartz = types.ModuleType("Quartz")
-    requested_filters = []
 
     class FakeImage:
         def __init__(self, width, height):
@@ -389,28 +388,8 @@ def test_optical_shell_pipeline_uses_displacement_field_filter(monkeypatch):
         def imageWithCGImage_(image):
             return FakeImage(680.0, 160.0)
 
-    class FakeFilter:
-        def __init__(self, name):
-            self._name = name
-            self._values = {}
-
-        def setDefaults(self):
-            return None
-
-        def setValue_forKey_(self, value, key):
-            self._values[key] = value
-
-        def valueForKey_(self, key):
-            return self._values.get("inputImage")
-
-    class FakeCIFilter:
-        @staticmethod
-        def filterWithName_(name):
-            requested_filters.append(name)
-            return FakeFilter(name)
-
     fake_quartz.CIImage = FakeImage
-    fake_quartz.CIFilter = FakeCIFilter
+    fake_quartz.CIFilter = types.SimpleNamespace(filterWithName_=lambda name: None)
     fake_quartz.CGAffineTransformIdentity = object()
     fake_quartz.CGAffineTransformScale = lambda transform, sx, sy: ("scale", sx, sy)
     fake_quartz.CGAffineTransformTranslate = lambda transform, tx, ty: ("translate", tx, ty)
@@ -421,7 +400,9 @@ def test_optical_shell_pipeline_uses_displacement_field_filter(monkeypatch):
     pipeline._create_pixel_buffer = MagicMock(return_value="pixel-buffer-out")
     pipeline._create_format_description = MagicMock(return_value="format-desc")
     pipeline._create_sample_buffer = MagicMock(return_value="shell-sample")
-    pipeline._displacement_image_for_shell = MagicMock(return_value=("displacement-image", object(), 18.0))
+    kernel = MagicMock()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.return_value = FakeImage(680.0, 160.0)
+    monkeypatch.setattr(mod, "_shell_warp_kernel", lambda: kernel)
 
     bridge = {
         "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer-in",
@@ -443,7 +424,7 @@ def test_optical_shell_pipeline_uses_displacement_field_filter(monkeypatch):
     )
 
     assert sample == "shell-sample"
-    assert "CIDisplacementDistortion" in requested_filters
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
 
 
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):
