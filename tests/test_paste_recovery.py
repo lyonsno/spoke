@@ -439,8 +439,10 @@ class TestSentinelClipboardPreservation:
 class TestOCRVerifyRetry:
     """Test OCR verification retry path and stale-text guard."""
 
-    def test_verify_paste_confirms_via_focused_value_before_ocr(self, main_module, monkeypatch):
-        """Focused AXValue confirmation should short-circuit the OCR fallback."""
+    def test_verify_paste_does_not_trust_focused_value_without_ocr(
+        self, main_module, monkeypatch
+    ):
+        """A focused AX substring hit alone must not bypass OCR verification."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "dictated text"
         dispatched = []
@@ -458,20 +460,19 @@ class TestOCRVerifyRetry:
                 if self._target is not None:
                     self._target()
 
-        with patch("spoke.__main__.focused_text_contains", return_value=True), \
-             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
-             patch("spoke.paste_verify.capture_screen_text") as mock_capture, \
-             patch("spoke.paste_verify.classify_paste_result") as mock_classify:
+        with patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_screen_text", return_value="screen text") as mock_capture, \
+             patch("spoke.paste_verify.classify_paste_result", return_value="missing") as mock_classify:
             d.verifyPaste_(None)
 
-        mock_capture.assert_not_called()
-        mock_classify.assert_not_called()
+        mock_capture.assert_called_once_with()
+        mock_classify.assert_called_once_with("dictated text", "screen text")
         assert dispatched == [
             (
                 "verifyPasteResult:",
                 {
-                    "found": True,
-                    "status": "confirmed_ax",
+                    "found": False,
+                    "status": "missing",
                     "text": "dictated text",
                     "attempt": 0,
                 },

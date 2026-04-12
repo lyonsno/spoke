@@ -139,7 +139,7 @@ def _run_modal_with_paste(alert) -> int:
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .narrator import ThinkingNarrator
-from .focus_check import has_focused_text_input, focused_text_contains
+from .focus_check import has_focused_text_input
 from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
@@ -3408,19 +3408,6 @@ class SpokeAppDelegate(NSObject):
         # Run OCR in background thread to avoid blocking the main thread
         import threading
         def _verify():
-            focused_match = focused_text_contains(text)
-            if focused_match is True:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "verifyPasteResult:",
-                    {
-                        "found": True,
-                        "status": "confirmed_ax",
-                        "text": text,
-                        "attempt": attempt,
-                    },
-                    False,
-                )
-                return
             from .paste_verify import capture_screen_text, classify_paste_result
             screen_text = capture_screen_text()
             status = classify_paste_result(text, screen_text)
