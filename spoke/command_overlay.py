@@ -230,11 +230,10 @@ def _command_backdrop_pulse_style(
             drive,
         ),
     )
-    backdrop_opacity = _lerp(
-        _COMMAND_BACKDROP_PULSE_OPACITY_MAX,
-        _COMMAND_BACKDROP_PULSE_OPACITY_MIN,
-        drive,
-    )
+    # The sampled backdrop is the replacement background inside the masked region.
+    # If we fade it down during the airy phase, the live crisp desktop leaks through
+    # the transparent window and the blur reads like a translucent wash instead.
+    backdrop_opacity = 1.0
     return blur_radius_points, mask_width_multiplier, backdrop_opacity
 
 

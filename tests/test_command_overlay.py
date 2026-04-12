@@ -315,6 +315,20 @@ class TestShowFinishHide:
         overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
         overlay._backdrop_layer.setOpacity_.assert_called_with(1.0)
 
+    def test_apply_backdrop_pulse_style_keeps_backdrop_opaque_in_airy_phase(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(0.0)
+
+        overlay._backdrop_layer.setOpacity_.assert_called_with(1.0)
+
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
 
@@ -703,7 +717,8 @@ class TestBackdropGeometry:
 
             assert high[0] > low[0]
             assert high[1] > low[1]
-            assert high[2] < low[2]
+            assert high[2] == pytest.approx(1.0)
+            assert low[2] == pytest.approx(1.0)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
