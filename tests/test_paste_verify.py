@@ -386,6 +386,69 @@ class TestCaptureScreenText:
         assert capture["request"].level == "accurate"
 
 
+class TestVerificationSnapshotHelpers:
+    def test_capture_verification_snapshot_returns_downsampled_active_window(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _capture_active_window=lambda: ("image", None, None, None),
+            _capture_screen=lambda: None,
+            _downsample_image=lambda image: f"downsampled-{image}",
+            _image_dimensions=lambda image: (640, 320),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.capture_verification_snapshot() == (
+                "downsampled-image",
+                640,
+                320,
+                "active_window",
+            )
+
+    def test_capture_verification_snapshot_returns_none_when_capture_fails(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _capture_active_window=lambda: None,
+            _capture_screen=lambda: None,
+            _downsample_image=lambda image: image,
+            _image_dimensions=lambda image: (0, 0),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.capture_verification_snapshot() is None
+
+    def test_snapshot_contains_text_returns_none_for_empty_ocr_text(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _run_ocr=lambda image, width, height, scope, accurate: ("   ", []),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.snapshot_contains_text(("image", 640, 320, "screen"), "expected text") is None
+
+    def test_snapshot_contains_text_returns_none_when_ocr_raises(self):
+        mod = _import_module()
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("ocr blew up")
+
+        fake_scene_capture = types.SimpleNamespace(_run_ocr=_boom)
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.snapshot_contains_text(("image", 640, 320, "screen"), "expected text") is None
+
+    def test_snapshot_contains_text_uses_text_match_result(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _run_ocr=lambda image, width, height, scope, accurate: ("visible expected text", ["block"]),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}), \
+             patch.object(mod, "text_appears_on_screen", return_value=True) as mock_match:
+            assert mod.snapshot_contains_text(("image", 640, 320, "screen"), "expected text") is True
+
+        mock_match.assert_called_once_with("expected text", "visible expected text")
+
+
 class TestClassifyPasteResult:
     def test_empty_capture_is_unavailable(self):
         mod = _import_module()
