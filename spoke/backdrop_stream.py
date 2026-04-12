@@ -136,6 +136,69 @@ def _shell_warp_kernel():
     return _SHELL_WARP_KERNEL or None
 
 
+def _debug_shell_ci_image(extent, shell_config):
+    import numpy as np
+    from Foundation import NSData
+    from Quartz import (
+        CIImage,
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    width = max(1, int(round(extent.size.width)))
+    height = max(1, int(round(extent.size.height)))
+    content_width = min(max(float(shell_config.get("content_width_points", width)), 1.0), float(width))
+    content_height = min(max(float(shell_config.get("content_height_points", height)), 1.0), float(height))
+    corner_radius = min(
+        max(float(shell_config.get("corner_radius_points", 16.0)), 0.0),
+        max(min(content_width, content_height) * 0.5 - 1.0, 0.0),
+    )
+    sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
+    band = max(float(shell_config.get("band_width_points", 12.0)), 1.0)
+    tail = max(float(shell_config.get("tail_width_points", 9.0)), 1.0)
+    core_mag = max(float(shell_config.get("core_magnification", 1.0)) - 1.0, 0.0)
+    ring_refraction = max(float(shell_config.get("ring_refraction", 1.8)), 0.0)
+    tail_refraction = max(float(shell_config.get("tail_refraction", 0.65)), 0.0)
+
+    core_radius = max(min(content_width, content_height) * 0.5 - band, 1.0)
+    inside_push = _smoothstep01((-sdf - band) / core_radius)
+    ring_peak = np.exp(-np.square(sdf / max(band * 0.35, 1e-4))).astype(np.float32)
+    outer_tail = np.exp(-np.maximum(sdf, 0.0) / max(tail, 1e-4)).astype(np.float32)
+    outside_mask = (sdf > 0.0).astype(np.float32)
+
+    center_vis = np.clip(inside_push * (0.35 + 0.25 * core_mag), 0.0, 1.0)
+    ring_vis = np.clip(ring_peak * min(ring_refraction / 3.0, 2.0), 0.0, 1.0)
+    tail_vis = np.clip(outer_tail * outside_mask * min(tail_refraction / 0.75, 2.0), 0.0, 1.0)
+    heat = np.clip(np.maximum(center_vis * 0.55, np.maximum(ring_vis, tail_vis * 0.75)), 0.0, 1.0)
+
+    rgba = np.empty((height, width, 4), dtype=np.uint8)
+    rgba[..., 0] = np.clip((0.08 + 0.92 * ring_vis + 0.30 * tail_vis) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip((0.06 + 0.55 * center_vis + 0.35 * tail_vis) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip((0.18 + 0.78 * center_vis + 0.20 * ring_vis) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 3] = np.clip((0.12 + 0.88 * heat) * 255.0, 0.0, 255.0).astype(np.uint8)
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        width,
+        height,
+        8,
+        32,
+        width * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    ci_image = CIImage.imageWithCGImage_(image)
+    return ci_image.imageByCroppingToRect_(extent) if hasattr(ci_image, "imageByCroppingToRect_") else ci_image
+
+
 def _screen_capture_kit_available() -> bool:
     return _load_screencapturekit_bridge() is not None
 
@@ -521,37 +584,42 @@ class _MetalBlurPipeline:
             else working_image
         )
         output = clamped
-        warp_kernel = _shell_warp_kernel()
-        if warp_kernel is not None:
-            args = [
-                float(working_extent.size.width),
-                float(working_extent.size.height),
-                float(shell_config.get("content_width_points", working_extent.size.width))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("content_height_points", working_extent.size.height))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("corner_radius_points", 16.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("core_magnification", 1.0)),
-                float(shell_config.get("band_width_points", 12.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("tail_width_points", 9.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("ring_refraction", 1.8)),
-                float(shell_config.get("tail_refraction", 0.65)),
-            ]
-            try:
-                candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
-                    working_extent,
-                    lambda _index, rect: rect,
-                    output,
-                    args,
-                )
-            except Exception:
-                logger.debug("Optical-shell warp kernel application failed", exc_info=True)
-                candidate = None
+        if shell_config.get("debug_visualize"):
+            candidate = _debug_shell_ci_image(working_extent, shell_config)
             if candidate is not None:
                 output = candidate
+        else:
+            warp_kernel = _shell_warp_kernel()
+            if warp_kernel is not None:
+                args = [
+                    float(working_extent.size.width),
+                    float(working_extent.size.height),
+                    float(shell_config.get("content_width_points", working_extent.size.width))
+                    * _METAL_BLUR_DOWNSAMPLE,
+                    float(shell_config.get("content_height_points", working_extent.size.height))
+                    * _METAL_BLUR_DOWNSAMPLE,
+                    float(shell_config.get("corner_radius_points", 16.0))
+                    * _METAL_BLUR_DOWNSAMPLE,
+                    float(shell_config.get("core_magnification", 1.0)),
+                    float(shell_config.get("band_width_points", 12.0))
+                    * _METAL_BLUR_DOWNSAMPLE,
+                    float(shell_config.get("tail_width_points", 9.0))
+                    * _METAL_BLUR_DOWNSAMPLE,
+                    float(shell_config.get("ring_refraction", 1.8)),
+                    float(shell_config.get("tail_refraction", 0.65)),
+                ]
+                try:
+                    candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
+                        working_extent,
+                        lambda _index, rect: rect,
+                        output,
+                        args,
+                    )
+                except Exception:
+                    logger.debug("Optical-shell warp kernel application failed", exc_info=True)
+                    candidate = None
+                if candidate is not None:
+                    output = candidate
 
         if hasattr(output, "imageByCroppingToRect_"):
             output = output.imageByCroppingToRect_(working_extent)
