@@ -35,7 +35,7 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
-from .backdrop_stream import make_backdrop_renderer
+from .backdrop_stream import _debug_shell_grid_ci_image, make_backdrop_renderer
 from .overlay import _OVERLAY_WINDOW_LEVEL
 
 logger = logging.getLogger(__name__)
@@ -422,6 +422,21 @@ class _QuartzBackdropRenderer:
         return self._ci_context
 
     def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            context = self._context()
+            if context is not None and hasattr(context, "createCGImage_fromRect_"):
+                shell_config = _command_optical_shell_config()
+                if shell_config is not None:
+                    extent = NSMakeRect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
+                    output = _debug_shell_grid_ci_image(extent, shell_config)
+                    if output is not None:
+                        try:
+                            image = context.createCGImage_fromRect_(output, extent)
+                        except Exception:
+                            logger.debug("Failed to seed debug shell grid image in Quartz backdrop renderer", exc_info=True)
+                            image = None
+                        if image is not None:
+                            return image
         try:
             from Quartz import (
                 CGWindowListCreateImage,

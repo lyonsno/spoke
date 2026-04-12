@@ -943,6 +943,34 @@ class TestBackdropGeometry:
 
 
 class TestBackdropRefresh:
+    def test_quartz_backdrop_renderer_seeds_debug_grid_when_visualize_enabled(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", "1")
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        renderer = mod._QuartzBackdropRenderer()
+        context = MagicMock()
+        context.createCGImage_fromRect_.return_value = "grid-image"
+        renderer._context = MagicMock(return_value=context)
+        monkeypatch.setattr(
+            mod,
+            "_debug_shell_grid_ci_image",
+            MagicMock(return_value=SimpleNamespace(extent=lambda: _make_rect(0.0, 0.0, 680.0, 160.0))),
+        )
+        mock_pyobjc["Quartz"].CGWindowListCreateImage = MagicMock(
+            side_effect=AssertionError("Debug visualize should bypass live Quartz capture")
+        )
+
+        image = renderer.capture_blurred_image(
+            window_number=17,
+            capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+            blur_radius_points=5.4,
+        )
+
+        assert image == "grid-image"
+
     def test_refresh_backdrop_snapshot_updates_contents_frame_and_mask(
         self, mock_pyobjc
     ):
