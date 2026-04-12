@@ -349,6 +349,12 @@ class TestShowFinishHide:
         assert config["enabled"] is True
         assert config["content_width_points"] == pytest.approx(mod._OVERLAY_WIDTH)
         assert config["content_height_points"] == pytest.approx(mod._OVERLAY_HEIGHT)
+        assert config["ring_amplitude_points"] == pytest.approx(
+            mod._COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS
+        )
+        assert config["tail_amplitude_points"] == pytest.approx(
+            mod._COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS
+        )
         assert config["cleanup_blur_radius_points"] == pytest.approx(
             mod._COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS
         )

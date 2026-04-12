@@ -419,8 +419,8 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
             "core_magnification": 2.5,
             "band_width_points": 12.0,
             "tail_width_points": 10.0,
-            "ring_refraction": 6.0,
-            "tail_refraction": 1.5,
+            "ring_amplitude_points": 72.0,
+            "tail_amplitude_points": 18.0,
             "cleanup_blur_radius_points": 0.75,
         },
         cleanup_blur_radius_points=0.75,
@@ -431,11 +431,11 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
     kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
     args = kernel.applyWithExtent_roiCallback_inputImage_arguments_.call_args.args[3]
     assert args == pytest.approx(
-        [680.0, 160.0, 600.0, 80.0, 16.0, 2.5, 12.0, 10.0, 6.0, 1.5]
+        [680.0, 160.0, 600.0, 80.0, 16.0, 2.5, 12.0, 10.0, 72.0, 18.0]
     )
 
 
-def test_optical_shell_debug_visualization_bypasses_warp_kernel(monkeypatch):
+def test_optical_shell_debug_visualization_uses_grid_then_warp_kernel(monkeypatch):
     monkeypatch.setenv("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")
     mod = _import_module()
 
@@ -481,7 +481,7 @@ def test_optical_shell_debug_visualization_bypasses_warp_kernel(monkeypatch):
     kernel.applyWithExtent_roiCallback_inputImage_arguments_.return_value = FakeImage(680.0, 160.0)
     helper = MagicMock(return_value=FakeImage(680.0, 160.0))
     monkeypatch.setattr(mod, "_shell_warp_kernel", lambda: kernel)
-    monkeypatch.setattr(mod, "_debug_shell_ci_image", helper, raising=False)
+    monkeypatch.setattr(mod, "_debug_shell_grid_ci_image", helper, raising=False)
 
     bridge = {
         "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer-in",
@@ -498,8 +498,8 @@ def test_optical_shell_debug_visualization_bypasses_warp_kernel(monkeypatch):
             "core_magnification": 2.5,
             "band_width_points": 12.0,
             "tail_width_points": 10.0,
-            "ring_refraction": 6.0,
-            "tail_refraction": 1.5,
+            "ring_amplitude_points": 72.0,
+            "tail_amplitude_points": 18.0,
             "debug_visualize": True,
             "cleanup_blur_radius_points": 0.0,
         },
@@ -509,7 +509,7 @@ def test_optical_shell_debug_visualization_bypasses_warp_kernel(monkeypatch):
 
     assert sample == "shell-sample"
     helper.assert_called_once()
-    kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_not_called()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
 
 
 def test_optical_shell_debug_visualization_skips_cleanup_blur(monkeypatch):
@@ -552,8 +552,11 @@ def test_optical_shell_debug_visualization_skips_cleanup_blur(monkeypatch):
     pipeline._create_pixel_buffer = MagicMock(return_value="pixel-buffer-out")
     pipeline._create_format_description = MagicMock(return_value="format-desc")
     pipeline._create_sample_buffer = MagicMock(return_value="shell-sample")
+    kernel = MagicMock()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.return_value = FakeImage(680.0, 160.0)
     helper = MagicMock(return_value=FakeImage(680.0, 160.0))
-    monkeypatch.setattr(mod, "_debug_shell_ci_image", helper, raising=False)
+    monkeypatch.setattr(mod, "_shell_warp_kernel", lambda: kernel)
+    monkeypatch.setattr(mod, "_debug_shell_grid_ci_image", helper, raising=False)
 
     bridge = {
         "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer-in",
@@ -567,6 +570,8 @@ def test_optical_shell_debug_visualization_skips_cleanup_blur(monkeypatch):
             "content_width_points": 600.0,
             "content_height_points": 80.0,
             "corner_radius_points": 16.0,
+            "ring_amplitude_points": 72.0,
+            "tail_amplitude_points": 18.0,
             "debug_visualize": True,
         },
         cleanup_blur_radius_points=0.75,

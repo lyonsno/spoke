@@ -52,8 +52,8 @@ kernel vec2 opticalShellWarp(
     float coreMagnification,
     float bandWidth,
     float tailWidth,
-    float ringRefraction,
-    float tailRefraction
+    float ringAmplitudePoints,
+    float tailAmplitudePoints
 ) {
     vec2 d = destCoord();
     vec2 c = vec2(width * 0.5, height * 0.5);
@@ -74,8 +74,8 @@ kernel vec2 opticalShellWarp(
     float zoom = mix(1.0, coreMagnification, insidePush);
     vec2 src = c + (d - c) / zoom;
     float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.18, 8.0) * insidePush;
-    float ringDisp = max(bandWidth * ringRefraction, 12.0) * ringPeak;
-    float tailDisp = max(tailWidth * tailRefraction, 4.0) * outerTail;
+    float ringDisp = max(ringAmplitudePoints, 12.0) * ringPeak;
+    float tailDisp = max(tailAmplitudePoints, 4.0) * outerTail;
     float disp = coreDisp + ringDisp + tailDisp;
     src -= n * disp;
     return src;
@@ -136,7 +136,7 @@ def _shell_warp_kernel():
     return _SHELL_WARP_KERNEL or None
 
 
-def _debug_shell_ci_image(extent, shell_config):
+def _debug_shell_grid_ci_image(extent, shell_config):
     import numpy as np
     from Foundation import NSData
     from Quartz import (
@@ -156,36 +156,31 @@ def _debug_shell_ci_image(extent, shell_config):
         max(float(shell_config.get("corner_radius_points", 16.0)), 0.0),
         max(min(content_width, content_height) * 0.5 - 1.0, 0.0),
     )
-    sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
-    band = max(float(shell_config.get("band_width_points", 12.0)), 1.0)
-    tail = max(float(shell_config.get("tail_width_points", 9.0)), 1.0)
-    core_mag = max(float(shell_config.get("core_magnification", 1.0)) - 1.0, 0.0)
-    ring_refraction = max(float(shell_config.get("ring_refraction", 1.8)), 0.0)
-    tail_refraction = max(float(shell_config.get("tail_refraction", 0.65)), 0.0)
-
-    core_radius = max(min(content_width, content_height) * 0.5 - band, 1.0)
-    inside_push = _smoothstep01((-sdf - band) / core_radius)
-    ring_peak = np.exp(-np.square(sdf / max(band * 0.35, 1e-4))).astype(np.float32)
-    outer_tail = np.exp(-np.maximum(sdf, 0.0) / max(tail, 1e-4)).astype(np.float32)
-    outside_mask = (sdf > 0.0).astype(np.float32)
-
-    center_vis = np.clip(inside_push * (0.35 + 0.25 * core_mag), 0.0, 1.0)
-    ring_vis = np.clip(ring_peak * min(ring_refraction / 3.0, 2.0), 0.0, 1.0)
-    tail_vis = np.clip(outer_tail * outside_mask * min(tail_refraction / 0.75, 2.0), 0.0, 1.0)
-    heat = np.clip(np.maximum(center_vis * 0.55, np.maximum(ring_vis, tail_vis * 0.75)), 0.0, 1.0)
-    contour = np.mod(np.maximum(-sdf, 0.0), max(band * 0.35, 3.0))
-    contour = (contour < max(band * 0.08, 1.25)).astype(np.float32) * inside_push
-    ring_outline = (np.abs(sdf) < max(band * 0.12, 1.5)).astype(np.float32)
-
     rgba = np.empty((height, width, 4), dtype=np.uint8)
-    rgba[..., 0] = np.clip((0.05 + 0.95 * ring_vis + 0.95 * ring_outline) * 255.0, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 1] = np.clip((0.02 + 0.85 * tail_vis + 0.90 * contour) * 255.0, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 2] = np.clip((0.06 + 0.95 * center_vis + 0.85 * contour) * 255.0, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 3] = np.where(
-        heat > 0.02,
-        255,
-        0,
-    ).astype(np.uint8)
+    rgba[..., :] = 255
+
+    xs = np.arange(width, dtype=np.float32)[None, :]
+    ys = np.arange(height, dtype=np.float32)[:, None]
+    spacing = max(float(shell_config.get("debug_grid_spacing_points", 18.0)), 6.0)
+    major = spacing * 4.0
+    center_x = width * 0.5
+    center_y = height * 0.5
+
+    minor_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), spacing) < 1.0, (height, width))
+    minor_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), spacing) < 1.0, (height, width))
+    major_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), major) < 1.5, (height, width))
+    major_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), major) < 1.5, (height, width))
+    grid = minor_vertical | minor_horizontal
+    major_grid = major_vertical | major_horizontal
+
+    rgba[grid] = np.array([180, 180, 180, 255], dtype=np.uint8)
+    rgba[major_grid] = np.array([40, 40, 40, 255], dtype=np.uint8)
+
+    sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
+    ring = np.abs(sdf) < max(float(shell_config.get("band_width_points", 12.0)) * 0.12, 1.5)
+    interior = sdf < 0.0
+    rgba[interior] = np.clip(rgba[interior].astype(np.int16) - np.array([10, 0, 0, 0]), 0, 255).astype(np.uint8)
+    rgba[ring] = np.array([255, 0, 0, 255], dtype=np.uint8)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
     provider = CGDataProviderCreateWithCFData(payload)
@@ -592,42 +587,41 @@ class _MetalBlurPipeline:
         )
         output = clamped
         if shell_config.get("debug_visualize"):
-            candidate = _debug_shell_ci_image(working_extent, shell_config)
+            candidate = _debug_shell_grid_ci_image(working_extent, shell_config)
             if candidate is not None:
                 output = candidate
             cleanup_blur = 0.0
-        else:
-            warp_kernel = _shell_warp_kernel()
-            if warp_kernel is not None:
-                args = [
-                    float(working_extent.size.width),
-                    float(working_extent.size.height),
-                    float(shell_config.get("content_width_points", working_extent.size.width))
-                    * _METAL_BLUR_DOWNSAMPLE,
-                    float(shell_config.get("content_height_points", working_extent.size.height))
-                    * _METAL_BLUR_DOWNSAMPLE,
-                    float(shell_config.get("corner_radius_points", 16.0))
-                    * _METAL_BLUR_DOWNSAMPLE,
-                    float(shell_config.get("core_magnification", 1.0)),
-                    float(shell_config.get("band_width_points", 12.0))
-                    * _METAL_BLUR_DOWNSAMPLE,
-                    float(shell_config.get("tail_width_points", 9.0))
-                    * _METAL_BLUR_DOWNSAMPLE,
-                    float(shell_config.get("ring_refraction", 1.8)),
-                    float(shell_config.get("tail_refraction", 0.65)),
-                ]
-                try:
-                    candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
-                        working_extent,
-                        lambda _index, rect: rect,
-                        output,
-                        args,
-                    )
-                except Exception:
-                    logger.debug("Optical-shell warp kernel application failed", exc_info=True)
-                    candidate = None
-                if candidate is not None:
-                    output = candidate
+        warp_kernel = _shell_warp_kernel()
+        if warp_kernel is not None:
+            args = [
+                float(working_extent.size.width),
+                float(working_extent.size.height),
+                float(shell_config.get("content_width_points", working_extent.size.width))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("content_height_points", working_extent.size.height))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("corner_radius_points", 16.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("core_magnification", 1.0)),
+                float(shell_config.get("band_width_points", 12.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("tail_width_points", 9.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("ring_amplitude_points", 12.0)),
+                float(shell_config.get("tail_amplitude_points", 4.0)),
+            ]
+            try:
+                candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
+                    working_extent,
+                    lambda _index, rect: rect,
+                    output,
+                    args,
+                )
+            except Exception:
+                logger.debug("Optical-shell warp kernel application failed", exc_info=True)
+                candidate = None
+            if candidate is not None:
+                output = candidate
 
         if hasattr(output, "imageByCroppingToRect_"):
             output = output.imageByCroppingToRect_(working_extent)
