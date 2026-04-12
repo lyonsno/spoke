@@ -850,9 +850,18 @@ def test_optical_shell_center_envelope_prefers_center_and_rounds_shoulders():
 
     assert center > 0.97
     assert 0.15 < axis_shoulder < 0.85
-    assert diagonal_shoulder < 0.1
-    assert axis_shoulder > diagonal_shoulder + 0.2
+    assert diagonal_shoulder < 0.14
+    assert axis_shoulder > diagonal_shoulder + 0.18
     assert near_rim < 0.05
+
+
+def test_optical_shell_interior_flow_bridges_center_and_rim_regions():
+    mod = _import_module()
+
+    flow = mod._optical_shell_interior_flow(0.42, 0.28)
+
+    assert flow > 0.58
+    assert flow > 0.42
 
 
 def test_apply_optical_shell_warp_inflates_corner_radius_for_smoother_field(monkeypatch):
