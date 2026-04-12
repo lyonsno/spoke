@@ -728,6 +728,71 @@ def test_capture_blurred_image_seeds_direct_debug_grid_when_visualize_enabled(mo
     assert image == "grid-image"
 
 
+def test_capture_blurred_image_debug_visualize_warps_seeded_grid(monkeypatch):
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._screen = object()
+    renderer._fallback_factory = lambda: None
+    renderer._fallback = None
+    renderer._stream = None
+    renderer._stream_output = None
+    renderer._stream_started = False
+    renderer._startup_requested = False
+    renderer._pending_signature = None
+    renderer._applied_signature = None
+    renderer._latest_image = None
+    renderer._frame_callback = None
+    renderer._sample_buffer_callback = object()
+    renderer._blur_radius_points = 0.0
+    renderer._optical_shell_config = {
+        "enabled": True,
+        "debug_visualize": True,
+        "content_width_points": 600.0,
+        "content_height_points": 80.0,
+        "corner_radius_points": 16.0,
+        "core_magnification": 2.5,
+        "band_width_points": 12.0,
+        "tail_width_points": 10.0,
+        "ring_amplitude_points": 72.0,
+        "tail_amplitude_points": 18.0,
+    }
+    renderer._current_display = None
+    renderer._current_display_frame = None
+    renderer._current_content = None
+    renderer._window_number = None
+    renderer._lock = mod.threading.Lock()
+    renderer._ci_context = MagicMock()
+    renderer._stream_handler_queue = None
+    renderer._metal_blur_pipeline_instance = None
+    renderer._request_stream_start = MagicMock()
+    renderer._update_stream = MagicMock()
+    renderer._context = MagicMock(return_value=renderer._ci_context)
+
+    class FakeImage:
+        def __init__(self, width, height):
+            self._extent = _make_rect(0.0, 0.0, width, height)
+
+        def extent(self):
+            return self._extent
+
+    helper = MagicMock(return_value=FakeImage(680.0, 160.0))
+    kernel = MagicMock()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.return_value = FakeImage(680.0, 160.0)
+    monkeypatch.setattr(mod, "_debug_shell_grid_ci_image", helper)
+    monkeypatch.setattr(mod, "_shell_warp_kernel", lambda: kernel)
+    renderer._ci_context.createCGImage_fromRect_.return_value = "warped-grid-image"
+
+    image = renderer.capture_blurred_image(
+        window_number=99,
+        capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+        blur_radius_points=0.75,
+    )
+
+    assert image == "warped-grid-image"
+    helper.assert_called_once()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
+
+
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)

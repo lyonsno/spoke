@@ -221,6 +221,37 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     return ci_image.imageByCroppingToRect_(extent) if hasattr(ci_image, "imageByCroppingToRect_") else ci_image
 
 
+def _apply_optical_shell_warp_ci_image(ci_image, extent, shell_config):
+    if ci_image is None or extent is None:
+        return ci_image
+    warp_kernel = _shell_warp_kernel()
+    if warp_kernel is None:
+        return ci_image
+    args = [
+        float(extent.size.width),
+        float(extent.size.height),
+        float(shell_config.get("content_width_points", extent.size.width)),
+        float(shell_config.get("content_height_points", extent.size.height)),
+        float(shell_config.get("corner_radius_points", 16.0)),
+        float(shell_config.get("core_magnification", 1.0)),
+        float(shell_config.get("band_width_points", 12.0)),
+        float(shell_config.get("tail_width_points", 9.0)),
+        float(shell_config.get("ring_amplitude_points", 12.0)),
+        float(shell_config.get("tail_amplitude_points", 4.0)),
+    ]
+    try:
+        candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
+            extent,
+            lambda _index, rect: rect,
+            ci_image,
+            args,
+        )
+    except Exception:
+        logger.debug("Optical-shell warp kernel application failed", exc_info=True)
+        return ci_image
+    return candidate if candidate is not None else ci_image
+
+
 def _screen_capture_kit_available() -> bool:
     return _load_screencapturekit_bridge() is not None
 
@@ -611,37 +642,23 @@ class _MetalBlurPipeline:
             if candidate is not None:
                 output = candidate
             cleanup_blur = 0.0
-        warp_kernel = _shell_warp_kernel()
-        if warp_kernel is not None:
-            args = [
-                float(working_extent.size.width),
-                float(working_extent.size.height),
-                float(shell_config.get("content_width_points", working_extent.size.width))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("content_height_points", working_extent.size.height))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("corner_radius_points", 16.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("core_magnification", 1.0)),
-                float(shell_config.get("band_width_points", 12.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("tail_width_points", 9.0))
-                * _METAL_BLUR_DOWNSAMPLE,
-                float(shell_config.get("ring_amplitude_points", 12.0)),
-                float(shell_config.get("tail_amplitude_points", 4.0)),
-            ]
-            try:
-                candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
-                    working_extent,
-                    lambda _index, rect: rect,
-                    output,
-                    args,
-                )
-            except Exception:
-                logger.debug("Optical-shell warp kernel application failed", exc_info=True)
-                candidate = None
-            if candidate is not None:
-                output = candidate
+        scaled_shell_config = dict(shell_config)
+        scaled_shell_config["content_width_points"] = float(
+            shell_config.get("content_width_points", working_extent.size.width)
+        ) * _METAL_BLUR_DOWNSAMPLE
+        scaled_shell_config["content_height_points"] = float(
+            shell_config.get("content_height_points", working_extent.size.height)
+        ) * _METAL_BLUR_DOWNSAMPLE
+        scaled_shell_config["corner_radius_points"] = float(
+            shell_config.get("corner_radius_points", 16.0)
+        ) * _METAL_BLUR_DOWNSAMPLE
+        scaled_shell_config["band_width_points"] = float(
+            shell_config.get("band_width_points", 12.0)
+        ) * _METAL_BLUR_DOWNSAMPLE
+        scaled_shell_config["tail_width_points"] = float(
+            shell_config.get("tail_width_points", 9.0)
+        ) * _METAL_BLUR_DOWNSAMPLE
+        output = _apply_optical_shell_warp_ci_image(output, working_extent, scaled_shell_config)
 
         if hasattr(output, "imageByCroppingToRect_"):
             output = output.imageByCroppingToRect_(working_extent)
@@ -1149,6 +1166,7 @@ class _ScreenCaptureKitBackdropRenderer:
             output = _debug_shell_grid_ci_image(extent, optical_shell_config)
             context = self._context()
             if output is not None and context is not None and hasattr(context, "createCGImage_fromRect_"):
+                output = _apply_optical_shell_warp_ci_image(output, extent, optical_shell_config)
                 try:
                     image = context.createCGImage_fromRect_(output, extent)
                 except Exception:

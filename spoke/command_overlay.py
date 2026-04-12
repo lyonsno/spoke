@@ -35,7 +35,11 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
-from .backdrop_stream import _debug_shell_grid_ci_image, make_backdrop_renderer
+from .backdrop_stream import (
+    _apply_optical_shell_warp_ci_image,
+    _debug_shell_grid_ci_image,
+    make_backdrop_renderer,
+)
 from .overlay import _OVERLAY_WINDOW_LEVEL
 
 logger = logging.getLogger(__name__)
@@ -430,6 +434,7 @@ class _QuartzBackdropRenderer:
                     extent = NSMakeRect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
                     output = _debug_shell_grid_ci_image(extent, shell_config)
                     if output is not None:
+                        output = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
                         try:
                             image = context.createCGImage_fromRect_(output, extent)
                         except Exception:
