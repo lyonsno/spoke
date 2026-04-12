@@ -146,6 +146,21 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION = _env(
 _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
 )
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK", 0.08
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK", 0.18
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT", 0.14
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT", 0.38
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE", 0.16
+)
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
@@ -1423,8 +1438,20 @@ class CommandOverlay(NSObject):
         # the pulse-driven rhythm.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             fill_drive = _lerp(breath, breath * breath, t)
-            fill_min = _lerp(0.30, 0.84, t)
-            fill_max = _lerp(0.92, 0.99, t)
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                fill_min = _lerp(
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK,
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT,
+                    t,
+                )
+                fill_max = _lerp(
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK,
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT,
+                    t,
+                )
+            else:
+                fill_min = _lerp(0.30, 0.84, t)
+                fill_max = _lerp(0.92, 0.99, t)
             self._fill_layer.setOpacity_(min(_lerp(fill_min, fill_max, fill_drive), 0.99))
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
@@ -1433,7 +1460,12 @@ class CommandOverlay(NSObject):
                 # Warm golden-amber tint — visible, thermal, not alarming
                 cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
                 self._spring_tint_layer.setBackgroundColor_(cg_color)
-                self._spring_tint_layer.setOpacity_(0.5 * spring)
+                spring_scale = (
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE
+                    if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+                    else 0.5
+                )
+                self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
 

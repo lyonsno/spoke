@@ -683,6 +683,56 @@ class TestAdaptiveCompositing:
             "the preview overlay reaches when its amplitude is high."
         )
 
+    def test_optical_shell_peak_assistant_breath_keeps_fill_light_enough_to_show_backdrop(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+        assert fill_opacity <= 0.45, (
+            "Optical-shell mode should stop burying the backdrop under a near-solid fill body."
+        )
+
+    def test_optical_shell_softens_cancel_spring_tint_so_shell_remains_visible(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        import Quartz
+
+        monkeypatch.setattr(Quartz, "CGColorCreateSRGB", lambda *args: "cg-color", raising=False)
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._cancel_spring = 1.0
+        overlay._cancel_spring_target = 1.0
+        overlay._spring_tint_layer = MagicMock()
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        spring_opacity = overlay._spring_tint_layer.setOpacity_.call_args[0][0]
+        assert spring_opacity <= 0.18, (
+            "Optical-shell mode should keep the spring tint from washing out the shell effect."
+        )
+
 
 class TestBackdropGeometry:
     """Backdrop blur capture should use a bounded overscan, not the full SDF feather."""
