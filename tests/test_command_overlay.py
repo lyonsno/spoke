@@ -169,6 +169,19 @@ class TestThinkingTimer:
 
         overlay._backdrop_renderer.set_frame_callback.assert_called_once_with(None)
 
+    def test_install_backdrop_frame_callback_skips_live_image_path_for_debug_visualization(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_layer = MagicMock()
+
+        overlay._install_backdrop_frame_callback()
+
+        overlay._backdrop_renderer.set_frame_callback.assert_called_once_with(None)
+
     def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._backdrop_renderer = MagicMock()

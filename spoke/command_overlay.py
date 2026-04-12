@@ -1794,7 +1794,9 @@ class CommandOverlay(NSObject):
         renderer = getattr(self, "_backdrop_renderer", None)
         if renderer is None or not hasattr(renderer, "set_frame_callback"):
             return
-        if self._backdrop_layer_uses_sample_buffers():
+        if self._backdrop_layer_uses_sample_buffers() or (
+            _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE
+        ):
             renderer.set_frame_callback(None)
             return
 

@@ -1123,11 +1123,6 @@ class _ScreenCaptureKitBackdropRenderer:
 
     def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
         self._blur_radius_points = max(blur_radius_points, 0.0)
-        if self._stream is None:
-            self._request_stream_start(window_number=window_number, capture_rect=capture_rect)
-        else:
-            self._update_stream(window_number=window_number, capture_rect=capture_rect)
-
         optical_shell_config = getattr(self, "_optical_shell_config", None)
         if optical_shell_config is not None and optical_shell_config.get("debug_visualize"):
             extent = _make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
@@ -1143,6 +1138,11 @@ class _ScreenCaptureKitBackdropRenderer:
                     with self._lock:
                         self._latest_image = image
                     return image
+
+        if self._stream is None:
+            self._request_stream_start(window_number=window_number, capture_rect=capture_rect)
+        else:
+            self._update_stream(window_number=window_number, capture_rect=capture_rect)
 
         if self.uses_direct_sample_buffers(self._blur_radius_points):
             return None

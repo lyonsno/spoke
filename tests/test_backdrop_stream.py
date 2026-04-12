@@ -726,3 +726,49 @@ def test_capture_blurred_image_seeds_direct_debug_grid_when_visualize_enabled(mo
     )
 
     assert image == "grid-image"
+
+
+def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._screen = object()
+    renderer._fallback_factory = lambda: None
+    renderer._fallback = None
+    renderer._stream = None
+    renderer._stream_output = None
+    renderer._stream_started = False
+    renderer._startup_requested = False
+    renderer._pending_signature = None
+    renderer._applied_signature = None
+    renderer._latest_image = None
+    renderer._frame_callback = None
+    renderer._sample_buffer_callback = object()
+    renderer._blur_radius_points = 0.0
+    renderer._optical_shell_config = {"enabled": True, "debug_visualize": True}
+    renderer._current_display = None
+    renderer._current_display_frame = None
+    renderer._current_content = None
+    renderer._window_number = None
+    renderer._lock = mod.threading.Lock()
+    renderer._ci_context = MagicMock()
+    renderer._stream_handler_queue = None
+    renderer._metal_blur_pipeline_instance = None
+    renderer._request_stream_start = MagicMock()
+    renderer._update_stream = MagicMock()
+    renderer._context = MagicMock(return_value=renderer._ci_context)
+    monkeypatch.setattr(
+        mod,
+        "_debug_shell_grid_ci_image",
+        MagicMock(return_value=SimpleNamespace(extent=lambda: _make_rect(0.0, 0.0, 680.0, 160.0))),
+    )
+    renderer._ci_context.createCGImage_fromRect_.return_value = "grid-image"
+
+    image = renderer.capture_blurred_image(
+        window_number=99,
+        capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+        blur_radius_points=0.75,
+    )
+
+    assert image == "grid-image"
+    renderer._request_stream_start.assert_not_called()
+    renderer._update_stream.assert_not_called()
