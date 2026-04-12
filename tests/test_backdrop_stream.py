@@ -415,8 +415,12 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
         shell_config={
             "content_width_points": 600.0,
             "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "core_magnification": 2.5,
             "band_width_points": 12.0,
             "tail_width_points": 10.0,
+            "ring_refraction": 6.0,
+            "tail_refraction": 1.5,
             "cleanup_blur_radius_points": 0.75,
         },
         cleanup_blur_radius_points=0.75,
@@ -425,6 +429,10 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
 
     assert sample == "shell-sample"
     kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
+    args = kernel.applyWithExtent_roiCallback_inputImage_arguments_.call_args.args[3]
+    assert args == pytest.approx(
+        [680.0, 160.0, 600.0, 80.0, 16.0, 2.5, 12.0, 10.0, 6.0, 1.5]
+    )
 
 
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):

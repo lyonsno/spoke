@@ -51,7 +51,9 @@ kernel vec2 opticalShellWarp(
     float cornerRadius,
     float coreMagnification,
     float bandWidth,
-    float tailWidth
+    float tailWidth,
+    float ringRefraction,
+    float tailRefraction
 ) {
     vec2 d = destCoord();
     vec2 c = vec2(width * 0.5, height * 0.5);
@@ -71,9 +73,10 @@ kernel vec2 opticalShellWarp(
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
     float zoom = mix(1.0, coreMagnification, insidePush);
     vec2 src = c + (d - c) / zoom;
-    float disp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.18, 8.0) * insidePush
-        + max(bandWidth * 1.8, 12.0) * ringPeak
-        + max(tailWidth * 0.65, 4.0) * outerTail;
+    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.18, 8.0) * insidePush;
+    float ringDisp = max(bandWidth * ringRefraction, 12.0) * ringPeak;
+    float tailDisp = max(tailWidth * tailRefraction, 4.0) * outerTail;
+    float disp = coreDisp + ringDisp + tailDisp;
     src -= n * disp;
     return src;
 }
@@ -534,6 +537,8 @@ class _MetalBlurPipeline:
                 * _METAL_BLUR_DOWNSAMPLE,
                 float(shell_config.get("tail_width_points", 9.0))
                 * _METAL_BLUR_DOWNSAMPLE,
+                float(shell_config.get("ring_refraction", 1.8)),
+                float(shell_config.get("tail_refraction", 0.65)),
             ]
             try:
                 candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
