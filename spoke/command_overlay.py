@@ -167,6 +167,9 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL = _env_bool(
 _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE = _env_bool(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", False
 )
+_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER", 0.18
+)
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
@@ -787,6 +790,11 @@ class CommandOverlay(NSObject):
             base_mask_width_multiplier,
             self._backdrop_blur_drive,
         )
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            mask_width_multiplier = min(
+                mask_width_multiplier,
+                _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER,
+            )
         renderer = getattr(self, "_backdrop_renderer", None)
         shell_config = _command_optical_shell_config()
         effective_blur_radius_points = blur_radius_points
@@ -1458,8 +1466,8 @@ class CommandOverlay(NSObject):
                     t,
                 )
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
-                    fill_min *= 0.2
-                    fill_max *= 0.2
+                    fill_min = 0.0
+                    fill_max = 0.0
             else:
                 fill_min = _lerp(0.30, 0.84, t)
                 fill_max = _lerp(0.92, 0.99, t)
@@ -1477,7 +1485,7 @@ class CommandOverlay(NSObject):
                     else 0.5
                 )
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
-                    spring_scale *= 0.25
+                    spring_scale = 0.0
                 self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)

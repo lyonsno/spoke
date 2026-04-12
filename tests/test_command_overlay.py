@@ -759,12 +759,35 @@ class TestAdaptiveCompositing:
 
         fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
         spring_opacity = overlay._spring_tint_layer.setOpacity_.call_args[0][0]
-        assert fill_opacity <= 0.08, (
+        assert fill_opacity <= 0.02, (
             "Reveal mode should hollow out the fill so the shell field can be judged directly."
         )
-        assert spring_opacity <= 0.04, (
+        assert spring_opacity <= 0.001, (
             "Reveal mode should nearly eliminate the spring tint while inspecting the shell."
         )
+
+    def test_apply_backdrop_pulse_style_debug_visualization_hardens_backdrop_mask(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        assert overlay._backdrop_mask_width_multiplier <= 0.25, (
+            "Debug visualization should use a near-hard backdrop mask so the field "
+            "isn't buried under a second soft falloff."
+        )
+        overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
 
 
 class TestBackdropGeometry:
