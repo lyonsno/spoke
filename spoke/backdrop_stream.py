@@ -1128,6 +1128,22 @@ class _ScreenCaptureKitBackdropRenderer:
         else:
             self._update_stream(window_number=window_number, capture_rect=capture_rect)
 
+        optical_shell_config = getattr(self, "_optical_shell_config", None)
+        if optical_shell_config is not None and optical_shell_config.get("debug_visualize"):
+            extent = _make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
+            output = _debug_shell_grid_ci_image(extent, optical_shell_config)
+            context = self._context()
+            if output is not None and context is not None and hasattr(context, "createCGImage_fromRect_"):
+                try:
+                    image = context.createCGImage_fromRect_(output, extent)
+                except Exception:
+                    logger.debug("Failed to seed debug shell grid image", exc_info=True)
+                    image = None
+                if image is not None:
+                    with self._lock:
+                        self._latest_image = image
+                    return image
+
         if self.uses_direct_sample_buffers(self._blur_radius_points):
             return None
 
