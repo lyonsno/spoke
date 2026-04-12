@@ -653,6 +653,24 @@ def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
     ]
 
 
+def _bootstrap_local_command_model_id(
+    *,
+    persisted_model: str | None,
+    env_model: str | None,
+    model_dir: Path,
+) -> str:
+    persisted = (persisted_model or "").strip() or None
+    env = (env_model or "").strip() or None
+    local_model_ids = _iter_local_command_model_ids(model_dir)
+    if persisted and local_model_ids and persisted in local_model_ids:
+        return persisted
+    if env:
+        return env
+    if persisted:
+        return persisted
+    return _DEFAULT_COMMAND_MODEL
+
+
 def _is_local_command_model_leaf(model_path: Path) -> bool:
     """Return True when a leaf directory looks like an installed MLX model."""
     if not model_path.is_dir():
@@ -926,10 +944,14 @@ class SpokeAppDelegate(NSObject):
                 )
             else:
                 env_command_model = os.environ.get("SPOKE_COMMAND_MODEL")
-                self._command_model_id = (
-                    env_command_model
-                    or self._load_command_model_preference()
-                    or _DEFAULT_COMMAND_MODEL
+                persisted_command_model = self._load_command_model_preference()
+                local_model_dir = Path(
+                    os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+                ).expanduser()
+                self._command_model_id = _bootstrap_local_command_model_id(
+                    persisted_model=persisted_command_model,
+                    env_model=env_command_model,
+                    model_dir=local_model_dir,
                 )
             client_kwargs = {
                 "base_url": command_url,

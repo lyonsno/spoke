@@ -2119,6 +2119,53 @@ class TestDualModelConfiguration:
         )
         assert d._command_model_id == "step-3p5-flash-mixedp-final"
 
+    def test_init_prefers_valid_persisted_local_selection_over_smoke_env_override(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """A valid local assistant choice should survive relaunch even when smoke env pins a default."""
+        model_root = tmp_path / "models"
+        preferred = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
+        preferred.mkdir(parents=True)
+        (preferred / "config.json").write_text("{}")
+        (preferred / "tokenizer.json").write_text("{}")
+        (preferred / "model.safetensors.index.json").write_text("{}")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[
+                    (
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        True,
+                    )
+                ],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="http://localhost:8001",
+            model="lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+        )
+        assert d._command_model_id == "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit"
+
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch
     ):
