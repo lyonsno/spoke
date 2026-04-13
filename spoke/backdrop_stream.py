@@ -86,7 +86,7 @@ kernel vec2 opticalShellWarp(
     float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside) * relief;
     float boostedInsideShell = min(insideShell * 1.35, 1.0);
     float interiorFlow = min(1.0, centerShell + boostedInsideShell - centerShell * boostedInsideShell * 0.35);
-    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0)) * relief;
+    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
     float zoom = mix(1.0, coreMagnification, interiorFlow);
     vec2 src = c + (d - c) / zoom;

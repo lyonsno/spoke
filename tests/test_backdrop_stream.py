@@ -932,6 +932,14 @@ def test_optical_shell_corner_relief_preserves_flats_but_softens_corners():
     assert flat > corner + 0.12
 
 
+def test_optical_shell_kernel_keeps_ring_amplitude_independent_of_corner_relief():
+    mod = _import_module()
+
+    source = mod._SHELL_WARP_KERNEL_SOURCE
+
+    assert "float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));" in source
+
+
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
