@@ -2071,11 +2071,12 @@ class TestDualModelConfiguration:
                 result = d.init()
 
         assert result is not None
-        MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
-            model="qwen3-14b",
-        )
         assert d._command_model_id == "qwen3-14b"
+        assert d._command_client._model == "qwen3-14b"
+        assert d._command_model_options == [
+            ("qwen3-14b", "qwen3-14b", True),
+            ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
+        ]
         mock_seed.assert_called_once_with("qwen3-14b")
         assert d._command_model_options == [
             (
@@ -2123,18 +2124,11 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch, tmp_path
     ):
         """A valid local assistant choice should survive relaunch even when smoke env pins a default."""
-        model_root = tmp_path / "models"
-        preferred = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
-        preferred.mkdir(parents=True)
-        (preferred / "config.json").write_text("{}")
-        (preferred / "tokenizer.json").write_text("{}")
-        (preferred / "model.safetensors.index.json").write_text("{}")
-        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
         monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_command_model_preference",
-            lambda self: "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+            lambda self: "qwen3-14b",
             raising=False,
         )
         monkeypatch.setattr(
@@ -2149,11 +2143,8 @@ class TestDualModelConfiguration:
                 main_module.SpokeAppDelegate,
                 "_seed_command_model_options",
                 return_value=[
-                    (
-                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
-                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
-                        True,
-                    )
+                    ("qwen3-14b", "qwen3-14b", True),
+                    ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
                 ],
             ):
                 d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
@@ -2162,9 +2153,14 @@ class TestDualModelConfiguration:
         assert result is not None
         MockCommand.assert_called_once_with(
             base_url="http://localhost:8001",
-            model="lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+            model="step-3p5-flash-mixedp-final",
         )
-        assert d._command_model_id == "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit"
+        assert d._command_model_id == "qwen3-14b"
+        assert d._command_client._model == "qwen3-14b"
+        assert d._command_model_options == [
+            ("qwen3-14b", "qwen3-14b", True),
+            ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
+        ]
 
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch

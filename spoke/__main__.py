@@ -671,6 +671,31 @@ def _bootstrap_local_command_model_id(
     return _DEFAULT_COMMAND_MODEL
 
 
+def _reconcile_local_command_model_id(
+    *,
+    current_model: str | None,
+    persisted_model: str | None,
+    env_model: str | None,
+    options: list[tuple[str, str, bool]],
+) -> str | None:
+    """Prefer a valid persisted local model after startup seeds real options."""
+    option_ids = {model_id for model_id, _label, _selected in options if model_id}
+    if not option_ids:
+        return current_model
+
+    persisted = (persisted_model or "").strip() or None
+    env = (env_model or "").strip() or None
+    current = (current_model or "").strip() or None
+
+    if persisted and persisted in option_ids:
+        return persisted
+    if env and env in option_ids:
+        return env
+    if current and current in option_ids:
+        return current
+    return current_model
+
+
 def _is_local_command_model_leaf(model_path: Path) -> bool:
     """Return True when a leaf directory looks like an installed MLX model."""
     if not model_path.is_dir():
@@ -973,6 +998,26 @@ class SpokeAppDelegate(NSObject):
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
+            if command_backend == "local" and self._command_model_options:
+                reconciled_command_model_id = _reconcile_local_command_model_id(
+                    current_model=self._command_model_id,
+                    persisted_model=persisted_command_model,
+                    env_model=env_command_model,
+                    options=self._command_model_options,
+                )
+                if reconciled_command_model_id != self._command_model_id:
+                    logger.info(
+                        "Reconciling local assistant model after seeding options: %s -> %s",
+                        self._command_model_id,
+                        reconciled_command_model_id,
+                    )
+                    self._command_model_id = reconciled_command_model_id
+                    if self._command_client is not None:
+                        self._command_client._model = reconciled_command_model_id
+                    self._command_model_options = [
+                        (model_id, label, model_id == reconciled_command_model_id)
+                        for model_id, label, _selected in self._command_model_options
+                    ]
             self._command_models_refresh_in_flight = False
             self._command_overlay: TranscriptionOverlay | None = None
             self._scene_cache = SceneCaptureCache(max_captures=10)
