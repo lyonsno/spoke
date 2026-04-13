@@ -123,6 +123,7 @@ class AudioCapture:
         self._callback_thread: threading.Thread | None = None
         self._callbacks_enabled = False
         self._callback_generation = 0
+        self._stream_closing = False
 
     def warmup(self) -> None:
         """Pre-initialize PortAudio so first start() is fast."""
@@ -135,8 +136,10 @@ class AudioCapture:
     def _close_stream(self) -> None:
         """Best-effort stream teardown for normal stop and failed starts."""
         stream = self._stream
+        self._stream_closing = True
         self._stream = None
         if stream is None:
+            self._stream_closing = False
             return
         try:
             stream.stop()
@@ -146,6 +149,8 @@ class AudioCapture:
             stream.close()
         except Exception:
             logger.debug("Audio stream close failed during teardown", exc_info=True)
+        finally:
+            self._stream_closing = False
 
     def _reset_portaudio(self) -> None:
         """Best-effort PortAudio reset after a dead input stream."""
@@ -247,6 +252,7 @@ class AudioCapture:
         self._callback_generation += 1
         self._frames = []
         self._read_cursor = 0
+        self._stream_closing = False
         self._amplitude_cb = amplitude_callback
         self._segment_cb = segment_callback
         self._vad_cb = vad_state_callback
@@ -463,7 +469,7 @@ class AudioCapture:
         status: sd.CallbackFlags,
     ) -> None:
         """Called by PortAudio on its own thread. Must be fast."""
-        if self._stream is None:
+        if self._stream is None or self._stream_closing:
             return
         if status:
             logger.warning("sounddevice status: %s", status)
@@ -477,7 +483,10 @@ class AudioCapture:
 
         if self._amplitude_cb is not None:
             self._queue_callback_event("amplitude", rms)
-            
+
+        if self._stream_closing:
+            return
+
         if self._segment_cb is not None or self._vad_cb is not None:
             # Grace period: suppress silence transitions but do NOT force speech.
             # Silero still decides — grace only prevents premature silence-idle
@@ -490,6 +499,8 @@ class AudioCapture:
                 torch = self._torch
                 max_prob = 0.0
                 for offset in range(0, len(chunk), SILERO_CHUNK):
+                    if self._stream_closing:
+                        return
                     sub = chunk[offset:offset + SILERO_CHUNK]
                     if len(sub) < SILERO_CHUNK:
                         break
