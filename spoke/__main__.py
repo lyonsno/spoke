@@ -4947,9 +4947,10 @@ class SpokeAppDelegate(NSObject):
             return [(selected_model, selected_model, True)] if selected_model else []
         # Local backend: check server reachability before listing disk models
         server_reachable = False
+        server_model_ids: list[str] = []
         if self._command_client is not None:
             try:
-                self._command_client.list_models()
+                server_model_ids = self._command_client.list_models()
                 server_reachable = True
             except Exception:
                 logger.info("Local model server unreachable at seed — suppressing model list")
@@ -4960,11 +4961,26 @@ class SpokeAppDelegate(NSObject):
         ).expanduser()
         local_model_ids = _iter_local_command_model_ids(local_model_dir)
         if local_model_ids:
+            local_model_set = set(local_model_ids)
             return [
                 (model_id, model_id, model_id == selected_model)
-                for model_id in local_model_ids
+                for model_id in [
+                    *[
+                        model_id
+                        for model_id in server_model_ids
+                        if model_id in local_model_set
+                    ],
+                    *[
+                        model_id
+                        for model_id in local_model_ids
+                        if model_id not in server_model_ids
+                    ],
+                ]
             ]
-        return [(selected_model, selected_model, True)] if selected_model else []
+        return [
+            (model_id, model_id, model_id == selected_model)
+            for model_id in server_model_ids
+        ]
 
     def _refresh_command_model_options_async(self) -> None:
         if self._command_client is None or self._command_models_refresh_in_flight:

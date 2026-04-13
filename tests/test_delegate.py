@@ -1727,6 +1727,26 @@ class TestDualModelConfiguration:
             ),
         ]
 
+    def test_seed_command_model_options_uses_server_inventory_when_local_curated_list_empty(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Local startup seed should use live server models when no curated disk models are present."""
+        model_root = tmp_path / "models"
+        model_root.mkdir()
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "local"
+        d._command_client = MagicMock()
+        d._command_client.list_models.return_value = ["qwen3-14b", "step-3p5-flash-mixedp-final"]
+
+        options = d._seed_command_model_options("step-3p5-flash-mixedp-final")
+
+        assert options == [
+            ("qwen3-14b", "qwen3-14b", False),
+            ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True),
+        ]
+
     def test_command_models_discovered_heals_stale_sidecar_selection_without_relaunch(
         self, main_module, monkeypatch
     ):
