@@ -977,6 +977,18 @@ def test_optical_shell_depth_remap_is_monotone_and_center_weighted():
     assert near_center > 0.94
 
 
+def test_optical_shell_source_depth_points_scales_from_boundary_inward():
+    mod = _import_module()
+
+    rim = mod._optical_shell_source_depth_points(0.0, 50.0)
+    midpoint = mod._optical_shell_source_depth_points(0.5, 50.0)
+    center = mod._optical_shell_source_depth_points(1.0, 50.0)
+
+    assert rim == 0.0
+    assert 24.0 < midpoint < 26.0
+    assert center == 50.0
+
+
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
     mod = _import_module()
 
@@ -996,7 +1008,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
     assert "float source01 = depthRemap(inside01, curveBoost);" in source
-    assert "vec2 src = mix(boundary, c, source01);" in source
+    assert "float sourceDepth = source01 * centerDepth;" in source
+    assert "vec2 src = boundary - n * sourceDepth;" in source
 
 
 def test_optical_shell_kernel_normalizes_inside_depth_from_sdf():
