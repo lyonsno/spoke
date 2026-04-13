@@ -75,10 +75,8 @@ kernel vec2 opticalShellWarp(
         - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, sdf);
-    vec2 centerHalf = max(halfRect - vec2(bandWidth * 0.2), vec2(1.0));
-    vec2 centerNorm = abs(p) / centerHalf;
-    float centerRadius = length(centerNorm);
-    float inside01 = clamp(1.0 - centerRadius, 0.0, 1.0);
+    float centerDepth = max(min(halfRect.x, halfRect.y), 1.0);
+    float inside01 = clamp(-sdf / centerDepth, 0.0, 1.0);
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
@@ -180,6 +178,15 @@ def _optical_shell_depth_remap(inside01: float, curve_boost: float) -> float:
     inside = min(max(float(inside01), 0.0), 1.0)
     boost = min(max(float(curve_boost), 0.0), 0.95)
     return min(max(inside + boost * inside * (1.0 - inside), 0.0), 1.0)
+
+
+def _optical_shell_inside_depth01_from_sdf(
+    sdf: float,
+    content_width: float,
+    content_height: float,
+) -> float:
+    center_depth = max(min(float(content_width), float(content_height)) * 0.5, 1.0)
+    return min(max(-float(sdf) / center_depth, 0.0), 1.0)
 
 
 def _optical_shell_gradient_epsilon(band_width: float) -> float:
@@ -289,13 +296,11 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < float(profile["ring_halfwidth"])
     interior = sdf < 0.0
-    center_half_width = max(content_width * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
-    center_half_height = max(content_height * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
-    center_radius = np.hypot(
-        np.abs(xs - center_x) / center_half_width,
-        np.abs(ys - center_y) / center_half_height,
+    inside01 = np.clip(
+        -sdf / max(min(content_width, content_height) * 0.5, 1.0),
+        0.0,
+        1.0,
     ).astype(np.float32)
-    inside01 = np.clip(1.0 - center_radius, 0.0, 1.0).astype(np.float32)
     curve_boost = _optical_shell_curve_boost(
         float(shell_config.get("core_magnification", 1.0)),
         float(shell_config.get("ring_amplitude_points", 12.0)),

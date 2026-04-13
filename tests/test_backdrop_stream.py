@@ -977,6 +977,19 @@ def test_optical_shell_depth_remap_is_monotone_and_center_weighted():
     assert near_center > 0.94
 
 
+def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
+    mod = _import_module()
+
+    center = mod._optical_shell_inside_depth01_from_sdf(-50.0, 240.0, 100.0)
+    shoulder = mod._optical_shell_inside_depth01_from_sdf(-24.0, 240.0, 100.0)
+    rim = mod._optical_shell_inside_depth01_from_sdf(-2.0, 240.0, 100.0)
+    outside = mod._optical_shell_inside_depth01_from_sdf(4.0, 240.0, 100.0)
+
+    assert 0.99 <= center <= 1.0
+    assert center > shoulder > rim > 0.0
+    assert outside == 0.0
+
+
 def test_optical_shell_kernel_uses_single_depth_remap_curve():
     mod = _import_module()
 
@@ -984,6 +997,15 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
 
     assert "float source01 = depthRemap(inside01, curveBoost);" in source
     assert "vec2 src = mix(boundary, c, source01);" in source
+
+
+def test_optical_shell_kernel_normalizes_inside_depth_from_sdf():
+    mod = _import_module()
+
+    source = mod._SHELL_WARP_KERNEL_SOURCE
+
+    assert "float centerDepth = max(min(halfRect.x, halfRect.y), 1.0);" in source
+    assert "float inside01 = clamp(-sdf / centerDepth, 0.0, 1.0);" in source
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
