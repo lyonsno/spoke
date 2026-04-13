@@ -53,6 +53,11 @@ float cornerRelief(vec2 p, vec2 halfRect, float cornerRadius, float bandWidth) {
     return mix(1.0, 0.68, cornerness);
 }
 
+float coreDispEnvelope(float centerShell, float insideShell) {
+    float shoulder = insideShell * (1.0 - centerShell);
+    return min(shoulder * 1.25, 1.0);
+}
+
 kernel vec2 opticalShellWarp(
     float width,
     float height,
@@ -90,7 +95,7 @@ kernel vec2 opticalShellWarp(
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
     float zoom = mix(1.0, coreMagnification, interiorFlow);
     vec2 src = c + (d - c) / zoom;
-    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.05, 2.0) * insideShell;
+    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.05, 2.0) * coreDispEnvelope(centerShell, insideShell);
     float ringDisp = max(ringAmplitudePoints, 12.0) * ringPeak;
     float tailDisp = max(tailAmplitudePoints, 4.0) * outerTail;
     float disp = coreDisp + ringDisp + tailDisp;
@@ -167,6 +172,12 @@ def _optical_shell_interior_flow(center_envelope: float, inside_envelope: float)
     center = min(max(float(center_envelope), 0.0), 1.0)
     inside = min(max(float(inside_envelope) * 1.35, 0.0), 1.0)
     return min(1.0, center + inside - center * inside * 0.35)
+
+
+def _optical_shell_core_displacement_envelope(center_envelope: float, inside_envelope: float) -> float:
+    center = min(max(float(center_envelope), 0.0), 1.0)
+    inside = min(max(float(inside_envelope), 0.0), 1.0)
+    return min(inside * (1.0 - center) * 1.25, 1.0)
 
 
 def _optical_shell_gradient_epsilon(band_width: float) -> float:

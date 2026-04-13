@@ -864,6 +864,19 @@ def test_optical_shell_interior_flow_bridges_center_and_rim_regions():
     assert flow > 0.42
 
 
+def test_optical_shell_core_displacement_envelope_quiets_center_and_peaks_in_shoulders():
+    mod = _import_module()
+
+    center = mod._optical_shell_core_displacement_envelope(0.98, 0.22)
+    shoulder = mod._optical_shell_core_displacement_envelope(0.42, 0.64)
+    quiet_rim = mod._optical_shell_core_displacement_envelope(0.04, 0.08)
+
+    assert center < 0.08
+    assert shoulder > 0.4
+    assert shoulder > center + 0.35
+    assert quiet_rim < 0.16
+
+
 def test_apply_optical_shell_warp_inflates_corner_radius_for_smoother_field(monkeypatch):
     mod = _import_module()
 
