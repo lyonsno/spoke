@@ -196,6 +196,17 @@ def _optical_shell_corner_relief(
     return 1.0 - 0.32 * cornerness
 
 
+def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
+    spacing = max(float(shell_config.get("debug_grid_spacing_points", 18.0)), 6.0)
+    return {
+        "spacing": spacing,
+        "major": spacing * 4.0,
+        "checker_enabled": False,
+        "minor_enabled": False,
+        "major_halfwidth": 2.5,
+    }
+
+
 def _shell_warp_kernel():
     global _SHELL_WARP_KERNEL
     if _SHELL_WARP_KERNEL is not None:
@@ -238,29 +249,22 @@ def _debug_shell_grid_ci_image(extent, shell_config):
 
     xs = np.arange(width, dtype=np.float32)[None, :]
     ys = np.arange(height, dtype=np.float32)[:, None]
-    spacing = max(float(shell_config.get("debug_grid_spacing_points", 18.0)), 6.0)
-    major = spacing * 4.0
+    profile = _debug_shell_grid_profile(shell_config)
+    spacing = float(profile["spacing"])
+    major = float(profile["major"])
     center_x = width * 0.5
     center_y = height * 0.5
 
-    checker = (
-        (
-            (np.floor(np.abs(xs - center_x) / spacing).astype(np.int32)
-             + np.floor(np.abs(ys - center_y) / spacing).astype(np.int32))
-            % 2
-        )
-        == 0
+    major_vertical = np.broadcast_to(
+        np.mod(np.abs(xs - center_x), major) < float(profile["major_halfwidth"]),
+        (height, width),
     )
-    rgba[checker] = np.array([255, 244, 170, 255], dtype=np.uint8)
-
-    minor_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), spacing) < 1.0, (height, width))
-    minor_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), spacing) < 1.0, (height, width))
-    major_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), major) < 2.5, (height, width))
-    major_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), major) < 2.5, (height, width))
-    grid = minor_vertical | minor_horizontal
+    major_horizontal = np.broadcast_to(
+        np.mod(np.abs(ys - center_y), major) < float(profile["major_halfwidth"]),
+        (height, width),
+    )
     major_grid = major_vertical | major_horizontal
 
-    rgba[grid] = np.array([0, 120, 255, 255], dtype=np.uint8)
     rgba[major_grid] = np.array([15, 15, 15, 255], dtype=np.uint8)
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)

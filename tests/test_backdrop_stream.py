@@ -932,6 +932,18 @@ def test_optical_shell_corner_relief_preserves_flats_but_softens_corners():
     assert flat > corner + 0.12
 
 
+def test_debug_shell_grid_profile_is_sparse_major_lines_only():
+    mod = _import_module()
+
+    profile = mod._debug_shell_grid_profile({"debug_grid_spacing_points": 14.0})
+
+    assert profile["spacing"] == 14.0
+    assert profile["major"] == 56.0
+    assert profile["checker_enabled"] is False
+    assert profile["minor_enabled"] is False
+    assert profile["major_halfwidth"] == 2.5
+
+
 def test_optical_shell_kernel_keeps_ring_amplitude_independent_of_corner_relief():
     mod = _import_module()
 
