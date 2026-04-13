@@ -849,7 +849,7 @@ def test_optical_shell_center_envelope_prefers_center_and_rounds_shoulders():
     )
 
     assert center > 0.97
-    assert 0.15 < axis_shoulder < 0.85
+    assert 0.22 < axis_shoulder < 0.9
     assert diagonal_shoulder < 0.14
     assert axis_shoulder > diagonal_shoulder + 0.18
     assert near_rim < 0.05
@@ -905,6 +905,31 @@ def test_optical_shell_gradient_epsilon_scales_with_band_width_for_corner_smooth
 
     assert narrow == 1.0
     assert wide > 2.0
+
+
+def test_optical_shell_corner_relief_preserves_flats_but_softens_corners():
+    mod = _import_module()
+
+    flat = mod._optical_shell_corner_relief(
+        offset_x=285.0,
+        offset_y=0.0,
+        content_width=600.0,
+        content_height=80.0,
+        corner_radius=16.0,
+        band_width=11.338583,
+    )
+    corner = mod._optical_shell_corner_relief(
+        offset_x=270.0,
+        offset_y=28.0,
+        content_width=600.0,
+        content_height=80.0,
+        corner_radius=16.0,
+        band_width=11.338583,
+    )
+
+    assert flat > 0.95
+    assert corner < 0.82
+    assert flat > corner + 0.12
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):

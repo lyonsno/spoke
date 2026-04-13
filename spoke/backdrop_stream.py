@@ -46,6 +46,13 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
+float cornerRelief(vec2 p, vec2 halfRect, float cornerRadius, float bandWidth) {
+    vec2 inner = max(halfRect - vec2(cornerRadius + bandWidth * 0.2), vec2(1.0));
+    vec2 norm = abs(p) / inner;
+    float cornerness = smoothstep(0.38, 0.86, min(norm.x, norm.y));
+    return mix(1.0, 0.68, cornerness);
+}
+
 kernel vec2 opticalShellWarp(
     float width,
     float height,
@@ -71,14 +78,15 @@ kernel vec2 opticalShellWarp(
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, sdf);
     float insideDepth = max(-sdf, 0.0);
-    vec2 centerHalf = max(halfRect - vec2(bandWidth * 0.5), vec2(1.0));
+    vec2 centerHalf = max(halfRect - vec2(bandWidth * 0.2), vec2(1.0));
     vec2 centerNorm = abs(p) / centerHalf;
     float centerRadius = length(centerNorm);
-    float centerShell = 1.0 - smoothstep(0.12, 1.08, centerRadius);
-    float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside);
+    float centerShell = 1.0 - smoothstep(0.08, 1.02, centerRadius);
+    float relief = cornerRelief(p, halfRect, cornerRadius, bandWidth);
+    float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside) * relief;
     float boostedInsideShell = min(insideShell * 1.35, 1.0);
     float interiorFlow = min(1.0, centerShell + boostedInsideShell - centerShell * boostedInsideShell * 0.35);
-    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
+    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0)) * relief;
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
     float zoom = mix(1.0, coreMagnification, interiorFlow);
     vec2 src = c + (d - c) / zoom;
@@ -149,10 +157,10 @@ def _optical_shell_center_envelope(
     content_height: float,
     band_width: float,
 ) -> float:
-    half_width = max(float(content_width) * 0.5 - float(band_width) * 0.5, 1.0)
-    half_height = max(float(content_height) * 0.5 - float(band_width) * 0.5, 1.0)
+    half_width = max(float(content_width) * 0.5 - float(band_width) * 0.2, 1.0)
+    half_height = max(float(content_height) * 0.5 - float(band_width) * 0.2, 1.0)
     radius = math.hypot(abs(float(offset_x)) / half_width, abs(float(offset_y)) / half_height)
-    return 1.0 - _smoothstep_scalar(0.12, 1.08, radius)
+    return 1.0 - _smoothstep_scalar(0.08, 1.02, radius)
 
 
 def _optical_shell_interior_flow(center_envelope: float, inside_envelope: float) -> float:
@@ -167,6 +175,25 @@ def _optical_shell_gradient_epsilon(band_width: float) -> float:
 
 def _optical_shell_effective_corner_radius(corner_radius: float, band_width: float) -> float:
     return max(float(corner_radius), 0.0) + max(float(band_width), 0.0) * _OPTICAL_SHELL_CORNER_RADIUS_INFLATION
+
+
+def _optical_shell_corner_relief(
+    *,
+    offset_x: float,
+    offset_y: float,
+    content_width: float,
+    content_height: float,
+    corner_radius: float,
+    band_width: float,
+) -> float:
+    half_width = float(content_width) * 0.5
+    half_height = float(content_height) * 0.5
+    inner_width = max(half_width - (float(corner_radius) + float(band_width) * 0.2), 1.0)
+    inner_height = max(half_height - (float(corner_radius) + float(band_width) * 0.2), 1.0)
+    norm_x = abs(float(offset_x)) / inner_width
+    norm_y = abs(float(offset_y)) / inner_height
+    cornerness = _smoothstep_scalar(0.38, 0.86, min(norm_x, norm_y))
+    return 1.0 - 0.32 * cornerness
 
 
 def _shell_warp_kernel():
@@ -248,13 +275,30 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         ** 2.0
     ).astype(np.float32)
     center_half_width = max(content_width * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.5, 1.0)
-    center_half_height = max(content_height * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.5, 1.0)
+    center_half_height = max(content_height * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
+    center_half_width = max(content_width * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
     center_radius = np.hypot(
         np.abs(xs - center_x) / center_half_width,
         np.abs(ys - center_y) / center_half_height,
     ).astype(np.float32)
-    center_env = 1.0 - _smoothstep01((center_radius - 0.12) / (1.08 - 0.12))
+    center_env = 1.0 - _smoothstep01((center_radius - 0.08) / (1.02 - 0.08))
+    relief = np.empty_like(center_env, dtype=np.float32)
+    band_width = float(shell_config.get("band_width_points", 12.0))
+    corner_radius = float(shell_config.get("corner_radius_points", 16.0))
+    for row in range(height):
+        offset_y = (row + 0.5) - center_y
+        for col in range(width):
+            offset_x = (col + 0.5) - center_x
+            relief[row, col] = _optical_shell_corner_relief(
+                offset_x=offset_x,
+                offset_y=offset_y,
+                content_width=content_width,
+                content_height=content_height,
+                corner_radius=corner_radius,
+                band_width=band_width,
+            )
     boosted_inside_env = np.minimum(inside_env * 1.35, 1.0)
+    boosted_inside_env *= relief
     shell_env = np.minimum(1.0, center_env + boosted_inside_env - center_env * boosted_inside_env * 0.35)
     rgba[interior] = np.clip(
         rgba[interior].astype(np.int16)
