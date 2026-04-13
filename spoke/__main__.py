@@ -5012,6 +5012,27 @@ class SpokeAppDelegate(NSObject):
         self._command_models_refresh_in_flight = False
         options = payload.get("options") or []
         self._command_model_options = options
+        if command_backend == "local" and options:
+            healed_model_id = _reconcile_local_command_model_id(
+                current_model=self._command_model_id,
+                persisted_model=self._load_command_model_preference(),
+                relaunch_model=None,
+                env_model=os.environ.get("SPOKE_COMMAND_MODEL"),
+                options=options,
+            )
+            if healed_model_id and healed_model_id != self._command_model_id:
+                logger.info(
+                    "Healing local assistant model after async discovery: %s -> %s",
+                    self._command_model_id,
+                    healed_model_id,
+                )
+                self._command_model_id = healed_model_id
+                if self._command_client is not None:
+                    self._command_client._model = healed_model_id
+                self._command_model_options = [
+                    (model_id, label, model_id == healed_model_id)
+                    for model_id, label, _selected in options
+                ]
         if (
             command_backend in ("sidecar", "cloud")
             and options

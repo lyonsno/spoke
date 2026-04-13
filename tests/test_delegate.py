@@ -1756,6 +1756,37 @@ class TestDualModelConfiguration:
         ]
         d._menubar.refresh_menu.assert_called_once_with()
 
+    def test_command_models_discovered_heals_local_selection_back_to_persisted_model(
+        self, main_module, monkeypatch
+    ):
+        """Local startup fallback should heal back to the persisted assistant model once options arrive."""
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "local"
+        d._command_model_id = "step-3p5-flash-mixedp-final"
+        d._command_client = MagicMock()
+        d._menubar = MagicMock()
+        d._save_command_model_preference = MagicMock(return_value=True)
+        d._load_command_model_preference = MagicMock(return_value="qwen3-14b")
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    ("qwen3-14b", "qwen3-14b", False),
+                    ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True),
+                ]
+            }
+        )
+
+        assert d._command_model_id == "qwen3-14b"
+        assert d._command_client._model == "qwen3-14b"
+        d._save_command_model_preference.assert_not_called()
+        assert d._command_model_options == [
+            ("qwen3-14b", "qwen3-14b", True),
+            ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
+        ]
+        d._menubar.refresh_menu.assert_called_once_with()
+
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):
