@@ -217,11 +217,11 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
         "checker_enabled": False,
         "minor_enabled": False,
         "major_halfwidth": 2.5,
-        "ring_color": (190, 70, 130, 255),
-        "ring_halfwidth": 1.0,
-        "center_marker_shape": "oval",
-        "center_marker_width_points": 16.0,
-        "center_marker_height_points": 28.0,
+        "ring_color": (90, 90, 90, 144),
+        "ring_halfwidth": 0.75,
+        "center_marker_shape": "circle",
+        "center_marker_width_points": 18.0,
+        "center_marker_height_points": 18.0,
         "center_marker_color": (0, 235, 90, 255),
     }
 

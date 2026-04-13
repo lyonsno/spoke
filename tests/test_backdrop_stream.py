@@ -955,11 +955,11 @@ def test_debug_shell_grid_profile_is_sparse_major_lines_only():
     assert profile["checker_enabled"] is False
     assert profile["minor_enabled"] is False
     assert profile["major_halfwidth"] == 2.5
-    assert profile["ring_color"] == (190, 70, 130, 255)
-    assert profile["ring_halfwidth"] == 1.0
-    assert profile["center_marker_shape"] == "oval"
-    assert profile["center_marker_width_points"] == 16.0
-    assert profile["center_marker_height_points"] == 28.0
+    assert profile["ring_color"] == (90, 90, 90, 144)
+    assert profile["ring_halfwidth"] == 0.75
+    assert profile["center_marker_shape"] == "circle"
+    assert profile["center_marker_width_points"] == 18.0
+    assert profile["center_marker_height_points"] == 18.0
 
 
 def test_optical_shell_depth_remap_is_monotone_and_center_weighted():
