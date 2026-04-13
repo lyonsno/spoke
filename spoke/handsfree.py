@@ -63,6 +63,14 @@ def match_voice_command(text: str) -> tuple[str, str] | None:
     return VOICE_COMMANDS.get(normalized)
 
 
+def _is_repeated_keyword_phrase(text: str, keyword: str) -> bool:
+    """True when *text* is one or more standalone repetitions of *keyword*."""
+    normalized_keyword = keyword.strip().lower().rstrip(".,!?")
+    tokens = [token.strip(".,!?") for token in text.strip().lower().split()]
+    tokens = [token for token in tokens if token]
+    return bool(tokens) and all(token == normalized_keyword for token in tokens)
+
+
 class HandsFreeState(enum.Enum):
     DORMANT = "dormant"        # feature disabled
     LISTENING = "listening"    # wake word active, waiting for "listen"
@@ -304,8 +312,7 @@ class HandsFreeController:
                 return
 
             if text and text.strip():
-                normalized = text.strip().lower().rstrip(".,!?")
-                if normalized == self._sleep_keyword.strip().lower():
+                if _is_repeated_keyword_phrase(text, self._sleep_keyword):
                     self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "handleWakeWord:", {"role": "sleep"}, False,
                     )
