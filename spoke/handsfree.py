@@ -301,6 +301,13 @@ class HandsFreeController:
                 return
 
             if text and text.strip():
+                normalized = text.strip().lower().rstrip(".,!?")
+                if normalized == self._sleep_keyword.strip().lower():
+                    self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "handleWakeWord:", {"role": "sleep"}, False,
+                    )
+                    return
+
                 payload = {"text": text.strip(), "dest": dest or "cursor"}
                 self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "handsFreeInject:", payload, False,
