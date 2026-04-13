@@ -18,6 +18,8 @@ class TestSpacebarStateMachine:
         det._state = mod._State.IDLE
         det._hold_timer = None
         det._safety_timer = None
+        det._repeat_watchdog_timer = None
+        det._last_space_keydown_monotonic = 0.0
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -112,6 +114,54 @@ class TestSpacebarStateMachine:
         assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
         assert det._state == mod._State.RECORDING
 
+    def test_repeat_watchdog_recovers_when_keyup_is_missed(self, input_tap_module):
+        """If repeat began and the release never arrives, watchdog recovery should
+        end the hold once Quartz reports space is now up."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)  # -> RECORDING
+        assert det._state == mod._State.RECORDING
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)  # repeat while recording
+        Quartz.CGEventSourceKeyState.return_value = False
+
+        with patch.object(mod.time, "monotonic", return_value=11.0):
+            det._last_space_keydown_monotonic = 10.0
+            det.repeatWatchdogFired_(None)
+
+        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is True
+        on_start.assert_called_once()
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
+    def test_repeat_watchdog_ignores_false_release_while_repeats_are_recent(
+        self, input_tap_module
+    ):
+        """A transient false Quartz probe must not end a hold if repeats were
+        still arriving recently."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)  # -> RECORDING
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)  # repeat while recording
+        Quartz.CGEventSourceKeyState.return_value = False
+
+        with patch.object(mod.time, "monotonic", return_value=10.2):
+            det._last_space_keydown_monotonic = 10.0
+            det.repeatWatchdogFired_(None)
+
+        assert det._state == mod._State.RECORDING
+        assert det._awaiting_space_release is False
+        on_start.assert_called_once()
+        on_end.assert_not_called()
+
     def test_safety_timer_stops_recording(self, input_tap_module):
         """Safety timeout should auto-stop recording."""
         det, on_start, on_end = self._make_detector(input_tap_module)
@@ -204,6 +254,27 @@ class TestEventTapCallback:
         event = MagicMock()
         mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert det._forwarding is False
+
+    def test_timeout_disable_event_reenables_tap(self, input_tap_module):
+        """Quartz timeout disable should immediately re-enable the event tap."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det = MagicMock()
+        det._forwarding = False
+        det._tap = MagicMock()
+        mod._active_detector = det
+
+        event = MagicMock()
+        result = mod._event_tap_callback(
+            None,
+            Quartz.kCGEventTapDisabledByTimeout,
+            event,
+            None,
+        )
+
+        Quartz.CGEventTapEnable.assert_called_once_with(det._tap, True)
+        assert result is event
 
 
 class TestForwardingRecovery:

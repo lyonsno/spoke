@@ -44,6 +44,8 @@ from Quartz import (
     kCGEventFlagsChanged,
     kCGEventKeyDown,
     kCGEventKeyUp,
+    kCGEventTapDisabledByTimeout,
+    kCGEventTapDisabledByUserInput,
     kCGEventTapOptionDefault,
     kCGHeadInsertEventTap,
     kCGHIDEventTap,
@@ -72,6 +74,8 @@ _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
 _DOUBLE_TAP_WINDOW_S = 0.3  # 300ms window for double-tap detection
 _ENTER_STALE_GRACE_S = 0.75  # stale enter observations must not poison later space taps
+_REPEAT_RELEASE_GRACE_S = 0.35  # after repeat has started, missed keyUp should recover quickly
+_REPEAT_QUIET_RECOVERY_S = 0.75  # require a real quiet gap before trusting a false-up probe
 
 
 def _current_enter_key_state() -> bool | None:
@@ -87,6 +91,20 @@ def _current_enter_key_state() -> bool | None:
         )
     except Exception:
         logger.debug("Could not query current Enter key state", exc_info=True)
+        return None
+
+
+def _current_space_key_state() -> bool | None:
+    """Return the real current spacebar key state when Quartz exposes it."""
+    try:
+        return bool(
+            CGEventSourceKeyState(
+                kCGEventSourceStateCombinedSessionState,
+                SPACEBAR_KEYCODE,
+            )
+        )
+    except Exception:
+        logger.debug("Could not query current Space key state", exc_info=True)
         return None
 
 
@@ -145,6 +163,7 @@ class SpacebarHoldDetector(NSObject):
         self._suppress_enter_keyup = False  # swallow trailing Enter keyUp after a consumed chord
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
+        self._repeat_watchdog_timer: NSTimer | None = None
         self._forwarding = False
         self._forwarding_timer: NSTimer | None = None
         self._release_decision_timer: NSTimer | None = None
@@ -156,6 +175,7 @@ class SpacebarHoldDetector(NSObject):
         self._pending_release_active = False
         self._pending_release_shift_held = False
         self._space_keydown_timestamp_ns: int | None = None
+        self._last_space_keydown_monotonic = 0.0
 
         # Tray mode support — set by the delegate when tray is active.
         # When True, quick spacebar taps call on_hold_end instead of
@@ -229,6 +249,7 @@ class SpacebarHoldDetector(NSObject):
         if self._state in (_State.RECORDING, _State.LATCHED):
             source_state = self._state
             self._cancel_safety_timer()
+            self._cancel_repeat_watchdog()
             self._state = _State.IDLE
             self._awaiting_space_release = True
             self._on_hold_end(
@@ -249,6 +270,7 @@ class SpacebarHoldDetector(NSObject):
             self._cancel_hold_timer()
         elif source_state in (_State.RECORDING, _State.LATCHED):
             self._cancel_safety_timer()
+            self._cancel_repeat_watchdog()
         if source_state == _State.LATCHED:
             self._latched_space_down = False
         self._state = _State.IDLE
@@ -296,6 +318,8 @@ class SpacebarHoldDetector(NSObject):
         if keycode != SPACEBAR_KEYCODE:
             return False
 
+        self._last_space_keydown_monotonic = time.monotonic()
+
         if getattr(self, "_awaiting_space_release", False):
             return True
 
@@ -325,6 +349,9 @@ class SpacebarHoldDetector(NSObject):
                 self._latched_space_down = True
             return True
 
+        if self._state == _State.RECORDING:
+            self._start_repeat_watchdog()
+
         # Already WAITING or RECORDING — suppress key repeats
         return True
 
@@ -344,12 +371,14 @@ class SpacebarHoldDetector(NSObject):
 
         if getattr(self, "_awaiting_space_release", False):
             self._awaiting_space_release = False
+            self._cancel_repeat_watchdog()
             return True
 
         # Cancel spring capture: space released while spring is winding
         if getattr(self, 'cancel_spring_active', False):
             self._cancel_hold_timer()
             self._cancel_safety_timer()
+            self._cancel_repeat_watchdog()
             self._suppress_enter_keyup = getattr(self, '_enter_held', False)
             self._state = _State.IDLE
             cb = getattr(self, '_on_cancel_spring_release', None)
@@ -405,6 +434,7 @@ class SpacebarHoldDetector(NSObject):
 
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
+            self._cancel_repeat_watchdog()
             self._suppress_enter_keyup = getattr(self, '_enter_held', False)
             self._state = _State.IDLE
             if getattr(self, '_tray_gesture_consumed', False):
@@ -440,6 +470,7 @@ class SpacebarHoldDetector(NSObject):
             if getattr(self, '_latched_space_down', False):
                 self._latched_space_down = False
                 self._cancel_safety_timer()
+                self._cancel_repeat_watchdog()
                 self._suppress_enter_keyup = getattr(self, '_enter_held', False)
                 self._state = _State.IDLE
                 self._enter_latched = False
@@ -504,6 +535,7 @@ class SpacebarHoldDetector(NSObject):
             logger.warning("Safety timeout — auto-stopping recording")
             source_state = self._state
             self._state = _State.IDLE
+            self._cancel_repeat_watchdog()
             self._awaiting_space_release = True
             self._on_hold_end(
                 shift_held=False,
@@ -520,6 +552,39 @@ class SpacebarHoldDetector(NSObject):
         if self._safety_timer is not None:
             self._safety_timer.invalidate()
             self._safety_timer = None
+
+    def _start_repeat_watchdog(self) -> None:
+        self._cancel_repeat_watchdog()
+        self._repeat_watchdog_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _REPEAT_RELEASE_GRACE_S, self, "repeatWatchdogFired:", None, False
+        )
+
+    def _cancel_repeat_watchdog(self) -> None:
+        timer = getattr(self, "_repeat_watchdog_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._repeat_watchdog_timer = None
+
+    def repeatWatchdogFired_(self, timer: NSTimer) -> None:
+        """Recover a hold if repeat had started but the matching keyUp vanished."""
+        self._repeat_watchdog_timer = None
+        if self._state != _State.RECORDING:
+            return
+        quiet_for = time.monotonic() - getattr(self, "_last_space_keydown_monotonic", 0.0)
+        if quiet_for < _REPEAT_QUIET_RECOVERY_S:
+            self._start_repeat_watchdog()
+            return
+        is_space_down = _current_space_key_state()
+        if is_space_down is not False:
+            return
+        logger.warning("Repeat watchdog recovered a missed spacebar keyUp")
+        self._cancel_safety_timer()
+        self._state = _State.IDLE
+        self._awaiting_space_release = True
+        self._on_hold_end(
+            shift_held=self._shift_latched,
+            enter_held=getattr(self, "_enter_held", False),
+        )
 
     # ── synthetic space forwarding ──────────────────────────
 
@@ -614,6 +679,16 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     """Raw CGEventTap callback — must be a plain function, not a method."""
     det = _active_detector
     if det is None:
+        return event
+
+    if event_type == kCGEventTapDisabledByTimeout:
+        if getattr(det, "_tap", None) is not None:
+            CGEventTapEnable(det._tap, True)
+            logger.warning("CGEventTap disabled by timeout — re-enabled")
+        return event
+
+    if event_type == kCGEventTapDisabledByUserInput:
+        logger.warning("CGEventTap disabled by user input")
         return event
 
     # Let our own forwarded events pass through

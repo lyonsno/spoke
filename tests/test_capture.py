@@ -150,6 +150,29 @@ class TestAudioCallback:
         assert cap._frames == []
         cap._amplitude_cb.assert_not_called()
 
+    def test_callback_skips_vad_if_teardown_begins_mid_callback(self):
+        """If teardown starts after callback entry but before VAD work, the
+        callback should bail out instead of running Silero on a dying stream."""
+        cap = AudioCapture()
+        cap._stream = object()
+        cap._stream_closing = False
+        cap._frames = []
+        cap._amplitude_cb = object()
+        cap._segment_cb = MagicMock()
+        cap._vad_cb = None
+        cap._torch = MagicMock()
+
+        chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+
+        def begin_teardown(kind, payload):
+            cap._stream_closing = True
+
+        cap._queue_callback_event = begin_teardown
+
+        cap._audio_callback(chunk, 1024, None, 0)
+
+        cap._torch.from_numpy.assert_not_called()
+
     def test_get_all_frames_concatenates(self):
         """_get_all_frames should return one contiguous array."""
         cap = AudioCapture()

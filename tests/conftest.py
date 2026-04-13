@@ -31,6 +31,8 @@ def _make_fake_quartz():
     q.kCGEventFlagsChanged = 12
     q.kCGEventKeyDown = 10
     q.kCGEventKeyUp = 11
+    q.kCGEventTapDisabledByTimeout = 0xFFFFFFFE
+    q.kCGEventTapDisabledByUserInput = 0xFFFFFFFF
     q.kCGEventFlagMaskCommand = 0x00100000
     q.kCGEventFlagMaskControl = 0x00040000
     q.kCGEventFlagMaskAlternate = 0x00080000
