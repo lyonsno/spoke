@@ -51,16 +51,6 @@ float depthRemap(float inside01, float curveBoost) {
     return clamp(x + curveBoost * x * (1.0 - x), 0.0, 1.0);
 }
 
-float smoothCapsuleField(float axial01, float radial01) {
-    float a = clamp(axial01, 0.0, 1.0);
-    float b = clamp(radial01, 0.0, 1.0);
-    float softness = 0.08;
-    float base = 0.5 * (a + b + sqrt((a - b) * (a - b) + softness * softness) - softness);
-    float lo = min(a, b);
-    float hi = max(a, b);
-    return base + 0.32 * lo * (1.0 - hi);
-}
-
 kernel vec2 opticalShellWarp(
     float width,
     float height,
@@ -96,7 +86,8 @@ kernel vec2 opticalShellWarp(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
-    float field01 = clamp(smoothCapsuleField(axial01, radial01), 0.0, 1.0);
+    float fieldPower = 3.0;
+    float field01 = clamp(pow(pow(axial01, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
     vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;
@@ -212,13 +203,8 @@ def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) ->
 def _optical_shell_capsule_field01(axial01: float, radial01: float) -> float:
     axial = min(max(float(axial01), 0.0), 1.0)
     radial = min(max(float(radial01), 0.0), 1.0)
-    softness = 0.08
-    base = 0.5 * (
-        axial + radial + math.sqrt((axial - radial) ** 2 + softness * softness) - softness
-    )
-    low = min(axial, radial)
-    high = max(axial, radial)
-    return base + 0.32 * low * (1.0 - high)
+    field_power = 3.0
+    return min((axial**field_power + radial**field_power) ** (1.0 / field_power), 1.0)
 
 
 def _optical_shell_local_center_depth(
