@@ -1006,14 +1006,18 @@ def test_optical_shell_capsule_axis_decomposition_blends_into_endcaps():
     capsule_radius = 50.0
 
     body_spine, body_radial = mod._optical_shell_capsule_axis_decomposition(60.0, spine_half, capsule_radius)
-    seam_spine, seam_radial = mod._optical_shell_capsule_axis_decomposition(75.0, spine_half, capsule_radius)
+    seam_spine, seam_radial = mod._optical_shell_capsule_axis_decomposition(68.0, spine_half, capsule_radius)
+    cap_shoulder_spine, cap_shoulder_radial = mod._optical_shell_capsule_axis_decomposition(75.0, spine_half, capsule_radius)
     cap_spine, cap_radial = mod._optical_shell_capsule_axis_decomposition(120.0, spine_half, capsule_radius)
 
-    assert body_spine == 60.0
-    assert body_radial == 0.0
-    assert 69.0 < seam_spine < 75.0
-    assert 0.0 < seam_radial < 5.0
-    assert seam_spine + seam_radial == pytest.approx(75.0)
+    assert 59.95 < body_spine <= 60.0
+    assert 0.0 <= body_radial < 0.05
+    assert 67.0 < seam_spine < 68.0
+    assert 0.0 < seam_radial < 1.0
+    assert seam_spine + seam_radial == pytest.approx(68.0)
+    assert 69.5 < cap_shoulder_spine <= spine_half
+    assert 5.0 - 1e-6 < cap_shoulder_radial < 5.5
+    assert cap_shoulder_spine + cap_shoulder_radial == pytest.approx(75.0)
     assert cap_spine == pytest.approx(spine_half)
     assert cap_radial == pytest.approx(50.0)
 
@@ -1054,10 +1058,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
 
     assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
     assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
-    assert "float joinBlend = max(capsuleRadius * 0.18, 1.0);" in source
-    assert "float excess = max(absPx - spineHalf, 0.0);" in source
-    assert "float smoothExcess = excess * smoothstep(0.0, joinBlend, excess);" in source
-    assert "float spineAbs = absPx - smoothExcess;" in source
+    assert "float joinSharpness = 0.75;" in source
+    assert "float spineAbs = -log(exp(-joinSharpness * absPx) + exp(-joinSharpness * spineHalf)) / joinSharpness;" in source
     assert "float spineX = sign(px) * spineAbs;" in source
     assert "float radialX = px - spineX;" in source
     assert "float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);" in source

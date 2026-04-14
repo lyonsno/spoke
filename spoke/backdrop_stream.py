@@ -79,10 +79,8 @@ kernel vec2 opticalShellWarp(
     float spineHalf = max(halfRect.x - capsuleRadius, 1.0);
     float px = p.x;
     float absPx = abs(px);
-    float joinBlend = max(capsuleRadius * 0.18, 1.0);
-    float excess = max(absPx - spineHalf, 0.0);
-    float smoothExcess = excess * smoothstep(0.0, joinBlend, excess);
-    float spineAbs = absPx - smoothExcess;
+    float joinSharpness = 0.75;
+    float spineAbs = -log(exp(-joinSharpness * absPx) + exp(-joinSharpness * spineHalf)) / joinSharpness;
     float spineX = sign(px) * spineAbs;
     float radialX = px - spineX;
     vec2 radial = vec2(radialX, p.y);
@@ -210,14 +208,11 @@ def _optical_shell_capsule_axis_decomposition(
 ) -> tuple[float, float]:
     px = float(offset_x)
     spine_half = max(float(spine_half), 1.0)
-    join_blend = max(float(capsule_radius) * 0.18, 1.0)
     abs_px = abs(px)
-    excess = max(abs_px - spine_half, 0.0)
-    if join_blend > 0.0:
-        smooth_excess = excess * _smoothstep_scalar(0.0, join_blend, excess)
-    else:
-        smooth_excess = excess
-    spine_abs = max(abs_px - smooth_excess, 0.0)
+    join_sharpness = 0.75
+    spine_abs = -math.log(
+        math.exp(-join_sharpness * abs_px) + math.exp(-join_sharpness * spine_half)
+    ) / join_sharpness
     spine_x = math.copysign(spine_abs, px)
     radial_x = px - spine_x
     return spine_x, radial_x
