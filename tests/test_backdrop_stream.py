@@ -989,16 +989,23 @@ def test_optical_shell_source_depth_points_scales_from_boundary_inward():
     assert center == 50.0
 
 
-def test_optical_shell_local_center_depth_follows_boundary_normal():
+def test_optical_shell_capsule_spine_half_length_uses_half_height_radius():
     mod = _import_module()
 
-    horizontal = mod._optical_shell_local_center_depth(1.0, 0.0, 240.0, 100.0)
-    vertical = mod._optical_shell_local_center_depth(0.0, 1.0, 240.0, 100.0)
-    diagonal = mod._optical_shell_local_center_depth(0.70710678, 0.70710678, 240.0, 100.0)
+    assert mod._optical_shell_capsule_spine_half_length(240.0, 100.0) == 70.0
+    assert mod._optical_shell_capsule_spine_half_length(100.0, 100.0) == 1.0
 
-    assert horizontal == 120.0
-    assert vertical == 50.0
-    assert 70.0 < diagonal < 71.0
+
+def test_optical_shell_center_bias_coordinate_compresses_toward_center():
+    mod = _import_module()
+
+    center = mod._optical_shell_center_bias_coordinate(0.0, 0.95)
+    midpoint = mod._optical_shell_center_bias_coordinate(0.5, 0.95)
+    rim = mod._optical_shell_center_bias_coordinate(1.0, 0.95)
+
+    assert center == 0.0
+    assert 0.0 < midpoint < 0.5
+    assert rim == 1.0
 
 
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
@@ -1019,19 +1026,22 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
 
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
-    assert "float source01 = depthRemap(inside01, curveBoost);" in source
-    assert "float localCenterDepth = min(" in source
-    assert "float sourceDepth = source01 * localCenterDepth;" in source
-    assert "vec2 src = boundary - n * sourceDepth;" in source
+    assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
+    assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
+    assert "float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);" in source
+    assert "float sourceAxial01 = 1.0 - depthRemap(1.0 - axial01, curveBoost);" in source
+    assert "float sourceRadial01 = 1.0 - depthRemap(1.0 - radial01, curveBoost);" in source
+    assert "vec2 src = c + vec2(sourceSpineX, 0.0) + radialDir * sourceRadial;" in source
 
 
-def test_optical_shell_kernel_normalizes_inside_depth_from_sdf():
+def test_optical_shell_kernel_avoids_global_center_depth_mix():
     mod = _import_module()
 
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
-    assert "float centerDepth = max(min(halfRect.x, halfRect.y), 1.0);" in source
-    assert "float inside01 = clamp(-sdf / centerDepth, 0.0, 1.0);" in source
+    assert "float centerDepth = max(min(halfRect.x, halfRect.y), 1.0);" not in source
+    assert "vec2 src = mix(boundary, c, source01);" not in source
+    assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):

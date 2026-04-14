@@ -75,21 +75,23 @@ kernel vec2 opticalShellWarp(
         - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, sdf);
-    float centerDepth = max(min(halfRect.x, halfRect.y), 1.0);
-    float inside01 = clamp(-sdf / centerDepth, 0.0, 1.0);
+    float capsuleRadius = max(halfRect.y, 1.0);
+    float spineHalf = max(halfRect.x - capsuleRadius, 1.0);
+    float spineX = clamp(p.x, -spineHalf, spineHalf);
+    vec2 radial = vec2(p.x - spineX, p.y);
+    float radialLen = length(radial);
+    vec2 radialDir = radialLen > 1e-3 ? radial / radialLen : vec2(0.0, 1.0);
+    float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);
+    float radial01 = clamp(radialLen / capsuleRadius, 0.0, 1.0);
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
-    float source01 = depthRemap(inside01, curveBoost);
-    float localCenterDepth = min(
-        halfRect.x / max(abs(n.x), 1e-3),
-        halfRect.y / max(abs(n.y), 1e-3)
-    );
-    localCenterDepth = max(localCenterDepth, 1.0);
-    float sourceDepth = source01 * localCenterDepth;
-    vec2 boundary = d - n * sdf;
-    vec2 src = boundary - n * sourceDepth;
+    float sourceAxial01 = 1.0 - depthRemap(1.0 - axial01, curveBoost);
+    float sourceRadial01 = 1.0 - depthRemap(1.0 - radial01, curveBoost);
+    float sourceSpineX = sign(spineX) * spineHalf * sourceAxial01;
+    float sourceRadial = capsuleRadius * sourceRadial01;
+    vec2 src = c + vec2(sourceSpineX, 0.0) + radialDir * sourceRadial;
     float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(sdf, 0.0) / max(tailWidth, 0.001));
     vec2 outsideSrc = d - n * outsideTail;
     return mix(src, outsideSrc, outside);
@@ -188,6 +190,15 @@ def _optical_shell_depth_remap(inside01: float, curve_boost: float) -> float:
 
 def _optical_shell_source_depth_points(source01: float, center_depth: float) -> float:
     return min(max(float(source01), 0.0), 1.0) * max(float(center_depth), 0.0)
+
+
+def _optical_shell_capsule_spine_half_length(content_width: float, content_height: float) -> float:
+    return max(float(content_width) * 0.5 - float(content_height) * 0.5, 1.0)
+
+
+def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) -> float:
+    coord = min(max(float(coord01), 0.0), 1.0)
+    return 1.0 - _optical_shell_depth_remap(1.0 - coord, curve_boost)
 
 
 def _optical_shell_local_center_depth(
