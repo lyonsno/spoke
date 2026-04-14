@@ -230,10 +230,10 @@ class TestCollectAXHints:
 
 
 class TestDownsampleSize:
-    def test_defaults_to_two_thirds_resolution(self):
+    def test_defaults_to_one_third_resolution(self):
         mod = _import_module()
         result = mod._downsample_size(2560, 1440)
-        assert result == (1707, 960)
+        assert result == (853, 480)
 
     def test_skips_if_already_small(self):
         """Small windows should not be downsampled below a usable size."""
@@ -277,7 +277,7 @@ class TestCaptureContext:
         assert capture is not None
         assert capture.image_path == str(tmp_path / "scene-test.png")
         assert capture.model_image_path == str(tmp_path / "scene-test-model.png")
-        assert capture.model_image_size == (1707, 960)
+        assert capture.model_image_size == (853, 480)
         downsample.assert_called_once_with(raw_image)
         assert save_image.call_args_list == [
             call(raw_image, str(tmp_path / "scene-test.png")),

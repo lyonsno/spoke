@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 # ── Default configuration ────────────────────────────────────────
 
-# Linear scale factor for model-facing image (2/3 keeps more UI detail for VLMs
-# while still shrinking retina desktop captures materially).
-_DEFAULT_SCALE = 2.0 / 3.0
+# Linear scale factor for model-facing image (1/3 keeps enough detail for VLMs
+# to read UI text reliably while cutting vision-token prefill ~9× vs full res).
+_DEFAULT_SCALE = 1.0 / 3.0
 
 # Minimum dimension (px) below which we skip downsampling.
 _MIN_DOWNSAMPLE_DIM = 800
@@ -689,10 +689,15 @@ def capture_context(
     t_save = time.perf_counter()
     logger.info("capture_context: image save %.0fms", (t_save - t_capture) * 1000)
 
-    # OCR
-    ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
+    # OCR (skippable — when the model receives the image directly, OCR text
+    # is redundant and its latency + token cost can be avoided).
+    if os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes"):
+        ocr_text, ocr_blocks = "", []
+        logger.info("capture_context: OCR skipped (SPOKE_SKIP_OCR)")
+    else:
+        ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
+        logger.info("capture_context: OCR %.0fms (%d blocks)", (time.perf_counter() - t_save) * 1000, len(ocr_blocks))
     t_ocr = time.perf_counter()
-    logger.info("capture_context: OCR %.0fms (%d blocks)", (t_ocr - t_save) * 1000, len(ocr_blocks))
 
     # AX hints (best-effort, with timeout)
     ax_hints = _collect_ax_hints(scene_ref)
