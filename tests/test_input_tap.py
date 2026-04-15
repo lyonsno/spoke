@@ -138,6 +138,33 @@ class TestSpacebarStateMachine:
         on_start.assert_called_once()
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
+    def test_repeat_watchdog_queries_enter_state_not_stale_field(self, input_tap_module):
+        """When _enter_held is stale True but Enter is physically up, the watchdog
+        must query Quartz and pass enter_held=False — not trust the stale field."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)  # -> RECORDING
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)  # repeat
+
+        # Simulate stale _enter_held from a missed Enter keyUp
+        det._enter_held = True
+
+        # Quartz reports: space is up (False), enter is up (False)
+        Quartz.CGEventSourceKeyState.side_effect = lambda src, keycode: False
+
+        with patch.object(mod.time, "monotonic", return_value=11.0):
+            det._last_space_keydown_monotonic = 10.0
+            det.repeatWatchdogFired_(None)
+
+        assert det._state == mod._State.IDLE
+        # The critical assertion: enter_held must be False (from Quartz),
+        # not True (from the stale field).
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
     def test_repeat_watchdog_ignores_false_release_while_repeats_are_recent(
         self, input_tap_module
     ):

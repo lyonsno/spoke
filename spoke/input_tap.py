@@ -581,6 +581,11 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_safety_timer()
         self._state = _State.IDLE
         self._awaiting_space_release = True
+        # Query Quartz for the real Enter state — _enter_held may be stale if
+        # the Enter keyUp was also lost during this chord.
+        actual_enter = _current_enter_key_state()
+        if actual_enter is not None:
+            self._enter_held = actual_enter
         self._on_hold_end(
             shift_held=self._shift_latched,
             enter_held=getattr(self, "_enter_held", False),
