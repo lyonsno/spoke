@@ -2,12 +2,12 @@
 
 Speech-native control surface for macOS.
 
-`spoke` is a menubar app built with PyObjC. Hold the spacebar anywhere on the
-system to dictate, route the utterance into a tray for review, send it into a
-tool-calling assistant, or keep recording hands-free. Direct text insertion,
-tray review, assistant dispatch, and spoken playback are separate surfaces
-with explicit transitions between them. Preview/final transcription, assistant
-inference, and TTS each have their own backend selection and persist in
+`spoke` is a menubar app built with PyObjC for system-wide dictation,
+review, and assistant control. Hold the spacebar anywhere on the system to
+speak, then decide whether that utterance should land as text, stage in the
+tray, go to the assistant, or stay live in hands-free mode. Preview/final
+transcription, assistant inference, and TTS each keep their own backend and
+model state in
 `~/Library/Application Support/Spoke/model_preferences.json`.
 
 <video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
@@ -15,19 +15,20 @@ inference, and TTS each have their own backend selection and persist in
 ## What It Does
 
 - Dictate anywhere on the system and paste directly into the focused field
-- Fail open into a tray when insertion cannot be verified or when you want review first
-- Send spoken utterances to an assistant with streamed responses and tool calls
+- Fail open into a stacked tray when insertion cannot be verified or when you want review first
+- Use an assistant that can respond with streamed text, tools, screen context, local files, and Gmail
+- Show brief thinking and loading summaries while the assistant is still working
 - Keep recording hands-free with latched mode or wake words
 - Read results back through local, sidecar, or cloud TTS backends
-- Switch transcription, assistant, and TTS backends from the menubar and keep those choices across relaunches
+- Switch transcription, model, assistant, and TTS choices from the menubar and keep them across relaunches
 
 ## Product Shape
 
 `spoke` is built around four connected surfaces:
 
 - `Text`: hold space, speak, release cleanly, and the text lands at the cursor.
-- `Tray`: hold shift at release to stage speech for review, recovery, recall, or later insertion.
-- `Assistant`: hold enter at release to send the utterance into the assistant path.
+- `Tray`: hold shift at release to stage speech in a stacked tray for review, recovery, recall, or later insertion.
+- `Assistant`: hold enter at release to send the utterance into the assistant path, with streamed output and live thinking/loading summaries while it works.
 - `Speech out`: assistant responses can be spoken back through the configured TTS backend.
 
 The overlays and glow exist to make those transitions legible.
@@ -44,12 +45,15 @@ Optional wake words -> start or stop hands-free dictation without touching the k
 
 Quick taps still produce a normal space. Longer holds trigger recording,
 preview text, and the overlay/glow surface. If insertion cannot be verified,
-`spoke` falls back to the tray so the utterance is recoverable.
+`spoke` fails open into the tray so the utterance stays recoverable.
 
 Hands-free mode can also be started by voice. Set
 `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` (see the env-var table below) to enable
 the wake-word listener; without that key the wake-word path is inert and only
 the keyboard gestures above are active.
+
+While dictating hands-free, simple spoken editing commands such as `new line`,
+`new paragraph`, and `enter` are treated as controls rather than literal text.
 
 If you want to prepare custom Porcupine keyword training material, `spoke`
 now also ships a batch sample generator that renders WAVs through the same
@@ -103,6 +107,21 @@ tooling, use:
 uv sync --extra tts --group dev
 ```
 
+## Cloud And Wake-Word Setup
+
+If you want cloud backends, sidecar bootstrap, or wake-word auth, create a
+machine-local secrets file from the checked-in template:
+
+```sh
+mkdir -p ~/.config/spoke
+cp scripts/secrets.env.example ~/.config/spoke/secrets.env
+chmod 600 ~/.config/spoke/secrets.env
+```
+
+Then populate `~/.config/spoke/secrets.env` from your offline source of truth.
+That keeps secrets out of the repo while giving `spoke` a stable place to find
+cloud and wake-word credentials.
+
 ## Run
 
 ```sh
@@ -117,7 +136,7 @@ On first run macOS will ask for:
 Accessibility must be granted to the app that launches `spoke` if you run it
 from a terminal, or to `Spoke.app` if you run the bundled app.
 
-## Backend Selection
+## Backend And Model Selection
 
 `spoke` starts with local transcription by default:
 
@@ -132,11 +151,22 @@ The menus can independently control:
 
 - `Preview Backend`: local Whisper, sidecar, or cloud OpenAI Whisper
 - `Transcription Backend`: local Whisper, sidecar, or cloud OpenAI Whisper
-- `Assistant Backend`: local OMLX, sidecar OMLX, or cloud
+- `Preview Model`: the fast speculative model used for live preview when the active backend supports model choice
+- `Transcription Model`: the final commit model used when the active backend supports model choice
+- `Assistant Backend`: Local OMLX, Sidecar OMLX, Google Cloud, or OpenRouter
+- `Assistant Model`: the concrete model for the currently selected assistant surface
 - `TTS Backend`: local runtime, MLX-audio sidecar, or Gemini cloud
 
+Each surface remembers its own last selection, including the active assistant
+model. If you want cloud backends or wake words, populate
+`~/.config/spoke/secrets.env` from `scripts/secrets.env.example` first.
+
 For ordinary use, prefer the menus. The remaining environment variables are
-smoke/debugging overrides and bootstrap plumbing.
+bootstrap, smoke-surface, or debugging overrides.
+
+When you invoke the assistant, it can work from more than just the transcribed
+utterance: it can inspect the frontmost screen, search and read local files,
+query Gmail, place results into the tray, and speak text back aloud when asked.
 
 ## Remote sidecars
 
@@ -157,8 +187,8 @@ If you want a quick health check for the local service fleet, run:
 ./scripts/spoke-doctor.sh
 ```
 
-That script reports the current status of the assistant endpoint,
-MLX-audio sidecar, remote Whisper sidecar, and the running `spoke` process.
+That script reports the current status of the assistant endpoint, speech
+sidecars, and the running `spoke` process.
 
 ## Advanced Overrides
 
@@ -179,19 +209,6 @@ developer territory and should inspect the codepaths in
 [`spoke/__main__.py`](spoke/__main__.py) and related modules rather than treat
 the README as a full configuration reference.
 
-## Notes
-
-- `spoke` keeps a bounded post-transcription repair pass for recurring
-  project-specific vocabulary that is known to fail in real logs.
-- The assistant tool surface includes local filesystem and screen-context
-  affordances available to the model during a turn.
-- TTS is a routing surface across local, sidecar, and cloud backends.
-- Brief thinking summaries can be shown while the assistant is reasoning or
-  loading, as a secondary affordance.
-- The menubar also exposes launch-target switching, source/branch visibility,
-  and the status HUD (`Terror Form`) for runtime legibility on local smoke
-  surfaces.
-
 ## Development
 
 Run the test suite:
@@ -209,6 +226,7 @@ spoke/
 ├── capture.py            # sounddevice recording and WAV encoding
 ├── handsfree.py          # latched and wake-word-driven dictation controller
 ├── wakeword.py           # Picovoice Porcupine listener
+├── wakeword_samples.py   # wake-word sample batch generator
 ├── transcribe.py         # remote OpenAI-compatible transcription client
 ├── transcribe_local.py   # local MLX Whisper backend
 ├── transcribe_qwen.py    # local Qwen3-ASR backend
@@ -247,7 +265,7 @@ brew install create-dmg
 
 The app bundle is written to `dist/Spoke.app`.
 
-## Runtime notes
+## Runtime Notes
 
 - The bundled app logs to `~/Library/Logs/Spoke.log`.
 - Local MLX backends may download model weights on first use.
