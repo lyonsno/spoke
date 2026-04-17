@@ -945,22 +945,23 @@ def test_optical_shell_corner_relief_preserves_flats_but_softens_corners():
     assert flat > corner + 0.12
 
 
-def test_debug_shell_grid_profile_uses_capsule_native_contours():
+def test_debug_shell_grid_profile_prioritizes_field_contours_over_coordinate_hints():
     mod = _import_module()
 
     profile = mod._debug_shell_grid_profile({"debug_grid_spacing_points": 14.0})
 
     assert profile["spacing"] == 14.0
-    assert profile["longitudinal_major_step"] == 0.125
-    assert profile["longitudinal_minor_step"] == 0.0625
-    assert profile["radial_major_step"] == 0.125
-    assert profile["radial_minor_step"] == 0.0625
-    assert profile["contour_halfwidth"] == 0.012
-    assert profile["minor_contour_halfwidth"] == 0.006
-    assert profile["longitudinal_color"] == (45, 45, 45, 190)
-    assert profile["radial_color"] == (60, 60, 60, 120)
-    assert profile["minor_longitudinal_color"] == (70, 70, 70, 90)
-    assert profile["minor_radial_color"] == (80, 80, 80, 70)
+    assert profile["field_major_step"] == 0.125
+    assert profile["field_minor_step"] == 0.0625
+    assert profile["field_contour_halfwidth"] == 0.012
+    assert profile["field_minor_contour_halfwidth"] == 0.006
+    assert profile["field_color"] == (45, 45, 45, 210)
+    assert profile["field_minor_color"] == (70, 70, 70, 110)
+    assert profile["longitudinal_hint_step"] == 0.125
+    assert profile["radial_hint_step"] == 0.125
+    assert profile["hint_contour_halfwidth"] == 0.004
+    assert profile["longitudinal_hint_color"] == (65, 65, 65, 65)
+    assert profile["radial_hint_color"] == (80, 80, 80, 50)
     assert profile["ring_color"] == (90, 90, 90, 144)
     assert profile["ring_halfwidth"] == 0.75
     assert profile["center_marker_shape"] == "circle"

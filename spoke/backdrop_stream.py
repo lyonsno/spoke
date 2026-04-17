@@ -354,16 +354,17 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
     spacing = max(float(shell_config.get("debug_grid_spacing_points", 18.0)), 6.0)
     return {
         "spacing": spacing,
-        "longitudinal_major_step": 0.125,
-        "longitudinal_minor_step": 0.0625,
-        "radial_major_step": 0.125,
-        "radial_minor_step": 0.0625,
-        "contour_halfwidth": 0.012,
-        "minor_contour_halfwidth": 0.006,
-        "longitudinal_color": (45, 45, 45, 190),
-        "radial_color": (60, 60, 60, 120),
-        "minor_longitudinal_color": (70, 70, 70, 90),
-        "minor_radial_color": (80, 80, 80, 70),
+        "field_major_step": 0.125,
+        "field_minor_step": 0.0625,
+        "field_contour_halfwidth": 0.012,
+        "field_minor_contour_halfwidth": 0.006,
+        "field_color": (45, 45, 45, 210),
+        "field_minor_color": (70, 70, 70, 110),
+        "longitudinal_hint_step": 0.125,
+        "radial_hint_step": 0.125,
+        "hint_contour_halfwidth": 0.004,
+        "longitudinal_hint_color": (65, 65, 65, 65),
+        "radial_hint_color": (80, 80, 80, 50),
         "ring_color": (90, 90, 90, 144),
         "ring_halfwidth": 0.75,
         "center_marker_shape": "circle",
@@ -430,34 +431,44 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         distance = np.abs(normalized - np.rint(normalized)) * float(step)
         return distance < float(halfwidth)
 
-    major_longitudinal = _contour_mask(
-        longitudinal01,
-        float(profile["longitudinal_major_step"]),
-        float(profile["contour_halfwidth"]),
+    field01 = np.clip(
+        (
+            (longitudinal01 * 0.82) ** 3.0
+            + radial01**3.0
+        )
+        ** (1.0 / 3.0),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    major_field = _contour_mask(
+        field01,
+        float(profile["field_major_step"]),
+        float(profile["field_contour_halfwidth"]),
     )
-    major_radial = _contour_mask(
-        radial01,
-        float(profile["radial_major_step"]),
-        float(profile["contour_halfwidth"]),
-    )
-    minor_longitudinal = _contour_mask(
+    minor_field = _contour_mask(
+        field01,
+        float(profile["field_minor_step"]),
+        float(profile["field_minor_contour_halfwidth"]),
+    ) & ~major_field
+    longitudinal_hints = _contour_mask(
         longitudinal01,
-        float(profile["longitudinal_minor_step"]),
-        float(profile["minor_contour_halfwidth"]),
-    ) & ~major_longitudinal
-    minor_radial = _contour_mask(
+        float(profile["longitudinal_hint_step"]),
+        float(profile["hint_contour_halfwidth"]),
+    )
+    radial_hints = _contour_mask(
         radial01,
-        float(profile["radial_minor_step"]),
-        float(profile["minor_contour_halfwidth"]),
-    ) & ~major_radial
+        float(profile["radial_hint_step"]),
+        float(profile["hint_contour_halfwidth"]),
+    )
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < float(profile["ring_halfwidth"])
     interior = sdf < 0.0
-    rgba[interior & minor_longitudinal] = np.array(profile["minor_longitudinal_color"], dtype=np.uint8)
-    rgba[interior & minor_radial] = np.array(profile["minor_radial_color"], dtype=np.uint8)
-    rgba[interior & major_radial] = np.array(profile["radial_color"], dtype=np.uint8)
-    rgba[interior & major_longitudinal] = np.array(profile["longitudinal_color"], dtype=np.uint8)
+    rgba[interior & radial_hints] = np.array(profile["radial_hint_color"], dtype=np.uint8)
+    rgba[interior & longitudinal_hints] = np.array(profile["longitudinal_hint_color"], dtype=np.uint8)
+    rgba[interior & minor_field] = np.array(profile["field_minor_color"], dtype=np.uint8)
+    rgba[interior & major_field] = np.array(profile["field_color"], dtype=np.uint8)
     inside01 = np.clip(
         -sdf / max(min(content_width, content_height) * 0.5, 1.0),
         0.0,
