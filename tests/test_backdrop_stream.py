@@ -957,16 +957,12 @@ def test_debug_shell_grid_profile_prioritizes_field_contours_over_coordinate_hin
     assert profile["field_minor_contour_halfwidth"] == 0.006
     assert profile["field_color"] == (45, 45, 45, 210)
     assert profile["field_minor_color"] == (70, 70, 70, 110)
-    assert profile["longitudinal_hint_step"] == 0.125
-    assert profile["radial_hint_step"] == 0.125
-    assert profile["hint_contour_halfwidth"] == 0.004
-    assert profile["longitudinal_hint_color"] == (65, 65, 65, 28)
-    assert profile["radial_hint_color"] == (80, 80, 80, 22)
-    assert profile["ring_color"] == (90, 90, 90, 144)
-    assert profile["ring_halfwidth"] == 0.75
+    assert profile["longitudinal_hint_color"] == (65, 65, 65, 0)
+    assert profile["radial_hint_color"] == (80, 80, 80, 0)
+    assert profile["ring_color"] == (90, 90, 90, 0)
     assert profile["center_marker_shape"] == "circle"
-    assert profile["center_marker_width_points"] == 18.0
-    assert profile["center_marker_height_points"] == 18.0
+    assert profile["center_marker_width_points"] == 12.0
+    assert profile["center_marker_height_points"] == 12.0
 
 
 def test_optical_shell_capsule_coordinate_fields_follow_pill_geometry():

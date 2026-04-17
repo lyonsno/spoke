@@ -368,13 +368,13 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
         "longitudinal_hint_step": 0.125,
         "radial_hint_step": 0.125,
         "hint_contour_halfwidth": 0.004,
-        "longitudinal_hint_color": (65, 65, 65, 28),
-        "radial_hint_color": (80, 80, 80, 22),
-        "ring_color": (90, 90, 90, 144),
+        "longitudinal_hint_color": (65, 65, 65, 0),
+        "radial_hint_color": (80, 80, 80, 0),
+        "ring_color": (90, 90, 90, 0),
         "ring_halfwidth": 0.75,
         "center_marker_shape": "circle",
-        "center_marker_width_points": 18.0,
-        "center_marker_height_points": 18.0,
+        "center_marker_width_points": 12.0,
+        "center_marker_height_points": 12.0,
         "center_marker_color": (0, 235, 90, 255),
     }
 
@@ -488,21 +488,6 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     rgba[interior & longitudinal_hints] = np.array(profile["longitudinal_hint_color"], dtype=np.uint8)
     rgba[interior & minor_field] = np.array(profile["field_minor_color"], dtype=np.uint8)
     rgba[interior & major_field] = np.array(profile["field_color"], dtype=np.uint8)
-    source01 = np.clip(inside01 + curve_boost * inside01 * (1.0 - inside01), 0.0, 1.0).astype(np.float32)
-    rgba[interior] = np.clip(
-        rgba[interior].astype(np.int16)
-        + np.stack(
-            [
-                np.rint(-18.0 * source01).astype(np.int16),
-                np.rint(-40.0 * source01).astype(np.int16),
-                np.rint(-20.0 * source01).astype(np.int16),
-                np.zeros_like(source01, dtype=np.int16),
-            ],
-            axis=-1,
-        )[interior],
-        0,
-        255,
-    ).astype(np.uint8)
     rgba[ring] = np.array(profile["ring_color"], dtype=np.uint8)
 
     marker_width = float(profile["center_marker_width_points"]) * 0.5
