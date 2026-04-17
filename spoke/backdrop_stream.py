@@ -446,11 +446,6 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         1.0,
     ).astype(np.float32)
 
-    major_field = _contour_mask(
-        raw_field01,
-        float(profile["field_major_step"]),
-        float(profile["field_contour_halfwidth"]),
-    )
     longitudinal_hints = _contour_mask(
         longitudinal01,
         float(profile["longitudinal_hint_step"]),
@@ -465,10 +460,6 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < float(profile["ring_halfwidth"])
     interior = sdf < 0.0
-    rgba[interior & radial_hints] = np.array(profile["radial_hint_color"], dtype=np.uint8)
-    rgba[interior & longitudinal_hints] = np.array(profile["longitudinal_hint_color"], dtype=np.uint8)
-    rgba[interior & minor_field] = np.array(profile["field_minor_color"], dtype=np.uint8)
-    rgba[interior & major_field] = np.array(profile["field_color"], dtype=np.uint8)
     inside01 = np.clip(
         -sdf / max(min(content_width, content_height) * 0.5, 1.0),
         0.0,
@@ -493,6 +484,10 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         float(profile["field_minor_step"]),
         float(profile["field_minor_contour_halfwidth"]),
     ) & ~major_field
+    rgba[interior & radial_hints] = np.array(profile["radial_hint_color"], dtype=np.uint8)
+    rgba[interior & longitudinal_hints] = np.array(profile["longitudinal_hint_color"], dtype=np.uint8)
+    rgba[interior & minor_field] = np.array(profile["field_minor_color"], dtype=np.uint8)
+    rgba[interior & major_field] = np.array(profile["field_color"], dtype=np.uint8)
     source01 = np.clip(inside01 + curve_boost * inside01 * (1.0 - inside01), 0.0, 1.0).astype(np.float32)
     rgba[interior] = np.clip(
         rgba[interior].astype(np.int16)

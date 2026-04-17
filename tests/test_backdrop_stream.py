@@ -990,6 +990,48 @@ def test_optical_shell_capsule_coordinate_fields_follow_pill_geometry():
     assert radial[center_y, center_x] < radial[shoulder_y, body_x]
 
 
+def test_debug_shell_grid_ci_image_renders_without_unbound_field_masks(monkeypatch):
+    fake_foundation = types.ModuleType("Foundation")
+
+    class FakeNSData:
+        @staticmethod
+        def dataWithBytes_length_(payload, length):
+            return payload[:length]
+
+    fake_foundation.NSData = FakeNSData
+    monkeypatch.setitem(sys.modules, "Foundation", fake_foundation)
+
+    fake_quartz = types.ModuleType("Quartz")
+
+    class FakeCIImage:
+        @staticmethod
+        def imageWithCGImage_(image):
+            return ("ci-image", image)
+
+    fake_quartz.CIImage = FakeCIImage
+    fake_quartz.CGColorSpaceCreateDeviceRGB = lambda: "colorspace"
+    fake_quartz.CGDataProviderCreateWithCFData = lambda payload: ("provider", payload)
+    fake_quartz.CGImageCreate = lambda *args: "cg-image"
+    fake_quartz.kCGImageAlphaPremultipliedLast = 1
+    fake_quartz.kCGRenderingIntentDefault = 0
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    mod = _import_module()
+
+    image = mod._debug_shell_grid_ci_image(
+        _make_rect(0.0, 0.0, 680.0, 160.0),
+        {
+            "content_width_points": 680.0,
+            "content_height_points": 160.0,
+            "corner_radius_points": 36.0,
+            "core_magnification": 2.2,
+            "ring_amplitude_points": 96.0,
+        },
+    )
+
+    assert image == ("ci-image", "cg-image")
+
+
 def test_optical_shell_depth_remap_is_monotone_and_center_weighted():
     mod = _import_module()
 
