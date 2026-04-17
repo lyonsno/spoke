@@ -945,24 +945,48 @@ def test_optical_shell_corner_relief_preserves_flats_but_softens_corners():
     assert flat > corner + 0.12
 
 
-def test_debug_shell_grid_profile_uses_light_high_resolution_lines():
+def test_debug_shell_grid_profile_uses_capsule_native_contours():
     mod = _import_module()
 
     profile = mod._debug_shell_grid_profile({"debug_grid_spacing_points": 14.0})
 
     assert profile["spacing"] == 14.0
-    assert profile["major"] == 42.0
-    assert profile["checker_enabled"] is False
-    assert profile["minor_enabled"] is True
-    assert profile["minor_halfwidth"] == 0.9
-    assert profile["minor_color"] == (70, 70, 70, 90)
-    assert profile["major_halfwidth"] == 1.6
-    assert profile["major_color"] == (45, 45, 45, 190)
+    assert profile["longitudinal_major_step"] == 0.125
+    assert profile["longitudinal_minor_step"] == 0.0625
+    assert profile["radial_major_step"] == 0.125
+    assert profile["radial_minor_step"] == 0.0625
+    assert profile["contour_halfwidth"] == 0.012
+    assert profile["minor_contour_halfwidth"] == 0.006
+    assert profile["longitudinal_color"] == (45, 45, 45, 190)
+    assert profile["radial_color"] == (60, 60, 60, 120)
+    assert profile["minor_longitudinal_color"] == (70, 70, 70, 90)
+    assert profile["minor_radial_color"] == (80, 80, 80, 70)
     assert profile["ring_color"] == (90, 90, 90, 144)
     assert profile["ring_halfwidth"] == 0.75
     assert profile["center_marker_shape"] == "circle"
     assert profile["center_marker_width_points"] == 18.0
     assert profile["center_marker_height_points"] == 18.0
+
+
+def test_optical_shell_capsule_coordinate_fields_follow_pill_geometry():
+    mod = _import_module()
+
+    longitudinal, radial = mod._optical_shell_capsule_coordinate_fields(241, 101, 241.0, 101.0)
+
+    center_y = 50
+    center_x = 120
+    body_x = 180
+    cap_x = 230
+    shoulder_y = 20
+
+    assert longitudinal.shape == (101, 241)
+    assert radial.shape == (101, 241)
+    assert 0.0 <= longitudinal[center_y, center_x] < 0.01
+    assert 0.0 <= radial[center_y, center_x] < 0.01
+    assert 0.45 < longitudinal[center_y, body_x] < 0.55
+    assert 0.98 < longitudinal[center_y, cap_x] <= 1.0
+    assert longitudinal[center_y, body_x] < longitudinal[shoulder_y, cap_x] < longitudinal[center_y, cap_x]
+    assert radial[center_y, center_x] < radial[shoulder_y, body_x]
 
 
 def test_optical_shell_depth_remap_is_monotone_and_center_weighted():

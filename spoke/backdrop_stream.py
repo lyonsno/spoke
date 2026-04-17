@@ -247,6 +247,43 @@ def _optical_shell_capsule_longitudinal01(
     return body_longitudinal * (1.0 - cap_blend) + cap_longitudinal * cap_blend
 
 
+def _optical_shell_capsule_coordinate_fields(
+    field_width: int,
+    field_height: int,
+    content_width: float,
+    content_height: float,
+):
+    import numpy as np
+
+    width = max(int(field_width), 1)
+    height = max(int(field_height), 1)
+    content_width = max(float(content_width), 1.0)
+    content_height = max(float(content_height), 1.0)
+    xs = np.arange(width, dtype=np.float32)[None, :] + 0.5 - width * 0.5
+    ys = np.arange(height, dtype=np.float32)[:, None] + 0.5 - height * 0.5
+    spine_half = _optical_shell_capsule_spine_half_length(content_width, content_height)
+    capsule_radius = max(content_height * 0.5, 1.0)
+    abs_x = np.abs(xs)
+    join_sharpness = 0.75
+    spine_abs = -np.log(np.exp(-join_sharpness * abs_x) + np.exp(-join_sharpness * spine_half)) / join_sharpness
+    spine_x = np.sign(xs) * spine_abs
+    radial_x = xs - spine_x
+    total_half = spine_half + capsule_radius
+    body_longitudinal = np.clip(np.abs(spine_x) / total_half, 0.0, 1.0)
+    cap_angle = 1.0 - np.clip(
+        np.arctan2(np.abs(ys), np.maximum(np.abs(radial_x), 1e-4)) / (0.5 * math.pi),
+        0.0,
+        1.0,
+    )
+    cap_longitudinal = np.clip((spine_half + capsule_radius * cap_angle) / total_half, 0.0, 1.0)
+    cap_blend_start = max(spine_half - capsule_radius * 0.18, 0.0)
+    cap_blend_end = spine_half + capsule_radius * 0.12
+    cap_blend = _smoothstep01((abs_x - cap_blend_start) / max(cap_blend_end - cap_blend_start, 1e-3))
+    longitudinal = (body_longitudinal * (1.0 - cap_blend) + cap_longitudinal * cap_blend).astype(np.float32)
+    radial = np.clip(np.hypot(radial_x, ys) / capsule_radius, 0.0, 1.0).astype(np.float32)
+    return longitudinal, radial
+
+
 def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) -> float:
     coord = min(max(float(coord01), 0.0), 1.0)
     return 1.0 - _optical_shell_depth_remap(1.0 - coord, curve_boost)
@@ -317,13 +354,16 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
     spacing = max(float(shell_config.get("debug_grid_spacing_points", 18.0)), 6.0)
     return {
         "spacing": spacing,
-        "major": spacing * 3.0,
-        "checker_enabled": False,
-        "minor_enabled": True,
-        "minor_halfwidth": 0.9,
-        "minor_color": (70, 70, 70, 90),
-        "major_halfwidth": 1.6,
-        "major_color": (45, 45, 45, 190),
+        "longitudinal_major_step": 0.125,
+        "longitudinal_minor_step": 0.0625,
+        "radial_major_step": 0.125,
+        "radial_minor_step": 0.0625,
+        "contour_halfwidth": 0.012,
+        "minor_contour_halfwidth": 0.006,
+        "longitudinal_color": (45, 45, 45, 190),
+        "radial_color": (60, 60, 60, 120),
+        "minor_longitudinal_color": (70, 70, 70, 90),
+        "minor_radial_color": (80, 80, 80, 70),
         "ring_color": (90, 90, 90, 144),
         "ring_halfwidth": 0.75,
         "center_marker_shape": "circle",
@@ -373,41 +413,51 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     rgba = np.empty((height, width, 4), dtype=np.uint8)
     rgba[..., :] = np.array([210, 255, 240, 255], dtype=np.uint8)
 
-    xs = np.arange(width, dtype=np.float32)[None, :]
-    ys = np.arange(height, dtype=np.float32)[:, None]
     profile = _debug_shell_grid_profile(shell_config)
-    spacing = float(profile["spacing"])
-    major = float(profile["major"])
     center_x = width * 0.5
     center_y = height * 0.5
-
-    major_vertical = np.broadcast_to(
-        np.mod(np.abs(xs - center_x), major) < float(profile["major_halfwidth"]),
-        (height, width),
+    xs = np.arange(width, dtype=np.float32)[None, :] + 0.5 - center_x
+    ys = np.arange(height, dtype=np.float32)[:, None] + 0.5 - center_y
+    longitudinal01, radial01 = _optical_shell_capsule_coordinate_fields(
+        width,
+        height,
+        content_width,
+        content_height,
     )
-    major_horizontal = np.broadcast_to(
-        np.mod(np.abs(ys - center_y), major) < float(profile["major_halfwidth"]),
-        (height, width),
+
+    def _contour_mask(field, step, halfwidth):
+        normalized = field / max(float(step), 1e-4)
+        distance = np.abs(normalized - np.rint(normalized)) * float(step)
+        return distance < float(halfwidth)
+
+    major_longitudinal = _contour_mask(
+        longitudinal01,
+        float(profile["longitudinal_major_step"]),
+        float(profile["contour_halfwidth"]),
     )
-    major_grid = major_vertical | major_horizontal
-
-    if bool(profile.get("minor_enabled", False)):
-        minor_vertical = np.broadcast_to(
-            np.mod(np.abs(xs - center_x), spacing) < float(profile["minor_halfwidth"]),
-            (height, width),
-        )
-        minor_horizontal = np.broadcast_to(
-            np.mod(np.abs(ys - center_y), spacing) < float(profile["minor_halfwidth"]),
-            (height, width),
-        )
-        minor_grid = (minor_vertical | minor_horizontal) & ~major_grid
-        rgba[minor_grid] = np.array(profile["minor_color"], dtype=np.uint8)
-
-    rgba[major_grid] = np.array(profile["major_color"], dtype=np.uint8)
+    major_radial = _contour_mask(
+        radial01,
+        float(profile["radial_major_step"]),
+        float(profile["contour_halfwidth"]),
+    )
+    minor_longitudinal = _contour_mask(
+        longitudinal01,
+        float(profile["longitudinal_minor_step"]),
+        float(profile["minor_contour_halfwidth"]),
+    ) & ~major_longitudinal
+    minor_radial = _contour_mask(
+        radial01,
+        float(profile["radial_minor_step"]),
+        float(profile["minor_contour_halfwidth"]),
+    ) & ~major_radial
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < float(profile["ring_halfwidth"])
     interior = sdf < 0.0
+    rgba[interior & minor_longitudinal] = np.array(profile["minor_longitudinal_color"], dtype=np.uint8)
+    rgba[interior & minor_radial] = np.array(profile["minor_radial_color"], dtype=np.uint8)
+    rgba[interior & major_radial] = np.array(profile["radial_color"], dtype=np.uint8)
+    rgba[interior & major_longitudinal] = np.array(profile["longitudinal_color"], dtype=np.uint8)
     inside01 = np.clip(
         -sdf / max(min(content_width, content_height) * 0.5, 1.0),
         0.0,
@@ -437,8 +487,8 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     marker_width = float(profile["center_marker_width_points"]) * 0.5
     marker_height = float(profile["center_marker_height_points"]) * 0.5
     center_marker = (
-        ((xs - center_x) / max(marker_width, 1.0)) ** 2
-        + ((ys - center_y) / max(marker_height, 1.0)) ** 2
+        (xs / max(marker_width, 1.0)) ** 2
+        + (ys / max(marker_height, 1.0)) ** 2
     ) <= 1.0
     rgba[center_marker] = np.array(profile["center_marker_color"], dtype=np.uint8)
 
