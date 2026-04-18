@@ -10,6 +10,22 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
+## Documentation Surface Routing
+
+`README.md` is the public, product-facing surface for `spoke`; it is not the
+catch-all home for every real capability in the repo.
+
+When deciding whether documentation is missing, or when writing tests around
+documentation, consult `docs/documentation_surfaces.toml` first:
+
+- if a capability is routed to a developer or operator surface and marked
+  `public_readme = "omit"`, absence from `README.md` is intentional and should
+  not be turned into a regression finding or a phrase-presence test
+- phrase-based README tests are only valid for capabilities whose routed
+  audience actually includes the public README surface
+- if a capability seems real but has no routing entry, that is a routing/design
+  gap and should be surfaced as such rather than silently promoted into README
+
 ## Epistaxis Intent Model
 
 For `spoke`, do not treat `Repo/task` in `**Current intent**` as a single

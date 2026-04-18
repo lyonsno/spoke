@@ -209,13 +209,10 @@ developer territory and should inspect the codepaths in
 [`spoke/__main__.py`](spoke/__main__.py) and related modules rather than treat
 the README as a full configuration reference.
 
-## Developer Notes
-
-- `spoke` keeps a bounded post-transcription repair pass for recurring
-  project-specific vocabulary observed in real logs.
-- On local smoke surfaces, the menubar also exposes launch-target switching,
-  source/branch visibility, and the status HUD (`Terror Form`) so you can
-  confirm which runtime surface is actually live.
+This README is product-facing. Developer/operator-only capability routing lives
+in [`docs/developer-operator-surfaces.md`](docs/developer-operator-surfaces.md),
+and local smoke bring-up remains in
+[`docs/local-smoke-runbook.md`](docs/local-smoke-runbook.md).
 
 ## Development
 
@@ -245,7 +242,7 @@ spoke/
 ├── command_overlay.py    # assistant overlay
 ├── overlay.py            # live transcription overlay
 ├── glow.py               # screen-edge glow
-├── terraform_hud.py      # Terror Form HUD
+├── terraform_hud.py      # runtime status HUD
 ├── menubar.py            # status item and menu
 └── tool_dispatch.py      # local tool execution surface
 ```

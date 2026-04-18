@@ -1,0 +1,31 @@
+[capabilities.bounded_post_transcription_repair_pass]
+audience = "developer"
+canonical_surface = "docs/developer-operator-surfaces.md"
+public_readme = "omit"
+reason = "This repair pass is transparent to ordinary users and belongs with developer-facing transcription internals."
+revisit_when = "Promote it if users gain configuration, controls, or visible behavior tied to the repair pass."
+canonical_markers = [
+  "bounded post-transcription repair pass",
+  "project-specific vocabulary",
+]
+public_readme_absent_markers = [
+  "bounded post-transcription repair pass",
+  "project-specific vocabulary observed in real logs",
+]
+
+[capabilities.smoke_surface_runtime_affordances]
+audience = "operator"
+canonical_surface = "docs/developer-operator-surfaces.md"
+public_readme = "omit"
+reason = "These affordances exist to verify and identify local smoke surfaces rather than to explain the product to normal users."
+revisit_when = "Promote them if smoke/operator affordances become part of the default user workflow instead of specialist runtime legibility."
+canonical_markers = [
+  "launch-target switching",
+  "source/branch visibility",
+  "Terror Form",
+]
+public_readme_absent_markers = [
+  "launch-target switching",
+  "source/branch visibility",
+  "Terror Form",
+]
