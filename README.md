@@ -209,6 +209,14 @@ developer territory and should inspect the codepaths in
 [`spoke/__main__.py`](spoke/__main__.py) and related modules rather than treat
 the README as a full configuration reference.
 
+## Developer Notes
+
+- `spoke` keeps a bounded post-transcription repair pass for recurring
+  project-specific vocabulary observed in real logs.
+- On local smoke surfaces, the menubar also exposes launch-target switching,
+  source/branch visibility, and the status HUD (`Terror Form`) so you can
+  confirm which runtime surface is actually live.
+
 ## Development
 
 Run the test suite:
