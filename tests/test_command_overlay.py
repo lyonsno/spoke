@@ -204,6 +204,16 @@ class TestThinkingTimer:
 
         assert overlay._choose_backdrop_layer_class() is sentinel_layer_class
 
+    def test_choose_backdrop_layer_logs_overlay_creation(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer = None
+        info = MagicMock()
+        monkeypatch.setattr(mod.logger, "info", info)
+
+        assert overlay._choose_backdrop_layer_class() is mod.CALayer
+
+        info.assert_called_once_with("Command overlay created")
+
 
 class TestDismissAnimation:
     """Test the pop-then-shrink dismiss animation state machine."""

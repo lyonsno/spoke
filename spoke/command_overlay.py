@@ -767,21 +767,29 @@ class CommandOverlay(NSObject):
         self._update_backdrop_capture_geometry()
 
     def _choose_backdrop_layer_class(self):
+        layer_class = CALayer
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
-            return CALayer
+            logger.info("Command overlay created")
+            return layer_class
         renderer = getattr(self, "_backdrop_renderer", None)
-        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
+        blur_radius_points = getattr(
+            self,
+            "_backdrop_blur_radius_points",
+            _COMMAND_BACKDROP_BLUR_RADIUS,
+        )
         if renderer is not None and hasattr(renderer, "supports_sample_buffer_presentation"):
             try:
                 if renderer.supports_sample_buffer_presentation(blur_radius_points):
                     display_layer_class = _backdrop_display_layer_class()
                     if display_layer_class is not None:
-                        return display_layer_class
+                        layer_class = display_layer_class
             except Exception:
-                logger.debug("Command backdrop renderer sample-buffer capability check failed", exc_info=True)
-        return CALayer
-
+                logger.debug(
+                    "Command backdrop renderer sample-buffer capability check failed",
+                    exc_info=True,
+                )
         logger.info("Command overlay created")
+        return layer_class
 
     def _backdrop_layer_uses_sample_buffers(self) -> bool:
         return bool(getattr(self, "_backdrop_layer_is_sample_buffer_display", False))
