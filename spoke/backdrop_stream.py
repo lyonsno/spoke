@@ -77,31 +77,17 @@ kernel vec2 opticalShellWarp(
     float outside = step(0.0, sdf);
     float capsuleRadius = max(halfRect.y, 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 1.0);
-    float px = p.x;
-    float absPx = abs(px);
-    float joinSharpness = 0.75;
-    float spineAbs = -log(exp(-joinSharpness * absPx) + exp(-joinSharpness * spineHalf)) / joinSharpness;
-    float spineX = sign(px) * spineAbs;
-    float radialX = px - spineX;
-    vec2 radial = vec2(radialX, p.y);
-    float radialLen = length(radial);
-    float totalHalf = spineHalf + capsuleRadius;
-    float bodyLongitudinal01 = clamp(abs(spineX) / totalHalf, 0.0, 1.0);
-    float capAngle01 = 1.0 - clamp(atan2(abs(radial.y), max(abs(radialX), 1e-4)) / 1.5707963267948966, 0.0, 1.0);
-    float capLongitudinal01 = clamp((spineHalf + capsuleRadius * capAngle01) / totalHalf, 0.0, 1.0);
-    float capBlend = smoothstep(max(spineHalf - capsuleRadius * 0.18, 0.0), spineHalf + capsuleRadius * 0.12, absPx);
-    float longitudinal01 = mix(bodyLongitudinal01, capLongitudinal01, capBlend);
-    float radial01 = clamp(radialLen / capsuleRadius, 0.0, 1.0);
+    float rho = length(p);
+    vec2 dir = rho > 1e-4 ? p / rho : vec2(0.0, 1.0);
+    float supportRadius = spineHalf * abs(dir.x) + capsuleRadius;
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
-    float fieldPower = 3.0;
-    float axialWeight = 0.72;
-    float field01 = clamp(pow(pow(longitudinal01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
+    float field01 = clamp(rho / max(supportRadius, 1e-3), 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
-    vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;
+    vec2 src = c + p * scale;
     float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(sdf, 0.0) / max(tailWidth, 0.001));
     vec2 outsideSrc = d - n * outsideTail;
     return mix(src, outsideSrc, outside);
@@ -289,16 +275,48 @@ def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) ->
     return 1.0 - _optical_shell_depth_remap(1.0 - coord, curve_boost)
 
 
-def _optical_shell_capsule_field01(axial01: float, radial01: float) -> float:
-    axial = min(max(float(axial01), 0.0), 1.0)
-    radial = min(max(float(radial01), 0.0), 1.0)
-    field_power = 3.0
-    axial_weight = 0.72
-    return min(((axial * axial_weight) ** field_power + radial**field_power) ** (1.0 / field_power), 1.0)
+def _optical_shell_pill_support_radius(
+    offset_x: float,
+    offset_y: float,
+    content_width: float,
+    content_height: float,
+) -> float:
+    spine_half = _optical_shell_capsule_spine_half_length(content_width, content_height)
+    capsule_radius = max(float(content_height) * 0.5, 1.0)
+    rho = math.hypot(float(offset_x), float(offset_y))
+    dir_x = abs(float(offset_x)) / rho if rho > 1e-6 else 0.0
+    return spine_half * dir_x + capsule_radius
 
 
-def _optical_shell_debug_field01(axial01: float, radial01: float, curve_boost: float) -> float:
-    field01 = _optical_shell_capsule_field01(axial01, radial01)
+def _optical_shell_pill_field01(
+    offset_x: float,
+    offset_y: float,
+    content_width: float,
+    content_height: float,
+) -> float:
+    rho = math.hypot(float(offset_x), float(offset_y))
+    support_radius = _optical_shell_pill_support_radius(
+        offset_x,
+        offset_y,
+        content_width,
+        content_height,
+    )
+    return min(rho / max(support_radius, 1e-3), 1.0)
+
+
+def _optical_shell_debug_field01(
+    offset_x: float,
+    offset_y: float,
+    content_width: float,
+    content_height: float,
+    curve_boost: float,
+) -> float:
+    field01 = _optical_shell_pill_field01(
+        offset_x,
+        offset_y,
+        content_width,
+        content_height,
+    )
     return _optical_shell_center_bias_coordinate(field01, curve_boost)
 
 
@@ -424,47 +442,21 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     center_y = height * 0.5
     xs = np.arange(width, dtype=np.float32)[None, :] + 0.5 - center_x
     ys = np.arange(height, dtype=np.float32)[:, None] + 0.5 - center_y
-    longitudinal01, radial01 = _optical_shell_capsule_coordinate_fields(
-        width,
-        height,
-        content_width,
-        content_height,
-    )
-
     def _contour_mask(field, step, halfwidth):
         normalized = field / max(float(step), 1e-4)
         distance = np.abs(normalized - np.rint(normalized)) * float(step)
         return distance < float(halfwidth)
 
-    raw_field01 = np.clip(
-        (
-            (longitudinal01 * 0.82) ** 3.0
-            + radial01**3.0
-        )
-        ** (1.0 / 3.0),
-        0.0,
-        1.0,
-    ).astype(np.float32)
-
-    longitudinal_hints = _contour_mask(
-        longitudinal01,
-        float(profile["longitudinal_hint_step"]),
-        float(profile["hint_contour_halfwidth"]),
-    )
-    radial_hints = _contour_mask(
-        radial01,
-        float(profile["radial_hint_step"]),
-        float(profile["hint_contour_halfwidth"]),
-    )
+    spine_half = _optical_shell_capsule_spine_half_length(content_width, content_height)
+    capsule_radius = max(content_height * 0.5, 1.0)
+    rho = np.hypot(xs, ys).astype(np.float32)
+    dir_x = np.divide(np.abs(xs), np.maximum(rho, 1e-6))
+    support_radius = spine_half * dir_x + capsule_radius
+    raw_field01 = np.clip(rho / np.maximum(support_radius, 1e-3), 0.0, 1.0).astype(np.float32)
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < float(profile["ring_halfwidth"])
     interior = sdf < 0.0
-    inside01 = np.clip(
-        -sdf / max(min(content_width, content_height) * 0.5, 1.0),
-        0.0,
-        1.0,
-    ).astype(np.float32)
     curve_boost = _optical_shell_curve_boost(
         float(shell_config.get("core_magnification", 1.0)),
         float(shell_config.get("ring_amplitude_points", 12.0)),
@@ -484,8 +476,6 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         float(profile["field_minor_step"]),
         float(profile["field_minor_contour_halfwidth"]),
     ) & ~major_field
-    rgba[interior & radial_hints] = np.array(profile["radial_hint_color"], dtype=np.uint8)
-    rgba[interior & longitudinal_hints] = np.array(profile["longitudinal_hint_color"], dtype=np.uint8)
     rgba[interior & minor_field] = np.array(profile["field_minor_color"], dtype=np.uint8)
     rgba[interior & major_field] = np.array(profile["field_color"], dtype=np.uint8)
     rgba[ring] = np.array(profile["ring_color"], dtype=np.uint8)

@@ -1,6 +1,7 @@
 """Tests for the ScreenCaptureKit backdrop renderer seam."""
 
 import importlib
+import math
 import sys
 import types
 from types import SimpleNamespace
@@ -1098,34 +1099,44 @@ def test_optical_shell_capsule_longitudinal01_tracks_cap_angle():
     assert 0.76 < cap_shoulder < 0.86
 
 
-def test_optical_shell_capsule_field01_couples_axial_and_radial_position():
+def test_optical_shell_pill_support_radius_tracks_capsule_direction():
     mod = _import_module()
 
-    center = mod._optical_shell_capsule_field01(0.0, 0.0)
-    axial = mod._optical_shell_capsule_field01(0.6, 0.2)
-    radial = mod._optical_shell_capsule_field01(0.2, 0.6)
-    shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
+    horizontal = mod._optical_shell_pill_support_radius(120.0, 0.0, 240.0, 100.0)
+    vertical = mod._optical_shell_pill_support_radius(0.0, 30.0, 240.0, 100.0)
+    diagonal = mod._optical_shell_pill_support_radius(40.0, 20.0, 240.0, 100.0)
 
-    assert center == 0.0
-    assert 0.43 < axial < 0.46
-    assert 0.59 < radial < 0.62
-    assert axial < radial
-    assert shoulder > radial
-    assert 0.66 < shoulder < 0.69
+    assert horizontal == pytest.approx(120.0)
+    assert vertical == pytest.approx(50.0)
+    assert vertical < diagonal < horizontal
+
+
+def test_optical_shell_pill_field01_tracks_scaled_capsule_family():
+    mod = _import_module()
+
+    support = mod._optical_shell_pill_support_radius(40.0, 20.0, 240.0, 100.0)
+    scale = 0.5 * support / math.hypot(40.0, 20.0)
+    field_x = mod._optical_shell_pill_field01(60.0, 0.0, 240.0, 100.0)
+    field_y = mod._optical_shell_pill_field01(0.0, 25.0, 240.0, 100.0)
+    field_diag = mod._optical_shell_pill_field01(40.0 * scale, 20.0 * scale, 240.0, 100.0)
+
+    assert field_x == pytest.approx(0.5)
+    assert field_y == pytest.approx(0.5)
+    assert field_diag == pytest.approx(0.5, abs=1e-3)
 
 
 def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field():
     mod = _import_module()
 
-    raw_mid = mod._optical_shell_capsule_field01(0.6, 0.2)
-    debug_mid = mod._optical_shell_debug_field01(0.6, 0.2, 0.95)
-    raw_shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
-    debug_shoulder = mod._optical_shell_debug_field01(0.6, 0.6, 0.95)
+    raw_mid = mod._optical_shell_pill_field01(60.0, 0.0, 240.0, 100.0)
+    debug_mid = mod._optical_shell_debug_field01(60.0, 0.0, 240.0, 100.0, 0.95)
+    raw_shoulder = mod._optical_shell_pill_field01(75.0, 20.0, 240.0, 100.0)
+    debug_shoulder = mod._optical_shell_debug_field01(75.0, 20.0, 240.0, 100.0, 0.95)
 
-    assert 0.43 < raw_mid < 0.46
-    assert 0.20 < debug_mid < raw_mid
-    assert 0.66 < raw_shoulder < 0.69
-    assert 0.44 < debug_shoulder < raw_shoulder
+    assert raw_mid == pytest.approx(0.5)
+    assert 0.26 < debug_mid < raw_mid
+    assert raw_shoulder > raw_mid
+    assert 0.43 < debug_shoulder < raw_shoulder
     assert debug_mid < debug_shoulder
 
 
@@ -1149,22 +1160,13 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
 
     assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
     assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
-    assert "float joinSharpness = 0.75;" in source
-    assert "float spineAbs = -log(exp(-joinSharpness * absPx) + exp(-joinSharpness * spineHalf)) / joinSharpness;" in source
-    assert "float spineX = sign(px) * spineAbs;" in source
-    assert "float radialX = px - spineX;" in source
-    assert "float totalHalf = spineHalf + capsuleRadius;" in source
-    assert "float bodyLongitudinal01 = clamp(abs(spineX) / totalHalf, 0.0, 1.0);" in source
-    assert "float capAngle01 = 1.0 - clamp(atan2(abs(radial.y), max(abs(radialX), 1e-4)) / 1.5707963267948966, 0.0, 1.0);" in source
-    assert "float capLongitudinal01 = clamp((spineHalf + capsuleRadius * capAngle01) / totalHalf, 0.0, 1.0);" in source
-    assert "float capBlend = smoothstep(max(spineHalf - capsuleRadius * 0.18, 0.0), spineHalf + capsuleRadius * 0.12, absPx);" in source
-    assert "float longitudinal01 = mix(bodyLongitudinal01, capLongitudinal01, capBlend);" in source
-    assert "float fieldPower = 3.0;" in source
-    assert "float axialWeight = 0.72;" in source
-    assert "float field01 = clamp(pow(pow(longitudinal01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);" in source
+    assert "float rho = length(p);" in source
+    assert "vec2 dir = rho > 1e-4 ? p / rho : vec2(0.0, 1.0);" in source
+    assert "float supportRadius = spineHalf * abs(dir.x) + capsuleRadius;" in source
+    assert "float field01 = clamp(rho / max(supportRadius, 1e-3), 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
-    assert "vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;" in source
+    assert "vec2 src = c + p * scale;" in source
 
 
 def test_optical_shell_kernel_avoids_global_center_depth_mix():
