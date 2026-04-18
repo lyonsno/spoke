@@ -624,6 +624,100 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
         config.setDestinationRect_(_cgrect(_make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)))
 
 
+class QuartzBackdropRenderer:
+    """Best-effort snapshot renderer shared by overlay fallback paths."""
+
+    def __init__(self, *, log_label: str = "backdrop", seed_image_factory=None) -> None:
+        self._ci_context = None
+        self._log_label = log_label
+        self._seed_image_factory = seed_image_factory
+
+    def _context(self):
+        if self._ci_context is not None:
+            return self._ci_context
+        try:
+            from Quartz import CIContext
+        except Exception:
+            return None
+        try:
+            self._ci_context = CIContext.contextWithOptions_(None)
+        except Exception:
+            logger.debug("Failed to create CIContext for %s", self._log_label, exc_info=True)
+            self._ci_context = None
+        return self._ci_context
+
+    def _seed_image(self, *, capture_rect):
+        if self._seed_image_factory is None:
+            return None
+        try:
+            return self._seed_image_factory(self, capture_rect)
+        except Exception:
+            logger.debug("Failed to seed %s image", self._log_label, exc_info=True)
+            return None
+
+    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        seeded_image = self._seed_image(capture_rect=capture_rect)
+        if seeded_image is not None:
+            return seeded_image
+
+        try:
+            from Quartz import (
+                CGWindowListCreateImage,
+                kCGWindowListOptionOnScreenBelowWindow,
+            )
+        except Exception:
+            return None
+
+        rect = (
+            (capture_rect.origin.x, capture_rect.origin.y),
+            (capture_rect.size.width, capture_rect.size.height),
+        )
+        try:
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                window_number,
+                0,
+            )
+        except Exception:
+            logger.debug("%s snapshot capture failed", self._log_label.capitalize(), exc_info=True)
+            return None
+        if image is None or blur_radius_points <= 0.0:
+            return image
+
+        try:
+            from Quartz import CIImage, CIFilter
+        except Exception:
+            return image
+
+        try:
+            context = self._context()
+            if context is None:
+                return image
+            ci_image = CIImage.imageWithCGImage_(image)
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is None:
+                return image
+            blur.setDefaults()
+            blur.setValue_forKey_(ci_image, "inputImage")
+            blur.setValue_forKey_(blur_radius_points, "inputRadius")
+            output = blur.valueForKey_("outputImage")
+            if output is None:
+                return image
+            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
+                output = output.imageByCroppingToRect_(extent)
+            if extent is None and hasattr(output, "extent"):
+                extent = output.extent()
+            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
+                return image
+            blurred = context.createCGImage_fromRect_(output, extent)
+            return blurred or image
+        except Exception:
+            logger.debug("%s blur pass failed; using unblurred snapshot", self._log_label.capitalize(), exc_info=True)
+            return image
+
+
 def make_backdrop_renderer(screen, fallback_factory):
     if _screen_capture_kit_available():
         try:

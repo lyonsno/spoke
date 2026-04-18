@@ -36,6 +36,7 @@ from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
 from .backdrop_stream import (
+    QuartzBackdropRenderer,
     _apply_optical_shell_warp_ci_image,
     _debug_shell_grid_ci_image,
     make_backdrop_renderer,
@@ -405,99 +406,35 @@ def _command_backdrop_mask_falloff_width(scale: float) -> float:
     return max(scale, 1e-6) * max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
 
 
-class _QuartzBackdropRenderer:
-    """Best-effort snapshot renderer for the assistant backdrop prototype."""
+def _seed_command_debug_backdrop_image(renderer: QuartzBackdropRenderer, capture_rect):
+    if not (
+        _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+        and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE
+    ):
+        return None
+    context = renderer._context()
+    if context is None or not hasattr(context, "createCGImage_fromRect_"):
+        return None
+    shell_config = _command_optical_shell_config()
+    if shell_config is None:
+        return None
+    extent = NSMakeRect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
+    output = _debug_shell_grid_ci_image(extent, shell_config)
+    if output is None:
+        return None
+    output = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
+    try:
+        return context.createCGImage_fromRect_(output, extent)
+    except Exception:
+        logger.debug("Failed to seed debug shell grid image in Quartz backdrop renderer", exc_info=True)
+        return None
 
-    def __init__(self) -> None:
-        self._ci_context = None
 
-    def _context(self):
-        if self._ci_context is not None:
-            return self._ci_context
-        try:
-            from Quartz import CIContext
-        except Exception:
-            return None
-        try:
-            self._ci_context = CIContext.contextWithOptions_(None)
-        except Exception:
-            logger.debug("Failed to create CIContext for command backdrop", exc_info=True)
-            self._ci_context = None
-        return self._ci_context
-
-    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
-        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
-            context = self._context()
-            if context is not None and hasattr(context, "createCGImage_fromRect_"):
-                shell_config = _command_optical_shell_config()
-                if shell_config is not None:
-                    extent = NSMakeRect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
-                    output = _debug_shell_grid_ci_image(extent, shell_config)
-                    if output is not None:
-                        output = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
-                        try:
-                            image = context.createCGImage_fromRect_(output, extent)
-                        except Exception:
-                            logger.debug("Failed to seed debug shell grid image in Quartz backdrop renderer", exc_info=True)
-                            image = None
-                        if image is not None:
-                            return image
-        try:
-            from Quartz import (
-                CGWindowListCreateImage,
-                kCGWindowListOptionOnScreenBelowWindow,
-            )
-        except Exception:
-            return None
-
-        rect = (
-            (capture_rect.origin.x, capture_rect.origin.y),
-            (capture_rect.size.width, capture_rect.size.height),
-        )
-        try:
-            image = CGWindowListCreateImage(
-                rect,
-                kCGWindowListOptionOnScreenBelowWindow,
-                window_number,
-                0,
-            )
-        except Exception:
-            logger.debug("Backdrop snapshot capture failed", exc_info=True)
-            return None
-        if image is None or blur_radius_points <= 0.0:
-            return image
-
-        try:
-            from Quartz import CIImage, CIFilter
-        except Exception:
-            return image
-
-        try:
-            context = self._context()
-            if context is None:
-                return image
-            ci_image = CIImage.imageWithCGImage_(image)
-            blur = CIFilter.filterWithName_("CIGaussianBlur")
-            if blur is None:
-                return image
-            blur.setDefaults()
-            blur.setValue_forKey_(ci_image, "inputImage")
-            blur.setValue_forKey_(blur_radius_points, "inputRadius")
-            output = blur.valueForKey_("outputImage")
-            if output is None:
-                return image
-            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
-            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
-                output = output.imageByCroppingToRect_(extent)
-            if extent is None and hasattr(output, "extent"):
-                extent = output.extent()
-            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
-                return image
-            blurred = context.createCGImage_fromRect_(output, extent)
-            return blurred or image
-        except Exception:
-            logger.debug("Backdrop blur pass failed; using unblurred snapshot", exc_info=True)
-            return image
+def _QuartzBackdropRenderer():
+    return QuartzBackdropRenderer(
+        log_label="command backdrop",
+        seed_image_factory=_seed_command_debug_backdrop_image,
+    )
 
 
 def _dismiss_animation_state(elapsed_s: float) -> tuple[str, float, float, bool]:

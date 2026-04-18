@@ -249,6 +249,21 @@ def test_init_uses_shared_backdrop_renderer_factory(mock_pyobjc, monkeypatch):
     factory.assert_called_once()
 
 
+def test_init_fallback_factory_uses_shared_quartz_renderer(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+
+    def factory(screen, fallback_factory):
+        return fallback_factory()
+
+    monkeypatch.setattr(overlay_module, "make_backdrop_renderer", factory)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+
+    from spoke.backdrop_stream import QuartzBackdropRenderer
+
+    assert isinstance(overlay._backdrop_renderer, QuartzBackdropRenderer)
+
+
 def test_install_backdrop_frame_callback_pushes_live_frames_into_layer(mock_pyobjc):
     overlay_module = _import_overlay(mock_pyobjc)
     overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)

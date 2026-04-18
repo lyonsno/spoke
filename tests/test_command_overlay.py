@@ -147,6 +147,21 @@ class TestThinkingTimer:
         assert overlay._backdrop_renderer is sentinel
         factory.assert_called_once()
 
+    def test_init_fallback_factory_uses_shared_quartz_renderer(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+
+        def factory(screen, fallback_factory):
+            return fallback_factory()
+
+        monkeypatch.setattr(mod, "make_backdrop_renderer", factory)
+
+        overlay = mod.CommandOverlay.alloc().initWithScreen_(MagicMock())
+
+        from spoke.backdrop_stream import QuartzBackdropRenderer
+
+        assert isinstance(overlay._backdrop_renderer, QuartzBackdropRenderer)
+
     def test_install_backdrop_frame_callback_pushes_live_frames_into_layer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._backdrop_renderer = MagicMock()

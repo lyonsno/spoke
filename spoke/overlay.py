@@ -36,7 +36,7 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
-from .backdrop_stream import make_backdrop_renderer
+from .backdrop_stream import QuartzBackdropRenderer, make_backdrop_renderer
 from .dedup import ontology_term_spans
 
 logger = logging.getLogger(__name__)
@@ -413,83 +413,8 @@ def _preview_backdrop_rms_style(base_blur_radius_points: float, activity: float)
     )
 
 
-class _QuartzBackdropRenderer:
-    """Best-effort snapshot renderer for overlay backdrop blur prototypes."""
-
-    def __init__(self) -> None:
-        self._ci_context = None
-
-    def _context(self):
-        if self._ci_context is not None:
-            return self._ci_context
-        try:
-            from Quartz import CIContext
-        except Exception:
-            return None
-        try:
-            self._ci_context = CIContext.contextWithOptions_(None)
-        except Exception:
-            logger.debug("Failed to create CIContext for preview backdrop", exc_info=True)
-            self._ci_context = None
-        return self._ci_context
-
-    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
-        try:
-            from Quartz import (
-                CGWindowListCreateImage,
-                kCGWindowListOptionOnScreenBelowWindow,
-            )
-        except Exception:
-            return None
-
-        rect = (
-            (capture_rect.origin.x, capture_rect.origin.y),
-            (capture_rect.size.width, capture_rect.size.height),
-        )
-        try:
-            image = CGWindowListCreateImage(
-                rect,
-                kCGWindowListOptionOnScreenBelowWindow,
-                window_number,
-                0,
-            )
-        except Exception:
-            logger.debug("Preview backdrop snapshot capture failed", exc_info=True)
-            return None
-        if image is None or blur_radius_points <= 0.0:
-            return image
-
-        try:
-            from Quartz import CIImage, CIFilter
-        except Exception:
-            return image
-
-        try:
-            context = self._context()
-            if context is None:
-                return image
-            ci_image = CIImage.imageWithCGImage_(image)
-            blur = CIFilter.filterWithName_("CIGaussianBlur")
-            if blur is None:
-                return image
-            blur.setDefaults()
-            blur.setValue_forKey_(ci_image, "inputImage")
-            blur.setValue_forKey_(blur_radius_points, "inputRadius")
-            output = blur.valueForKey_("outputImage")
-            if output is None:
-                return image
-            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
-            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
-                output = output.imageByCroppingToRect_(extent)
-            if extent is None and hasattr(output, "extent"):
-                extent = output.extent()
-            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
-                return image
-            blurred = context.createCGImage_fromRect_(output, extent)
-            return blurred or image
-        except Exception:
-            logger.debug("Preview backdrop blur pass failed; using unblurred snapshot", exc_info=True)
-            return image
+def _QuartzBackdropRenderer():
+    return QuartzBackdropRenderer(log_label="preview backdrop")
 
 
 def _build_ridge_image(field_width: float, field_height: float,
