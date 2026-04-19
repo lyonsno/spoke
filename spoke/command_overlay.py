@@ -554,13 +554,17 @@ class _QuartzBackdropRenderer:
                         )
 
                         # Build inset capsule alpha mask.
+                        # Must match the kernel's capsule geometry: radius = halfHeight,
+                        # spineHalf = halfWidth - radius. Then inset uniformly.
                         mw = max(1, int(round(extent.size.width)))
                         mh = max(1, int(round(extent.size.height)))
                         content_w = float(shell_config.get("content_width_points", mw))
                         content_h = float(shell_config.get("content_height_points", mh))
-                        inset_factor = 0.55  # inner capsule is 55% of the full one
-                        inner_radius = max(content_h * 0.5 * inset_factor, 1.0)
-                        inner_spine = max(content_w * 0.5 * inset_factor - inner_radius, 0.0)
+                        outer_radius = max(content_h * 0.5, 1.0)
+                        outer_spine = max(content_w * 0.5 - outer_radius, 0.0)
+                        inset_px = outer_radius * 0.45  # inset by 45% of radius
+                        inner_radius = max(outer_radius - inset_px, 1.0)
+                        inner_spine = max(outer_spine, 0.0)  # spine stays same length
                         mxs = np.arange(mw, dtype=np.float32)[None, :] + 0.5 - mw * 0.5
                         mys = np.arange(mh, dtype=np.float32)[:, None] + 0.5 - mh * 0.5
                         inner_sdf = (np.hypot(
