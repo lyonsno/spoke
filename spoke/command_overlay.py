@@ -1759,15 +1759,25 @@ class CommandOverlay(NSObject):
         try:
             from .overlay import _glow_fill_alpha
 
-            cache_key = (width, height, scale)
+            cache_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
             cached = getattr(self, '_sdf_cache_key', None)
             if cached == cache_key:
                 fill_alpha = self._cached_fill_alpha
             else:
-                sdf = _overlay_rounded_rect_sdf(
-                    total_w, total_h, width, height,
-                    _OVERLAY_CORNER_RADIUS, scale,
-                )
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                    import numpy as np
+                    pw, ph = max(int(total_w), 1), max(int(total_h), 1)
+                    xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
+                    ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
+                    capsule_radius = max(height * 0.5, 1.0)
+                    spine_half = max(width * 0.5 - capsule_radius, 0.0)
+                    spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
+                    sdf = (np.hypot(spine_dist, ys) - capsule_radius).astype(np.float32)
+                else:
+                    sdf = _overlay_rounded_rect_sdf(
+                        total_w, total_h, width, height,
+                        _OVERLAY_CORNER_RADIUS, scale,
+                    )
                 fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
                 self._sdf_cache_key = cache_key
                 self._cached_fill_alpha = fill_alpha
