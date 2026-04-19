@@ -107,7 +107,7 @@ kernel vec2 opticalShellWarp(
     // near the rim) while keeping the mapping strictly monotonic —
     // no S-curve reversal that sucks content back inward.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float field01 = mix(0.55, 1.0, pow(rawField, 0.5));
+    float field01 = mix(0.72, 1.0, pow(rawField, 0.5));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
@@ -118,8 +118,8 @@ kernel vec2 opticalShellWarp(
     if (capsuleSdf <= 0.0) {
         src = c + p * scale;
     } else {
-        float pushAmount = curveBoost * capsuleRadius * 0.15
-            * exp(-capsuleSdf * 0.4);
+        float pushAmount = curveBoost * capsuleRadius * 0.2
+            * exp(-capsuleSdf * 0.8);
         src = d + capsuleN * pushAmount;
     }
     return src;
