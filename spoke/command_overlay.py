@@ -666,7 +666,7 @@ class CommandOverlay(NSObject):
         screen_frame = self._screen.frame()
         sw = screen_frame.size.width
 
-        f = _OUTER_FEATHER
+        f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
         y = _OVERLAY_BOTTOM_MARGIN - f
         win_w = _OVERLAY_WIDTH + 2 * f
@@ -968,7 +968,7 @@ class CommandOverlay(NSObject):
         # Reset geometry
         screen_frame = self._screen.frame()
         sw = screen_frame.size.width
-        f = _OUTER_FEATHER
+        f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
         self._window.setFrame_display_animate_(
             NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
@@ -1751,7 +1751,7 @@ class CommandOverlay(NSObject):
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
             _fill_field_to_image, _BG_COLOR_DARK,
         )
-        f = _OUTER_FEATHER
+        f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
@@ -2021,7 +2021,7 @@ class CommandOverlay(NSObject):
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
-            f = _OUTER_FEATHER
+            f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
             win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
             if abs(win_frame.size.height - new_win_h) > 4:
