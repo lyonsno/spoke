@@ -1778,7 +1778,10 @@ class CommandOverlay(NSObject):
                         total_w, total_h, width, height,
                         _OVERLAY_CORNER_RADIUS, scale,
                     )
-                fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                    fill_alpha = _interior_fill_alpha(sdf, edge_softness=1.5 * scale)
+                else:
+                    fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
                 self._sdf_cache_key = cache_key
                 self._cached_fill_alpha = fill_alpha
 

@@ -105,9 +105,12 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
 
-    // Floor field01 to create a wide center plateau.
-    // Higher floor = thicker central band that content flows around.
-    float field01 = max(clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0), 0.35);
+    // Smoothly remap field so the center plateau is wide and the
+    // transition to the rim is gradual, not a hard clamp.
+    float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
+    // smoothstep from 0→0.5 of raw field maps to 0.35→0.5 of output,
+    // creating a wide magnified center zone with smooth falloff.
+    float field01 = mix(0.35, 1.0, smoothstep(0.0, 1.0, rawField));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
