@@ -405,6 +405,52 @@ def _command_backdrop_mask_falloff_width(scale: float) -> float:
     return max(scale, 1e-6) * max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
 
 
+def _guide_grid_ci_image(extent):
+    """Faint grid overlay for visual reference during smoke testing."""
+    import numpy as np
+    from Foundation import NSData
+    from Quartz import (
+        CIImage,
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    width = max(1, int(round(extent.size.width)))
+    height = max(1, int(round(extent.size.height)))
+    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+
+    # Horizontal lines — roughly 10 across the height.
+    h_step = max(height // 10, 8)
+    for y in range(0, height, h_step):
+        rgba[y, :] = (255, 255, 255, 28)
+
+    # Vertical lines — roughly 30 across the width.
+    v_step = max(width // 30, 8)
+    for x in range(0, width, v_step):
+        rgba[:, x] = (255, 255, 255, 28)
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        width,
+        height,
+        8,
+        32,
+        width * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    ci_image = CIImage.imageWithCGImage_(image)
+    return ci_image.imageByCroppingToRect_(extent) if hasattr(ci_image, "imageByCroppingToRect_") else ci_image
+
+
 class _QuartzBackdropRenderer:
     """Best-effort snapshot renderer for the assistant backdrop prototype."""
 
@@ -491,6 +537,25 @@ class _QuartzBackdropRenderer:
                         output = warped
                         if hasattr(output, "imageByCroppingToRect_"):
                             output = output.imageByCroppingToRect_(extent)
+
+                    # Faint guide grid over the warped backdrop.
+                    if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
+                        grid_image = _guide_grid_ci_image(extent)
+                        if grid_image is not None:
+                            try:
+                                from Quartz import CIFilter
+                                comp = CIFilter.filterWithName_("CISourceOverCompositing")
+                                if comp is not None:
+                                    comp.setDefaults()
+                                    comp.setValue_forKey_(grid_image, "inputImage")
+                                    comp.setValue_forKey_(output, "inputBackgroundImage")
+                                    composited = comp.valueForKey_("outputImage")
+                                    if composited is not None:
+                                        output = composited
+                                        if hasattr(output, "imageByCroppingToRect_"):
+                                            output = output.imageByCroppingToRect_(extent)
+                            except Exception:
+                                pass
 
             if not hasattr(context, "createCGImage_fromRect_"):
                 return image
