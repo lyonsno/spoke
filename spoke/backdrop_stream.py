@@ -115,10 +115,16 @@ kernel vec2 opticalShellWarp(
     if (capsuleSdf <= 0.0) {
         src = c + p * scale;
     } else {
+        // Attenuate push near capsule tips where gradient curvature
+        // is highest — prevents sampling far outside the image.
+        float tipDist = max(abs(p.x) - spineHalf, 0.0);
+        float tipFade = 1.0 - smoothstep(0.0, capsuleRadius * 0.8, tipDist);
         float pushDist = curveBoost * capsuleRadius * 0.25
-            * exp(-capsuleSdf * 0.12);
+            * exp(-capsuleSdf * 0.12) * tipFade;
         src = d - capsuleN * pushDist;
     }
+    // Clamp to image bounds to avoid sampling garbage at edges.
+    src = clamp(src, vec2(0.0, 0.0), vec2(width, height));
     return src;
 }
 """
