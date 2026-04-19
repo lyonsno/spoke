@@ -1041,6 +1041,10 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 ],
             )
 
+            # CoreMedia string constant — hardcode rather than loading via
+            # objc.loadBundleVariables which doesn't reliably resolve string consts.
+            _kCMSampleAttachmentKey_DisplayImmediately = "DisplayImmediately"
+
             _BRIDGE_STATE = {
                 "SCShareableContent": objc.lookUpClass("SCShareableContent"),
                 "SCContentFilter": objc.lookUpClass("SCContentFilter"),
@@ -1053,7 +1057,7 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "CMSampleBufferGetPresentationTimeStamp": CMSampleBufferGetPresentationTimeStamp,
                 "CMSampleBufferGetDuration": CMSampleBufferGetDuration,
                 "CMSampleBufferGetSampleAttachmentsArray": CMSampleBufferGetSampleAttachmentsArray,
-                "kCMSampleAttachmentKey_DisplayImmediately": kCMSampleAttachmentKey_DisplayImmediately,
+                "kCMSampleAttachmentKey_DisplayImmediately": _kCMSampleAttachmentKey_DisplayImmediately,
             }
         except Exception:
             logger.info("ScreenCaptureKit bridge load FAILED", exc_info=True)
