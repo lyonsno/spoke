@@ -1470,7 +1470,14 @@ class _ScreenCaptureKitBackdropRenderer:
             if extent is None:
                 return
             output = ci_image
-            if self._blur_radius_points > 0.0:
+            # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
+            if optical_shell_config is not None:
+                warped = _apply_optical_shell_warp_ci_image(output, extent, optical_shell_config)
+                if warped is not None:
+                    output = warped
+                    if hasattr(output, "imageByCroppingToRect_"):
+                        output = output.imageByCroppingToRect_(extent)
+            elif self._blur_radius_points > 0.0:
                 blur = CIFilter.filterWithName_("CIGaussianBlur")
                 if blur is not None:
                     blur.setDefaults()
