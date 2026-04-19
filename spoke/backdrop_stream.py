@@ -88,8 +88,18 @@ kernel vec2 opticalShellWarp(
     float capsuleRadius = max(halfRect.y, 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 0.0);
 
-    // --- capsule SDF and gradient (outward normal) ---
+    // --- capsule SDF (cheap — one call) ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
+
+    // Early bailout: far exterior (identity) and deep interior
+    // (will be blurred over anyway). Only the active band around
+    // the boundary needs the expensive gradient + remap work.
+    float activeOuterLimit = capsuleRadius * 0.5;  // ~40px outside
+    float activeInnerLimit = capsuleRadius * 0.45; // ~36px inside from boundary
+    if (capsuleSdf > activeOuterLimit) return d;   // far exterior: identity
+    if (capsuleSdf < -activeInnerLimit) return c;  // deep interior: center (blurred away)
+
+    // --- capsule gradient (only computed in the active band) ---
     float eps = max(1.0, bandWidth * __OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__);
     float csdx = sdCapsule(p + vec2(eps, 0.0), spineHalf, capsuleRadius)
         - sdCapsule(p - vec2(eps, 0.0), spineHalf, capsuleRadius);
@@ -103,27 +113,18 @@ kernel vec2 opticalShellWarp(
     );
 
     // Remap field with a floor and monotonic curve.
-    // pow(rawField, 0.5) = sqrt pushes values toward 1 (more content
-    // near the rim) while keeping the mapping strictly monotonic —
-    // no S-curve reversal that sucks content back inward.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
     float field01 = mix(0.90, 1.0, pow(rawField, 0.35));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Interior: radial scaling from center (evacuation).
-    // Exterior: displace along capsule normal (away from surface).
-    // Content flows around the capsule — pushed away from the nearest
-    // point on the surface, not toward/away from center.
+    // Interior: radial scaling. Exterior: normal displacement.
     vec2 src;
     if (capsuleSdf <= 0.0) {
         src = c + p * scale;
     } else {
         float pushDist = curveBoost * capsuleRadius * 0.25
             * exp(-capsuleSdf * 0.12);
-        // capsuleN points outward from surface.  Displacing the
-        // *source* lookup inward (opposite to normal) makes the
-        // rendered content appear to have been pushed outward.
         src = d - capsuleN * pushDist;
     }
     return src;
