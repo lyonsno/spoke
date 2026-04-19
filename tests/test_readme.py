@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 README = Path(__file__).resolve().parents[1] / "README.md"
+REPO_ROOT = README.parent
 DOCS = README.parent / "docs"
 MANIFEST = DOCS / "documentation_surfaces.toml"
 
@@ -14,6 +15,19 @@ def read_readme() -> str:
 def load_manifest() -> dict:
     with MANIFEST.open("rb") as fh:
         return tomllib.load(fh)
+
+
+def canonical_surface_path(canonical_surface: str) -> Path:
+    surface_path = (REPO_ROOT / canonical_surface).resolve()
+    repo_root = REPO_ROOT.resolve()
+    if not surface_path.is_relative_to(repo_root):
+        raise ValueError(f"canonical surface escapes repo root: {canonical_surface}")
+    return surface_path
+
+
+def test_canonical_surface_paths_are_repo_relative():
+    assert canonical_surface_path("README.md") == README
+    assert canonical_surface_path("docs/local-smoke-runbook.md") == DOCS / "local-smoke-runbook.md"
 
 
 def test_topothesia_manifest_routes_non_public_spoke_capabilities():
@@ -36,8 +50,14 @@ def test_omitted_capabilities_live_off_readme_in_their_canonical_surfaces():
     text = read_readme()
     manifest = load_manifest()
 
-    repair_surface = DOCS / manifest["capabilities"]["bounded_post_transcription_repair_pass"]["canonical_surface"].split("/", 1)[1]
-    smoke_surface = DOCS / manifest["capabilities"]["smoke_surface_runtime_affordances"]["canonical_surface"].split("/", 1)[1]
+    repair_surface = canonical_surface_path(
+        manifest["capabilities"]["bounded_post_transcription_repair_pass"]["canonical_surface"]
+    )
+    smoke_surface = canonical_surface_path(
+        manifest["capabilities"]["smoke_surface_runtime_affordances"]["canonical_surface"]
+    )
+    assert repair_surface.is_file()
+    assert smoke_surface.is_file()
 
     assert "bounded post-transcription repair pass" not in text.lower()
     assert "launch-target switching" not in text
