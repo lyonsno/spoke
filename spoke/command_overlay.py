@@ -587,27 +587,54 @@ class _QuartzBackdropRenderer:
                         )
                         mask_ci = CIImage.imageWithCGImage_(mask_cg)
 
-                        # Blur the ORIGINAL capture (pre-warp) for a clean center wash.
-                        blur = CIFilter.filterWithName_("CIGaussianBlur")
-                        if blur is not None:
-                            blur.setDefaults()
-                            blur.setValue_forKey_(ci_image, "inputImage")
-                            blur.setValue_forKey_(32.0, "inputRadius")
-                            blurred = blur.valueForKey_("outputImage")
-                            if blurred is not None and hasattr(blurred, "imageByCroppingToRect_"):
-                                blurred = blurred.imageByCroppingToRect_(extent)
-                                # Composite: blurred center over warped backdrop using mask
-                                blend = CIFilter.filterWithName_("CIBlendWithMask")
-                                if blend is not None:
-                                    blend.setDefaults()
-                                    blend.setValue_forKey_(blurred, "inputImage")
-                                    blend.setValue_forKey_(output, "inputBackgroundImage")
-                                    blend.setValue_forKey_(mask_ci, "inputMaskImage")
-                                    blended = blend.valueForKey_("outputImage")
-                                    if blended is not None:
-                                        output = blended
-                                        if hasattr(output, "imageByCroppingToRect_"):
-                                            output = output.imageByCroppingToRect_(extent)
+                        # Downsample the original capture aggressively, warp it
+                        # (cheap — few pixels), then upsample. The upsample
+                        # itself acts as the blur — no Gaussian pass needed.
+                        from Quartz import CIFilter
+                        downsample_factor = 0.08  # 12.5x reduction
+                        # Downsample
+                        down_transform = (
+                            ci_image.imageByApplyingTransform_((downsample_factor, 0, 0, downsample_factor, 0, 0))
+                            if hasattr(ci_image, "imageByApplyingTransform_")
+                            else None
+                        )
+                        if down_transform is not None:
+                            small_extent = down_transform.extent() if hasattr(down_transform, "extent") else None
+                            if small_extent is not None:
+                                # Warp the tiny image
+                                small_config = dict(shell_config)
+                                for k in ("content_width_points", "content_height_points",
+                                          "corner_radius_points", "band_width_points", "tail_width_points"):
+                                    if k in small_config:
+                                        small_config[k] = float(small_config[k]) * downsample_factor
+                                small_warped = _apply_optical_shell_warp_ci_image(
+                                    down_transform, small_extent, small_config
+                                )
+                                if small_warped is not None:
+                                    if hasattr(small_warped, "imageByCroppingToRect_"):
+                                        small_warped = small_warped.imageByCroppingToRect_(small_extent)
+                                    # Upsample back — bilinear interpolation = free blur
+                                    up_scale = 1.0 / downsample_factor
+                                    up_transform = (
+                                        small_warped.imageByApplyingTransform_((up_scale, 0, 0, up_scale, 0, 0))
+                                        if hasattr(small_warped, "imageByApplyingTransform_")
+                                        else None
+                                    )
+                                    if up_transform is not None:
+                                        if hasattr(up_transform, "imageByCroppingToRect_"):
+                                            up_transform = up_transform.imageByCroppingToRect_(extent)
+                                        # Composite: blurred-warped center over sharp-warped rim
+                                        blend = CIFilter.filterWithName_("CIBlendWithMask")
+                                        if blend is not None:
+                                            blend.setDefaults()
+                                            blend.setValue_forKey_(up_transform, "inputImage")
+                                            blend.setValue_forKey_(output, "inputBackgroundImage")
+                                            blend.setValue_forKey_(mask_ci, "inputMaskImage")
+                                            blended = blend.valueForKey_("outputImage")
+                                            if blended is not None:
+                                                output = blended
+                                                if hasattr(output, "imageByCroppingToRect_"):
+                                                    output = output.imageByCroppingToRect_(extent)
                     except Exception:
                         pass
 
