@@ -56,8 +56,11 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
 }
 
 float depthRemap(float inside01, float curveBoost) {
+    // Power-curve remap: exponent < 1 evacuates the center aggressively.
+    // curveBoost in [0, 0.95] maps to exponent in [1.0, 0.1].
     float x = clamp(inside01, 0.0, 1.0);
-    return clamp(x + curveBoost * x * x * (1.0 - x), 0.0, 1.0);
+    float exponent = max(1.0 - curveBoost * 0.95, 0.05);
+    return pow(x, exponent);
 }
 
 kernel vec2 opticalShellWarp(
@@ -104,10 +107,9 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
 
-    // Anisotropic scaling: apply warp strongly on Y (vertical push),
-    // lightly on X.  This rotates the dominant displacement 90 degrees
-    // so what was horizontal compression becomes vertical expansion.
-    vec2 src = c + vec2(p.x * mix(1.0, scale, 0.15),
+    // Anisotropic scaling: full warp on Y, partial on X.
+    // Vertical push dominates but horizontal still contributes.
+    vec2 src = c + vec2(p.x * mix(1.0, scale, 0.55),
                         p.y * scale);
 
     float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(capsuleSdf, 0.0) / max(tailWidth, 0.001));
