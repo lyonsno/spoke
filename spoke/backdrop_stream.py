@@ -103,37 +103,14 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
 
-    // Extend field outside the capsule boundary with steep exponential
-    // decay so the effect bleeds a few pixels outward with sharp attack.
-    // Inside: field01 goes from 0 (center) to 1 (boundary) as before.
-    // Outside: field01 continues above 1.0, decaying toward a max.
-    float bleedWidth = max(bandWidth * 0.5, 4.0);
-    float field01;
-    if (capsuleSdf <= 0.0) {
-        field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    } else {
-        // Sharp exponential attack outside the boundary.
-        float outsideFade = exp(-capsuleSdf / bleedWidth);
-        field01 = 1.0 + outsideFade * 0.15;
-    }
-
     // Floor field01 to prevent the center fold singularity.
-    // At the center, field01 → 0 and scale = sourceField01/field01
-    // diverges, creating a seam where the gradient flips direction.
-    // The floor keeps the ratio finite and the fold soft.
-    float fieldClamped = max(clamp(field01, 0.0, 1.0), 0.08);
-    float sourceField01 = 1.0 - depthRemap(1.0 - fieldClamped, curveBoost);
-    // Outside the boundary, blend scale toward 1.0 (identity).
-    float interiorScale = sourceField01 / fieldClamped;
-    float outsideFactor = field01 > 1.0
-        ? exp(-max(capsuleSdf, 0.0) / bleedWidth) : 0.0;
-    float scale = field01 <= 1.0
-        ? interiorScale
-        : mix(1.0, interiorScale, outsideFactor);
+    float field01 = max(clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0), 0.08);
+    float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
+    float scale = sourceField01 / field01;
 
-    // Full isotropic scaling — content flows around center equally
-    // in all directions.
-    vec2 src = c + p * scale;
+    // Inside the capsule: full warp. Outside: identity (no effect).
+    float outside = step(0.0, capsuleSdf);
+    vec2 src = c + p * mix(scale, 1.0, outside);
     return src;
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))

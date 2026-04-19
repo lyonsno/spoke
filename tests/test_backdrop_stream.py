@@ -1183,8 +1183,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
     assert "float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);" in source
     assert "depthRemap" in source
-    assert "bleedWidth" in source
-    assert "p * scale" in source
+    assert "outside" in source
+    assert "p * mix(scale, 1.0, outside)" in source
 
 
 def test_optical_shell_kernel_avoids_global_center_depth_mix():
