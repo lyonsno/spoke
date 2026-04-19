@@ -1184,8 +1184,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);" in source
     assert "float field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
-    assert "float displacement = (field01 - sourceField01) * capsuleRadius;" in source
-    assert "vec2 src = d + capsuleNormal * displacement;" in source
+    assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
+    assert "p.y * scale" in source
 
 
 def test_optical_shell_kernel_avoids_global_center_depth_mix():

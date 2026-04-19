@@ -82,13 +82,14 @@ kernel vec2 opticalShellWarp(
     // --- capsule SDF for the interior field ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
 
-    // --- capsule gradient (inward normal) via finite differences ---
+    // --- rounded-rect SDF for outside-tail normals only ---
+    float rrSdf = sdRoundRect(p, halfRect, cornerRadius);
     float eps = max(1.0, bandWidth * __OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__);
-    float csdx = sdCapsule(p + vec2(eps, 0.0), spineHalf, capsuleRadius)
-        - sdCapsule(p - vec2(eps, 0.0), spineHalf, capsuleRadius);
-    float csdy = sdCapsule(p + vec2(0.0, eps), spineHalf, capsuleRadius)
-        - sdCapsule(p - vec2(0.0, eps), spineHalf, capsuleRadius);
-    vec2 capsuleNormal = normalize(vec2(csdx, csdy) + vec2(1e-4, 1e-4));
+    float sdfx = sdRoundRect(p + vec2(eps, 0.0), halfRect, cornerRadius)
+        - sdRoundRect(p - vec2(eps, 0.0), halfRect, cornerRadius);
+    float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
+        - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
+    vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, capsuleSdf);
 
     float curveBoost = min(
@@ -101,16 +102,16 @@ kernel vec2 opticalShellWarp(
     // value of field01 traces a pill — nested pills all the way in.
     float field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
+    float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
 
-    // Displacement along capsule normal rather than radial from center.
-    // This pushes content outward along the pill's own geometry: horizontal
-    // in the body, curving into the caps.  The magnitude is the difference
-    // between where this contour is and where the remap says to sample.
-    float displacement = (field01 - sourceField01) * capsuleRadius;
-    vec2 src = d + capsuleNormal * displacement;
+    // Anisotropic scaling: apply warp strongly on Y (vertical push),
+    // lightly on X.  This rotates the dominant displacement 90 degrees
+    // so what was horizontal compression becomes vertical expansion.
+    vec2 src = c + vec2(p.x * mix(1.0, scale, 0.15),
+                        p.y * scale);
 
     float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(capsuleSdf, 0.0) / max(tailWidth, 0.001));
-    vec2 outsideSrc = d - capsuleNormal * outsideTail;
+    vec2 outsideSrc = d - n * outsideTail;
     return mix(src, outsideSrc, outside);
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
