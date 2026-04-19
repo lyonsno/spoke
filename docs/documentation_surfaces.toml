@@ -1,0 +1,17 @@
+[capabilities.bounded_post_transcription_repair_pass]
+audience = "developer"
+canonical_surface = "docs/developer-operator-surfaces.md"
+public_readme = "omit"
+reason = "The bounded repair pass is a developer-facing implementation affordance, not part of the public product contract."
+revisit_when = "Revisit if the repair pass becomes user-configurable or shapes visible product behavior."
+canonical_markers = ["Bounded Post-Transcription Repair Pass"]
+public_readme_absent_markers = ["Bounded Post-Transcription Repair Pass"]
+
+[capabilities.smoke_surface_runtime_affordances]
+audience = "operator"
+canonical_surface = "docs/local-smoke-runbook.md"
+public_readme = "omit"
+reason = "Smoke-only launch-target and HUD affordances belong on the local operator surface rather than in the public README."
+revisit_when = "Revisit if these affordances become part of ordinary end-user workflow instead of smoke/runtime verification."
+canonical_markers = ["Smoke-Surface Runtime Affordances"]
+public_readme_absent_markers = ["launch-target switching", "source/branch visibility", "Terror Form"]

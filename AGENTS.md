@@ -10,6 +10,15 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
+## Topothesia
+
+`spoke` uses Topothesia for README-vs-operator/developer routing. Before
+restoring or removing a README note about a real capability, check
+`docs/documentation_surfaces.toml` and the routed canonical surface first.
+
+For the current `spoke` contract, the public README is intentionally not the
+home for smoke-only runtime affordances or developer-only repair-pass notes.
+
 ## Epistaxis Intent Model
 
 For `spoke`, do not treat `Repo/task` in `**Current intent**` as a single
