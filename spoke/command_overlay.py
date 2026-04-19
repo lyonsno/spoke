@@ -464,11 +464,11 @@ class _QuartzBackdropRenderer:
         except Exception:
             logger.debug("Backdrop snapshot capture failed", exc_info=True)
             return None
-        if image is None or blur_radius_points <= 0.0:
+        if image is None:
             return image
 
         try:
-            from Quartz import CIImage, CIFilter
+            from Quartz import CIImage
         except Exception:
             return image
 
@@ -477,26 +477,27 @@ class _QuartzBackdropRenderer:
             if context is None:
                 return image
             ci_image = CIImage.imageWithCGImage_(image)
-            blur = CIFilter.filterWithName_("CIGaussianBlur")
-            if blur is None:
-                return image
-            blur.setDefaults()
-            blur.setValue_forKey_(ci_image, "inputImage")
-            blur.setValue_forKey_(blur_radius_points, "inputRadius")
-            output = blur.valueForKey_("outputImage")
-            if output is None:
-                return image
             extent = ci_image.extent() if hasattr(ci_image, "extent") else None
-            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
-                output = output.imageByCroppingToRect_(extent)
-            if extent is None and hasattr(output, "extent"):
-                extent = output.extent()
-            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
+            if extent is None:
                 return image
-            blurred = context.createCGImage_fromRect_(output, extent)
-            return blurred or image
+            output = ci_image
+
+            # Apply optical shell warp to the real backdrop capture.
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                shell_config = _command_optical_shell_config()
+                if shell_config is not None:
+                    warped = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
+                    if warped is not None:
+                        output = warped
+                        if hasattr(output, "imageByCroppingToRect_"):
+                            output = output.imageByCroppingToRect_(extent)
+
+            if not hasattr(context, "createCGImage_fromRect_"):
+                return image
+            result = context.createCGImage_fromRect_(output, extent)
+            return result or image
         except Exception:
-            logger.debug("Backdrop blur pass failed; using unblurred snapshot", exc_info=True)
+            logger.debug("Backdrop warp pass failed; using raw snapshot", exc_info=True)
             return image
 
 
