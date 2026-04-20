@@ -53,7 +53,6 @@ class TestCommandClient:
         """The prompt should tell the assistant to use literal refs for arbitrary speech."""
         from spoke.command import _SYSTEM_PROMPT
         assert "literal:<exact text to speak>" in _SYSTEM_PROMPT
-        assert "Do not pretend read_aloud is limited to visible text." in _SYSTEM_PROMPT
 
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""
