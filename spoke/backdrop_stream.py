@@ -791,7 +791,7 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
     config.setWidth_(pixel_width)
     config.setHeight_(pixel_height)
     if hasattr(config, "setQueueDepth_"):
-        config.setQueueDepth_(1)
+        config.setQueueDepth_(3)
     if hasattr(config, "setShowsCursor_"):
         config.setShowsCursor_(False)
     if hasattr(config, "setScalesToFit_"):
@@ -1298,7 +1298,15 @@ if objc is not None and hasattr(objc, "lookUpClass"):
                 if self._frame_count == 0:
                     logger.info("SCK: first sample buffer received (output_type=%r)", output_type)
                 self._frame_count += 1
-                self._renderer._consume_sample_buffer(sample_buffer, output_type)
+                # Wrap in autorelease pool — SCK delivers on a dispatch
+                # queue where PyObjC's default pool may drain between
+                # frames, releasing toll-free bridged CF objects too early.
+                pool = objc.autorelease_pool()
+                pool.__enter__()
+                try:
+                    self._renderer._consume_sample_buffer(sample_buffer, output_type)
+                finally:
+                    pool.__exit__(None, None, None)
 
         if hasattr(objc, "selector"):
             _ScreenCaptureKitStreamOutput.stream_didOutputSampleBuffer_ofType_ = objc.selector(
