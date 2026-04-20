@@ -1496,6 +1496,9 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "CMSampleBufferGetSampleAttachmentsArray": CMSampleBufferGetSampleAttachmentsArray,
                 "kCMSampleAttachmentKey_DisplayImmediately": _kCMSampleAttachmentKey_DisplayImmediately,
                 "_cv_lib": _cv_lib,
+                "_cm_lib": _cm_lib,
+                "_native_GetImageBuffer": _native_GetImageBuffer if _has_native_coremedia else None,
+                "_cm_direct_GetImageBuffer": _cm_direct_GetImageBuffer,
             }
         except Exception:
             logger.info("ScreenCaptureKit bridge load FAILED", exc_info=True)
@@ -2113,48 +2116,88 @@ class _ScreenCaptureKitBackdropRenderer:
             return
         # Display-link-driven Metal path — submit IOSurface to the renderer,
         # which presents via CVDisplayLink (never blocks the SCK queue).
+        #
+        # Extract the pixel buffer via _CIImage_from_sample_buffer's native
+        # or direct bridge (not the ctypes path, which returns None for most
+        # frames due to PyObjC bridging issues).  Then get the IOSurface
+        # from the pixel buffer.
         dl_renderer = getattr(self, "_display_link_renderer", None)
         if dl_renderer is not None and optical_shell_config is not None:
             dl_diag = getattr(self, "_dl_submit_diag_n", 0)
             self._dl_submit_diag_n = dl_diag + 1
             try:
-                pb = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
                 cv_lib = bridge.get("_cv_lib")
-                if pb is None:
-                    if dl_diag < 5:
-                        logger.info("SCK dl-submit[%d]: CMSampleBufferGetImageBuffer returned None", dl_diag)
-                elif cv_lib is None:
-                    if dl_diag < 5:
+                if cv_lib is None:
+                    if dl_diag < 3:
                         logger.info("SCK dl-submit[%d]: cv_lib not available", dl_diag)
                 else:
-                    raw_pb = objc.pyobjc_id(pb)
-                    ios = cv_lib.CVPixelBufferGetIOSurface(raw_pb)
-                    if not ios:
-                        if dl_diag < 5:
-                            logger.info("SCK dl-submit[%d]: CVPixelBufferGetIOSurface returned NULL (pb=%r)", dl_diag, type(pb).__name__)
-                    else:
-                        ios_obj = objc.objc_object(c_void_p=ios)
-                        cv_lib.CVPixelBufferGetWidth.argtypes = [ctypes.c_void_p]
-                        cv_lib.CVPixelBufferGetWidth.restype = ctypes.c_size_t
-                        cv_lib.CVPixelBufferGetHeight.argtypes = [ctypes.c_void_p]
-                        cv_lib.CVPixelBufferGetHeight.restype = ctypes.c_size_t
-                        w = int(cv_lib.CVPixelBufferGetWidth(raw_pb))
-                        h = int(cv_lib.CVPixelBufferGetHeight(raw_pb))
-                        if dl_diag < 3:
-                            logger.info("SCK dl-submit[%d]: IOSurface ok, %dx%d", dl_diag, w, h)
-                        if w > 0 and h > 0:
-                            # Scale shell config to pixel space
-                            scale = self._current_backing_scale()
-                            scaled_cfg = dict(optical_shell_config)
-                            for k in ("content_width_points", "content_height_points",
-                                      "corner_radius_points", "band_width_points",
-                                      "tail_width_points"):
-                                if k in scaled_cfg:
-                                    scaled_cfg[k] = float(scaled_cfg[k]) * scale
-                            dl_renderer.set_shell_config(scaled_cfg)
-                            dl_renderer.submit_iosurface(ios_obj, width=w, height=h)
-                            self._has_live_content = True
-                            return
+                    # Use the same extraction path as _CIImage_from_sample_buffer:
+                    # try native pyobjc-framework-CoreMedia first, then direct bridge.
+                    pb = None
+                    ci_from_sb = bridge.get("_CIImage_from_sample_buffer")
+                    if ci_from_sb is not None:
+                        ci_image = ci_from_sb(sample_buffer)
+                        if ci_image is not None:
+                            # CIImage.imageWithCVPixelBuffer_ retains the
+                            # pixel buffer — extract IOSurface from it.
+                            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+                            if extent is not None:
+                                w = int(extent.size.width)
+                                h = int(extent.size.height)
+                                # Get IOSurface: CIImage may expose it via
+                                # properties, or we can get it from the original
+                                # sample buffer's pixel buffer.
+                                ios_obj = None
+                                # Try extracting pixel buffer via the native bridge
+                                _native_get = bridge.get("_native_GetImageBuffer")
+                                _direct_get = bridge.get("_cm_direct_GetImageBuffer")
+                                if _native_get is not None:
+                                    try:
+                                        pb = _native_get(sample_buffer)
+                                    except Exception:
+                                        pb = None
+                                if pb is None and _direct_get is not None:
+                                    try:
+                                        pb = _direct_get(sample_buffer)
+                                    except Exception:
+                                        pb = None
+                                if pb is not None:
+                                    raw_pb = objc.pyobjc_id(pb)
+                                    ios = cv_lib.CVPixelBufferGetIOSurface(raw_pb)
+                                    if ios:
+                                        ios_obj = objc.objc_object(c_void_p=ios)
+                                if ios_obj is None:
+                                    # Fallback: ctypes path
+                                    raw_sb = objc.pyobjc_id(sample_buffer)
+                                    _cm_lib = bridge.get("_cm_lib")
+                                    if _cm_lib is not None:
+                                        pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_sb)
+                                        if pb_ptr:
+                                            ios = cv_lib.CVPixelBufferGetIOSurface(pb_ptr)
+                                            if ios:
+                                                ios_obj = objc.objc_object(c_void_p=ios)
+                                if ios_obj is not None and w > 0 and h > 0:
+                                    if dl_diag < 3:
+                                        logger.info("SCK dl-submit[%d]: IOSurface ok, %dx%d", dl_diag, w, h)
+                                    scale = self._current_backing_scale()
+                                    scaled_cfg = dict(optical_shell_config)
+                                    for k in ("content_width_points", "content_height_points",
+                                              "corner_radius_points", "band_width_points",
+                                              "tail_width_points"):
+                                        if k in scaled_cfg:
+                                            scaled_cfg[k] = float(scaled_cfg[k]) * scale
+                                    dl_renderer.set_shell_config(scaled_cfg)
+                                    dl_renderer.submit_iosurface(ios_obj, width=w, height=h)
+                                    self._has_live_content = True
+                                    return
+                                elif dl_diag < 5:
+                                    logger.info("SCK dl-submit[%d]: no IOSurface from CIImage path (w=%d h=%d pb=%s)", dl_diag, w, h, pb is not None)
+                            elif dl_diag < 5:
+                                logger.info("SCK dl-submit[%d]: CIImage has no extent", dl_diag)
+                        elif dl_diag < 5:
+                            logger.info("SCK dl-submit[%d]: _CIImage_from_sample_buffer returned None", dl_diag)
+                    elif dl_diag < 3:
+                        logger.info("SCK dl-submit[%d]: no _CIImage_from_sample_buffer in bridge", dl_diag)
             except Exception:
                 if dl_diag < 10:
                     logger.info("Metal display-link submit failed", exc_info=True)
