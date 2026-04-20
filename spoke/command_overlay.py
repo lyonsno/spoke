@@ -1666,37 +1666,61 @@ class CommandOverlay(NSObject):
                     )
                 except Exception:
                     pass
-                # Response text: main color on edges, alt color piped
-                # through center, applied per-character for gradient.
-                # Blur undulates with perceptual lightness — lighter chars
-                # go soft, darker chars stay crisp, trading off as the
-                # hues rotate through the cycle.
+                # Response text: two visual layers per character.
+                #
+                # Foreground (anchor): dark version of the dual-hue color
+                # rotation — value crushed to ~0.15-0.20, full opacity, no
+                # blur, light font weight. Always legible.
+                #
+                # Shadow (atmosphere): bright dual-hue color, luminance-driven
+                # blur. Lighter chars glow soft, darker chars stay crisp.
+                # Renders behind the dark anchor, giving depth without
+                # sacrificing readability.
                 resp_start = utt_len + 2
                 resp_len = total_len - resp_start
                 if resp_start < total_len and resp_len > 0:
-                    from AppKit import NSShadowAttributeName as _SH_pulse, NSShadow
+                    from AppKit import (
+                        NSShadowAttributeName as _SH_pulse,
+                        NSShadow,
+                        NSFontAttributeName as _FN_pulse,
+                        NSFont,
+                    )
+                    light_font = NSFont.systemFontOfSize_weight_(
+                        _FONT_SIZE, -0.4  # light weight
+                    )
                     try:
                         for ci in range(resp_len):
                             # 0.0 at edges, 1.0 at center
                             frac = ci / max(resp_len - 1, 1)
                             center_weight = 1.0 - abs(frac * 2.0 - 1.0)
+                            # Bright color (for shadow/glow layer)
                             cr = _lerp(response_r, alt_r, center_weight)
                             cg = _lerp(response_g, alt_g, center_weight)
                             cb = _lerp(response_b, alt_b, center_weight)
+                            # Dark anchor: same hue, value crushed
+                            dr = cr * 0.22
+                            dg = cg * 0.22
+                            db = cb * 0.22
+                            # Foreground = dark anchor
                             ts.addAttribute_value_range_(
                                 _FG_pulse,
                                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    cr, cg, cb, alpha_a
+                                    dr, dg, db, 1.0
                                 ),
                                 (resp_start + ci, 1),
                             )
-                            # Perceptual luminance drives blur radius
+                            # Light font weight for the anchor
+                            ts.addAttribute_value_range_(
+                                _FN_pulse, light_font,
+                                (resp_start + ci, 1),
+                            )
+                            # Shadow = bright glow, blur driven by luminance
                             lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-                            blur_radius = lum * 6.0  # 0 when dark, up to 6pt when bright
+                            blur_radius = 2.0 + lum * 5.0
                             shadow = NSShadow.alloc().init()
                             shadow.setShadowColor_(
                                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    cr, cg, cb, 0.5 * lum
+                                    cr, cg, cb, 0.7 + 0.3 * lum
                                 )
                             )
                             shadow.setShadowOffset_((0, 0))
