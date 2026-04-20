@@ -182,16 +182,19 @@ kernel vec2 opticalShellWarp(
     float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
     vec2 warped = c + p * vec2(scaleX, scaleY);
 
-    // Branchless exterior: compute mag for all pixels, blend weight
-    // is zero for interior so it has no effect there.
+    // Exterior: interior warp fades to magnified exterior.
+    // mag ramps up through the bleed zone (zero at sdf=0, full at
+    // bleedZone) then decays past it, so there's no discontinuity
+    // at the capsule boundary.
+    float exteriorT = max(capsuleSdf, 0.0);
+    float magRampIn = smoothstep(0.0, bleedZone, exteriorT);
     float distPastBleed = max(capsuleSdf - bleedZone, 0.0);
+    float magDecay = exp(-distPastBleed / capsuleRadius * %(ext_mag_decay)s);
     vec2 n = capsuleGradient(p, spineHalf);
-    float mag = %(ext_mag_strength)s * capsuleRadius
-        * exp(-distPastBleed / capsuleRadius * %(ext_mag_decay)s);
+    float mag = %(ext_mag_strength)s * capsuleRadius * magRampIn * magDecay;
     vec2 magSrc = d - n * mag;
     magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
-    float warpFade = smoothstep(0.0, bleedZone, max(capsuleSdf, 0.0));
-    return mix(warped, magSrc, warpFade);
+    return mix(warped, magSrc, magRampIn);
 }
 """ % {
         "bleed_frac": _WARP_BLEED_ZONE_FRAC,
