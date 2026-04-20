@@ -112,7 +112,7 @@ kernel void opticalShellWarp(
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{
-        outTexture.write(inTexture.read(gid), gid);
+        outTexture.write(inTexture.read(pixel), pixel);
         return;
     }}
 
@@ -197,7 +197,7 @@ kernel void opticalShellWarp(
         finalColor.rgb *= scale_factor;
     }}
 
-    outTexture.write(finalColor, gid);
+    outTexture.write(finalColor, pixel);
 }}
 """
 
@@ -224,10 +224,10 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-def _pack_warp_params(width, height, shell_config):
+def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "12f",
+        "14f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -240,6 +240,8 @@ def _pack_warp_params(width, height, shell_config):
         float(shell_config.get("tail_amplitude_points", 4.0)),
         float(shell_config.get("center_x", 0.0)),
         float(shell_config.get("center_y", 0.0)),
+        float(grid_offset_x),
+        float(grid_offset_y),
     )
 
 
@@ -368,14 +370,8 @@ class MetalWarpPipeline:
         if output_texture is None:
             return False
 
-        # Params — use ctypes to avoid PyObjC bridging issues with
-        # newBufferWithBytes:length:options: argument mapping
         out_w = output_texture.width()
         out_h = output_texture.height()
-        params_data = _pack_warp_params(out_w, out_h, shell_config)
-        params_buffer = _create_metal_buffer(self._device, params_data)
-        if params_buffer is None:
-            return False
 
         # Two-pass: blit full screen (fast memcpy), then compute-warp
         # only the capsule bounding box (~5% of pixels).
@@ -402,6 +398,19 @@ class MetalWarpPipeline:
         box_h = box_y1 - box_y0
 
         if box_w > 0 and box_h > 0:
+            # Pack params with grid offset so the shader maps gid back
+            # to screen coordinates
+            params_data = _pack_warp_params(
+                out_w, out_h, shell_config,
+                grid_offset_x=float(box_x0),
+                grid_offset_y=float(box_y0),
+            )
+            params_buffer = _create_metal_buffer(self._device, params_data)
+            if params_buffer is None:
+                command_buffer.presentDrawable_(drawable)
+                command_buffer.commit()
+                return True  # blit-only frame
+
             encoder = command_buffer.computeCommandEncoder()
             encoder.setComputePipelineState_(self._pipeline)
             encoder.setTexture_atIndex_(input_texture, 0)
@@ -411,11 +420,6 @@ class MetalWarpPipeline:
             w = self._pipeline.threadExecutionWidth()
             h_tg = self._pipeline.maxTotalThreadsPerThreadgroup() // w
             threadgroup_size = (w, min(h_tg, box_h), 1)
-            # dispatchThreads with offset: Metal 2 supports threadgroupsPerGrid
-            # but for simplicity, dispatch the bounding box and let the shader
-            # handle the offset via gid.  We need to adjust the grid origin.
-            # Unfortunately Metal compute doesn't support grid offset directly,
-            # so we pass the box origin in the params and dispatch box_w × box_h.
             grid_size = (box_w, box_h, 1)
             encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
             encoder.endEncoding()
