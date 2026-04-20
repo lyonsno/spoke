@@ -2076,6 +2076,51 @@ class _ScreenCaptureKitBackdropRenderer:
         if optical_shell_config is None and self._blur_radius_points <= 0.0 and self.uses_direct_sample_buffers():
             self._publish_live_sample_buffer(sample_buffer)
             return
+        # Try Metal compute warp first — stays on GPU, no CPU round-trip.
+        if optical_shell_config is not None:
+            try:
+                from spoke.metal_warp import get_metal_warp_pipeline
+                metal_pipeline = get_metal_warp_pipeline()
+                if metal_pipeline is not None:
+                    pb = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
+                    if pb is not None:
+                        # Get IOSurface from pixel buffer
+                        ios_ptr = bridge.get("_cv_lib")
+                        if ios_ptr is not None:
+                            raw_pb = objc.pyobjc_id(pb)
+                            ios = ios_ptr.CVPixelBufferGetIOSurface(raw_pb)
+                            if ios:
+                                ios_obj = objc.objc_object(c_void_p=ios)
+                                scale = self._current_backing_scale()
+                                scaled_cfg = dict(optical_shell_config)
+                                for k in ("content_width_points", "content_height_points",
+                                          "corner_radius_points", "band_width_points",
+                                          "tail_width_points"):
+                                    if k in scaled_cfg:
+                                        scaled_cfg[k] = float(scaled_cfg[k]) * scale
+                                from Quartz import CIImage, CIContext
+                                # Get dimensions from pixel buffer
+                                ci_pb = CIImage.imageWithCVPixelBuffer_(pb)
+                                if ci_pb is not None:
+                                    ext = ci_pb.extent()
+                                    w = int(ext.size.width)
+                                    h = int(ext.size.height)
+                                    out_tex = metal_pipeline.warp_iosurface(
+                                        ios_obj, width=w, height=h, shell_config=scaled_cfg,
+                                    )
+                                    if out_tex is not None:
+                                        # Create CIImage from output texture and render to CGImage
+                                        ci_out = CIImage.imageWithMTLTexture_options_(out_tex, None)
+                                        if ci_out is not None:
+                                            ctx = self._context()
+                                            if ctx is not None:
+                                                cg = ctx.createCGImage_fromRect_(ci_out, ci_out.extent())
+                                                if cg is not None:
+                                                    self._publish_live_image(cg)
+                                                    return
+            except Exception:
+                logger.debug("Metal warp path failed", exc_info=True)
+
         try:
             from Quartz import CIImage, CIFilter
 
