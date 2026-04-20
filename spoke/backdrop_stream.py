@@ -79,10 +79,12 @@ kernel vec2 opticalShellWarp(
     // --- capsule SDF (one call) ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
 
-    // Early bailout: far exterior and deep interior.
+    // Exterior bleed zone: let the warp continue past the boundary
+    // so content wraps around the endcaps instead of clipping.
+    float bleedZone = capsuleRadius * 0.25;
     float activeInnerLimit = capsuleRadius * 0.55;
-    if (capsuleSdf > 0.0) return d;              // exterior: identity
-    if (capsuleSdf < -activeInnerLimit) return c; // deep interior: center
+    if (capsuleSdf > bleedZone) return d;         // far exterior: identity
+    if (capsuleSdf < -activeInnerLimit) return c;  // deep interior: center
 
     float curveBoost = min(
         0.95,
@@ -95,9 +97,13 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Interior only: radial scaling from center.
-    vec2 src = c + p * scale;
-    return src;
+    // Radial scaling from center, fading to identity in the bleed zone.
+    vec2 warped = c + p * scale;
+    if (capsuleSdf > 0.0) {
+        float fade = smoothstep(0.0, bleedZone, capsuleSdf);
+        return mix(warped, d, fade);
+    }
+    return warped;
 }
 """
 
