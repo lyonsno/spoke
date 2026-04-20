@@ -182,19 +182,16 @@ kernel vec2 opticalShellWarp(
     float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
     vec2 warped = c + p * vec2(scaleX, scaleY);
 
-    // Exterior: interior warp fades to magnified exterior.
-    // magRampIn uses a short ramp (capsuleRadius * 0.15) to avoid
-    // a discontinuity at sdf=0 while reaching full strength quickly.
+    // Exterior magnification: strongest right at the capsule surface,
+    // decaying with distance.  Tiny seam-prevention ramp at sdf=0.
     float exteriorT = max(capsuleSdf, 0.0);
-    float magRampIn = smoothstep(0.0, capsuleRadius * 0.15, exteriorT);
+    float seamRamp = smoothstep(0.0, 2.0, exteriorT);  // ~2px ramp
     float magDecay = exp(-exteriorT / capsuleRadius * %(ext_mag_decay)s);
     vec2 n = capsuleGradient(p, spineHalf);
-    // Attenuate at endcaps so tips don't vortex while body gets a
-    // uniform lens.  Inverse of interior spine proximity: 1 on the
-    // straight body, fading to 0 at the tip poles.
+    // Attenuate at endcaps so tips don't vortex.
     float tipDist = max(abs(p.x) - spineHalf, 0.0);
     float tipAtten = 1.0 - smoothstep(0.0, capsuleRadius * 0.8, tipDist);
-    float mag = %(ext_mag_strength)s * capsuleRadius * magRampIn * magDecay * tipAtten;
+    float mag = %(ext_mag_strength)s * capsuleRadius * seamRamp * magDecay * tipAtten;
     vec2 magSrc = d - n * mag;
     magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
     // Blend: interior warp → magnified exterior over the bleed zone.
