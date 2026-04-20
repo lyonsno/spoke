@@ -1642,6 +1642,8 @@ class _ScreenCaptureKitBackdropRenderer:
             logger.debug("ScreenCaptureKit stream update failed", exc_info=True)
             self._pending_signature = None
 
+    _consume_diag_count = 0
+
     def _consume_sample_buffer(self, sample_buffer, output_type):
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
@@ -1660,12 +1662,23 @@ class _ScreenCaptureKitBackdropRenderer:
             if output_type_value != bridge["SCStreamOutputTypeScreen"]:
                 return
         optical_shell_config = getattr(self, "_optical_shell_config", None)
+        _ScreenCaptureKitBackdropRenderer._consume_diag_count += 1
+        if _ScreenCaptureKitBackdropRenderer._consume_diag_count <= 3:
+            logger.info(
+                "SCK consume: sb_callback=%s shell_config=%s blur=%.2f metal=%s",
+                self._sample_buffer_callback is not None,
+                optical_shell_config is not None,
+                self._blur_radius_points,
+                self._metal_blur_pipeline() is not None,
+            )
         if self._sample_buffer_callback is not None:
             if optical_shell_config is not None:
                 shell_sample_buffer = self._optical_shell_sample_buffer(sample_buffer)
                 if shell_sample_buffer is not None:
                     self._publish_live_sample_buffer(shell_sample_buffer)
                     return
+                elif _ScreenCaptureKitBackdropRenderer._consume_diag_count <= 3:
+                    logger.info("SCK consume: optical_shell_sample_buffer returned None")
             elif self._blur_radius_points <= 0.0:
                 self._publish_live_sample_buffer(sample_buffer)
                 return
