@@ -2065,6 +2065,15 @@ class _ScreenCaptureKitBackdropRenderer:
             extent = ci_image.extent() if hasattr(ci_image, "extent") else None
             if extent is None:
                 return
+            diag = getattr(self, "_consume_diag_n", 0)
+            if diag <= 7 and optical_shell_config is not None:
+                logger.info(
+                    "SCK cgimage: extent=(%s,%s %sx%s) cfg_w=%s cfg_h=%s",
+                    extent.origin.x, extent.origin.y,
+                    extent.size.width, extent.size.height,
+                    optical_shell_config.get("content_width_points"),
+                    optical_shell_config.get("content_height_points"),
+                )
             output = ci_image
             # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
             if optical_shell_config is not None:
