@@ -168,30 +168,50 @@ kernel void opticalShellWarp(
     if (blurRadius < 0.25f) {{
         finalColor = centerColor;
     }} else {{
-        // Fixed 4-tap cross pattern with radius-scaled offsets.
-        // Cheap (4 reads) but effective because the warp magnification
-        // means even small source offsets cover large screen areas.
+        // Gaussian-weighted disk blur.  16 taps in concentric rings
+        // at 3 radii (0.4r, 0.7r, 1.0r) plus center.  Enough
+        // overlap to read as smooth, not ghosted.
         float r = max(blurRadius, 0.5f);
+        float sigma2 = r * r * 0.5f;
+        float2 lim = float2(params.width - 1.0f, params.height - 1.0f);
+
         float4 acc = centerColor;
-        float2 dx = float2(r, 0.0f);
-        float2 dy = float2(0.0f, r);
-        acc += inTexture.read(uint2(clamp(samplePt + dx, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-        acc += inTexture.read(uint2(clamp(samplePt - dx, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-        acc += inTexture.read(uint2(clamp(samplePt + dy, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-        acc += inTexture.read(uint2(clamp(samplePt - dy, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-        // Diagonal taps for deeper blur
-        if (blurRadius > 3.0f) {{
-            float r2 = r * 0.707f;  // diagonal at same distance
-            float2 dd1 = float2(r2, r2);
-            float2 dd2 = float2(r2, -r2);
-            acc += inTexture.read(uint2(clamp(samplePt + dd1, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-            acc += inTexture.read(uint2(clamp(samplePt - dd1, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-            acc += inTexture.read(uint2(clamp(samplePt + dd2, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-            acc += inTexture.read(uint2(clamp(samplePt - dd2, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
-            finalColor = acc / 9.0f;
-        }} else {{
-            finalColor = acc / 5.0f;
+        float tw = 1.0f;
+
+        // 16-tap Poisson-ish disk: 3 rings × {4, 6, 6} taps
+        // Ring 1: r×0.35, 4 taps (cross)
+        float r1 = r * 0.35f;
+        float2 o1[4] = {{ float2(r1,0), float2(-r1,0), float2(0,r1), float2(0,-r1) }};
+        for (int i = 0; i < 4; i++) {{
+            float w = exp(-dot(o1[i],o1[i]) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o1[i], float2(0), lim))) * w;
+            tw += w;
         }}
+        // Ring 2: r×0.65, 6 taps (hex)
+        float r2 = r * 0.65f;
+        float2 o2[6] = {{
+            float2(r2, 0), float2(-r2, 0),
+            float2(r2*0.5f, r2*0.866f), float2(-r2*0.5f, r2*0.866f),
+            float2(r2*0.5f, -r2*0.866f), float2(-r2*0.5f, -r2*0.866f)
+        }};
+        for (int i = 0; i < 6; i++) {{
+            float w = exp(-dot(o2[i],o2[i]) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o2[i], float2(0), lim))) * w;
+            tw += w;
+        }}
+        // Ring 3: r×1.0, 6 taps (hex, rotated 30°)
+        float r3 = r;
+        float2 o3[6] = {{
+            float2(r3*0.866f, r3*0.5f), float2(-r3*0.866f, r3*0.5f),
+            float2(r3*0.866f, -r3*0.5f), float2(-r3*0.866f, -r3*0.5f),
+            float2(0, r3), float2(0, -r3)
+        }};
+        for (int i = 0; i < 6; i++) {{
+            float w = exp(-dot(o3[i],o3[i]) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o3[i], float2(0), lim))) * w;
+            tw += w;
+        }}
+        finalColor = acc / tw;
     }}
 
     // Perceptual value clamp: keep luminance in the 15-85%% range.
