@@ -2117,6 +2117,8 @@ class _ScreenCaptureKitBackdropRenderer:
             except Exception:
                 logger.debug("Metal display-link submit failed", exc_info=True)
 
+        # CIWarpKernel fallback — used when Metal display-link is unavailable.
+        _sck_timer.begin("total")
         try:
             from Quartz import CIImage, CIFilter
 
@@ -2134,17 +2136,10 @@ class _ScreenCaptureKitBackdropRenderer:
             if extent is None:
                 return
 
-            # SCK setWidth_/setHeight_ sizes the output buffer to the
-            # capture rect dimensions — the image is already overlay-sized.
-            # No crop needed.
-
-            # sourceRect crops the capture to the overlay region.
-            # No CIImage crop needed.
-
             diag = getattr(self, "_consume_diag_n", 0)
             if diag <= 7 and optical_shell_config is not None:
                 logger.info(
-                    "SCK cgimage: extent=(%s,%s %sx%s) cfg_w=%s cfg_h=%s",
+                    "SCK cgimage fallback: extent=(%s,%s %sx%s) cfg_w=%s cfg_h=%s",
                     extent.origin.x, extent.origin.y,
                     extent.size.width, extent.size.height,
                     optical_shell_config.get("content_width_points"),
@@ -2153,10 +2148,7 @@ class _ScreenCaptureKitBackdropRenderer:
             output = ci_image
             # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
             if optical_shell_config is not None:
-                # Pre-warp blur: uniform 1.5px on the source.  The warp's
-                # interior magnification makes this depth-dependent: 1.5px
-                # at the rim (1x mag) is barely visible, 1.5px at center
-                # (10x+ mag) becomes 15px+ — smooth wash.
+                _sck_timer.begin("pre_blur")
                 pre_blur = CIFilter.filterWithName_("CIGaussianBlur")
                 if pre_blur is not None:
                     pre_blur.setDefaults()
@@ -2166,8 +2158,9 @@ class _ScreenCaptureKitBackdropRenderer:
                     blurred = pre_blur.valueForKey_("outputImage")
                     if blurred is not None:
                         output = blurred.imageByCroppingToRect_(extent) if hasattr(blurred, "imageByCroppingToRect_") else blurred
+                _sck_timer.end("pre_blur")
 
-                # Scale config to pixel space — SCK frames are at Retina res.
+                _sck_timer.begin("warp")
                 scale = self._current_backing_scale()
                 scaled_cfg = dict(optical_shell_config)
                 for k in ("content_width_points", "content_height_points",
@@ -2180,6 +2173,7 @@ class _ScreenCaptureKitBackdropRenderer:
                     output = warped
                     if hasattr(output, "imageByCroppingToRect_"):
                         output = output.imageByCroppingToRect_(extent)
+                _sck_timer.end("warp")
             elif self._blur_radius_points > 0.0:
                 blur = CIFilter.filterWithName_("CIGaussianBlur")
                 if blur is not None:
@@ -2189,15 +2183,20 @@ class _ScreenCaptureKitBackdropRenderer:
                     candidate = blur.valueForKey_("outputImage")
                     if candidate is not None:
                         output = candidate.imageByCroppingToRect_(extent)
+            _sck_timer.begin("render")
             context = self._context()
             if context is None:
                 return
             image = context.createCGImage_fromRect_(output, extent)
+            _sck_timer.end("render")
             if image is None:
                 return
             self._publish_live_image(image)
         except Exception:
             logger.debug("ScreenCaptureKit sample processing failed", exc_info=True)
+        finally:
+            _sck_timer.end("total")
+            _sck_timer.frame_done()
 
     def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
         self._blur_radius_points = max(blur_radius_points, 0.0)
