@@ -1260,12 +1260,16 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 ],
             )
 
-            # CMSampleBufferGetImageBuffer returns a CVImageBufferRef (raw
-            # pointer).  objc.loadBundleFunctions with '@@' tried to wrap
-            # the return as an ObjC object, but CVPixelBuffer isn't always
-            # toll-free bridged cleanly through that path — returns None.
-            # Use ctypes directly: extract raw pointer from PyObjC object,
-            # call C function, wrap result back as ObjC object.
+            # Load CMSampleBufferGetImageBuffer via both PyObjC (@@) and
+            # ctypes to compare which path actually works.
+            _cm_direct_ns = {}
+            objc.loadBundleFunctions(
+                coremedia_bundle,
+                _cm_direct_ns,
+                [("CMSampleBufferGetImageBuffer", b"@@")],
+            )
+            _cm_direct_GetImageBuffer = _cm_direct_ns.get("CMSampleBufferGetImageBuffer")
+
             _cm_lib = ctypes.CDLL(f"{_COREMEDIA_FRAMEWORK_PATH}/CoreMedia")
             _cm_lib.CMSampleBufferGetImageBuffer.argtypes = [ctypes.c_void_p]
             _cm_lib.CMSampleBufferGetImageBuffer.restype = ctypes.c_void_p
@@ -1308,38 +1312,68 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 from Quartz import CIImage
                 _ci_from_sb_diag[0] += 1
                 n = _ci_from_sb_diag[0]
+                # The sample buffer arrives as a PyObjC proxy.  For native
+                # ObjC objects, pyobjc_id == the real id.  For non-ObjC
+                # CF types bridged via the wrong selector signature (@),
+                # the proxy wraps a Python representation that doesn't
+                # correspond to the real CMSampleBufferRef pointer.
+                #
+                # Try multiple strategies to get the real pointer:
                 raw_ptr_pyobjc = objc.pyobjc_id(sample_buffer)
                 try:
                     raw_ptr_cvoid = sample_buffer.__c_void_p__().value
                 except Exception:
                     raw_ptr_cvoid = None
-                # Try __c_void_p__ first — it gives the actual CF/ObjC
-                # object pointer for toll-free bridged types.
+                # Strategy: try calling CMSampleBufferGetImageBuffer with
+                # the PyObjC object directly via objc.loadBundleFunctions
+                # signature '@@' — this lets PyObjC handle the bridging.
+                pb_ptr_direct = None
+                try:
+                    pb_ptr_direct = _cm_direct_GetImageBuffer(sample_buffer)
+                except Exception:
+                    pass
                 raw_ptr = raw_ptr_cvoid if raw_ptr_cvoid else raw_ptr_pyobjc
-                pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
+                pb_ptr_ctypes = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
                 if n <= 10:
                     logger.info(
-                        "SCK ci_from_sb[%d]: pyobjc_id=%s cvoid=%s used=%s pb_ptr=%s",
+                        "SCK ci_from_sb[%d]: pyobjc_id=%s ctypes_pb=%s direct_pb=%s type=%s",
                         n,
                         hex(raw_ptr_pyobjc),
-                        hex(raw_ptr_cvoid) if raw_ptr_cvoid else "None",
-                        hex(raw_ptr),
-                        hex(pb_ptr) if pb_ptr else "NULL",
+                        hex(pb_ptr_ctypes) if pb_ptr_ctypes else "NULL",
+                        pb_ptr_direct,
+                        type(sample_buffer).__name__,
                     )
-                if not pb_ptr:
+                # Prefer the direct PyObjC-bridged result — it's already
+                # a properly bridged ObjC object that CIImage can use.
+                if pb_ptr_direct is not None:
+                    ci = CIImage.imageWithCVPixelBuffer_(pb_ptr_direct)
+                    if ci is not None:
+                        return ci
+                    # Try IOSurface fallback
+                    try:
+                        pb_raw = objc.pyobjc_id(pb_ptr_direct)
+                        ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_raw)
+                        if ios_ptr:
+                            ios_obj = objc.objc_object(c_void_p=ios_ptr)
+                            return CIImage.imageWithIOSurface_(ios_obj)
+                    except Exception:
+                        pass
+
+                # ctypes fallback
+                if not pb_ptr_ctypes:
                     return None
-                _cf_lib.CFRetain(pb_ptr)
+                _cf_lib.CFRetain(pb_ptr_ctypes)
                 try:
-                    pb_obj = objc.objc_object(c_void_p=pb_ptr)
+                    pb_obj = objc.objc_object(c_void_p=pb_ptr_ctypes)
                     ci = CIImage.imageWithCVPixelBuffer_(pb_obj)
                     if ci is not None:
                         return ci
-                    ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_ptr)
+                    ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_ptr_ctypes)
                     if ios_ptr:
                         ios_obj = objc.objc_object(c_void_p=ios_ptr)
                         return CIImage.imageWithIOSurface_(ios_obj)
                 finally:
-                    _cf_lib.CFRelease(pb_ptr)
+                    _cf_lib.CFRelease(pb_ptr_ctypes)
                 return None
 
             CMSampleBufferGetImageBuffer = _CMSampleBufferGetImageBuffer_via_ctypes
