@@ -1,5 +1,5 @@
 # Smoke env — hands-free dictation + thinking narrator.
-export SPOKE_COMMAND_URL="http://localhost:8001"
+export SPOKE_COMMAND_URL="http://localhost:8090"
 export SPOKE_COMMAND_MODEL="step-3p5-flash-mixedp-final"
 export SPOKE_COMMAND_API_KEY="1234"
 export OMLX_SERVER_API_KEY="1234"

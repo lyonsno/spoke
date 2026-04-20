@@ -15,6 +15,7 @@ import re
 import uuid
 from typing import Any, Callable, Generator, Literal
 
+from pathlib import Path
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -94,9 +95,10 @@ def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
 
     return tokens
 
-_DEFAULT_COMMAND_URL = "http://localhost:8001"
+_DEFAULT_COMMAND_URL = "http://localhost:8090"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
-_DEFAULT_RING_BUFFER_SIZE = 10
+_DEFAULT_RING_BUFFER_SIZE = 20
+_HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 
 
 def _rough_tool_result_tokens(text: str) -> int:
@@ -189,12 +191,15 @@ class CommandStreamEvent:
 class CommandClient:
     """Streaming chat client for voice commands via OMLX."""
 
+    _SENTINEL = object()
+
     def __init__(
         self,
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
         max_history: int | None = None,
+        history_path: Path | None | object = _SENTINEL,
     ):
         raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
@@ -228,7 +233,32 @@ class CommandClient:
         # Each entry is the full sequence of messages for one turn:
         # [user, assistant, tool_result, assistant, ...] preserving
         # tool calls and results for multi-turn context.
-        self._history: list[list[dict]] = []
+        self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
+        self._history: list[list[dict]] = self._load_history()
+
+    def _load_history(self) -> list[list[dict]]:
+        """Load persisted history from disk, or return empty list."""
+        if self._history_path is None:
+            return []
+        try:
+            data = json.loads(self._history_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            return data
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return []
+
+    def _save_history(self) -> None:
+        """Persist current history to disk."""
+        if self._history_path is None:
+            return
+        self._history_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._history_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(self._history, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(self._history_path)
 
     @property
     def history(self) -> list[list[dict]]:
@@ -695,9 +725,11 @@ class CommandClient:
         self._history.append(turn_messages)
         if len(self._history) > self._max_history:
             self._history.pop(0)
+        self._save_history()
 
         return full_response
 
     def clear_history(self) -> None:
         """Clear the conversation ring buffer."""
         self._history.clear()
+        self._save_history()
