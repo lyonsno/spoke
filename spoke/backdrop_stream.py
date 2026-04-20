@@ -2148,45 +2148,10 @@ class _ScreenCaptureKitBackdropRenderer:
             context = self._context()
             if context is None:
                 return
-            # Try rendering to IOSurface first — avoids the GPU→CPU→GPU
-            # round-trip of createCGImage.  CALayer can display IOSurfaces
-            # directly at compositor refresh rate.
-            rendered = False
-            if hasattr(context, "render_toIOSurface_bounds_colorSpace_"):
-                iosurface = getattr(self, "_reusable_iosurface", None)
-                width = max(1, int(round(extent.size.width)))
-                height = max(1, int(round(extent.size.height)))
-                iosurface_key = (width, height)
-                if getattr(self, "_iosurface_key", None) != iosurface_key:
-                    iosurface = None
-                if iosurface is None:
-                    try:
-                        from Quartz import CGRectMake
-                        iosurface = _create_iosurface(width, height)
-                        if iosurface is not None:
-                            self._reusable_iosurface = iosurface
-                            self._iosurface_key = iosurface_key
-                    except Exception:
-                        pass
-                if iosurface is not None:
-                    try:
-                        from Quartz import CGRectMake
-                        render_bounds = CGRectMake(
-                            extent.origin.x, extent.origin.y,
-                            extent.size.width, extent.size.height,
-                        )
-                        context.render_toIOSurface_bounds_colorSpace_(
-                            output, iosurface, render_bounds, None,
-                        )
-                        self._publish_live_image(iosurface)
-                        rendered = True
-                    except Exception:
-                        logger.debug("IOSurface render failed, falling back to CGImage", exc_info=True)
-            if not rendered:
-                image = context.createCGImage_fromRect_(output, extent)
-                if image is None:
-                    return
-                self._publish_live_image(image)
+            image = context.createCGImage_fromRect_(output, extent)
+            if image is None:
+                return
+            self._publish_live_image(image)
         except Exception:
             logger.debug("ScreenCaptureKit sample processing failed", exc_info=True)
 
