@@ -1673,13 +1673,17 @@ class _ScreenCaptureKitBackdropRenderer:
             config = self._build_configuration(content_filter, capture_rect)
             self._window_number = window_number
 
-            def updated_filter(error):
+            # PyObjC bridgesupport declares these completion blocks as
+            # 0-arg.  Use *args to accept either 0 or 1 arguments.
+            def updated_filter(*args):
+                error = args[0] if args else None
                 if error is not None:
                     logger.debug("ScreenCaptureKit updateContentFilter failed: %r", error)
                     self._pending_signature = None
                     return
 
-                def updated_config(error):
+                def updated_config(*args):
+                    error = args[0] if args else None
                     if error is not None:
                         logger.debug("ScreenCaptureKit updateConfiguration failed: %r", error)
                         self._pending_signature = None
