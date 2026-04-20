@@ -62,6 +62,8 @@ struct WarpParams {{
     float tailAmplitudePoints;
     float centerX;      // capsule center X in pixels (0 = use width/2)
     float centerY;      // capsule center Y in pixels (0 = use height/2)
+    float gridOffsetX;  // dispatch grid origin X (for bounding-box dispatch)
+    float gridOffsetY;  // dispatch grid origin Y
 }};
 
 float sdCapsule(float2 p, float spineHalf, float radius) {{
@@ -91,9 +93,11 @@ kernel void opticalShellWarp(
     constant WarpParams& params [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]]
 ) {{
-    if (gid.x >= (uint)params.width || gid.y >= (uint)params.height) return;
+    // Map dispatch gid to screen pixel via grid offset
+    uint2 pixel = uint2(gid.x + (uint)params.gridOffsetX, gid.y + (uint)params.gridOffsetY);
+    if (pixel.x >= (uint)params.width || pixel.y >= (uint)params.height) return;
 
-    float2 d = float2(gid.x, gid.y) + 0.5f;
+    float2 d = float2(pixel.x, pixel.y) + 0.5f;
     // Capsule center: explicit position or image center
     float2 c = float2(
         params.centerX > 0.0f ? params.centerX : params.width * 0.5f,
@@ -373,20 +377,48 @@ class MetalWarpPipeline:
         if params_buffer is None:
             return False
 
-        # Encode
+        # Two-pass: blit full screen (fast memcpy), then compute-warp
+        # only the capsule bounding box (~5% of pixels).
         command_buffer = self._command_queue.commandBuffer()
-        encoder = command_buffer.computeCommandEncoder()
-        encoder.setComputePipelineState_(self._pipeline)
-        encoder.setTexture_atIndex_(input_texture, 0)
-        encoder.setTexture_atIndex_(output_texture, 1)
-        encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
 
-        w = self._pipeline.threadExecutionWidth()
-        h = self._pipeline.maxTotalThreadsPerThreadgroup() // w
-        threadgroup_size = (w, min(h, out_h), 1)
-        grid_size = (out_w, out_h, 1)
-        encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
-        encoder.endEncoding()
+        # Pass 1: blit entire input → output (hardware memcpy, near-free)
+        blit = command_buffer.blitCommandEncoder()
+        blit.copyFromTexture_toTexture_(input_texture, output_texture)
+        blit.endEncoding()
+
+        # Pass 2: compute warp over capsule bounding box only
+        cx = shell_config.get("center_x", out_w * 0.5)
+        cy = shell_config.get("center_y", out_h * 0.5)
+        rect_w = shell_config.get("content_width_points", out_w)
+        rect_h = shell_config.get("content_height_points", out_h)
+        capsule_r = max(rect_h * 0.5, 1.0)
+        bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
+        # Bounding box of capsule + bleed
+        box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
+        box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
+        box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
+        box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, out_h)
+        box_w = box_x1 - box_x0
+        box_h = box_y1 - box_y0
+
+        if box_w > 0 and box_h > 0:
+            encoder = command_buffer.computeCommandEncoder()
+            encoder.setComputePipelineState_(self._pipeline)
+            encoder.setTexture_atIndex_(input_texture, 0)
+            encoder.setTexture_atIndex_(output_texture, 1)
+            encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
+
+            w = self._pipeline.threadExecutionWidth()
+            h_tg = self._pipeline.maxTotalThreadsPerThreadgroup() // w
+            threadgroup_size = (w, min(h_tg, box_h), 1)
+            # dispatchThreads with offset: Metal 2 supports threadgroupsPerGrid
+            # but for simplicity, dispatch the bounding box and let the shader
+            # handle the offset via gid.  We need to adjust the grid origin.
+            # Unfortunately Metal compute doesn't support grid offset directly,
+            # so we pass the box origin in the params and dispatch box_w × box_h.
+            grid_size = (box_w, box_h, 1)
+            encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
+            encoder.endEncoding()
 
         command_buffer.presentDrawable_(drawable)
         command_buffer.commit()
