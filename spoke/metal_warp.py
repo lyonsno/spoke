@@ -157,7 +157,11 @@ class MetalWarpPipeline:
 
         # Compile shader
         source = _metal_shader_source()
-        library, error = self._device.newLibraryWithSource_options_error_(source, None, None)
+        result = self._device.newLibraryWithSource_options_error_(source, None, None)
+        if isinstance(result, tuple):
+            library, error = result
+        else:
+            library, error = result, None
         if library is None:
             raise RuntimeError(f"Metal shader compilation failed: {error}")
 
@@ -165,7 +169,11 @@ class MetalWarpPipeline:
         if kernel_fn is None:
             raise RuntimeError("opticalShellWarp function not found in Metal library")
 
-        pipeline, error = self._device.newComputePipelineStateWithFunction_error_(kernel_fn, None)
+        result = self._device.newComputePipelineStateWithFunction_error_(kernel_fn, None)
+        if isinstance(result, tuple):
+            pipeline, error = result
+        else:
+            pipeline, error = result, None
         if pipeline is None:
             raise RuntimeError(f"Metal compute pipeline creation failed: {error}")
 
