@@ -375,6 +375,26 @@ class TestShowFinishHide:
             mod._COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS
         )
 
+    def test_apply_backdrop_pulse_style_uses_live_overlay_height_for_optical_shell_config(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 680.0, 240.0)
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 760.0, 320.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
+        assert config["content_height_points"] == pytest.approx(240.0)
+
     def test_command_overlay_size_can_be_overridden_for_smoke_surface(
         self, mock_pyobjc, monkeypatch
     ):
@@ -510,6 +530,19 @@ class TestWindowLayering:
         overlay.hide()
         assert overlay._visible is False
         assert overlay._streaming is False
+        overlay._backdrop_renderer.reset_live_session.assert_called_once_with(
+            stop_stream=True
+        )
+
+    def test_cancel_dismiss_stops_live_backdrop_session(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+
+        overlay.cancel_dismiss()
+
+        overlay._backdrop_renderer.reset_live_session.assert_called_once_with(
+            stop_stream=True
+        )
 
     def test_show_resets_text(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

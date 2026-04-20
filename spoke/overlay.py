@@ -808,6 +808,12 @@ class TranscriptionOverlay(NSObject):
             return
         self._cancel_tray_capture_flash()
         self._visible = False
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is not None and hasattr(renderer, "reset_live_session"):
+            try:
+                renderer.reset_live_session(stop_stream=True)
+            except Exception:
+                logger.debug("Failed to reset preview backdrop live session", exc_info=True)
         self._cancel_backdrop_refresh()
         self._cancel_typewriter()
         self._start_fade_out(duration=fade_duration)
@@ -823,6 +829,12 @@ class TranscriptionOverlay(NSObject):
             return
         self._visible = False
         self._cancel_tray_capture_flash()
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is not None and hasattr(renderer, "reset_live_session"):
+            try:
+                renderer.reset_live_session(stop_stream=True)
+            except Exception:
+                logger.debug("Failed to reset preview backdrop live session", exc_info=True)
         self._cancel_backdrop_refresh()
         self._cancel_fade()
         self._cancel_typewriter()

@@ -848,6 +848,24 @@ def _make_stream_handler_queue(label: str):
         return None
 
 
+def _invoke_callback_on_main_thread(callback, *args):
+    if callback is None:
+        return
+    if threading.current_thread() is threading.main_thread():
+        callback(*args)
+        return
+    try:
+        from PyObjCTools import AppHelper
+    except Exception:
+        callback(*args)
+        return
+    call_after = getattr(AppHelper, "callAfter", None)
+    if callable(call_after):
+        call_after(callback, *args)
+        return
+    callback(*args)
+
+
 class _CMTimeStruct(ctypes.Structure):
     _fields_ = [
         ("value", ctypes.c_longlong),
@@ -1462,6 +1480,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._pending_signature = None
         self._applied_signature = None
         self._latest_image = None
+        self._has_live_frame = False
         self._frame_callback = None
         self._sample_buffer_callback = None
         self._blur_radius_points = 0.0
@@ -1571,7 +1590,7 @@ class _ScreenCaptureKitBackdropRenderer:
         if callback is None:
             return
         try:
-            callback(image)
+            _invoke_callback_on_main_thread(callback, image)
         except Exception:
             logger.debug("ScreenCaptureKit frame callback failed", exc_info=True)
 
@@ -1583,16 +1602,50 @@ class _ScreenCaptureKitBackdropRenderer:
             logger.info("SCK: publish_live_image[%d] callback=%s", self._publish_image_count, self._frame_callback is not None)
         with self._lock:
             self._latest_image = image
+            self._has_live_frame = True
         self._dispatch_frame_callback(image)
 
     def _publish_live_sample_buffer(self, sample_buffer) -> None:
         callback = self._sample_buffer_callback
         if callback is None:
             return
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            self._has_live_frame = True
+        else:
+            with lock:
+                self._has_live_frame = True
         try:
-            callback(sample_buffer)
+            _invoke_callback_on_main_thread(callback, sample_buffer)
         except Exception:
             logger.debug("ScreenCaptureKit sample buffer callback failed", exc_info=True)
+
+    def reset_live_session(self, *, stop_stream: bool) -> None:
+        stream = self._stream if stop_stream else None
+        with self._lock:
+            self._latest_image = None
+            self._has_live_frame = False
+        self._stream_started = False
+        self._startup_requested = False
+        self._pending_signature = None
+        self._applied_signature = None
+        if not stop_stream:
+            return
+        self._stream = None
+        self._stream_output = None
+        self._current_display = None
+        self._current_display_frame = None
+        self._current_content = None
+        self._window_number = None
+        if stream is None:
+            return
+        try:
+            if hasattr(stream, "stopCaptureWithCompletionHandler_"):
+                stream.stopCaptureWithCompletionHandler_(lambda *args: None)
+            elif hasattr(stream, "stopCapture"):
+                stream.stopCapture()
+        except Exception:
+            logger.debug("Failed to stop ScreenCaptureKit stream", exc_info=True)
 
     def _signature_for(self, window_number, capture_rect, backing_scale):
         return (
@@ -1938,6 +1991,7 @@ class _ScreenCaptureKitBackdropRenderer:
                 if image is not None:
                     with self._lock:
                         self._latest_image = image
+                        self._has_live_frame = True
                     return image
 
         if self._stream is None:
@@ -1946,7 +2000,9 @@ class _ScreenCaptureKitBackdropRenderer:
             self._update_stream(window_number=window_number, capture_rect=capture_rect)
 
         if self.uses_direct_sample_buffers(self._blur_radius_points):
-            return None
+            with self._lock:
+                if self._has_live_frame:
+                    return None
 
         with self._lock:
             image = self._latest_image

@@ -526,6 +526,25 @@ def test_show_flushes_sample_buffer_preview_backdrop_before_reuse(mock_pyobjc, m
     overlay._backdrop_layer.flushAndRemoveImage.assert_called_once_with()
 
 
+def test_order_out_resets_live_preview_backdrop_session(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._window = MagicMock()
+    overlay._backdrop_layer = MagicMock()
+    overlay._backdrop_layer_is_sample_buffer_display = False
+    overlay._backdrop_renderer = MagicMock()
+    overlay._cancel_tray_capture_flash = MagicMock()
+    overlay._cancel_backdrop_refresh = MagicMock()
+    overlay._cancel_fade = MagicMock()
+    overlay._cancel_typewriter = MagicMock()
+
+    overlay.order_out()
+
+    overlay._backdrop_renderer.reset_live_session.assert_called_once_with(
+        stop_stream=True
+    )
+
+
 def test_refresh_preview_backdrop_snapshot_updates_contents_frame_and_mask(mock_pyobjc):
     overlay_module = _import_overlay(mock_pyobjc)
     overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
