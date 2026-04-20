@@ -1300,8 +1300,19 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 ],
             )
 
-            # Load CMSampleBufferGetImageBuffer via both PyObjC (@@) and
-            # ctypes to compare which path actually works.
+            # Prefer pyobjc-framework-CoreMedia if installed — it has
+            # correct type metadata for CMSampleBuffer functions.
+            _has_native_coremedia = False
+            try:
+                import CoreMedia as _CoreMediaModule
+                _native_GetImageBuffer = _CoreMediaModule.CMSampleBufferGetImageBuffer
+                _native_GetAttachments = _CoreMediaModule.CMSampleBufferGetSampleAttachmentsArray
+                _has_native_coremedia = True
+                logger.info("SCK: using native pyobjc-framework-CoreMedia bindings")
+            except (ImportError, AttributeError):
+                logger.info("SCK: pyobjc-framework-CoreMedia not available, using manual bridge")
+
+            # Manual bridge fallback
             _cm_direct_ns = {}
             objc.loadBundleFunctions(
                 coremedia_bundle,
@@ -1356,73 +1367,42 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 from Quartz import CIImage
                 _ci_from_sb_diag[0] += 1
                 n = _ci_from_sb_diag[0]
-                # The sample buffer arrives as a PyObjC proxy.  For native
-                # ObjC objects, pyobjc_id == the real id.  For non-ObjC
-                # CF types bridged via the wrong selector signature (@),
-                # the proxy wraps a Python representation that doesn't
-                # correspond to the real CMSampleBufferRef pointer.
-                #
-                # Try multiple strategies to get the real pointer:
-                # Check frame status — SCK delivers status/idle frames
-                # that don't contain image data.
-                frame_status = None
-                try:
-                    attachments = _cm_direct_GetAttachments(sample_buffer, False)
-                    if attachments and len(attachments) > 0:
-                        info = attachments[0]
-                        status_key = bridge.get("SCStreamFrameInfoStatus")
-                        if status_key and info:
-                            frame_status = info.get(status_key)
-                except Exception:
-                    pass
 
-                raw_ptr = objc.pyobjc_id(sample_buffer)
-                pb_ptr_direct = None
-                try:
-                    pb_ptr_direct = _cm_direct_GetImageBuffer(sample_buffer)
-                except Exception:
-                    pass
-                pb_ptr_ctypes = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
-                if n <= 10:
-                    logger.info(
-                        "SCK ci_from_sb[%d]: status=%s ctypes_pb=%s direct_pb=%s",
-                        n,
-                        frame_status,
-                        hex(pb_ptr_ctypes) if pb_ptr_ctypes else "NULL",
-                        pb_ptr_direct,
-                    )
-                # Prefer the direct PyObjC-bridged result — it's already
-                # a properly bridged ObjC object that CIImage can use.
-                if pb_ptr_direct is not None:
-                    ci = CIImage.imageWithCVPixelBuffer_(pb_ptr_direct)
-                    if ci is not None:
-                        return ci
-                    # Try IOSurface fallback
+                # Strategy 1: native pyobjc-framework-CoreMedia (correct
+                # type metadata, no bridging issues).
+                if _has_native_coremedia:
                     try:
-                        pb_raw = objc.pyobjc_id(pb_ptr_direct)
-                        ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_raw)
-                        if ios_ptr:
-                            ios_obj = objc.objc_object(c_void_p=ios_ptr)
-                            return CIImage.imageWithIOSurface_(ios_obj)
+                        pb = _native_GetImageBuffer(sample_buffer)
+                        if pb is not None:
+                            ci = CIImage.imageWithCVPixelBuffer_(pb)
+                            if n <= 5:
+                                logger.info("SCK ci_from_sb[%d]: native pb=%s ci=%s", n, pb, ci is not None)
+                            return ci
+                        elif n <= 5:
+                            logger.info("SCK ci_from_sb[%d]: native returned None", n)
+                    except Exception:
+                        if n <= 5:
+                            logger.info("SCK ci_from_sb[%d]: native raised", n, exc_info=True)
+
+                # Strategy 2: manual bridge via loadBundleFunctions '@@'
+                if _cm_direct_GetImageBuffer is not None:
+                    try:
+                        pb = _cm_direct_GetImageBuffer(sample_buffer)
+                        if pb is not None:
+                            return CIImage.imageWithCVPixelBuffer_(pb)
                     except Exception:
                         pass
 
-                # ctypes fallback
-                if not pb_ptr_ctypes:
+                # Strategy 3: ctypes (least reliable)
+                raw_ptr = objc.pyobjc_id(sample_buffer)
+                pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
+                if not pb_ptr:
                     return None
-                _cf_lib.CFRetain(pb_ptr_ctypes)
+                _cf_lib.CFRetain(pb_ptr)
                 try:
-                    pb_obj = objc.objc_object(c_void_p=pb_ptr_ctypes)
-                    ci = CIImage.imageWithCVPixelBuffer_(pb_obj)
-                    if ci is not None:
-                        return ci
-                    ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_ptr_ctypes)
-                    if ios_ptr:
-                        ios_obj = objc.objc_object(c_void_p=ios_ptr)
-                        return CIImage.imageWithIOSurface_(ios_obj)
+                    return CIImage.imageWithCVPixelBuffer_(objc.objc_object(c_void_p=pb_ptr))
                 finally:
-                    _cf_lib.CFRelease(pb_ptr_ctypes)
-                return None
+                    _cf_lib.CFRelease(pb_ptr)
 
             CMSampleBufferGetImageBuffer = _CMSampleBufferGetImageBuffer_via_ctypes
 
