@@ -91,7 +91,7 @@ kernel vec2 opticalShellWarp(
 
     // Remap field with a floor and monotonic curve.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float field01 = mix(0.55, 1.0, pow(rawField, 0.35));
+    float field01 = mix(0.95, 1.0, pow(rawField, 0.35));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
