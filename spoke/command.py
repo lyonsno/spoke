@@ -1,8 +1,8 @@
-"""Command dispatch to a local OMLX server.
+"""Command dispatch to the local command endpoint.
 
-Sends voice command utterances to a local model via the OpenAI-compatible
-chat completions API, streams the response, and maintains a ring buffer
-of recent exchanges for conversational context.
+Sends voice command utterances to the local OpenAI-compatible command stack,
+streams the response, and maintains a ring buffer of recent exchanges for
+conversational context.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
 
     return tokens
 
-_DEFAULT_COMMAND_URL = "http://localhost:8001"
+_DEFAULT_COMMAND_URL = "http://localhost:8090"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
 

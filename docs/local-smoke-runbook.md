@@ -100,12 +100,17 @@ only via a one-off `.spoke-smoke-env`.
 Common overrides:
 
 ```sh
-export SPOKE_COMMAND_URL="http://localhost:8001"
+export SPOKE_COMMAND_URL="http://localhost:8090"
 export SPOKE_COMMAND_API_KEY="1234"
 export SPOKE_COMMAND_MODEL_DIR="$HOME/dev/scripts/quant/models"
 export SPOKE_TTS_VOICE="casual_female"
 export SPOKE_TTS_MODEL="mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
 ```
+
+`SPOKE_COMMAND_URL` should point at Grapheus, not directly at OMLX. The local
+canonical stack is `spoke -> grapheus -> OMLX`, with Grapheus listening on
+`localhost:8090` and forwarding to the local OMLX server on `localhost:8001`.
+On `MacBook-Pro-2.local`, `phylax` owns the `grapheus_local` service lifecycle.
 
 ### OmniVoice local/quant note
 

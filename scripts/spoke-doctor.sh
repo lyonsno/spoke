@@ -98,9 +98,13 @@ printf "${BOLD}Spoke Service Fleet Health${RESET}\n"
 echo "─────────────────────────────────────────────────────"
 echo ""
 
-# --- OMLX (command server) ---
-omlx_url=$(resolve_url SPOKE_COMMAND_URL localhost 8001)
-check_service "OMLX (commands)" "$omlx_url" "/v1/models" true
+# --- Grapheus (command proxy) ---
+command_url=$(resolve_url SPOKE_COMMAND_URL localhost 8090)
+check_service "Grapheus (commands)" "$command_url" "/v1/models" true
+
+# --- Local OMLX upstream ---
+omlx_upstream_url=$(resolve_url OMLX_UPSTREAM_URL localhost 8001)
+check_service "OMLX upstream" "$omlx_upstream_url" "/v1/models" false
 
 # --- Narrator ---
 narrator_url="${SPOKE_NARRATOR_URL:-}"
@@ -109,7 +113,7 @@ if [[ -n "$narrator_url" ]]; then
     check_service "Narrator" "$narrator_url" "/v1/models" false
 else
     # Narrator falls back to command URL — already checked above
-    printf "${BOLD}%-24s${RESET} (using OMLX — same as commands)\n" "Narrator"
+    printf "${BOLD}%-24s${RESET} (using Grapheus command path)\n" "Narrator"
 fi
 
 # --- MLX-audio sidecar (TTS) ---

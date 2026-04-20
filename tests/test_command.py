@@ -116,7 +116,7 @@ class TestCommandClient:
         monkeypatch.setenv("SPOKE_COMMAND_HISTORY", "20")
         from spoke.command import CommandClient
         client = CommandClient()
-        assert client._base_url == "http://localhost:8001"
+        assert client._base_url == "http://localhost:8090"
         assert client._model == "env-model"
         assert client._api_key == "env-key"
         assert client._max_history == 20

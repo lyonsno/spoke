@@ -43,8 +43,9 @@ cognitive fork at the exact point where cognition should remain continuous.
    whether shift is held. If yes, route the transcribed text to the command
    pathway instead of text injection.
 2. Command dispatch module (`command.py`). Takes the transcribed command,
-   sends it to an OMLX server endpoint (`/v1/chat/completions`), streams the
-   response. Configuration via `SPOKE_COMMAND_URL` and `SPOKE_COMMAND_MODEL`.
+   sends it to the local Grapheus endpoint (`/v1/chat/completions`), which
+   proxies the local OMLX server, streams the response, and logs the traffic.
+   Configuration via `SPOKE_COMMAND_URL` and `SPOKE_COMMAND_MODEL`.
 3. Output overlay. A second overlay surface, visually kin to the input overlay
    — same ethereal transparency, same floating treatment — but differentiated
    by color and rhythm. The input overlay breathes with amplitude (non-
@@ -54,10 +55,10 @@ cognitive fork at the exact point where cognition should remain continuous.
    from day one — a dead pause followed by a wall of text would kill the
    feeling of liveness that makes the whole thing work.
 
-**Inference target:** OMLX server running a 35B-A3B MoE tool-caller. OMLX
-already supports MCP tool configs, persistent KV caches, and streaming. Spoke
-talks to it over the same OpenAI-compatible HTTP shape it already uses for
-remote transcription.
+**Inference target:** OMLX server running a 35B-A3B MoE tool-caller, reached
+through the local Grapheus command proxy. OMLX already supports MCP tool
+configs, persistent KV caches, and streaming; Grapheus gives Spoke a stable
+OpenAI-compatible local surface plus inference logging.
 
 ### Layer 2 — First Tool: Semantic Scratch Space
 
