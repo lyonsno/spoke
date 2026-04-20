@@ -263,7 +263,7 @@ def test_install_backdrop_frame_callback_pushes_live_frames_into_layer(mock_pyob
     overlay._backdrop_layer.setContents_.assert_called_once_with("live-frame")
 
 
-def test_install_backdrop_frame_callback_skips_image_path_for_sample_buffer_layer(mock_pyobjc):
+def test_install_backdrop_frame_callback_keeps_image_fallback_for_sample_buffer_layer(mock_pyobjc):
     overlay_module = _import_overlay(mock_pyobjc)
     overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
     overlay._backdrop_renderer = MagicMock()
@@ -272,7 +272,9 @@ def test_install_backdrop_frame_callback_skips_image_path_for_sample_buffer_laye
 
     overlay._install_backdrop_frame_callback()
 
-    overlay._backdrop_renderer.set_frame_callback.assert_called_once_with(None)
+    callback = overlay._backdrop_renderer.set_frame_callback.call_args[0][0]
+
+    assert callback is not None
 
 
 def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(mock_pyobjc):

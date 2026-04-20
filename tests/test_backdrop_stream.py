@@ -873,6 +873,153 @@ def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch)
     assert renderer._stream_handler_queue is sentinel_queue
 
 
+def test_request_stream_start_rolls_back_state_when_start_capture_fails(monkeypatch):
+    mod = _import_module()
+
+    class FakeDisplay:
+        def frame(self):
+            return _make_rect(0.0, 0.0, 1728.0, 1117.0)
+
+    fake_display = FakeDisplay()
+
+    class FakeContent:
+        def displays(self):
+            return [fake_display]
+
+        def windows(self):
+            return []
+
+    fake_content = FakeContent()
+
+    class FakeStream:
+        def addStreamOutput_type_sampleHandlerQueue_error_(self, output, output_type, queue, error):
+            return True, None
+
+        def startCaptureWithCompletionHandler_(self, callback):
+            callback("boom")
+
+    fake_stream = FakeStream()
+
+    class FakeSCStream:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFilter_configuration_delegate_(self, content_filter, config, delegate):
+            return fake_stream
+
+    class FakeSCShareableContent:
+        @staticmethod
+        def getShareableContentWithCompletionHandler_(callback):
+            callback(fake_content)
+
+    class FakeOutput:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithRenderer_(self, renderer):
+            return self
+
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCShareableContent": FakeSCShareableContent,
+            "SCStream": FakeSCStream,
+            "SCStreamOutputTypeScreen": 7,
+        },
+    )
+    monkeypatch.setattr(mod, "_ScreenCaptureKitStreamOutput", FakeOutput)
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._screen = object()
+    renderer._fallback_factory = lambda: None
+    renderer._fallback = None
+    renderer._stream = None
+    renderer._stream_output = None
+    renderer._stream_started = False
+    renderer._startup_requested = False
+    renderer._pending_signature = None
+    renderer._applied_signature = None
+    renderer._latest_image = None
+    renderer._frame_callback = None
+    renderer._sample_buffer_callback = None
+    renderer._blur_radius_points = 0.0
+    renderer._current_display = None
+    renderer._current_display_frame = None
+    renderer._current_content = None
+    renderer._window_number = None
+    renderer._lock = mod.threading.Lock()
+    renderer._ci_context = None
+    renderer._stream_handler_queue = None
+    renderer._match_display = lambda content: fake_display
+    renderer._build_filter = lambda content, display, window_number: "filter"
+    renderer._build_configuration = lambda content_filter, capture_rect: "config"
+    renderer._current_backing_scale = lambda: 2.0
+    renderer._signature_for = lambda window_number, capture_rect, backing_scale: ("sig",)
+
+    renderer._request_stream_start(window_number=99, capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0))
+
+    assert renderer._stream is None
+    assert renderer._stream_output is None
+    assert renderer._stream_started is False
+    assert renderer._applied_signature is None
+    assert renderer._window_number is None
+
+
+def test_consume_sample_buffer_optical_shell_uses_capture_point_pixel_scale(monkeypatch):
+    mod = _import_module()
+    fake_ci_image = MagicMock()
+    fake_ci_image.extent.return_value = MagicMock(size=MagicMock(width=150, height=75))
+    fake_ci_image.imageByClampingToExtent.return_value = fake_ci_image
+    fake_ci_image.imageByCroppingToRect_.return_value = fake_ci_image
+    fake_quartz = types.ModuleType("Quartz")
+    fake_quartz.CIImage = MagicMock()
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    bridge = {
+        "SCStreamOutputTypeScreen": 7,
+        "_CIImage_from_sample_buffer": MagicMock(return_value=fake_ci_image),
+    }
+    warp_helper = MagicMock(return_value=fake_ci_image)
+    monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: bridge)
+    monkeypatch.setattr(mod, "_apply_optical_shell_warp_ci_image", warp_helper)
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 0.2
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._frame_callback = MagicMock()
+    renderer._optical_shell_config = {
+        "enabled": True,
+        "content_width_points": 100.0,
+        "content_height_points": 50.0,
+        "corner_radius_points": 16.0,
+        "band_width_points": 8.0,
+        "tail_width_points": 6.0,
+    }
+    renderer._capture_point_pixel_scale = 1.5
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    fake_context = MagicMock()
+    fake_context.createCGImage_fromRect_ = MagicMock(return_value="cg-image")
+    renderer._ci_context = fake_context
+    renderer._lock = __import__("threading").Lock()
+    renderer._latest_image = None
+    renderer._publish_image_count = 0
+    renderer._screen = MagicMock()
+    renderer._screen.backingScaleFactor.return_value = 2.0
+
+    renderer._consume_sample_buffer("live-sample", 7)
+
+    scaled_config = warp_helper.call_args[0][2]
+    assert scaled_config["content_width_points"] == pytest.approx(150.0)
+    assert scaled_config["content_height_points"] == pytest.approx(75.0)
+    assert scaled_config["corner_radius_points"] == pytest.approx(24.0)
+    assert scaled_config["band_width_points"] == pytest.approx(12.0)
+    assert scaled_config["tail_width_points"] == pytest.approx(9.0)
+
+
 def test_capture_blurred_image_seeds_direct_debug_grid_when_visualize_enabled(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)

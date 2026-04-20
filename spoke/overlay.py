@@ -1306,9 +1306,6 @@ class TranscriptionOverlay(NSObject):
         renderer = getattr(self, "_backdrop_renderer", None)
         if renderer is None or not hasattr(renderer, "set_frame_callback"):
             return
-        if self._backdrop_layer_uses_sample_buffers():
-            renderer.set_frame_callback(None)
-            return
 
         def apply_live_frame(image) -> None:
             if self._backdrop_layer is None:
