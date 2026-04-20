@@ -180,8 +180,7 @@ kernel vec2 opticalShellWarp(
     // the endcaps and curves around instead of collapsing to a V.
     float scaleX = pow(max(scale, 0.0), %(x_squeeze)s);
     float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
-    // DEBUG: interior returns identity so we can isolate the exterior mag.
-    vec2 warped = d;  // was: c + p * vec2(scaleX, scaleY);
+    vec2 warped = c + p * vec2(scaleX, scaleY);
 
     // Exterior: interior warp fades to magnified exterior.
     // magRampIn uses a short ramp (capsuleRadius * 0.15) to avoid
