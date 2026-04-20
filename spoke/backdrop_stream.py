@@ -811,7 +811,7 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
     if hasattr(config, "setShowsCursor_"):
         config.setShowsCursor_(False)
     if hasattr(config, "setScalesToFit_"):
-        config.setScalesToFit_(False)
+        config.setScalesToFit_(True)
     if hasattr(config, "setContentScale_"):
         config.setContentScale_(scale)
     if hasattr(config, "setMinimumFrameInterval_"):
