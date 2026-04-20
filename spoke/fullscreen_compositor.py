@@ -40,6 +40,7 @@ class FullScreenCompositor:
 
         # State
         self._latest_iosurface = None
+        self._latest_pixel_buffer = None
         self._latest_width = 0
         self._latest_height = 0
         self._shell_config = None
@@ -82,6 +83,7 @@ class FullScreenCompositor:
         self._destroy_fullscreen_window()
         with self._lock:
             self._latest_iosurface = None
+            self._latest_pixel_buffer = None
         logger.info(
             "FullScreenCompositor: stopped (%d presented / %d ticks)",
             self._presented_count, self._frame_count,
@@ -332,10 +334,16 @@ class FullScreenCompositor:
                 continue
         return excluded
 
-    def submit_iosurface(self, iosurface, *, width: int, height: int):
-        """Called from SCK handler queue — must never block."""
+    def submit_iosurface(self, iosurface, *, width: int, height: int, pixel_buffer=None):
+        """Called from SCK handler queue — must never block.
+
+        If pixel_buffer is provided, we hold a reference to it to prevent
+        the SCK buffer pool from recycling the IOSurface before the
+        display link thread renders it.
+        """
         with self._lock:
             self._latest_iosurface = iosurface
+            self._latest_pixel_buffer = pixel_buffer  # prevent recycling
             self._latest_width = width
             self._latest_height = height
 
@@ -485,8 +493,8 @@ class _CompositorRendererProxy:
         w = int(cv_lib.CVPixelBufferGetWidth(raw_pb))
         h = int(cv_lib.CVPixelBufferGetHeight(raw_pb))
 
-        if self._diag_n <= 3:
-            logger.info("Compositor frame[%d]: %dx%d IOSurface", self._diag_n, w, h)
+        if self._diag_n <= 8:
+            logger.info("Compositor frame[%d]: %dx%d IOSurface ptr=%s pb=%s", self._diag_n, w, h, hex(ios), hex(objc.pyobjc_id(pb)))
 
         if w > 0 and h > 0:
-            self._compositor.submit_iosurface(ios_obj, width=w, height=h)
+            self._compositor.submit_iosurface(ios_obj, width=w, height=h, pixel_buffer=pb)
