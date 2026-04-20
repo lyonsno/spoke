@@ -3235,21 +3235,25 @@ class SpokeAppDelegate(NSObject):
                 })
 
             elif mode == "guided":
-                # Phase 1: Read attractors, cross-reference against
-                # the conversation turns being compacted, produce
-                # retention flags.
-                attractors_dir = _Path.home() / "dev" / "epistaxis" / "attractors"
-                attractor_titles = []
-                if attractors_dir.is_dir():
-                    for f in sorted(attractors_dir.iterdir()):
-                        if f.is_file() and f.suffix == ".md":
-                            # Strip date suffix and extension for readable title
-                            attractor_titles.append(f.stem)
+                # Phase 1: Semantic search against the attractor vector index.
+                # Embeds user turns from the target history window, queries the
+                # pre-built attractor index via cosine similarity, returns
+                # top-k matches as retention flags.
+                import numpy as _np
 
-                # Extract user/assistant text from the target turns
-                turn_texts = []
+                _index_path = _Path.home() / ".config" / "spoke" / "attractor-index.npz"
+
+                # Extract user text from the target turns
+                user_texts = []
+                turn_preview = []
                 for i in range(target):
                     turn = history[i]
+                    for m in turn:
+                        role = m.get("role", "")
+                        content = m.get("content", "")
+                        if role == "user" and content:
+                            user_texts.append(content[:500])
+                    # Preview for display
                     parts = []
                     for m in turn:
                         role = m.get("role", "")
@@ -3257,40 +3261,104 @@ class SpokeAppDelegate(NSObject):
                         if role in ("user", "assistant") and content:
                             parts.append(f"{role}: {content[:200]}")
                     if parts:
-                        turn_texts.append(f"Turn {i+1}: " + " | ".join(parts))
+                        turn_preview.append(f"Turn {i+1}: " + " | ".join(parts))
 
-                # Cross-reference: find attractor titles mentioned
-                # (even partially) in the conversation text
-                conversation_blob = " ".join(turn_texts).lower()
+                if not _index_path.is_file():
+                    return _json.dumps({
+                        "status": "error",
+                        "error": "attractor-index.npz not found. Run: uv run scripts/converge-embed.py build",
+                        "turn_preview": turn_preview[:5],
+                    })
+
+                if not user_texts:
+                    return _json.dumps({
+                        "status": "ok",
+                        "mode": "guided",
+                        "retention_flags": [],
+                        "instruction": "No user text found in target turns. Use your own judgment.",
+                        "turn_preview": turn_preview[:5],
+                    })
+
+                # Load the index
+                try:
+                    data = _np.load(_index_path, allow_pickle=False)
+                    full_emb = data["full_embeddings"]
+                    summary_emb = data["summary_embeddings"]
+                    metadata = _json.loads(str(data["metadata"]))
+                except Exception as e:
+                    return _json.dumps({"status": "error", "error": f"index load failed: {e}"})
+
+                # Embed user turns via the embedding model
+                try:
+                    sys_path = str(_Path(__file__).resolve().parent.parent / "scripts")
+                    if sys_path not in __import__("sys").path:
+                        __import__("sys").path.insert(0, sys_path)
+                    # Import inline to avoid loading the embedding model at startup
+                    from converge_embed_lib import embed_texts as _embed_texts
+                    turn_embeddings = _embed_texts(user_texts)
+                except ImportError:
+                    # Fallback: use subprocess to call the embed script
+                    import subprocess as _sp
+                    import tempfile as _tmp
+                    with _tmp.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
+                        _json.dump(user_texts, tf)
+                        tf_path = tf.name
+                    result = _sp.run(
+                        ["uv", "run", "python3", "-c",
+                         f"import json, numpy as np, sys; sys.path.insert(0, '{sys_path}'); "
+                         f"from converge_embed_lib import embed_texts; "
+                         f"texts = json.loads(open('{tf_path}').read()); "
+                         f"emb = embed_texts(texts); "
+                         f"np.save('{tf_path}.npy', emb)"],
+                        capture_output=True, timeout=120,
+                    )
+                    _Path(tf_path).unlink(missing_ok=True)
+                    if result.returncode != 0:
+                        return _json.dumps({
+                            "status": "error",
+                            "error": f"embedding failed: {result.stderr.decode()[:200]}",
+                        })
+                    turn_embeddings = _np.load(f"{tf_path}.npy")
+                    _Path(f"{tf_path}.npy").unlink(missing_ok=True)
+
+                # Cosine similarity (vectors are L2-normalized)
+                full_scores = full_emb @ turn_embeddings.T  # (attractors, turns)
+                summary_scores = summary_emb @ turn_embeddings.T
+                best_full = full_scores.max(axis=1)
+                best_summary = summary_scores.max(axis=1)
+                combined = _np.maximum(best_full, best_summary)
+
+                # Top-k above threshold
+                top_k = arguments.get("top_k", 10)
+                threshold = arguments.get("threshold", 0.35)
+                top_indices = _np.argsort(combined)[::-1][:top_k]
                 matched_attractors = []
-                for title in attractor_titles:
-                    # Check key words from the title against conversation
-                    words = [w for w in title.replace("-", " ").replace("_", " ").split()
-                             if len(w) > 3 and w not in (
-                                 "2026", "allow", "support", "resolve",
-                                 "ensure", "stop", "track", "from", "with",
-                                 "into", "that", "this", "auto", "grader",
-                             )]
-                    if words:
-                        matches = sum(1 for w in words if w in conversation_blob)
-                        if matches >= min(2, len(words)):
-                            matched_attractors.append(title)
+                for idx in top_indices:
+                    score = float(combined[idx])
+                    if score < threshold:
+                        break
+                    matched_attractors.append({
+                        "source": metadata[idx]["source"],
+                        "attractor": metadata[idx]["slug"],
+                        "summary": metadata[idx].get("summary", "")[:100],
+                        "score": round(score, 4),
+                    })
 
                 return _json.dumps({
                     "status": "ok",
                     "mode": "guided",
                     "turns_targeted": target,
                     "turns_total": len(history),
-                    "attractor_count": len(attractor_titles),
+                    "attractor_count": len(metadata),
                     "retention_flags": matched_attractors,
                     "instruction": (
-                        "These attractors are referenced or implicated by the "
-                        "conversation being compacted. When you call "
-                        "compact_history with mode='summarize', preserve any "
-                        "information that connects to these attractors. "
+                        "These attractors are semantically related to the "
+                        "conversation being compacted (ranked by cosine similarity). "
+                        "When you call compact_history with mode='summarize', "
+                        "preserve any information that connects to these attractors. "
                         "Use your conversational judgment for everything else."
                     ),
-                    "turn_preview": turn_texts[:5],
+                    "turn_preview": turn_preview[:5],
                 })
 
             return _json.dumps({"error": f"unknown mode: {mode}"})
