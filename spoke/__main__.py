@@ -3208,12 +3208,26 @@ class SpokeAppDelegate(NSObject):
                     if len(history[i]) < before:
                         compacted += 1
                 client._save_history()
-                return _json.dumps({
+                _drop_result = {
                     "status": "ok",
                     "mode": "drop_tool_results",
                     "turns_compacted": compacted,
                     "turns_total": len(history),
-                })
+                }
+                # Trace
+                try:
+                    from datetime import datetime as _dt
+                    _trace_path = _Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
+                    with open(_trace_path, "a") as _tf:
+                        _tf.write(_json.dumps({
+                            "timestamp": _dt.now().isoformat(),
+                            "event": "compact_drop_tool_results",
+                            "turns_compacted": compacted,
+                            "turns_total": len(history),
+                        }) + "\n")
+                except Exception:
+                    pass
+                return _json.dumps(_drop_result)
 
             elif mode == "summarize":
                 summary = arguments.get("summary", "")
@@ -3227,12 +3241,28 @@ class SpokeAppDelegate(NSObject):
                 ]
                 client._history = [summary_turn] + remaining
                 client._save_history()
-                return _json.dumps({
+                _summ_result = {
                     "status": "ok",
                     "mode": "summarize",
                     "turns_replaced": target,
                     "turns_remaining": len(remaining),
-                })
+                }
+                # Trace
+                try:
+                    from datetime import datetime as _dt
+                    _trace_path = _Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
+                    with open(_trace_path, "a") as _tf:
+                        _tf.write(_json.dumps({
+                            "timestamp": _dt.now().isoformat(),
+                            "event": "compact_summarize",
+                            "turns_replaced": target,
+                            "turns_remaining": len(remaining),
+                            "summary_length": len(summary),
+                            "summary_preview": summary[:200],
+                        }) + "\n")
+                except Exception:
+                    pass
+                return _json.dumps(_summ_result)
 
             elif mode == "guided":
                 # Phase 1: Semantic search against the attractor vector index.
@@ -3240,8 +3270,11 @@ class SpokeAppDelegate(NSObject):
                 # pre-built attractor index via cosine similarity, returns
                 # top-k matches as retention flags.
                 import numpy as _np
+                import time as _time
 
                 _index_path = _Path.home() / ".config" / "spoke" / "attractor-index.npz"
+                _trace_path = _Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
+                _t0 = _time.time()
 
                 # Extract user text from the target turns
                 user_texts = []
@@ -3345,7 +3378,8 @@ class SpokeAppDelegate(NSObject):
                         "score": round(score, 4),
                     })
 
-                return _json.dumps({
+                _elapsed = _time.time() - _t0
+                _result = {
                     "status": "ok",
                     "mode": "guided",
                     "turns_targeted": target,
@@ -3360,7 +3394,28 @@ class SpokeAppDelegate(NSObject):
                         "Use your conversational judgment for everything else."
                     ),
                     "turn_preview": turn_preview[:5],
-                })
+                }
+
+                # Write trace for observability
+                try:
+                    from datetime import datetime as _dt
+                    _trace_entry = _json.dumps({
+                        "timestamp": _dt.now().isoformat(),
+                        "event": "guided_compaction",
+                        "elapsed_s": round(_elapsed, 2),
+                        "turns_embedded": len(user_texts),
+                        "attractors_searched": len(metadata),
+                        "matches_returned": len(matched_attractors),
+                        "top_scores": [a["score"] for a in matched_attractors[:5]],
+                        "top_slugs": [a["attractor"][:50] for a in matched_attractors[:5]],
+                        "threshold": threshold,
+                    })
+                    with open(_trace_path, "a") as _tf:
+                        _tf.write(_trace_entry + "\n")
+                except Exception:
+                    pass  # trace is best-effort
+
+                return _json.dumps(_result)
 
             return _json.dumps({"error": f"unknown mode: {mode}"})
 
