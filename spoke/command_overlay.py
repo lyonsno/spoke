@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from collections.abc import Callable
 from types import SimpleNamespace
 
@@ -491,6 +492,8 @@ class _QuartzBackdropRenderer:
                             image = None
                         if image is not None:
                             return image
+        from spoke.backdrop_stream import _quartz_timer
+
         try:
             from Quartz import (
                 CGWindowListCreateImage,
@@ -499,6 +502,8 @@ class _QuartzBackdropRenderer:
         except Exception:
             return None
 
+        _quartz_timer.begin("total")
+        _quartz_timer.begin("capture")
         rect = (
             (capture_rect.origin.x, capture_rect.origin.y),
             (capture_rect.size.width, capture_rect.size.height),
@@ -513,6 +518,7 @@ class _QuartzBackdropRenderer:
         except Exception:
             logger.debug("Backdrop snapshot capture failed", exc_info=True)
             return None
+        _quartz_timer.end("capture")
         if image is None:
             return image
 
@@ -525,8 +531,10 @@ class _QuartzBackdropRenderer:
             context = self._context()
             if context is None:
                 return image
+            _quartz_timer.begin("ci_convert")
             ci_image = CIImage.imageWithCGImage_(image)
             extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+            _quartz_timer.end("ci_convert")
             if extent is None:
                 return image
             output = ci_image
@@ -535,11 +543,13 @@ class _QuartzBackdropRenderer:
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
                 shell_config = _command_optical_shell_config()
                 if shell_config is not None:
+                    _quartz_timer.begin("warp")
                     warped = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
                     if warped is not None:
                         output = warped
                         if hasattr(output, "imageByCroppingToRect_"):
                             output = output.imageByCroppingToRect_(extent)
+                    _quartz_timer.end("warp")
 
 
                     # Faint boundary outline over the warped backdrop.
@@ -563,7 +573,11 @@ class _QuartzBackdropRenderer:
 
             if not hasattr(context, "createCGImage_fromRect_"):
                 return image
+            _quartz_timer.begin("render")
             result = context.createCGImage_fromRect_(output, extent)
+            _quartz_timer.end("render")
+            _quartz_timer.end("total")
+            _quartz_timer.frame_done()
             return result or image
         except Exception:
             logger.debug("Backdrop warp pass failed; using raw snapshot", exc_info=True)

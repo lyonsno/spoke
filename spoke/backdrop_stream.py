@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import threading
+import time
 import warnings
 from types import SimpleNamespace
 
@@ -108,6 +109,79 @@ _WARP_EXTERIOR_MAG_STRENGTH = 0.3   # subtle — needs tuning pass with debug gr
 _WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
 
 _SHELL_WARP_KERNEL = None
+
+# ---------------------------------------------------------------------------
+# Frame timing instrumentation
+# ---------------------------------------------------------------------------
+_FRAME_TIMING_INTERVAL_S = 5.0  # log summary every N seconds
+_FRAME_TIMING_ENABLED = os.environ.get(
+    "SPOKE_BACKDROP_FRAME_TIMING", ""
+).strip() not in ("", "0")
+
+
+class _FrameTimer:
+    """Lightweight per-phase frame timer with periodic log summaries."""
+
+    __slots__ = ("_label", "_phases", "_frame_totals", "_count", "_last_report", "_lock")
+
+    def __init__(self, label: str):
+        self._label = label
+        self._phases: list[tuple[str, float]] = []  # (name, start_ns)
+        self._frame_totals: dict[str, list[float]] = {}
+        self._count = 0
+        self._last_report = time.monotonic()
+        self._lock = threading.Lock()
+
+    def begin(self, phase: str) -> None:
+        if not _FRAME_TIMING_ENABLED:
+            return
+        self._phases.append((phase, time.perf_counter_ns()))
+
+    def end(self, phase: str) -> None:
+        if not _FRAME_TIMING_ENABLED:
+            return
+        end_ns = time.perf_counter_ns()
+        for i in range(len(self._phases) - 1, -1, -1):
+            if self._phases[i][0] == phase:
+                start_ns = self._phases.pop(i)[1]
+                ms = (end_ns - start_ns) / 1_000_000
+                with self._lock:
+                    self._frame_totals.setdefault(phase, []).append(ms)
+                return
+
+    def frame_done(self) -> None:
+        if not _FRAME_TIMING_ENABLED:
+            return
+        self._phases.clear()
+        with self._lock:
+            self._count += 1
+            now = time.monotonic()
+            elapsed = now - self._last_report
+            if elapsed < _FRAME_TIMING_INTERVAL_S:
+                return
+            self._emit_and_reset(elapsed)
+
+    def _emit_and_reset(self, elapsed: float) -> None:
+        count = self._count
+        totals = self._frame_totals
+        self._frame_totals = {}
+        self._count = 0
+        self._last_report = time.monotonic()
+        if count == 0:
+            return
+        fps = count / elapsed
+        parts = [f"{self._label}: {count} frames in {elapsed:.1f}s ({fps:.1f} fps)"]
+        for phase, times in totals.items():
+            n = len(times)
+            avg = sum(times) / n
+            peak = max(times)
+            parts.append(f"  {phase}: avg={avg:.2f}ms peak={peak:.2f}ms (n={n})")
+        logger.info("\n".join(parts))
+
+
+# Singleton timers for each pipeline path
+_quartz_timer = _FrameTimer("quartz-shell")
+_sck_timer = _FrameTimer("sck-shell")
 
 def _build_shell_warp_kernel_source() -> str:
     return """
@@ -1026,6 +1100,7 @@ class _MetalBlurPipeline:
         cleanup_blur_radius_points: float,
         bridge,
     ):
+        _sck_timer.begin("total")
         pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
         if pixel_buffer is None:
             return None
@@ -1033,6 +1108,7 @@ class _MetalBlurPipeline:
             from Quartz import CIImage, CIFilter
         except Exception:
             return None
+        _sck_timer.begin("ci_setup")
         ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
         if ci_image is None:
             return None
@@ -1082,12 +1158,17 @@ class _MetalBlurPipeline:
         scaled_shell_config["tail_width_points"] = float(
             shell_config.get("tail_width_points", 9.0)
         ) * _METAL_BLUR_DOWNSAMPLE
+        _sck_timer.end("ci_setup")
+
+        _sck_timer.begin("warp")
         output = _apply_optical_shell_warp_ci_image(output, working_extent, scaled_shell_config)
+        _sck_timer.end("warp")
 
         if hasattr(output, "imageByCroppingToRect_"):
             output = output.imageByCroppingToRect_(working_extent)
 
         if cleanup_blur > 0.0:
+            _sck_timer.begin("blur")
             blur = CIFilter.filterWithName_("CIGaussianBlur")
             if blur is not None:
                 blur.setDefaults()
@@ -1096,13 +1177,19 @@ class _MetalBlurPipeline:
                 candidate = blur.valueForKey_("outputImage")
                 if candidate is not None and hasattr(candidate, "imageByCroppingToRect_"):
                     output = candidate.imageByCroppingToRect_(working_extent)
+            _sck_timer.end("blur")
 
-        return self._render_ci_image_to_sample_buffer(
+        _sck_timer.begin("render")
+        result = self._render_ci_image_to_sample_buffer(
             output,
             working_extent,
             source_sample=sample_buffer,
             bridge=bridge,
         )
+        _sck_timer.end("render")
+        _sck_timer.end("total")
+        _sck_timer.frame_done()
+        return result
 
 
 def _load_screencapturekit_bridge() -> dict[str, object] | None:
@@ -1176,9 +1263,13 @@ if objc is not None and hasattr(objc, "lookUpClass"):
                 if self is None:
                     return None
                 self._renderer = renderer
+                self._frame_count = 0
                 return self
 
             def stream_didOutputSampleBuffer_ofType_(self, stream, sample_buffer, output_type):
+                if self._frame_count == 0:
+                    logger.info("SCK: first sample buffer received (output_type=%r)", output_type)
+                self._frame_count += 1
                 self._renderer._consume_sample_buffer(sample_buffer, output_type)
 
         if hasattr(objc, "selector"):
@@ -1442,13 +1533,16 @@ class _ScreenCaptureKitBackdropRenderer:
         def got_content(content):
             self._startup_requested = False
             if content is None:
+                logger.info("SCK: getShareableContent returned None")
                 return
             try:
                 self._current_content = content
                 self._current_display = self._match_display(content)
                 if self._current_display is None:
+                    logger.info("SCK: no matching display found")
                     return
                 self._current_display_frame = self._current_display.frame()
+                logger.info("SCK: display matched, frame=%r", self._current_display_frame)
                 content_filter = self._build_filter(content, self._current_display, window_number)
                 config = self._build_configuration(content_filter, capture_rect)
                 SCStream = bridge["SCStream"]
@@ -1458,20 +1552,36 @@ class _ScreenCaptureKitBackdropRenderer:
                     None,
                 )
                 stream_output = _ScreenCaptureKitStreamOutput.alloc().initWithRenderer_(self)
-                success, error = stream.addStreamOutput_type_sampleHandlerQueue_error_(
-                    stream_output,
-                    bridge["SCStreamOutputTypeScreen"],
-                    self._sample_handler_queue(),
-                    None,
-                )
-                if not success:
-                    logger.debug("ScreenCaptureKit addStreamOutput failed: %r", error)
+                handler_queue = self._sample_handler_queue()
+                logger.info("SCK: handler queue=%r", handler_queue)
+                try:
+                    result = stream.addStreamOutput_type_sampleHandlerQueue_error_(
+                        stream_output,
+                        bridge["SCStreamOutputTypeScreen"],
+                        handler_queue,
+                        None,
+                    )
+                except Exception:
+                    logger.info("SCK: addStreamOutput raised", exc_info=True)
                     return
+                # PyObjC may return (BOOL, NSError*) or just BOOL depending
+                # on bridgesupport metadata availability.
+                if isinstance(result, tuple):
+                    success, error = result
+                else:
+                    success = bool(result)
+                    error = None
+                if not success:
+                    logger.info("SCK: addStreamOutput failed: %r", error)
+                    return
+                logger.info("SCK: addStreamOutput succeeded")
 
-                def started(error):
-                    if error is not None:
-                        logger.debug("ScreenCaptureKit startCapture failed: %r", error)
-                        return
+                # PyObjC bridgesupport declares the completion block as
+                # taking 0 args.  Use a 0-arg callback; if start fails,
+                # the stream just won't deliver frames and the fallback
+                # path handles it.
+                def started():
+                    logger.info("SCK: startCapture succeeded — stream is live")
                     self._stream_started = True
 
                 self._stream = stream
@@ -1484,7 +1594,7 @@ class _ScreenCaptureKitBackdropRenderer:
                 )
                 stream.startCaptureWithCompletionHandler_(started)
             except Exception:
-                logger.debug("ScreenCaptureKit stream startup failed", exc_info=True)
+                logger.info("SCK: stream startup failed", exc_info=True)
                 self._stream = None
                 self._stream_output = None
                 self._stream_started = False
