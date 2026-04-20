@@ -512,15 +512,29 @@ class MetalDisplayLinkRenderer:
             # skip this frame.  The next vsync will try again.
             drawable = self._metal_layer.nextDrawable()
             if drawable is None:
+                if self._frame_count <= 5:
+                    logger.info(
+                        "Metal render tick[%d]: nextDrawable returned None "
+                        "(drawableSize=%s, bounds=%s, frame=%s)",
+                        self._frame_count,
+                        self._metal_layer.drawableSize() if hasattr(self._metal_layer, "drawableSize") else "?",
+                        self._metal_layer.bounds() if hasattr(self._metal_layer, "bounds") else "?",
+                        self._metal_layer.frame() if hasattr(self._metal_layer, "frame") else "?",
+                    )
                 return
+
+            if self._frame_count <= 3:
+                logger.info("Metal render tick[%d]: drawable acquired, dispatching warp %dx%d", self._frame_count, w, h)
 
             if self._pipeline.warp_to_drawable(
                 iosurface, drawable, width=w, height=h, shell_config=config,
             ):
                 self._presented_count += 1
+            elif self._frame_count <= 5:
+                logger.info("Metal render tick[%d]: warp_to_drawable returned False", self._frame_count)
         except Exception:
-            if self._frame_count <= 3:
-                logger.debug("Metal render tick failed", exc_info=True)
+            if self._frame_count <= 10:
+                logger.info("Metal render tick[%d] failed", self._frame_count, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
