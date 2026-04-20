@@ -1120,12 +1120,16 @@ class CommandOverlay(NSObject):
 
         # Start or resume the thinking timer.
         self._start_thinking_timer(reset=not preserve_thinking_timer)
-        self._start_backdrop_refresh_timer()
 
         # Full-screen compositor: captures entire display, warps capsule region,
         # presents full frame via Metal.  No seam between warped and unwarped.
+        # Must start BEFORE the backdrop refresh timer — if compositor succeeds,
+        # the old backdrop path is disabled entirely.
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
             self._start_fullscreen_compositor()
+        # Only start old backdrop path if compositor isn't running
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            self._start_backdrop_refresh_timer()
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
@@ -2102,13 +2106,11 @@ class CommandOverlay(NSObject):
             compositor = FullScreenCompositor(self._screen)
             if compositor.start(shell_config):
                 self._fullscreen_compositor = compositor
-                # Stop the old per-overlay backdrop pipeline — compositor replaces it
-                if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
-                    self._backdrop_renderer.stop_live_stream()
+                # Cancel the old backdrop refresh timer — compositor replaces it.
+                # Don't call stop_live_stream here (can deadlock if SCK callback
+                # is in progress).  The old stream will be stopped when the
+                # overlay hides.
                 self._cancel_backdrop_refresh()
-                dl_renderer = getattr(self, "_metal_display_link_renderer", None)
-                if dl_renderer is not None:
-                    dl_renderer.stop()
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
@@ -2150,6 +2152,9 @@ class CommandOverlay(NSObject):
         self._refresh_backdrop_snapshot()
 
     def _refresh_backdrop_snapshot(self):
+        # Full-screen compositor handles all rendering
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            return None
         if (
             self._backdrop_renderer is None
             or self._backdrop_layer is None
