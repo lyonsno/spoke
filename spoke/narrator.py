@@ -112,7 +112,7 @@ class ThinkingNarrator:
         raw_url = (
             base_url
             or os.environ.get("SPOKE_NARRATOR_URL")
-            or os.environ.get("SPOKE_COMMAND_URL", "http://localhost:8001")
+            or os.environ.get("SPOKE_COMMAND_URL", "http://localhost:8090")
         ).rstrip("/")
         path = urlparse(raw_url).path.rstrip("/")
         self._url_has_version_prefix = any(
@@ -132,7 +132,7 @@ class ThinkingNarrator:
 
         # Command URL for polling OMLX status (may differ from narrator URL)
         self._command_url = (
-            os.environ.get("SPOKE_COMMAND_URL", "http://localhost:8001")
+            os.environ.get("SPOKE_COMMAND_URL", "http://localhost:8090")
         ).rstrip("/")
         self._command_api_key = (
             os.environ.get("SPOKE_COMMAND_API_KEY")

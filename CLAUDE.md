@@ -181,8 +181,9 @@ The fleet topology as of 2026-04-07:
 
 | Service | Default URL | Required? |
 |---------|------------|-----------|
-| OMLX (commands) | `localhost:8001` | Yes |
-| Narrator | Falls back to OMLX | No |
+| Grapheus (commands) | `localhost:8090` | Yes |
+| OMLX upstream | `localhost:8001` | No |
+| Narrator | Falls back to Grapheus | No |
 | MLX-audio (TTS/STT) | `MacBook-Pro-2.local:9001` | Yes |
 | Whisper (remote) | `nlm2pr.local:7001` | No (local fallback) |
 
@@ -191,8 +192,11 @@ reachable. Run `spoke-doctor.sh` first.
 
 ## Local assistant (command pathway)
 
-The assistant requires a local OpenAI-compatible model server. The app defaults
-to `http://localhost:8001` (OMLX) when `SPOKE_COMMAND_URL` is not set.
+The assistant requires a local OpenAI-compatible command endpoint. The app
+defaults to `http://localhost:8090` (Grapheus) when `SPOKE_COMMAND_URL` is not
+set. Grapheus is the canonical local command path for `spoke`; it proxies the
+local OMLX server at `http://localhost:8001` and captures structured logs.
+On `MacBook-Pro-2.local`, `phylax` owns the `grapheus_local` service lifecycle.
 
 Authentication: the app reads `SPOKE_COMMAND_API_KEY` first, then falls back to
 `OMLX_SERVER_API_KEY` from the environment. Both are typically set in the

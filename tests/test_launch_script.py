@@ -144,12 +144,12 @@ class TestEnvOverrides:
         env_file = tmp_path / ".spoke-smoke-env"
         env_file.write_text(
             '# comment\n'
-            'export SPOKE_COMMAND_URL="http://localhost:8001"\n'
+            'export SPOKE_COMMAND_URL="http://localhost:8090"\n'
             "SPOKE_TTS_VOICE='casual_female'\n"
             'BARE_KEY=bare_value\n'
         )
         overrides = parse_env_overrides(env_file)
-        assert overrides["SPOKE_COMMAND_URL"] == "http://localhost:8001"
+        assert overrides["SPOKE_COMMAND_URL"] == "http://localhost:8090"
         assert overrides["SPOKE_TTS_VOICE"] == "casual_female"
         assert overrides["BARE_KEY"] == "bare_value"
 

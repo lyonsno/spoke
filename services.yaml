@@ -9,16 +9,33 @@
 
 services:
 
-  omlx:
-    description: "OpenAI-compatible LLM server (commands, tool calls, thinking)"
+  grapheus:
+    description: "OpenAI-compatible command proxy in front of the local OMLX server"
     default_host: localhost
-    default_port: 8001
+    default_port: 8090
     env_url: SPOKE_COMMAND_URL
     env_api_key: SPOKE_COMMAND_API_KEY
     env_api_key_fallback: OMLX_SERVER_API_KEY
     health_endpoint: /v1/models
     notes: >
-      Runs via omlx CLI. API key is typically set in shell profile.
+      Canonical local command endpoint for spoke. Grapheus forwards command
+      traffic to the local OMLX server and logs completions on the way through.
+      On MacBook-Pro-2.local, phylax owns the grapheus_local launchd service.
+    rebuild: |
+      # Grapheus is launched and supervised outside spoke.
+      # On this box phylax owns the lifecycle:
+      phylax services status grapheus_local
+      phylax services restart grapheus_local
+
+  omlx:
+    description: "Local OMLX upstream behind Grapheus"
+    default_host: localhost
+    default_port: 8001
+    env_api_key_fallback: OMLX_SERVER_API_KEY
+    health_endpoint: /v1/models
+    notes: >
+      Upstream model server for the local command path. Grapheus should be the
+      canonical SPOKE_COMMAND_URL rather than pointing spoke directly here.
       Default model: qwen3p5-35B-A3B.
     rebuild: |
       # OMLX is installed globally or in its own venv — not in spoke's.
@@ -34,7 +51,8 @@ services:
     env_api_key_fallback: OMLX_SERVER_API_KEY
     health_endpoint: /v1/models
     notes: >
-      Falls back to SPOKE_COMMAND_URL if SPOKE_NARRATOR_URL is unset.
+      Falls back to SPOKE_COMMAND_URL if SPOKE_NARRATOR_URL is unset, which
+      means the local Grapheus command path by default.
       Can point at a different OMLX instance (e.g. nlm2pr.local:8001)
       running a smaller model like Bonsai-8B-mlx-1bit.
     rebuild: |
@@ -86,7 +104,7 @@ services:
 # Machines
 #
 # MacBook-Pro-2.local (M4 Max, 128GB) — primary dev box
-#   Runs: spoke core, omlx, mlx-audio-sidecar
+#   Runs: spoke core, grapheus, omlx, mlx-audio-sidecar
 #
 # nlm2pr.local (M2 Pro, 16GB) — secondary box
 #   Runs: whisper sidecar, optional narrator omlx instance
