@@ -15,6 +15,7 @@ import re
 import uuid
 from typing import Any, Callable, Generator, Literal
 
+from pathlib import Path
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -96,7 +97,8 @@ def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
 
 _DEFAULT_COMMAND_URL = "http://localhost:8090"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
-_DEFAULT_RING_BUFFER_SIZE = 10
+_DEFAULT_RING_BUFFER_SIZE = 20
+_HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 
 _SYSTEM_PROMPT = (
     "Respond directly to the user's request. "
@@ -183,12 +185,15 @@ class CommandStreamEvent:
 class CommandClient:
     """Streaming chat client for voice commands via OMLX."""
 
+    _SENTINEL = object()
+
     def __init__(
         self,
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
         max_history: int | None = None,
+        history_path: Path | None | object = _SENTINEL,
     ):
         raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
@@ -219,7 +224,30 @@ class CommandClient:
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
         # Ring buffer: list of (user_utterance, assistant_response) pairs
-        self._history: list[tuple[str, str]] = []
+        self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
+        self._history: list[tuple[str, str]] = self._load_history()
+
+    def _load_history(self) -> list[tuple[str, str]]:
+        """Load persisted history from disk, or return empty list."""
+        if self._history_path is None:
+            return []
+        try:
+            data = json.loads(self._history_path.read_text(encoding="utf-8"))
+            return [(u, a) for u, a in data]
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return []
+
+    def _save_history(self) -> None:
+        """Persist current history to disk."""
+        if self._history_path is None:
+            return
+        self._history_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._history_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(self._history, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(self._history_path)
 
     @property
     def history(self) -> list[tuple[str, str]]:
@@ -638,9 +666,11 @@ class CommandClient:
         self._history.append((utterance, visible_response or full_response))
         if len(self._history) > self._max_history:
             self._history.pop(0)
+        self._save_history()
 
         return full_response
 
     def clear_history(self) -> None:
         """Clear the conversation ring buffer."""
         self._history.clear()
+        self._save_history()

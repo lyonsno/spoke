@@ -3098,6 +3098,7 @@ class SpokeAppDelegate(NSObject):
                     max_h = self._command_client._max_history
                     if len(self._command_client._history) > max_h:
                         self._command_client._history.pop(0)
+                    self._command_client._save_history()
                     logger.info("Command history saved: %d turns", len(self._command_client._history))
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3290,6 +3291,7 @@ class SpokeAppDelegate(NSObject):
                 max_h = self._command_client._max_history
                 if len(self._command_client._history) > max_h:
                     self._command_client._history.pop(0)
+                self._command_client._save_history()
                 logger.info(
                     "Command history saved after stale token break: %d turns",
                     len(self._command_client._history),

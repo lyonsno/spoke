@@ -6,6 +6,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import spoke.command as _cmd_mod
+# Disable history persistence in all tests
+_cmd_mod._HISTORY_PATH = None
+
 
 def _make_sse_response(chunks):
     """Build a fake HTTP response that yields SSE lines."""
@@ -30,6 +34,7 @@ class TestCommandClient:
             "model": "test-model",
             "api_key": "test-key",
             "max_history": 5,
+            "history_path": None,
         }
         defaults.update(kwargs)
         return CommandClient(**defaults)
@@ -115,7 +120,7 @@ class TestCommandClient:
         monkeypatch.setenv("SPOKE_COMMAND_API_KEY", "env-key")
         monkeypatch.setenv("SPOKE_COMMAND_HISTORY", "20")
         from spoke.command import CommandClient
-        client = CommandClient()
+        client = CommandClient(history_path=None)
         assert client._base_url == "http://localhost:8090"
         assert client._model == "env-model"
         assert client._api_key == "env-key"
@@ -145,6 +150,7 @@ class TestCommandClient:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
 
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
@@ -167,6 +173,7 @@ class TestCommandClient:
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             model="gemini-2.5-flash",
             api_key="key",
+            history_path=None,
         )
 
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
@@ -192,6 +199,7 @@ class TestCommandClient:
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             model="gemini-2.5-flash",
             api_key="key",
+            history_path=None,
         )
 
         with patch("urllib.request.urlopen", return_value=fake_resp):
@@ -244,6 +252,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._role_chunk(),
@@ -264,6 +273,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
 
         tool_round_chunks = [
@@ -318,6 +328,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._role_chunk(),
@@ -337,6 +348,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("Hi"),
@@ -354,6 +366,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._reasoning_chunk("thinking hard..."),
@@ -422,6 +435,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         client._history = [("prev question", "prev answer")]
         chunks = [self._content_chunk("ok")]
@@ -447,6 +461,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
             with pytest.raises(urllib.error.URLError):
@@ -461,6 +476,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         body = b"data: {bad json}\n\ndata: " + json.dumps(
             {"choices": [{"index": 0, "delta": {"content": "ok"}}]}
@@ -479,6 +495,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         # Only role chunk + done, no content
         chunks = [{"choices": [{"index": 0, "delta": {"role": "assistant"}}]}]
@@ -495,6 +512,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {"choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}}]},
@@ -516,6 +534,7 @@ class TestStreamCleanup:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
@@ -538,6 +557,7 @@ class TestStreamCleanup:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
@@ -558,6 +578,7 @@ class TestStreamCleanup:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         # First stream: partial consumption
         chunks1 = [
@@ -624,6 +645,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("Let me check. "),
@@ -646,6 +668,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("A"),
@@ -668,6 +691,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("thinking"),
@@ -685,6 +709,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {
@@ -783,6 +808,7 @@ class TestCommandThinking:
             "model": "test-model",
             "api_key": "test-key",
             "max_history": 5,
+            "history_path": None,
         }
         defaults.update(kwargs)
         return CommandClient(**defaults)
