@@ -90,7 +90,7 @@ def _load_grapheus_utterances(log_date: str | None = None) -> list[dict]:
             entry = json.loads(line)
             req = entry.get("request", {})
             messages = req.get("messages", [])
-            user_msgs = [m for m in messages if m.get("role") == "user"]
+            user_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "user"]
             if not user_msgs:
                 continue
 
