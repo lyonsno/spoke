@@ -827,24 +827,18 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
             scale, pixel_width, pixel_height,
         )
 
-    # Don't constrain width/height — let SCK deliver at native display
-    # resolution.  We crop in the CIImage path.  Constraining the buffer
-    # size with or without sourceRect produced misaligned captures.
-    # config.setWidth_(pixel_width)
-    # config.setHeight_(pixel_height)
+    config.setWidth_(pixel_width)
+    config.setHeight_(pixel_height)
     if hasattr(config, "setQueueDepth_"):
         config.setQueueDepth_(3)
     if hasattr(config, "setShowsCursor_"):
         config.setShowsCursor_(False)
-    if hasattr(config, "setScalesToFit_"):
-        config.setScalesToFit_(True)
     if hasattr(config, "setContentScale_"):
         config.setContentScale_(scale)
     if hasattr(config, "setMinimumFrameInterval_"):
         config.setMinimumFrameInterval_(_FRAME_INTERVAL_60_FPS)
-    # Don't set sourceRect — capture the full display.  We crop the
-    # CIImage to the overlay region in _consume_sample_buffer.
-    # sourceRect with scalesToFit produced upper-left-quadrant artifacts.
+    if hasattr(config, "setSourceRect_"):
+        config.setSourceRect_(_cgrect(local_rect))
 
 
 def make_backdrop_renderer(screen, fallback_factory):
@@ -2148,29 +2142,8 @@ class _ScreenCaptureKitBackdropRenderer:
             # capture rect dimensions — the image is already overlay-sized.
             # No crop needed.
 
-            # SCK captures the full display.  Crop the CIImage to the
-            # overlay's capture region.
-            # CIImage: origin at bottom-left, Y increases upward.
-            # Quartz capture_rect: origin at top-left, Y increases downward.
-            capture_rect = getattr(self, "_capture_rect_for_crop", None)
-            if capture_rect is not None:
-                scale = self._current_backing_scale()
-                # Display height in points (from the SCK display frame)
-                display_h_points = extent.size.height / scale
-                crop_x = capture_rect.origin.x * scale
-                crop_w = capture_rect.size.width * scale
-                crop_h = capture_rect.size.height * scale
-                # Quartz Y → CIImage Y: flip around display height
-                crop_y = (display_h_points - capture_rect.origin.y - capture_rect.size.height) * scale
-                try:
-                    from Quartz import CGRectMake
-                    crop = CGRectMake(crop_x, crop_y, crop_w, crop_h)
-                    cropped = ci_image.imageByCroppingToRect_(crop)
-                    if cropped is not None:
-                        ci_image = cropped
-                        extent = ci_image.extent() if hasattr(ci_image, "extent") else extent
-                except Exception:
-                    pass
+            # sourceRect crops the capture to the overlay region.
+            # No CIImage crop needed.
 
             diag = getattr(self, "_consume_diag_n", 0)
             if diag <= 7 and optical_shell_config is not None:
