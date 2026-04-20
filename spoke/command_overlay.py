@@ -88,7 +88,7 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
 
 # Adaptive compositing for command output.
-_USER_TEXT_COLOR_DARK = (0.35, 0.37, 0.42)
+_USER_TEXT_COLOR_DARK = (0.18, 0.19, 0.22)
 _USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
 _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
@@ -1205,6 +1205,30 @@ class CommandOverlay(NSObject):
             r, g, b = c + m, m, x + m
         response_r, response_g, response_b = _response_color_for_brightness((r, g, b), t)
 
+        # Alternate color: offset hue by ~0.4, slightly out of phase so
+        # when the main color is bright the alt is dark and vice versa.
+        alt_hue = (hue + 0.4) % 1.0
+        alt_breath = 1.0 - breath  # out of phase
+        alt_v = base_v + (0.65 - base_v) * spring
+        alt_v = alt_v * (0.6 + 0.4 * alt_breath)  # modulate darker
+        alt_c = alt_v * s
+        alt_x = alt_c * (1.0 - abs((alt_hue * 6.0) % 2.0 - 1.0))
+        alt_m = alt_v - alt_c
+        alt_h6 = alt_hue * 6.0
+        if alt_h6 < 1:
+            alt_r, alt_g, alt_b = alt_c + alt_m, alt_x + alt_m, alt_m
+        elif alt_h6 < 2:
+            alt_r, alt_g, alt_b = alt_x + alt_m, alt_c + alt_m, alt_m
+        elif alt_h6 < 3:
+            alt_r, alt_g, alt_b = alt_m, alt_c + alt_m, alt_x + alt_m
+        elif alt_h6 < 4:
+            alt_r, alt_g, alt_b = alt_m, alt_x + alt_m, alt_c + alt_m
+        elif alt_h6 < 5:
+            alt_r, alt_g, alt_b = alt_x + alt_m, alt_m, alt_c + alt_m
+        else:
+            alt_r, alt_g, alt_b = alt_c + alt_m, alt_m, alt_x + alt_m
+        alt_r, alt_g, alt_b = _response_color_for_brightness((alt_r, alt_g, alt_b), t)
+
         # Update text colors per-range
         if self._text_view is not None:
             from AppKit import NSForegroundColorAttributeName as _FG_pulse
@@ -1212,7 +1236,7 @@ class CommandOverlay(NSObject):
             total_len = ts.length() if hasattr(ts, 'length') else 0
             if total_len > 0 and self._utterance_text:
                 utt_len = min(len(self._utterance_text), total_len)
-                # User text keeps the adaptive light/dark base, then breathes subtly.
+                # User text: fixed dark gray.
                 try:
                     user_base = _user_text_color_for_brightness(t)
                     ur = user_base[0]
@@ -1225,17 +1249,26 @@ class CommandOverlay(NSObject):
                     )
                 except Exception:
                     pass
-                # Response text stays hue-rotating, but darkens on bright screens.
+                # Response text: main color on edges, alt color piped
+                # through center, applied per-character for gradient.
                 resp_start = utt_len + 2
-                if resp_start < total_len:
+                resp_len = total_len - resp_start
+                if resp_start < total_len and resp_len > 0:
                     try:
-                        ts.addAttribute_value_range_(
-                            _FG_pulse,
-                            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                response_r, response_g, response_b, alpha_a
-                            ),
-                            (resp_start, total_len - resp_start),
-                        )
+                        for ci in range(resp_len):
+                            # 0.0 at edges, 1.0 at center
+                            frac = ci / max(resp_len - 1, 1)
+                            center_weight = 1.0 - abs(frac * 2.0 - 1.0)
+                            cr = _lerp(response_r, alt_r, center_weight)
+                            cg = _lerp(response_g, alt_g, center_weight)
+                            cb = _lerp(response_b, alt_b, center_weight)
+                            ts.addAttribute_value_range_(
+                                _FG_pulse,
+                                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                    cr, cg, cb, alpha_a
+                                ),
+                                (resp_start + ci, 1),
+                            )
                     except Exception:
                         pass
             elif total_len > 0:
