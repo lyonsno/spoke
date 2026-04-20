@@ -207,9 +207,9 @@ _quartz_timer = _FrameTimer("quartz-shell")
 _sck_timer = _FrameTimer("sck-shell")
 
 def _build_shell_warp_kernel_source() -> str:
-    # General CIKernel: returns vec4 color, can do multi-tap sampling.
-    # Computes warp coordinate, then samples with depth-dependent
-    # bilateral blur — sharp at capsule boundary, soft at center.
+    # CIWarpKernel: returns vec2 coordinate.  Blur is handled as a
+    # separate pre-warp Gaussian pass — avoids CISampler buffer
+    # retention that causes SCK stream stalls.
     return """
 float sdCapsule(vec2 p, float spineHalf, float radius) {
     p.x = abs(p.x);
@@ -232,8 +232,7 @@ float depthRemap(float inside01, float curveBoost) {
     return pow(x, exponent);
 }
 
-kernel vec4 opticalShellWarp(
-    sampler src,
+kernel vec2 opticalShellWarp(
     float width,
     float height,
     float rectWidth,
@@ -255,7 +254,7 @@ kernel vec4 opticalShellWarp(
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
 
     float bleedZone = capsuleRadius * %(bleed_frac)s;
-    if (capsuleSdf > bleedZone) return sample(src, samplerTransform(src, d));
+    if (capsuleSdf > bleedZone) return d;
 
     float curveBoost = min(
         %(cb_cap)s,
@@ -286,39 +285,7 @@ kernel vec4 opticalShellWarp(
     float mag = %(ext_mag_strength)s * capsuleRadius * seamRamp * magDecay * tipAtten;
     vec2 result = warped - n * mag;
     result = clamp(result, vec2(0.0, 0.0), vec2(width, height));
-
-    // Depth-dependent bilateral blur: sharp at boundary (0-10%% depth),
-    // ramps to radius-3 toward center.
-    float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float blurT = smoothstep(0.10, 0.35, interiorDepth);
-    float blurRadius = blurT * 3.0;
-
-    if (blurRadius < 0.3) {
-        return sample(src, samplerTransform(src, result));
-    }
-
-    // Bilateral blur: weight by spatial distance AND color similarity.
-    // Preserves edges while smoothing noise/flicker.
-    vec4 centerColor = sample(src, samplerTransform(src, result));
-    vec4 acc = centerColor * 2.0;
-    float totalWeight = 2.0;
-    float colorSigma = 0.15;
-
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            vec2 offset = vec2(float(dx), float(dy)) * blurRadius;
-            vec2 sp = clamp(result + offset, vec2(0.0), vec2(width, height));
-            vec4 s = sample(src, samplerTransform(src, sp));
-            // Bilateral weight: color similarity
-            vec3 diff = s.rgb - centerColor.rgb;
-            float colorDist = dot(diff, diff);
-            float w = exp(-colorDist / (2.0 * colorSigma * colorSigma));
-            acc += s * w;
-            totalWeight += w;
-        }
-    }
-    return acc / totalWeight;
+    return result;
 }
 """ % {
         "bleed_frac": _WARP_BLEED_ZONE_FRAC,
@@ -651,12 +618,12 @@ def _shell_warp_kernel():
     if _SHELL_WARP_KERNEL is not None:
         return _SHELL_WARP_KERNEL or None
     try:
-        from Quartz import CIKernel
+        from Quartz import CIWarpKernel
     except Exception:
         _SHELL_WARP_KERNEL = False
         return None
     try:
-        _SHELL_WARP_KERNEL = CIKernel.alloc().initWithString_(_SHELL_WARP_KERNEL_SOURCE)
+        _SHELL_WARP_KERNEL = CIWarpKernel.alloc().initWithString_(_SHELL_WARP_KERNEL_SOURCE)
     except Exception:
         logger.debug("Failed to compile optical-shell general kernel", exc_info=True)
         _SHELL_WARP_KERNEL = False
@@ -763,13 +730,7 @@ def _apply_optical_shell_warp_ci_image(ci_image, extent, shell_config):
     warp_kernel = _shell_warp_kernel()
     if warp_kernel is None:
         return ci_image
-    try:
-        from Quartz import CISampler
-        sampler = CISampler.samplerWithImage_(ci_image)
-    except Exception:
-        return ci_image
     args = [
-        sampler,
         float(extent.size.width),
         float(extent.size.height),
         float(shell_config.get("content_width_points", extent.size.width)),
@@ -785,9 +746,10 @@ def _apply_optical_shell_warp_ci_image(ci_image, extent, shell_config):
         float(shell_config.get("tail_amplitude_points", 4.0)),
     ]
     try:
-        candidate = warp_kernel.applyWithExtent_roiCallback_arguments_(
+        candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
             extent,
             lambda _index, rect: rect,
+            ci_image,
             args,
         )
     except Exception:
@@ -2186,7 +2148,20 @@ class _ScreenCaptureKitBackdropRenderer:
             output = ci_image
             # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
             if optical_shell_config is not None:
-                # Depth-dependent bilateral blur is built into the CIKernel.
+                # Pre-warp blur: uniform 1.5px on the source.  The warp's
+                # interior magnification makes this depth-dependent: 1.5px
+                # at the rim (1x mag) is barely visible, 1.5px at center
+                # (10x+ mag) becomes 15px+ — smooth wash.
+                pre_blur = CIFilter.filterWithName_("CIGaussianBlur")
+                if pre_blur is not None:
+                    pre_blur.setDefaults()
+                    clamped = output.imageByClampingToExtent() if hasattr(output, "imageByClampingToExtent") else output
+                    pre_blur.setValue_forKey_(clamped, "inputImage")
+                    pre_blur.setValue_forKey_(1.5, "inputRadius")
+                    blurred = pre_blur.valueForKey_("outputImage")
+                    if blurred is not None:
+                        output = blurred.imageByCroppingToRect_(extent) if hasattr(blurred, "imageByCroppingToRect_") else blurred
+
                 # Scale config to pixel space — SCK frames are at Retina res.
                 scale = self._current_backing_scale()
                 scaled_cfg = dict(optical_shell_config)

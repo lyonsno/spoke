@@ -105,7 +105,7 @@ def test_configure_stream_geometry_uses_filter_content_rect_and_point_pixel_scal
 
     assert config.calls["width"] == 1020
     assert config.calls["height"] == 240
-    assert config.calls["queue_depth"] == 3
+    assert config.calls["queue_depth"] == 8
     assert config.calls["shows_cursor"] is False
     assert config.calls["source_rect"].origin.x == pytest.approx(480.0)
     assert config.calls["source_rect"].origin.y == pytest.approx(637.0)
