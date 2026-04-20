@@ -859,7 +859,7 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
     config.setWidth_(pixel_width)
     config.setHeight_(pixel_height)
     if hasattr(config, "setQueueDepth_"):
-        config.setQueueDepth_(3)
+        config.setQueueDepth_(8)
     if hasattr(config, "setShowsCursor_"):
         config.setShowsCursor_(False)
     if hasattr(config, "setContentScale_"):
