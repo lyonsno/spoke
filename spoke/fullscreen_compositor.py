@@ -180,6 +180,10 @@ class FullScreenCompositor:
     def _start_capture(self):
         from spoke.backdrop_stream import _load_screencapturekit_bridge, _make_stream_handler_queue
 
+        # Brief pause so the window server registers our new full-screen window
+        # in the shareable content snapshot (needed for exclusion).
+        time.sleep(0.1)
+
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             raise RuntimeError("ScreenCaptureKit bridge unavailable")
@@ -209,6 +213,12 @@ class FullScreenCompositor:
         # Build filter: full display, exclude our compositor window
         SCContentFilter = bridge["SCContentFilter"]
         excluded = self._excluded_windows(content)
+        logger.info(
+            "FullScreenCompositor: excluding %d windows (IDs: %s, total in snapshot: %d)",
+            len(excluded),
+            [int(w.windowID()) for w in excluded] if excluded else [],
+            len(list(content.windows())) if hasattr(content, "windows") else 0,
+        )
         content_filter = SCContentFilter.alloc().initWithDisplay_excludingWindows_(display, excluded)
 
         # Configure: full display, no sourceRect
@@ -301,18 +311,24 @@ class FullScreenCompositor:
                 continue
         return displays[0]
 
+    def set_excluded_window_ids(self, window_ids: list[int]) -> None:
+        """Additional window IDs to exclude from capture (e.g. the overlay window)."""
+        self._extra_excluded_ids = set(int(x) for x in window_ids)
+
     def _excluded_windows(self, content):
-        """Exclude our full-screen compositor window from capture."""
-        if self._window is None:
-            return []
-        try:
-            our_id = int(self._window.windowNumber())
-        except Exception:
+        """Exclude our full-screen compositor window + any extra windows from capture."""
+        exclude_ids = set(getattr(self, "_extra_excluded_ids", set()))
+        if self._window is not None:
+            try:
+                exclude_ids.add(int(self._window.windowNumber()))
+            except Exception:
+                pass
+        if not exclude_ids:
             return []
         excluded = []
         for w in (list(content.windows()) if hasattr(content, "windows") else []):
             try:
-                if int(w.windowID()) == our_id:
+                if int(w.windowID()) in exclude_ids:
                     excluded.append(w)
             except Exception:
                 continue

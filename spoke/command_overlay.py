@@ -2104,6 +2104,12 @@ class CommandOverlay(NSObject):
                 if k in shell_config:
                     shell_config[k] = float(shell_config[k]) * scale
             compositor = FullScreenCompositor(self._screen)
+            # Exclude both the compositor's own window and the spoke overlay
+            try:
+                overlay_wid = int(self._window.windowNumber())
+                compositor.set_excluded_window_ids([overlay_wid])
+            except Exception:
+                pass
             if compositor.start(shell_config):
                 self._fullscreen_compositor = compositor
                 # Cancel the old backdrop refresh timer — compositor replaces it.
