@@ -1471,7 +1471,12 @@ class _ScreenCaptureKitBackdropRenderer:
         except Exception:
             logger.debug("ScreenCaptureKit frame callback failed", exc_info=True)
 
+    _publish_image_count = 0
+
     def _publish_live_image(self, image) -> None:
+        self._publish_image_count += 1
+        if self._publish_image_count <= 3:
+            logger.info("SCK: publish_live_image[%d] callback=%s", self._publish_image_count, self._frame_callback is not None)
         with self._lock:
             self._latest_image = image
         self._dispatch_frame_callback(image)
