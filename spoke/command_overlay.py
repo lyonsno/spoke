@@ -87,9 +87,9 @@ _COLOR_VELOCITY_PERIOD = 7.0  # velocity oscillation period (out of phase with e
 _COLOR_VELOCITY_MIN = 0.3  # slowest speed multiplier (dwells)
 _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
-_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
+_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 1.0)
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
-_ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.75)
+_ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 1.0)
 _ASSISTANT_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
@@ -196,7 +196,7 @@ _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 # Adaptive compositing for command output.
-_USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
+_USER_TEXT_COLOR_DARK = (0.35, 0.37, 0.42)
 _USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
 _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
@@ -1601,9 +1601,9 @@ class CommandOverlay(NSObject):
             logger.info("Color phase: %.3f hue, vel_phase=%.3f, spring=%.3f", hue, self._color_velocity_phase, spring)
 
         # Saturation and value — spring winds up saturation toward vivid red
-        base_s, base_v = 0.228, 0.81  # desaturated — legible, ambient, not neon
-        s = base_s + (0.75 - base_s) * spring  # 0.228 → 0.75 at full wind
-        v = base_v + (0.90 - base_v) * spring  # 0.81  → 0.90 at full wind
+        base_s, base_v = 0.35, 0.55  # saturated + darker — readable against opaque fill
+        s = base_s + (0.75 - base_s) * spring  # 0.35 → 0.75 at full wind
+        v = base_v + (0.65 - base_v) * spring  # 0.55 → 0.65 at full wind
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
@@ -1632,9 +1632,9 @@ class CommandOverlay(NSObject):
                 # User text keeps the adaptive light/dark base, then breathes subtly.
                 try:
                     user_base = _user_text_color_for_brightness(t)
-                    ur = _lerp(user_base[0], 1.0, 0.08 * pulse_u)
-                    ug = _lerp(user_base[1], 1.0, 0.06 * pulse_u)
-                    ub = _lerp(user_base[2], 1.0, 0.04 * pulse_u)
+                    ur = user_base[0]
+                    ug = user_base[1]
+                    ub = user_base[2]
                     ts.addAttribute_value_range_(
                         _FG_pulse,
                         NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, ub, utt_alpha),
