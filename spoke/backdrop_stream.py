@@ -2150,31 +2150,9 @@ class _ScreenCaptureKitBackdropRenderer:
             if extent is None:
                 return
 
-            # If the CIImage is full-display (no sourceRect), crop to the
-            # overlay's capture region.
-            capture_rect = getattr(self, "_capture_rect_for_crop", None)
-            if capture_rect is not None and optical_shell_config is not None:
-                scale = self._current_backing_scale()
-                # Convert capture rect (points, Quartz top-left origin) to
-                # CIImage coordinates (pixels, bottom-left origin).
-                display_h = extent.size.height
-                crop_x = capture_rect.origin.x * scale
-                crop_w = capture_rect.size.width * scale
-                crop_h = capture_rect.size.height * scale
-                # Quartz Y is top-down, CIImage Y is bottom-up
-                crop_y = display_h - (capture_rect.origin.y * scale) - crop_h
-                from Quartz import CGRectMake
-                crop_rect = CGRectMake(crop_x, crop_y, crop_w, crop_h)
-                diag_n = getattr(self, "_consume_diag_n", 0)
-                if diag_n <= 7:
-                    logger.info(
-                        "SCK crop: img=(%s,%s %sx%s) crop=(%s,%s %sx%s)",
-                        extent.origin.x, extent.origin.y,
-                        extent.size.width, extent.size.height,
-                        crop_x, crop_y, crop_w, crop_h,
-                    )
-                ci_image = ci_image.imageByCroppingToRect_(crop_rect)
-                extent = ci_image.extent() if hasattr(ci_image, "extent") else extent
+            # SCK setWidth_/setHeight_ sizes the output buffer to the
+            # capture rect dimensions — the image is already overlay-sized.
+            # No crop needed.
 
             diag = getattr(self, "_consume_diag_n", 0)
             if diag <= 7 and optical_shell_config is not None:
