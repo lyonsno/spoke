@@ -782,11 +782,27 @@ def _cgrect(rect):
         return rect
 
 
+_geom_diag_count = 0
+
+
 def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixel_scale: float) -> None:
+    global _geom_diag_count
     local_rect = _content_local_capture_rect(content_rect, capture_rect)
     scale = max(point_pixel_scale, 1.0)
     pixel_width = max(1, int(round(capture_rect.size.width * scale)))
     pixel_height = max(1, int(round(capture_rect.size.height * scale)))
+    _geom_diag_count += 1
+    if _geom_diag_count <= 3:
+        logger.info(
+            "SCK geom: content=(%s,%s %sx%s) capture=(%s,%s %sx%s) local=(%s,%s %sx%s) scale=%s px=%sx%s",
+            content_rect.origin.x, content_rect.origin.y,
+            content_rect.size.width, content_rect.size.height,
+            capture_rect.origin.x, capture_rect.origin.y,
+            capture_rect.size.width, capture_rect.size.height,
+            local_rect.origin.x, local_rect.origin.y,
+            local_rect.size.width, local_rect.size.height,
+            scale, pixel_width, pixel_height,
+        )
 
     config.setWidth_(pixel_width)
     config.setHeight_(pixel_height)
