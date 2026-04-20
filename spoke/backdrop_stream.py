@@ -1285,22 +1285,47 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                     return None
                 return objc.objc_object(c_void_p=result_ptr)
 
+            # CFRetain/CFRelease for preventing premature release of
+            # CVPixelBuffer returned by CMSampleBufferGetImageBuffer.
+            _cf_lib = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            _cf_lib.CFRetain.argtypes = [ctypes.c_void_p]
+            _cf_lib.CFRetain.restype = ctypes.c_void_p
+            _cf_lib.CFRelease.argtypes = [ctypes.c_void_p]
+            _cf_lib.CFRelease.restype = None
+
+            # CFRetain/CFRelease for preventing premature release of
+            # CVPixelBuffer returned by CMSampleBufferGetImageBuffer.
+            _cf_lib = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            _cf_lib.CFRetain.argtypes = [ctypes.c_void_p]
+            _cf_lib.CFRetain.restype = ctypes.c_void_p
+            _cf_lib.CFRelease.argtypes = [ctypes.c_void_p]
+            _cf_lib.CFRelease.restype = None
+
+            _ci_from_sb_diag = [0]
+
             def _CIImage_from_sample_buffer(sample_buffer):
-                """Extract a CIImage from a CMSampleBuffer, trying pixel
-                buffer first, then IOSurface fallback."""
+                """Extract a CIImage from a CMSampleBuffer."""
                 from Quartz import CIImage
+                _ci_from_sb_diag[0] += 1
+                n = _ci_from_sb_diag[0]
                 raw_ptr = objc.pyobjc_id(sample_buffer)
                 pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
-                if pb_ptr:
+                if n <= 10:
+                    logger.info("SCK ci_from_sb[%d]: sb_ptr=%s pb_ptr=%s", n, hex(raw_ptr), hex(pb_ptr) if pb_ptr else "NULL")
+                if not pb_ptr:
+                    return None
+                _cf_lib.CFRetain(pb_ptr)
+                try:
                     pb_obj = objc.objc_object(c_void_p=pb_ptr)
                     ci = CIImage.imageWithCVPixelBuffer_(pb_obj)
                     if ci is not None:
                         return ci
-                    # Pixel buffer exists but CIImage failed — try IOSurface
                     ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_ptr)
                     if ios_ptr:
                         ios_obj = objc.objc_object(c_void_p=ios_ptr)
                         return CIImage.imageWithIOSurface_(ios_obj)
+                finally:
+                    _cf_lib.CFRelease(pb_ptr)
                 return None
 
             CMSampleBufferGetImageBuffer = _CMSampleBufferGetImageBuffer_via_ctypes
