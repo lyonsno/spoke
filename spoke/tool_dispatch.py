@@ -235,21 +235,31 @@ _COMPACT_HISTORY_SCHEMA = {
         "name": "compact_history",
         "description": (
             "Compact the conversation history to reduce context size. "
-            "mode='drop_tool_results' strips all tool call/result messages "
-            "from the oldest N turns, keeping only user and assistant text. "
-            "mode='summarize' replaces the oldest N turns with a brief "
-            "summary you provide. Use when the context is bloated with "
-            "stale tool results."
+            "Three modes:\n"
+            "- drop_tool_results: strip tool call/result messages from "
+            "the oldest N turns, keeping user and assistant text.\n"
+            "- summarize: replace the oldest N turns with a summary you "
+            "provide.\n"
+            "- guided: attractor-aware compaction. The tool reads the "
+            "full attractor set, cross-references against the conversation "
+            "history being compacted, and returns retention flags — a short "
+            "list of things you must preserve because they connect to "
+            "durable intent. Call this first, then call again with "
+            "mode='summarize' using the flags to guide your summary. "
+            "The flags are the safety net; your conversational judgment "
+            "handles everything else."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["drop_tool_results", "summarize"],
+                    "enum": ["drop_tool_results", "summarize", "guided"],
                     "description": (
                         "drop_tool_results: strip tool messages from oldest N turns. "
-                        "summarize: replace oldest N turns with a summary."
+                        "summarize: replace oldest N turns with a summary. "
+                        "guided: return attractor-aware retention flags for the "
+                        "oldest N turns, then follow up with summarize."
                     ),
                 },
                 "n": {
@@ -262,7 +272,8 @@ _COMPACT_HISTORY_SCHEMA = {
                     "type": "string",
                     "description": (
                         "Required when mode='summarize'. A brief summary of "
-                        "the compacted turns to preserve as a single user message."
+                        "the compacted turns. When following a guided call, "
+                        "incorporate the retention flags."
                     ),
                 },
             },

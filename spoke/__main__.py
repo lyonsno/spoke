@@ -3123,6 +3123,8 @@ class SpokeAppDelegate(NSObject):
 
         def _compact_history(arguments):
             import json as _json
+            from pathlib import Path as _Path
+
             mode = arguments.get("mode", "drop_tool_results")
             n = arguments.get("n", 0)
             client = self._command_client
@@ -3168,6 +3170,65 @@ class SpokeAppDelegate(NSObject):
                     "mode": "summarize",
                     "turns_replaced": target,
                     "turns_remaining": len(remaining),
+                })
+
+            elif mode == "guided":
+                # Phase 1: Read attractors, cross-reference against
+                # the conversation turns being compacted, produce
+                # retention flags.
+                attractors_dir = _Path.home() / "dev" / "epistaxis" / "attractors"
+                attractor_titles = []
+                if attractors_dir.is_dir():
+                    for f in sorted(attractors_dir.iterdir()):
+                        if f.is_file() and f.suffix == ".md":
+                            # Strip date suffix and extension for readable title
+                            attractor_titles.append(f.stem)
+
+                # Extract user/assistant text from the target turns
+                turn_texts = []
+                for i in range(target):
+                    turn = history[i]
+                    parts = []
+                    for m in turn:
+                        role = m.get("role", "")
+                        content = m.get("content", "")
+                        if role in ("user", "assistant") and content:
+                            parts.append(f"{role}: {content[:200]}")
+                    if parts:
+                        turn_texts.append(f"Turn {i+1}: " + " | ".join(parts))
+
+                # Cross-reference: find attractor titles mentioned
+                # (even partially) in the conversation text
+                conversation_blob = " ".join(turn_texts).lower()
+                matched_attractors = []
+                for title in attractor_titles:
+                    # Check key words from the title against conversation
+                    words = [w for w in title.replace("-", " ").replace("_", " ").split()
+                             if len(w) > 3 and w not in (
+                                 "2026", "allow", "support", "resolve",
+                                 "ensure", "stop", "track", "from", "with",
+                                 "into", "that", "this", "auto", "grader",
+                             )]
+                    if words:
+                        matches = sum(1 for w in words if w in conversation_blob)
+                        if matches >= min(2, len(words)):
+                            matched_attractors.append(title)
+
+                return _json.dumps({
+                    "status": "ok",
+                    "mode": "guided",
+                    "turns_targeted": target,
+                    "turns_total": len(history),
+                    "attractor_count": len(attractor_titles),
+                    "retention_flags": matched_attractors,
+                    "instruction": (
+                        "These attractors are referenced or implicated by the "
+                        "conversation being compacted. When you call "
+                        "compact_history with mode='summarize', preserve any "
+                        "information that connects to these attractors. "
+                        "Use your conversational judgment for everything else."
+                    ),
+                    "turn_preview": turn_texts[:5],
                 })
 
             return _json.dumps({"error": f"unknown mode: {mode}"})
