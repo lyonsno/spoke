@@ -27,7 +27,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # Tuning constants — must stay in sync with backdrop_stream.py
-_WARP_BLEED_ZONE_FRAC = 2.0
+_WARP_BLEED_ZONE_FRAC = 0.5
 _WARP_CENTER_FLOOR = 0.80
 _WARP_FIELD_EXPONENT = 0.35
 _WARP_REMAP_BASE_EXP_SCALE = 0.98
