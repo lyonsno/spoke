@@ -118,23 +118,59 @@ def test_publish_live_image_caches_frame_and_invokes_callback():
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
     renderer._lock = mod.threading.Lock()
     renderer._latest_image = None
+    renderer._has_live_content = False
     callback = MagicMock()
     renderer._frame_callback = callback
 
     renderer._publish_live_image("fresh-frame")
 
     assert renderer._latest_image == "fresh-frame"
+    assert renderer._has_live_content is True
     callback.assert_called_once_with("fresh-frame")
 
 
 def test_publish_live_sample_buffer_invokes_callback():
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._has_live_content = False
     callback = MagicMock()
     renderer._sample_buffer_callback = callback
 
     renderer._publish_live_sample_buffer("sample-buffer")
 
+    assert renderer._has_live_content is True
+    callback.assert_called_once_with("sample-buffer")
+
+
+def test_publish_live_image_dispatches_callback_via_main_thread_helper(monkeypatch):
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._lock = mod.threading.Lock()
+    renderer._latest_image = None
+    renderer._has_live_content = False
+    callback = MagicMock()
+    renderer._frame_callback = callback
+    dispatch = MagicMock(side_effect=lambda fn, arg: fn(arg))
+    monkeypatch.setattr(mod, "_call_on_main_thread", dispatch)
+
+    renderer._publish_live_image("fresh-frame")
+
+    dispatch.assert_called_once()
+    callback.assert_called_once_with("fresh-frame")
+
+
+def test_publish_live_sample_buffer_dispatches_callback_via_main_thread_helper(monkeypatch):
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._has_live_content = False
+    callback = MagicMock()
+    renderer._sample_buffer_callback = callback
+    dispatch = MagicMock(side_effect=lambda fn, arg: fn(arg))
+    monkeypatch.setattr(mod, "_call_on_main_thread", dispatch)
+
+    renderer._publish_live_sample_buffer("sample-buffer")
+
+    dispatch.assert_called_once()
     callback.assert_called_once_with("sample-buffer")
 
 
@@ -232,6 +268,88 @@ def test_consume_sample_buffer_optical_shell_direct_ciimage_path(monkeypatch):
     # Should publish via live image path
     renderer._publish_live_image.assert_called_once()
     renderer._publish_live_sample_buffer.assert_not_called()
+
+
+def test_capture_blurred_image_clears_stale_cached_frame_before_stream_update(monkeypatch):
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 5.4
+    renderer._stream = object()
+    renderer._sample_buffer_callback = None
+    renderer._latest_image = "stale-frame"
+    renderer._has_live_content = True
+    renderer._lock = mod.threading.Lock()
+    renderer._update_stream = MagicMock(
+        side_effect=lambda *args, **kwargs: renderer._clear_live_content()
+    )
+    renderer._request_stream_start = MagicMock()
+    fallback = MagicMock()
+    fallback.capture_blurred_image.return_value = "fallback-frame"
+    renderer._fallback_renderer = MagicMock(return_value=fallback)
+
+    image = renderer.capture_blurred_image(
+        window_number=17,
+        capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+        blur_radius_points=5.4,
+    )
+
+    assert image == "fallback-frame"
+    assert renderer._latest_image is None
+    assert renderer._has_live_content is False
+    renderer._update_stream.assert_called_once()
+    renderer._request_stream_start.assert_not_called()
+
+
+def test_capture_blurred_image_keeps_fallback_until_direct_sample_path_is_live(monkeypatch):
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 0.0
+    renderer._stream = None
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._latest_image = None
+    renderer._has_live_content = False
+    renderer._lock = mod.threading.Lock()
+    renderer.supports_sample_buffer_presentation = MagicMock(return_value=True)
+    renderer._request_stream_start = MagicMock()
+    fallback = MagicMock()
+    fallback.capture_blurred_image.return_value = "fallback-frame"
+    renderer._fallback_renderer = MagicMock(return_value=fallback)
+
+    image = renderer.capture_blurred_image(
+        window_number=17,
+        capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+        blur_radius_points=0.0,
+    )
+
+    assert image == "fallback-frame"
+    renderer._request_stream_start.assert_called_once()
+
+
+def test_stop_live_stream_stops_capture_and_clears_cached_state():
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._lock = mod.threading.Lock()
+    stream = MagicMock()
+    renderer._stream = stream
+    renderer._stream_output = object()
+    renderer._stream_started = True
+    renderer._startup_requested = True
+    renderer._pending_signature = ("pending",)
+    renderer._applied_signature = ("applied",)
+    renderer._latest_image = "stale-frame"
+    renderer._has_live_content = True
+
+    renderer.stop_live_stream()
+
+    stream.stopCaptureWithCompletionHandler_.assert_called_once()
+    assert renderer._stream is None
+    assert renderer._stream_output is None
+    assert renderer._stream_started is False
+    assert renderer._startup_requested is False
+    assert renderer._pending_signature is None
+    assert renderer._applied_signature is None
+    assert renderer._latest_image is None
+    assert renderer._has_live_content is False
 
 
 def test_consume_sample_buffer_blurred_sample_failure_falls_back_to_image_path(monkeypatch):

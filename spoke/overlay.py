@@ -828,6 +828,8 @@ class TranscriptionOverlay(NSObject):
         self._cancel_typewriter()
         self._window.setAlphaValue_(0.0)
         self._reset_backdrop_layer()
+        if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
+            self._backdrop_renderer.stop_live_stream()
         self._window.orderOut_(None)
         logger.info("Overlay ordered out")
 
@@ -865,6 +867,8 @@ class TranscriptionOverlay(NSObject):
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
                 self._reset_backdrop_layer()
+                if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
+                    self._backdrop_renderer.stop_live_stream()
                 self._window.orderOut_(None)
             else:
                 self._window.setAlphaValue_(1.0)

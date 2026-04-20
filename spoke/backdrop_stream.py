@@ -848,6 +848,30 @@ def _make_stream_handler_queue(label: str):
         return None
 
 
+def _call_on_main_thread(callback, *args) -> None:
+    if callback is None:
+        return
+    try:
+        from Foundation import NSThread
+    except Exception:
+        callback(*args)
+        return
+    try:
+        if NSThread.isMainThread():
+            callback(*args)
+            return
+    except Exception:
+        pass
+    try:
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(callback, *args)
+        return
+    except Exception:
+        logger.debug("Failed to schedule backdrop callback on main thread", exc_info=True)
+    callback(*args)
+
+
 class _CMTimeStruct(ctypes.Structure):
     _fields_ = [
         ("value", ctypes.c_longlong),
@@ -1470,6 +1494,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._pending_signature = None
         self._applied_signature = None
         self._latest_image = None
+        self._has_live_content = False
         self._frame_callback = None
         self._sample_buffer_callback = None
         self._blur_radius_points = 0.0
@@ -1516,6 +1541,35 @@ class _ScreenCaptureKitBackdropRenderer:
             self._optical_shell_config = None
             return
         self._optical_shell_config = dict(config)
+
+    def _clear_live_content(self) -> None:
+        with self._lock:
+            self._latest_image = None
+        self._has_live_content = False
+
+    def stop_live_stream(self) -> None:
+        stream = self._stream
+        self._stream = None
+        self._stream_output = None
+        self._stream_started = False
+        self._startup_requested = False
+        self._pending_signature = None
+        self._applied_signature = None
+        self._clear_live_content()
+        if stream is None:
+            return
+        if hasattr(stream, "stopCaptureWithCompletionHandler_"):
+            try:
+                stream.stopCaptureWithCompletionHandler_(lambda *args: None)
+                return
+            except Exception:
+                logger.debug("Failed to stop ScreenCaptureKit capture stream", exc_info=True)
+        try:
+            stop = getattr(stream, "stopCapture", None)
+            if callable(stop):
+                stop()
+        except Exception:
+            logger.debug("Failed to stop ScreenCaptureKit capture stream", exc_info=True)
 
     def _sample_handler_queue(self):
         if self._stream_handler_queue is None:
@@ -1591,14 +1645,16 @@ class _ScreenCaptureKitBackdropRenderer:
             logger.info("SCK: publish_live_image[%d] callback=%s", self._publish_image_count, self._frame_callback is not None)
         with self._lock:
             self._latest_image = image
-        self._dispatch_frame_callback(image)
+        self._has_live_content = True
+        _call_on_main_thread(self._dispatch_frame_callback, image)
 
     def _publish_live_sample_buffer(self, sample_buffer) -> None:
         callback = self._sample_buffer_callback
         if callback is None:
             return
+        self._has_live_content = True
         try:
-            callback(sample_buffer)
+            _call_on_main_thread(callback, sample_buffer)
         except Exception:
             logger.debug("ScreenCaptureKit sample buffer callback failed", exc_info=True)
 
@@ -1697,6 +1753,7 @@ class _ScreenCaptureKitBackdropRenderer:
     def _request_stream_start(self, *, window_number, capture_rect):
         if self._startup_requested:
             return
+        self._clear_live_content()
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             return
@@ -1780,6 +1837,7 @@ class _ScreenCaptureKitBackdropRenderer:
         signature = self._signature_for(window_number, capture_rect, self._current_backing_scale())
         if signature == self._applied_signature or signature == self._pending_signature:
             return
+        self._clear_live_content()
         self._pending_signature = signature
         try:
             content_filter = self._build_filter(
@@ -1954,7 +2012,13 @@ class _ScreenCaptureKitBackdropRenderer:
             self._update_stream(window_number=window_number, capture_rect=capture_rect)
 
         if self.uses_direct_sample_buffers(self._blur_radius_points):
-            return None
+            if getattr(self, "_has_live_content", False):
+                return None
+            return self._fallback_renderer().capture_blurred_image(
+                window_number=window_number,
+                capture_rect=capture_rect,
+                blur_radius_points=blur_radius_points,
+            )
 
         with self._lock:
             image = self._latest_image

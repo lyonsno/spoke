@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 import os
 import time
 from collections.abc import Callable
@@ -313,13 +314,24 @@ def _command_backdrop_blur_target_for_presence(presence: float) -> float:
     return 1.0 - _clamp01(presence)
 
 
-def _command_optical_shell_config() -> dict[str, float | bool] | None:
+def _command_optical_shell_config(
+    content_width_points: float | None = None,
+    content_height_points: float | None = None,
+) -> dict[str, float | bool] | None:
     if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
         return None
+    width_points = (
+        _OVERLAY_WIDTH if content_width_points is None else max(float(content_width_points), 1.0)
+    )
+    height_points = (
+        _OVERLAY_HEIGHT
+        if content_height_points is None
+        else max(float(content_height_points), 1.0)
+    )
     return {
         "enabled": True,
-        "content_width_points": _OVERLAY_WIDTH,
-        "content_height_points": _OVERLAY_HEIGHT,
+        "content_width_points": width_points,
+        "content_height_points": height_points,
         "corner_radius_points": _OVERLAY_CORNER_RADIUS,
         "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
         "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
@@ -476,10 +488,16 @@ class _QuartzBackdropRenderer:
         return self._ci_context
 
     def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        overscan_points = _command_backdrop_capture_overscan_points()
+        content_width_points = max(capture_rect.size.width - 2 * overscan_points, 1.0)
+        content_height_points = max(capture_rect.size.height - 2 * overscan_points, 1.0)
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
             context = self._context()
             if context is not None and hasattr(context, "createCGImage_fromRect_"):
-                shell_config = _command_optical_shell_config()
+                shell_config = _command_optical_shell_config(
+                    content_width_points,
+                    content_height_points,
+                )
                 if shell_config is not None:
                     extent = NSMakeRect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
                     output = _debug_shell_grid_ci_image(extent, shell_config)
@@ -541,7 +559,10 @@ class _QuartzBackdropRenderer:
 
             # Apply optical shell warp to the real backdrop capture.
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                shell_config = _command_optical_shell_config()
+                shell_config = _command_optical_shell_config(
+                    content_width_points,
+                    content_height_points,
+                )
                 if shell_config is not None:
                     _quartz_timer.begin("warp")
                     warped = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
@@ -887,6 +908,20 @@ class CommandOverlay(NSObject):
         if hasattr(layer, "setMask_"):
             layer.setMask_(None)
 
+    def _current_optical_shell_config(self) -> dict[str, float | bool] | None:
+        content = getattr(self, "_content_view", None)
+        if content is None or not hasattr(content, "frame"):
+            return _command_optical_shell_config()
+        try:
+            frame = content.frame()
+            width = frame.size.width
+            height = frame.size.height
+        except Exception:
+            return _command_optical_shell_config()
+        if not isinstance(width, numbers.Real) or not isinstance(height, numbers.Real):
+            return _command_optical_shell_config()
+        return _command_optical_shell_config(width, height)
+
     def _apply_backdrop_pulse_style(self, breath: float) -> None:
         layer = getattr(self, "_backdrop_layer", None)
         if layer is None:
@@ -921,7 +956,7 @@ class CommandOverlay(NSObject):
                 _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER,
             )
         renderer = getattr(self, "_backdrop_renderer", None)
-        shell_config = _command_optical_shell_config()
+        shell_config = self._current_optical_shell_config()
         effective_blur_radius_points = blur_radius_points
         if shell_config is not None:
             effective_blur_radius_points = float(
@@ -1092,6 +1127,8 @@ class CommandOverlay(NSObject):
             self._window.setAlphaValue_(0.0)
             self._set_overlay_scale(1.0)
             self._reset_backdrop_layer()
+            if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
+                self._backdrop_renderer.stop_live_stream()
             self._window.orderOut_(None)
             self._visible = False
             self._cancel_pulse()
@@ -1384,6 +1421,8 @@ class CommandOverlay(NSObject):
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
                 self._reset_backdrop_layer()
+                if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
+                    self._backdrop_renderer.stop_live_stream()
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
             else:
@@ -2000,6 +2039,12 @@ class CommandOverlay(NSObject):
         except Exception:
             return None
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
+        shell_config = self._current_optical_shell_config()
+        if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
+            try:
+                self._backdrop_renderer.set_live_optical_shell_config(shell_config)
+            except Exception:
+                logger.debug("Failed to refresh live command optical-shell config", exc_info=True)
         image = self._backdrop_renderer.capture_blurred_image(
             window_number=window_number,
             capture_rect=capture_rect,
@@ -2058,6 +2103,9 @@ class CommandOverlay(NSObject):
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()
+                shell_config = self._current_optical_shell_config()
+                if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
+                    self._backdrop_renderer.set_live_optical_shell_config(shell_config)
                 if self._visible:
                     self._refresh_backdrop_snapshot()
 

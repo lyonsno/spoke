@@ -402,6 +402,26 @@ class TestShowFinishHide:
         assert config["content_height_points"] == pytest.approx(160.0)
         assert config["corner_radius_points"] == pytest.approx(32.0)
 
+    def test_apply_backdrop_pulse_style_uses_current_content_height_for_optical_shell(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, mod._OVERLAY_WIDTH, 196.0)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 196.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
+        assert config["content_height_points"] == pytest.approx(196.0)
+
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
 
@@ -417,6 +437,19 @@ class TestShowFinishHide:
         overlay.show()
 
         assert overlay._backdrop_timer is backdrop_timer
+
+    def test_hide_teardown_stops_live_backdrop_stream_when_fade_finishes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.stop_live_stream = MagicMock()
+        overlay._fade_direction = -1
+        overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._fade_from = 1.0
+
+        overlay.fadeStep_(None)
+
+        overlay._backdrop_renderer.stop_live_stream.assert_called_once_with()
 
     def test_show_skips_backdrop_refresh_timer_in_optical_shell_debug_visualization(
         self, mock_pyobjc, monkeypatch

@@ -583,6 +583,22 @@ def test_refresh_preview_backdrop_snapshot_skips_image_seed_for_blurred_sample_b
     overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
 
 
+def test_order_out_stops_live_preview_backdrop_stream(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._window = MagicMock()
+    overlay._backdrop_renderer = MagicMock()
+    overlay._cancel_tray_capture_flash = MagicMock()
+    overlay._cancel_backdrop_refresh = MagicMock()
+    overlay._cancel_fade = MagicMock()
+    overlay._cancel_typewriter = MagicMock()
+    overlay._reset_backdrop_layer = MagicMock()
+
+    overlay.order_out()
+
+    overlay._backdrop_renderer.stop_live_stream.assert_called_once_with()
+
+
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
