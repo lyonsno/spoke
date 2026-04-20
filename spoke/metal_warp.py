@@ -126,36 +126,58 @@ kernel void opticalShellWarp(
     float2 result = warped - n * mag;
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur: zero at capsule boundary, ramping up
-    // toward interior.  The warp magnification amplifies this — a
-    // 2px blur at the source becomes ~20px at 10x magnification.
+    // Depth-dependent bilateral blur: sharp at boundary (0-10%% depth),
+    // ramps to full blur toward center.  1px tap offsets — the warp
+    // magnification amplifies the effect naturally.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    // Ramp: 0 at boundary, starts at 0.25 depth, full at 0.5 depth
-    float blurT = smoothstep(0.0f, 0.5f, interiorDepth);
-    float blurRadius = blurT * 2.0f;  // max 2px source blur
+    float blurT = smoothstep(0.10f, 0.35f, interiorDepth);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
+    float4 centerColor = inTexture.read(uint2(samplePt));
 
-    if (blurRadius < 0.25f) {{
-        // Sharp — single tap
-        uint2 src = uint2(samplePt);
-        outTexture.write(inTexture.read(src), gid);
+    float4 finalColor;
+    if (blurT < 0.01f) {{
+        // Sharp — single tap at boundary
+        finalColor = centerColor;
     }} else {{
-        // Multi-tap box blur with depth-dependent radius
-        // 9-tap pattern: center + 8 neighbors at blur radius distance
-        float4 acc = float4(0.0f);
-        float totalWeight = 0.0f;
+        // Bilateral blur: 1px fixed offsets, depth-dependent blend.
+        // Weight by color similarity to preserve edges.
+        float4 acc = centerColor * 2.0f;
+        float totalWeight = 2.0f;
+        float colorSigma2 = 0.04f;  // tighter = more edge-preserving
+
         for (int dy = -1; dy <= 1; dy++) {{
             for (int dx = -1; dx <= 1; dx++) {{
-                float2 offset = float2(float(dx), float(dy)) * blurRadius;
-                float2 sp = clamp(samplePt + offset, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f));
-                float w = (dx == 0 && dy == 0) ? 2.0f : 1.0f;  // center-weighted
-                acc += inTexture.read(uint2(sp)) * w;
+                if (dx == 0 && dy == 0) continue;
+                float2 sp = clamp(samplePt + float2(float(dx), float(dy)),
+                                  float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f));
+                float4 s = inTexture.read(uint2(sp));
+                float3 diff = s.rgb - centerColor.rgb;
+                float colorDist = dot(diff, diff);
+                float w = exp(-colorDist / colorSigma2);
+                acc += s * w;
                 totalWeight += w;
             }}
         }}
-        outTexture.write(acc / totalWeight, gid);
+        float4 blurred = acc / totalWeight;
+        finalColor = mix(centerColor, blurred, blurT);
     }}
+
+    // Perceptual value clamp: keep luminance in the 15-85%% range.
+    // Prevents blown-out whites and crushed blacks in the warped
+    // interior.  Uses approximate sRGB luminance.
+    float luma = dot(finalColor.rgb, float3(0.2126f, 0.7152f, 0.0722f));
+    float clampedLuma = clamp(luma, 0.15f, 0.85f);
+    if (luma > 0.001f) {{
+        float lumaScale = clampedLuma / luma;
+        // Blend toward clamped based on depth — full clamping at center,
+        // none at boundary.
+        float clampStrength = smoothstep(0.05f, 0.30f, interiorDepth);
+        float scale_factor = mix(1.0f, lumaScale, clampStrength);
+        finalColor.rgb *= scale_factor;
+    }}
+
+    outTexture.write(finalColor, gid);
 }}
 """
 

@@ -2089,20 +2089,24 @@ class _ScreenCaptureKitBackdropRenderer:
                     ios = cv_lib.CVPixelBufferGetIOSurface(raw_pb)
                     if ios:
                         ios_obj = objc.objc_object(c_void_p=ios)
-                        drawable = metal_layer.nextDrawable()
-                        if drawable is not None:
-                            scale = self._current_backing_scale()
-                            scaled_cfg = dict(optical_shell_config)
-                            for k in ("content_width_points", "content_height_points",
-                                      "corner_radius_points", "band_width_points",
-                                      "tail_width_points"):
-                                if k in scaled_cfg:
-                                    scaled_cfg[k] = float(scaled_cfg[k]) * scale
-                            from Quartz import CIImage
-                            ci_pb = CIImage.imageWithCVPixelBuffer_(pb)
-                            w = int(ci_pb.extent().size.width) if ci_pb else 0
-                            h = int(ci_pb.extent().size.height) if ci_pb else 0
-                            if w > 0 and h > 0:
+                        # Update drawable size to match capture
+                        cv_lib.CVPixelBufferGetWidth.argtypes = [ctypes.c_void_p]
+                        cv_lib.CVPixelBufferGetWidth.restype = ctypes.c_size_t
+                        cv_lib.CVPixelBufferGetHeight.argtypes = [ctypes.c_void_p]
+                        cv_lib.CVPixelBufferGetHeight.restype = ctypes.c_size_t
+                        w = int(cv_lib.CVPixelBufferGetWidth(raw_pb))
+                        h = int(cv_lib.CVPixelBufferGetHeight(raw_pb))
+                        if w > 0 and h > 0:
+                            metal_layer.setDrawableSize_((w, h))
+                            drawable = metal_layer.nextDrawable()
+                            if drawable is not None:
+                                scale = self._current_backing_scale()
+                                scaled_cfg = dict(optical_shell_config)
+                                for k in ("content_width_points", "content_height_points",
+                                          "corner_radius_points", "band_width_points",
+                                          "tail_width_points"):
+                                    if k in scaled_cfg:
+                                        scaled_cfg[k] = float(scaled_cfg[k]) * scale
                                 if pipeline.warp_to_drawable(
                                     ios_obj, drawable,
                                     width=w, height=h, shell_config=scaled_cfg,
