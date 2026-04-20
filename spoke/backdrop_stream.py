@@ -1909,6 +1909,21 @@ class _ScreenCaptureKitBackdropRenderer:
             return
         if sample_buffer is None:
             return
+        # With the correct delegate signature, the sample buffer arrives
+        # as a PyObjCPointer (raw C struct pointer) rather than an ObjC
+        # object proxy.  CMSampleBuffer is toll-free bridged to NSObject,
+        # so wrap it as an objc_object for downstream use.
+        if type(sample_buffer).__name__ == "PyObjCPointer":
+            try:
+                sample_buffer = objc.objc_object(c_void_p=sample_buffer.__pointer__)
+            except Exception:
+                try:
+                    # Fallback: extract raw pointer value
+                    import ctypes as _ct
+                    ptr = _ct.cast(sample_buffer, _ct.c_void_p).value
+                    sample_buffer = objc.objc_object(c_void_p=ptr)
+                except Exception:
+                    return
         # output_type arrives as None when PyObjC bridges the NSInteger
         # SCStreamOutputType as an ObjC object (@) due to selector signature
         # mismatch.  Treat None as screen output — it's the only type we
