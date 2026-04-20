@@ -13,6 +13,7 @@ dependencies = [
     "mlx-qwen3-asr>=0.3.2",
     "pyobjc-framework-vision>=12.1",
     "pvporcupine>=3.0",
+    "pyobjc-framework-screencapturekit>=12.1",
 ]
 
 [project.scripts]
