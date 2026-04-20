@@ -1240,20 +1240,40 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
             objc.loadBundle("ScreenCaptureKit", globals(), bundle_path=_SCK_FRAMEWORK_PATH)
 
             coremedia_bundle = NSBundle.bundleWithPath_(_COREMEDIA_FRAMEWORK_PATH)
-            # Use '@' for CMSampleBuffer and CVPixelBuffer args — PyObjC
-            # wraps these toll-free-bridged CF types as ObjC objects
-            # (__NSCFType).  Raw struct-pointer signatures crash with
-            # "depythonifying 'pointer', got '__NSCFType'".
+            # CMSampleBufferGetPresentationTimeStamp / GetDuration accept
+            # toll-free bridged ObjC objects (@) and return CMTime structs.
+            # CMSampleBufferGetSampleAttachmentsArray likewise.
             objc.loadBundleFunctions(
                 coremedia_bundle,
                 globals(),
                 [
-                    ("CMSampleBufferGetImageBuffer", b"@@"),
                     ("CMSampleBufferGetPresentationTimeStamp", b"{_CMTime=qiIq}@"),
                     ("CMSampleBufferGetDuration", b"{_CMTime=qiIq}@"),
                     ("CMSampleBufferGetSampleAttachmentsArray", b"@@B"),
                 ],
             )
+
+            # CMSampleBufferGetImageBuffer returns a CVImageBufferRef (raw
+            # pointer).  objc.loadBundleFunctions with '@@' tried to wrap
+            # the return as an ObjC object, but CVPixelBuffer isn't always
+            # toll-free bridged cleanly through that path — returns None.
+            # Use ctypes directly: extract raw pointer from PyObjC object,
+            # call C function, wrap result back as ObjC object.
+            _cm_lib = ctypes.CDLL(f"{_COREMEDIA_FRAMEWORK_PATH}/CoreMedia")
+            _cm_lib.CMSampleBufferGetImageBuffer.argtypes = [ctypes.c_void_p]
+            _cm_lib.CMSampleBufferGetImageBuffer.restype = ctypes.c_void_p
+
+            def _CMSampleBufferGetImageBuffer_via_ctypes(sample_buffer):
+                try:
+                    raw_ptr = sample_buffer.__c_void_p__().value
+                except AttributeError:
+                    raw_ptr = objc.pyobjc_id(sample_buffer)
+                result_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
+                if not result_ptr:
+                    return None
+                return objc.objc_object(c_void_p=result_ptr)
+
+            CMSampleBufferGetImageBuffer = _CMSampleBufferGetImageBuffer_via_ctypes
 
             # CoreMedia string constant — hardcode rather than loading via
             # objc.loadBundleVariables which doesn't reliably resolve string consts.
