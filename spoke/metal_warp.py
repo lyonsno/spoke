@@ -214,20 +214,6 @@ kernel void opticalShellWarp(
         finalColor = acc / tw;
     }}
 
-    // Perceptual value clamp: keep luminance in the 15-85%% range.
-    // Prevents blown-out whites and crushed blacks in the warped
-    // interior.  Uses approximate sRGB luminance.
-    float luma = dot(finalColor.rgb, float3(0.2126f, 0.7152f, 0.0722f));
-    float clampedLuma = clamp(luma, 0.15f, 0.85f);
-    if (luma > 0.001f) {{
-        float lumaScale = clampedLuma / luma;
-        // Blend toward clamped based on depth — full clamping at center,
-        // none at boundary.
-        float clampStrength = smoothstep(0.05f, 0.30f, interiorDepth);
-        float scale_factor = mix(1.0f, lumaScale, clampStrength);
-        finalColor.rgb *= scale_factor;
-    }}
-
     outTexture.write(finalColor, pixel);
 }}
 """
