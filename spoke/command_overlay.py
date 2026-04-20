@@ -1922,11 +1922,14 @@ class CommandOverlay(NSObject):
         renderer = getattr(self, "_backdrop_renderer", None)
         if renderer is None or not hasattr(renderer, "set_frame_callback"):
             return
-        if self._backdrop_layer_uses_sample_buffers() or (
-            _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE
-        ):
-            renderer.set_frame_callback(None)
-            return
+        # When optical shell is active, SCK frames route through the CGImage
+        # path (not sample buffers), so we always need the frame callback.
+        if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+            if self._backdrop_layer_uses_sample_buffers() or (
+                _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE
+            ):
+                renderer.set_frame_callback(None)
+                return
 
         def apply_live_frame(image) -> None:
             if self._backdrop_layer is None:
