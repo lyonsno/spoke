@@ -110,6 +110,29 @@ _WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
 
 _SHELL_WARP_KERNEL = None
 
+
+def _create_iosurface(width: int, height: int):
+    """Create a reusable IOSurface for GPU-only rendering."""
+    try:
+        import objc as _objc
+        _objc.loadBundle(
+            "IOSurface",
+            globals(),
+            bundle_path="/System/Library/Frameworks/IOSurface.framework",
+        )
+        IOSurface = _objc.lookUpClass("IOSurface")
+        props = {
+            "IOSurfaceWidth": width,
+            "IOSurfaceHeight": height,
+            "IOSurfaceBytesPerElement": 4,
+            "IOSurfacePixelFormat": 1111970369,  # kCVPixelFormatType_32BGRA
+        }
+        surface = IOSurface.alloc().initWithProperties_(props)
+        return surface
+    except Exception:
+        logger.debug("Failed to create IOSurface", exc_info=True)
+        return None
+
 # ---------------------------------------------------------------------------
 # Frame timing instrumentation
 # ---------------------------------------------------------------------------
@@ -2125,10 +2148,45 @@ class _ScreenCaptureKitBackdropRenderer:
             context = self._context()
             if context is None:
                 return
-            image = context.createCGImage_fromRect_(output, extent)
-            if image is None:
-                return
-            self._publish_live_image(image)
+            # Try rendering to IOSurface first — avoids the GPU→CPU→GPU
+            # round-trip of createCGImage.  CALayer can display IOSurfaces
+            # directly at compositor refresh rate.
+            rendered = False
+            if hasattr(context, "render_toIOSurface_bounds_colorSpace_"):
+                iosurface = getattr(self, "_reusable_iosurface", None)
+                width = max(1, int(round(extent.size.width)))
+                height = max(1, int(round(extent.size.height)))
+                iosurface_key = (width, height)
+                if getattr(self, "_iosurface_key", None) != iosurface_key:
+                    iosurface = None
+                if iosurface is None:
+                    try:
+                        from Quartz import CGRectMake
+                        iosurface = _create_iosurface(width, height)
+                        if iosurface is not None:
+                            self._reusable_iosurface = iosurface
+                            self._iosurface_key = iosurface_key
+                    except Exception:
+                        pass
+                if iosurface is not None:
+                    try:
+                        from Quartz import CGRectMake
+                        render_bounds = CGRectMake(
+                            extent.origin.x, extent.origin.y,
+                            extent.size.width, extent.size.height,
+                        )
+                        context.render_toIOSurface_bounds_colorSpace_(
+                            output, iosurface, render_bounds, None,
+                        )
+                        self._publish_live_image(iosurface)
+                        rendered = True
+                    except Exception:
+                        logger.debug("IOSurface render failed, falling back to CGImage", exc_info=True)
+            if not rendered:
+                image = context.createCGImage_fromRect_(output, extent)
+                if image is None:
+                    return
+                self._publish_live_image(image)
         except Exception:
             logger.debug("ScreenCaptureKit sample processing failed", exc_info=True)
 
