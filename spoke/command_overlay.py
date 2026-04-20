@@ -567,7 +567,11 @@ class _QuartzBackdropRenderer:
                         else:
                             outer_radius = max(content_h * 0.5, 1.0)
                             outer_spine = max(content_w * 0.5 - outer_radius, 0.0)
-                            inset_px = outer_radius * 0.25  # inset by 25% — larger wash region
+                            # Inset enough that the feather dies to zero well
+                            # before the capsule boundary — prevents the
+                            # low-res upsampled wash from bleeding color at
+                            # the rim.
+                            inset_px = outer_radius * 0.40
                             inner_radius = max(outer_radius - inset_px, 1.0)
                             inner_spine = max(outer_spine, 0.0)
                             mxs = np.arange(mw, dtype=np.float32)[None, :] + 0.5 - mw * 0.5
@@ -575,8 +579,9 @@ class _QuartzBackdropRenderer:
                             inner_sdf = (np.hypot(
                                 np.maximum(np.abs(mxs) - inner_spine, 0.0), mys
                             ) - inner_radius).astype(np.float32)
-                            # Smooth alpha: 1 inside, smoothstep fade over ~48px
-                            feather_width = 48.0
+                            # Smooth alpha: 1 inside, smoothstep fade over
+                            # a narrow band so wash stays well inside the rim.
+                            feather_width = 20.0
                             t = np.clip(inner_sdf / feather_width, 0.0, 1.0).astype(np.float32)
                             center_alpha = (1.0 - t * t * (3.0 - 2.0 * t)).astype(np.float32)
                             mask_rgba = np.zeros((mh, mw, 4), dtype=np.uint8)
