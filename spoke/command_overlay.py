@@ -873,7 +873,7 @@ class CommandOverlay(NSObject):
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
         pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
-        utt_alpha = 0.325 + 0.125 * pulse_u
+        utt_alpha = 0.73 + 0.24 * pulse_u
 
         # Full spectrum hue rotation with velocity undulation
         # The speed varies sinusoidally so it dwells in some colors and
