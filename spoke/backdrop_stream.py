@@ -839,14 +839,10 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
         config.setContentScale_(scale)
     if hasattr(config, "setMinimumFrameInterval_"):
         config.setMinimumFrameInterval_(_FRAME_INTERVAL_60_FPS)
-    # Don't set sourceRect/destinationRect — let SCK capture the full
-    # display and crop to the overlay region in the CIImage path.
-    # Setting sourceRect with the wrong coordinate space causes content
-    # to be placed in the top-left corner with black padding.
-    #if hasattr(config, "setSourceRect_"):
-    #    config.setSourceRect_(_cgrect(local_rect))
-    #if hasattr(config, "setDestinationRect_"):
-    #    config.setDestinationRect_(_cgrect(_make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)))
+    if hasattr(config, "setSourceRect_"):
+        config.setSourceRect_(_cgrect(local_rect))
+    if hasattr(config, "setDestinationRect_"):
+        config.setDestinationRect_(_cgrect(_make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)))
 
 
 def make_backdrop_renderer(screen, fallback_factory):
@@ -2150,21 +2146,8 @@ class _ScreenCaptureKitBackdropRenderer:
             # capture rect dimensions — the image is already overlay-sized.
             # No crop needed.
 
-            # SCK delivers frames in top-down orientation but CIImage uses
-            # bottom-up.  Flip vertically so the warp kernel's Y direction
-            # matches the screen.
-            try:
-                from Quartz import CGAffineTransformMakeScale, CGAffineTransformTranslate
-                flip = CGAffineTransformTranslate(
-                    CGAffineTransformMakeScale(1.0, -1.0),
-                    0.0, -extent.size.height,
-                )
-                flipped = ci_image.imageByApplyingTransform_(flip)
-                if flipped is not None:
-                    ci_image = flipped
-                    extent = ci_image.extent() if hasattr(ci_image, "extent") else extent
-            except Exception:
-                pass
+            # sourceRect + scalesToFit crops and scales the capture to the
+            # overlay region — no manual flip or crop needed.
 
             diag = getattr(self, "_consume_diag_n", 0)
             if diag <= 7 and optical_shell_config is not None:

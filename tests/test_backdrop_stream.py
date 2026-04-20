@@ -107,10 +107,10 @@ def test_configure_stream_geometry_uses_filter_content_rect_and_point_pixel_scal
     assert config.calls["height"] == 240
     assert config.calls["queue_depth"] == 3
     assert config.calls["shows_cursor"] is False
-    # sourceRect and destinationRect are no longer set — full display
-    # capture with CIImage crop in the consume path.
-    assert "source_rect" not in config.calls
-    assert "destination_rect" not in config.calls
+    assert config.calls["source_rect"].origin.x == pytest.approx(480.0)
+    assert config.calls["source_rect"].origin.y == pytest.approx(637.0)
+    assert config.calls["destination_rect"].origin.x == pytest.approx(0.0)
+    assert config.calls["destination_rect"].origin.y == pytest.approx(0.0)
 
 
 def test_publish_live_image_caches_frame_and_invokes_callback():
