@@ -104,8 +104,8 @@ _WARP_Y_SQUEEZE = 1.5
 # creates a lens/magnification effect around the boundary.  The pull
 # decays exponentially with distance from the capsule surface.
 # Strength is fraction of capsuleRadius; higher = stronger lens.
-_WARP_EXTERIOR_MAG_STRENGTH = 0.15
-_WARP_EXTERIOR_MAG_DECAY = 3.0  # exponential decay rate (per capsuleRadius)
+_WARP_EXTERIOR_MAG_STRENGTH = 0.6
+_WARP_EXTERIOR_MAG_DECAY = 1.5  # exponential decay rate (per capsuleRadius)
 
 _SHELL_WARP_KERNEL = None
 
@@ -183,18 +183,18 @@ kernel vec2 opticalShellWarp(
     vec2 warped = c + p * vec2(scaleX, scaleY);
 
     // Exterior: interior warp fades to magnified exterior.
-    // mag ramps up through the bleed zone (zero at sdf=0, full at
-    // bleedZone) then decays past it, so there's no discontinuity
-    // at the capsule boundary.
+    // magRampIn uses a short ramp (capsuleRadius * 0.15) to avoid
+    // a discontinuity at sdf=0 while reaching full strength quickly.
     float exteriorT = max(capsuleSdf, 0.0);
-    float magRampIn = smoothstep(0.0, bleedZone, exteriorT);
-    float distPastBleed = max(capsuleSdf - bleedZone, 0.0);
-    float magDecay = exp(-distPastBleed / capsuleRadius * %(ext_mag_decay)s);
+    float magRampIn = smoothstep(0.0, capsuleRadius * 0.15, exteriorT);
+    float magDecay = exp(-exteriorT / capsuleRadius * %(ext_mag_decay)s);
     vec2 n = capsuleGradient(p, spineHalf);
     float mag = %(ext_mag_strength)s * capsuleRadius * magRampIn * magDecay;
     vec2 magSrc = d - n * mag;
     magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
-    return mix(warped, magSrc, magRampIn);
+    // Blend: interior warp → magnified exterior over the bleed zone.
+    float warpFade = smoothstep(0.0, bleedZone, exteriorT);
+    return mix(warped, magSrc, warpFade);
 }
 """ % {
         "bleed_frac": _WARP_BLEED_ZONE_FRAC,
