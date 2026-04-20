@@ -119,12 +119,14 @@ class FullScreenCompositor:
         frame = screen.frame()
         scale = screen.backingScaleFactor() if hasattr(screen, "backingScaleFactor") else 2.0
 
-        # Borderless, transparent, full-screen, above everything
+        # Borderless, transparent, full-screen, just below the command overlay
+        # so the overlay UI (text, fill) renders on top of the warped screen.
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, 0, NSBackingStoreBuffered, False,
         )
-        # Just above the normal overlay level
-        self._window.setLevel_(2147483630)  # kCGMaximumWindowLevelKey - 1
+        # Command overlay is at level 26 (_OVERLAY_WINDOW_LEVEL + 1).
+        # Compositor sits at 25 — above normal windows but below the overlay.
+        self._window.setLevel_(25)
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         self._window.setIgnoresMouseEvents_(True)
@@ -179,10 +181,6 @@ class FullScreenCompositor:
 
     def _start_capture(self):
         from spoke.backdrop_stream import _load_screencapturekit_bridge, _make_stream_handler_queue
-
-        # Brief pause so the window server registers our new full-screen window
-        # in the shareable content snapshot (needed for exclusion).
-        time.sleep(0.1)
 
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
