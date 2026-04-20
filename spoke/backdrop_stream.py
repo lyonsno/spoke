@@ -2011,10 +2011,20 @@ class _ScreenCaptureKitBackdropRenderer:
                         if ci_image is not None:
                             extent = ci_image.extent()
                             if extent is not None:
+                                # SCK delivers frames at Retina pixel scale.
+                                # The shell config dimensions are in points.
+                                # Scale them to match the CIImage extent.
+                                scale = self._current_backing_scale()
+                                scaled_config = dict(optical_shell_config)
+                                for k in ("content_width_points", "content_height_points",
+                                          "corner_radius_points", "band_width_points",
+                                          "tail_width_points"):
+                                    if k in scaled_config:
+                                        scaled_config[k] = float(scaled_config[k]) * scale
                                 warped = _apply_optical_shell_warp_ci_image(
                                     ci_image.imageByClampingToExtent() if hasattr(ci_image, "imageByClampingToExtent") else ci_image,
                                     extent,
-                                    optical_shell_config,
+                                    scaled_config,
                                 )
                                 if warped is not None:
                                     output = warped.imageByCroppingToRect_(extent) if hasattr(warped, "imageByCroppingToRect_") else warped

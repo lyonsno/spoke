@@ -260,6 +260,8 @@ def test_consume_sample_buffer_optical_shell_direct_ciimage_path(monkeypatch):
     renderer._lock = __import__("threading").Lock()
     renderer._latest_image = None
     renderer._publish_image_count = 0
+    renderer._screen = MagicMock()
+    renderer._screen.backingScaleFactor.return_value = 2.0
 
     renderer._consume_sample_buffer("live-sample", 7)
 
