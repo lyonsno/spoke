@@ -2117,6 +2117,10 @@ class CommandOverlay(NSObject):
                 # is in progress).  The old stream will be stopped when the
                 # overlay hides.
                 self._cancel_backdrop_refresh()
+                # Hide the old backdrop layer — compositor renders the warp now.
+                # The stale content in this layer would show on top of live output.
+                if self._backdrop_layer is not None:
+                    self._backdrop_layer.setHidden_(True)
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
@@ -2126,6 +2130,13 @@ class CommandOverlay(NSObject):
     def _stop_fullscreen_compositor(self):
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
+        # Unhide the old backdrop layer in case the old path resumes
+        backdrop = getattr(self, "_backdrop_layer", None)
+        if backdrop is not None:
+            try:
+                backdrop.setHidden_(False)
+            except Exception:
+                pass
         if compositor is not None:
             try:
                 compositor.stop()

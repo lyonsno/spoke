@@ -231,7 +231,7 @@ class FullScreenCompositor:
         config.setWidth_(pixel_w)
         config.setHeight_(pixel_h)
         config.setQueueDepth_(8)
-        config.setShowsCursor_(True)
+        config.setShowsCursor_(False)  # real cursor is visible; baked-in cursor ghosts
         config.setPixelFormat_(1111970369)  # kCVPixelFormatType_32BGRA
         # Don't set minimumFrameInterval — let SCK deliver at max rate
         if hasattr(config, "setContentScale_"):
