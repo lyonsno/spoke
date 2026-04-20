@@ -999,9 +999,13 @@ class CommandOverlay(NSObject):
                     pass
                 # Response text: main color on edges, alt color piped
                 # through center, applied per-character for gradient.
+                # Blur undulates with perceptual lightness — lighter chars
+                # go soft, darker chars stay crisp, trading off as the
+                # hues rotate through the cycle.
                 resp_start = utt_len + 2
                 resp_len = total_len - resp_start
                 if resp_start < total_len and resp_len > 0:
+                    from AppKit import NSShadowAttributeName as _SH_pulse, NSShadow
                     try:
                         for ci in range(resp_len):
                             # 0.0 at edges, 1.0 at center
@@ -1016,6 +1020,20 @@ class CommandOverlay(NSObject):
                                     cr, cg, cb, alpha_a
                                 ),
                                 (resp_start + ci, 1),
+                            )
+                            # Perceptual luminance drives blur radius
+                            lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
+                            blur_radius = lum * 6.0  # 0 when dark, up to 6pt when bright
+                            shadow = NSShadow.alloc().init()
+                            shadow.setShadowColor_(
+                                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                    cr, cg, cb, 0.5 * lum
+                                )
+                            )
+                            shadow.setShadowOffset_((0, 0))
+                            shadow.setShadowBlurRadius_(blur_radius)
+                            ts.addAttribute_value_range_(
+                                _SH_pulse, shadow, (resp_start + ci, 1),
                             )
                     except Exception:
                         pass
