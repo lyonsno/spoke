@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Tuning constants — must stay in sync with backdrop_stream.py
 _WARP_BLEED_ZONE_FRAC = 0.8
-_WARP_CENTER_FLOOR = 0.80
+_WARP_CENTER_FLOOR = 0.88
 _WARP_FIELD_EXPONENT = 0.35
 _WARP_REMAP_BASE_EXP_SCALE = 0.98
 _WARP_REMAP_BASE_EXP_FLOOR = 0.02
@@ -152,7 +152,7 @@ kernel void opticalShellWarp(
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
         float exteriorT = capsuleSdf;
-        float t = 1.0f - smoothstep(0.0f, 35.0f, exteriorT);
+        float t = 1.0f - smoothstep(0.0f, 20.0f, exteriorT);
         t = t * t;
 
         // Where the warp would put this pixel if it used the boundary scale
@@ -168,7 +168,7 @@ kernel void opticalShellWarp(
     // >25%%: holds at full radius.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
     float blurT = smoothstep(0.15f, 0.25f, interiorDepth);
-    float blurRadius = blurT * 40.0f;
+    float blurRadius = blurT * 80.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 centerColor = inTexture.read(uint2(samplePt));
