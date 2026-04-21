@@ -1870,7 +1870,7 @@ class CommandOverlay(NSObject):
         if boost_layer is not None and getattr(self, "_text_punchthrough", False):
             _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
             _bt = _bt * _bt * (3.0 - 2.0 * _bt)
-            boost_opacity = _lerp(0.0, 0.5, _bt)
+            boost_opacity = _lerp(0.0, 0.75, _bt)
             has_mask = getattr(self, "_boost_mask_layer", None) is not None
             if boost_opacity > 0.01 and has_mask:
                 boost_layer.setHidden_(False)

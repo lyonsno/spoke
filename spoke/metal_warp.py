@@ -168,8 +168,11 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur via mipmap LOD
-    float pixelsInside = max(-capsuleSdf, 0.0f);
+    // Depth-dependent blur via mipmap LOD.
+    // The warp capsule is inflated by capsuleRadius beyond the fill
+    // boundary, so blur should only start ramping once we're past
+    // that inflation zone (i.e., inside the fill pill).
+    float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f, 0.0f);
     float mipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
