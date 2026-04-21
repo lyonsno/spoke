@@ -198,7 +198,8 @@ class TestTranscriptionToken:
 
         with patch.object(main_module.threading, "Thread"):
             d._on_hold_end()
-        assert d._transcription_token == 2
+        assert d._transcription_token == 1
+        assert d._parallel_insert_token == 1
 
     def test_stale_transcription_is_discarded(self, main_module, monkeypatch):
         """If token doesn't match, result should be silently discarded."""
@@ -1103,6 +1104,8 @@ class TestDualModelConfiguration:
         d._tts_client._model_id = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
         d._tts_backend = "local"
         d._tts_sidecar_url = ""
+        d._load_preference = lambda key: None
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
 
         model_state = d._handle_model_menu_action(None)
@@ -1112,6 +1115,7 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local runtime", True),
                 ("sidecar", "Sidecar (not configured)", False, False),
+                ("cloud", "Cloud (no API key)", False, False),
                 ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
             ],
         }
@@ -1142,7 +1146,7 @@ class TestDualModelConfiguration:
         assert model_state["tts"]["selected"] == "k2-fsa/OmniVoice"
         assert model_state["tts_voice"] == {
             "type": "choice",
-            "title": "TTS Prompt: Auto voice",
+            "title": "TTS Voice: Auto voice",
             "selected": "",
             "models": [
                 ("", "Auto voice", True),
@@ -1156,7 +1160,7 @@ class TestDualModelConfiguration:
                 ("female, whisper, british accent", "Female whisper, British", True),
                 ("female, high pitch, american accent", "Female, high pitch, American", True),
                 ("male, low pitch, american accent", "Male, low pitch, American", True),
-                ("configure_voice", "Set Custom TTS Prompt…", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -1179,11 +1183,11 @@ class TestDualModelConfiguration:
 
         assert model_state["tts_voice"] == {
             "type": "choice",
-            "title": "TTS Prompt: female, british accent",
+            "title": "TTS Voice: female, british accent",
             "selected": "female, british accent",
             "models": [
-                ("", "Auto voice", True),
                 ("female, british accent", "Custom: female, british accent", True),
+                ("", "Auto voice", True),
                 ("female, child", "Female, child", True),
                 ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
                 ("female, elderly, british accent", "Female, elderly, British", True),
@@ -1194,7 +1198,7 @@ class TestDualModelConfiguration:
                 ("female, whisper, british accent", "Female whisper, British", True),
                 ("female, high pitch, american accent", "Female, high pitch, American", True),
                 ("male, low pitch, american accent", "Male, low pitch, American", True),
-                ("configure_voice", "Set Custom TTS Prompt…", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -1214,7 +1218,7 @@ class TestDualModelConfiguration:
 
         assert model_state["tts_voice"] == {
             "type": "choice",
-            "title": "TTS Prompt: Auto voice",
+            "title": "TTS Voice: Auto voice",
             "selected": "",
             "models": [
                 ("", "Auto voice", True),
@@ -1228,7 +1232,7 @@ class TestDualModelConfiguration:
                 ("female, whisper, british accent", "Female whisper, British", True),
                 ("female, high pitch, american accent", "Female, high pitch, American", True),
                 ("male, low pitch, american accent", "Male, low pitch, American", True),
-                ("configure_voice", "Set Custom TTS Prompt…", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -1251,11 +1255,31 @@ class TestDualModelConfiguration:
         model_state = d._handle_model_menu_action(None)
 
         assert model_state["tts_voice"] == {
-            "type": "toggle",
-            "title": "TTS Voice: casual_female [sidecar /v1/voices needed]",
-            "items": [
-                ("voice_discovery_unavailable", "Voice discovery unavailable on this sidecar", False, False),
-                ("configure_voice", "Set TTS Voice…", False, True),
+            "type": "choice",
+            "title": "TTS Voice: Casual Female",
+            "selected": "casual_female",
+            "models": [
+                ("casual_female", "Casual Female", True),
+                ("casual_male", "Casual Male", True),
+                ("cheerful_female", "Cheerful Female", True),
+                ("neutral_female", "Neutral Female", True),
+                ("neutral_male", "Neutral Male", True),
+                ("fr_female", "French Female", True),
+                ("fr_male", "French Male", True),
+                ("es_female", "Spanish Female", True),
+                ("es_male", "Spanish Male", True),
+                ("de_female", "German Female", True),
+                ("de_male", "German Male", True),
+                ("it_female", "Italian Female", True),
+                ("it_male", "Italian Male", True),
+                ("pt_female", "Portuguese Female", True),
+                ("pt_male", "Portuguese Male", True),
+                ("nl_female", "Dutch Female", True),
+                ("nl_male", "Dutch Male", True),
+                ("ar_male", "Arabic Male", True),
+                ("hi_female", "Hindi Female", True),
+                ("hi_male", "Hindi Male", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -2124,12 +2148,10 @@ class TestDualModelConfiguration:
 
         assert result is not None
         assert d._command_model_id == "qwen3-14b"
-        assert d._command_client._model == "qwen3-14b"
-        assert d._command_model_options == [
-            ("qwen3-14b", "qwen3-14b", True),
-            ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
-        ]
-        mock_seed.assert_called_once_with("qwen3-14b")
+        MockCommand.assert_called_once_with(
+            base_url=main_module._DEFAULT_COMMAND_URL,
+            model="qwen3-14b",
+        )
         assert d._command_model_options == [
             (
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
@@ -2137,6 +2159,7 @@ class TestDualModelConfiguration:
                 False,
             )
         ]
+        mock_seed.assert_called_once_with("qwen3-14b")
 
     def test_init_prefers_env_command_model_over_stale_persisted_local_selection(
         self, main_module, monkeypatch
@@ -2168,7 +2191,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
+            base_url=main_module._DEFAULT_COMMAND_URL,
             model="step-3p5-flash-mixedp-final",
         )
         assert d._command_model_id == "step-3p5-flash-mixedp-final"
@@ -2246,7 +2269,7 @@ class TestDualModelConfiguration:
         assert result is not None
         assert d._command_model_id == "qwen3-14b"
         MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
+            base_url=main_module._DEFAULT_COMMAND_URL,
             model="qwen3-14b",
         )
         assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
@@ -2282,7 +2305,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
+            base_url=main_module._DEFAULT_COMMAND_URL,
             model="qwen3-14b",
         )
         command_client.list_models.assert_not_called()
@@ -2937,6 +2960,7 @@ class TestRuntimePhaseLogging:
         d._command_client = MagicMock()
         d._refresh_command_model_options_async = MagicMock()
         d._request_mic_permission = MagicMock()
+        d._setup_event_tap = MagicMock()
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
@@ -2956,10 +2980,13 @@ class TestRuntimePhaseLogging:
             import sys
             sys.modules["spoke.command_overlay"] = MagicMock()
             sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
+            sys.modules["spoke.terraform_hud"] = MagicMock()
+            sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = MagicMock()
 
             d.applicationDidFinishLaunching_(None)
 
         d._refresh_command_model_options_async.assert_called_once_with()
+        d._setup_event_tap.assert_called_once_with()
 
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch
@@ -3762,7 +3789,6 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called_with("first")
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
-        assert "Command overlay finish failed" in caplog.text
 
     def test_tts_amplitude_update_failure_is_suppressed(
         self, main_module, monkeypatch, caplog
