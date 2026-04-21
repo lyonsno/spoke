@@ -187,6 +187,19 @@ class TestHandsFreeControllerWakeWords:
         controller._stop_dictating.assert_called_once_with()
         assert controller.state == HandsFreeState.LISTENING
 
+    def test_stop_dictating_restarts_wakeword_listener_for_next_cycle(self):
+        delegate = MagicMock()
+        delegate._capture.is_recording = False
+        controller = HandsFreeController(delegate=delegate)
+        controller._state = HandsFreeState.DICTATING
+        controller._wakeword = MagicMock()
+
+        controller._stop_dictating()
+
+        controller._wakeword.stop.assert_called_once_with()
+        controller._wakeword.start.assert_called_once_with()
+        assert controller.state == HandsFreeState.LISTENING
+
     def test_segment_transcription_of_sleep_word_routes_to_wake_handler(self, monkeypatch):
         class ImmediateThread:
             def __init__(self, target=None, args=(), kwargs=None, **_ignored):

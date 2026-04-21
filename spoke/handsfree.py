@@ -366,7 +366,16 @@ class HandsFreeController:
         """Exit dictation mode. DICTATING/TRANSCRIBING → LISTENING."""
         logger.info("Stopping hands-free dictation")
         self._stop_dictation_capture()
+        self._restart_wakeword_listener("post-dictation recovery")
         self._set_state(HandsFreeState.LISTENING)
+
+    def _restart_wakeword_listener(self, reason: str) -> None:
+        listener = self._wakeword
+        if listener is None:
+            return
+        logger.info("Restarting wakeword listener: reason=%s", reason)
+        listener.stop()
+        listener.start()
 
     def _stop_dictation_capture(self) -> None:
         """Stop audio capture and clean up UI."""
