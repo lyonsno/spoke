@@ -81,7 +81,13 @@ def _load_history_utterances() -> list[dict]:
 
     pairs: list[dict] = []
     for entry in data:
-        if isinstance(entry, list):
+        if isinstance(entry, list) and entry and isinstance(entry[0], str):
+            # Legacy format: ["user text", "assistant text"]
+            pairs.append({
+                "user": str(entry[0]),
+                "assistant": str(entry[1]) if len(entry) > 1 else "",
+            })
+        elif isinstance(entry, list):
             # New format: list of message dicts per turn
             user_text = ""
             assistant_text = ""
@@ -96,9 +102,6 @@ def _load_history_utterances() -> list[dict]:
                     assistant_text = content
             if user_text:
                 pairs.append({"user": user_text, "assistant": assistant_text})
-        elif isinstance(entry, (list, tuple)) and len(entry) == 2:
-            # Legacy format: (user, assistant) pairs
-            pairs.append({"user": str(entry[0]), "assistant": str(entry[1])})
     return pairs
 
 

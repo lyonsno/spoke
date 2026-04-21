@@ -14,6 +14,20 @@ _carve = importlib.import_module("converge-carve")
 
 
 class TestLoadHistoryUtterances:
+    def test_legacy_pair_format_still_loads(self, tmp_path):
+        history = [
+            ["old user request", "old assistant reply"],
+        ]
+        history_path = tmp_path / "history.json"
+        history_path.write_text(json.dumps(history))
+
+        with patch.object(_carve, "_HISTORY_PATH", history_path):
+            pairs = _carve._load_history_utterances()
+
+        assert pairs == [
+            {"user": "old user request", "assistant": "old assistant reply"}
+        ]
+
     def test_new_format_message_chains(self, tmp_path):
         history = [
             [
