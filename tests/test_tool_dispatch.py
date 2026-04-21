@@ -298,6 +298,107 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert "model_image" not in parsed
 
+    def test_execute_capture_context_multimodal_without_image_request_omits_image_part(
+        self, tmp_path
+    ):
+        """Multimodal tool payloads should not inline an image unless requested."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        cache = sc_mod.SceneCaptureCache(max_captures=5)
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": False},
+                scene_cache=cache,
+                tool_output_mode="multimodal",
+            )
+
+        assert [part["type"] for part in result["content"]] == ["text"]
+        summary = json.loads(result["content"][0]["text"])
+        assert summary["scene_ref"] == "scene-test"
+
+    def test_execute_capture_context_text_mode_forces_ocr_even_when_env_requests_skip(
+        self, monkeypatch
+    ):
+        """Text-mode callers should keep OCR refs even if the smoke env prefers image-only capture."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        monkeypatch.setenv("SPOKE_SKIP_OCR", "1")
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture) as mock_capture:
+            mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": True},
+                tool_output_mode="text",
+            )
+
+        assert mock_capture.call_args.kwargs["skip_ocr"] is False
+
+    def test_execute_capture_context_multimodal_image_request_can_skip_ocr(
+        self, monkeypatch
+    ):
+        """Image-requesting multimodal callers may honor the smoke env OCR skip."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        monkeypatch.setenv("SPOKE_SKIP_OCR", "1")
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture) as mock_capture:
+            mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": True},
+                tool_output_mode="multimodal",
+            )
+
+        assert mock_capture.call_args.kwargs["skip_ocr"] is True
+
     def test_multimodal_capture_context_summary_omits_local_model_image_path(self, tmp_path):
         """Multimodal text summaries should describe the scene, not a local path."""
         mod = _import_tools()
@@ -327,6 +428,42 @@ class TestExecuteTool:
 
         assert "model_image" not in summary
         assert result["content"][1]["image_url"]["url"] == "data:image/png;base64,YWJj"
+
+    def test_execute_capture_context_multimodal_honors_explicit_include_image_false(self, tmp_path):
+        """Explicitly disabling image attachment should win even on multimodal backends."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": False},
+                tool_output_mode="multimodal",
+            )
+
+        assert isinstance(result, dict)
+        assert result["content"] == [
+            {"type": "text", "text": '{"scene_ref": "scene-test", "scope": "active_window", "app_name": "Safari", "bundle_id": "com.apple.Safari", "window_title": "Test Page", "image_size": [2560, 1440], "model_image_size": [853, 480], "ocr_blocks": [], "ax_hints": []}'}
+        ]
 
     def test_execute_capture_context_failure(self):
         """When capture fails, execute_tool returns an error JSON."""

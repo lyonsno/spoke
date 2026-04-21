@@ -579,7 +579,7 @@ def _capture_active_window():
         if not window_title:
             window_title = target_window.get("kCGWindowName")
         if app_name is None:
-            app_name = target_window.get("kCGWindowOwnerName")
+            app_name = target_window.get("kCGWindowOwnerName") or app_name
         target_pid = target_window.get("kCGWindowOwnerPID")
         target_layer = target_window.get("kCGWindowLayer")
         bounds = target_window.get("kCGWindowBounds") or {}
@@ -766,6 +766,7 @@ def capture_context(
     scope: Literal["active_window", "screen"] = "active_window",
     cache: SceneCaptureCache | None = None,
     cache_dir: str | None = None,
+    skip_ocr: bool | None = None,
 ) -> SceneCapture | None:
     """Capture a scene and return a SceneCapture artifact.
 
@@ -829,9 +830,12 @@ def capture_context(
 
     # OCR (skippable — when the model receives the image directly, OCR text
     # is redundant and its latency + token cost can be avoided).
-    if os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes"):
+    if skip_ocr is None:
+        skip_ocr = os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes")
+
+    if skip_ocr:
         ocr_text, ocr_blocks = "", []
-        logger.info("capture_context: OCR skipped (SPOKE_SKIP_OCR)")
+        logger.info("capture_context: OCR skipped")
     else:
         ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
         logger.info("capture_context: OCR %.0fms (%d blocks)", (time.perf_counter() - t_save) * 1000, len(ocr_blocks))
