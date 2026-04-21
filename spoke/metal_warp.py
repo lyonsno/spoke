@@ -46,10 +46,6 @@ _WARP_EXTERIOR_MAG_DECAY = 2.0
 _WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
 _WARP_ALIAS_MIP_BIAS_SCALE = 1.35
 _WARP_ALIAS_MIP_BIAS_MAX = 2.0
-_WARP_EXTERIOR_EDGE_MIP_START_FRAC = 0.18
-_WARP_EXTERIOR_EDGE_MIP_PEAK_FRAC = 0.72
-_WARP_EXTERIOR_EDGE_MIP_FADE_FRAC = 0.96
-_WARP_EXTERIOR_EDGE_MIP_BIAS_MAX = 0.4
 
 _TEMPORAL_BLEND_FACTOR = 0.25  # EMA blend: 25% new frame, 75% accumulator
 
@@ -68,46 +64,6 @@ def _warp_alias_mip_bias(scale_x: float, scale_y: float) -> float:
         return 0.0
     bias = (warp_octaves - _WARP_ALIAS_MIP_BIAS_DEADZONE) * _WARP_ALIAS_MIP_BIAS_SCALE
     return min(bias, _WARP_ALIAS_MIP_BIAS_MAX)
-
-
-def _smoothstep01(value: float) -> float:
-    x = min(max(float(value), 0.0), 1.0)
-    return x * x * (3.0 - 2.0 * x)
-
-
-def _warp_exterior_edge_mip_bias(
-    capsule_sdf: float, capsule_radius: float, scale_x: float, scale_y: float
-) -> float:
-    """Return a small mip lift only in the outer warp ring.
-
-    This specifically targets the faint shimmer/alias lines near the outer
-    cutoff of the warp. It stays off inside the pill and for near-identity
-    warps, then rises gently through the outer ring before fading back out at
-    the bleed-zone edge so the cutoff itself remains clean.
-    """
-    if capsule_sdf <= 0.0 or capsule_radius <= 0.0:
-        return 0.0
-
-    deform_bias = _warp_alias_mip_bias(scale_x, scale_y)
-    if deform_bias <= 0.0:
-        return 0.0
-
-    bleed_zone = float(capsule_radius) * _WARP_BLEED_ZONE_FRAC
-    if bleed_zone <= 1e-6:
-        return 0.0
-
-    edge_t = min(max(float(capsule_sdf) / bleed_zone, 0.0), 1.0)
-    ramp_in = _smoothstep01(
-        (edge_t - _WARP_EXTERIOR_EDGE_MIP_START_FRAC)
-        / max(_WARP_EXTERIOR_EDGE_MIP_PEAK_FRAC - _WARP_EXTERIOR_EDGE_MIP_START_FRAC, 1e-6)
-    )
-    ramp_out = 1.0 - _smoothstep01(
-        (edge_t - _WARP_EXTERIOR_EDGE_MIP_PEAK_FRAC)
-        / max(_WARP_EXTERIOR_EDGE_MIP_FADE_FRAC - _WARP_EXTERIOR_EDGE_MIP_PEAK_FRAC, 1e-6)
-    )
-    zone = max(ramp_in * ramp_out, 0.0)
-    deform_frac = min(deform_bias / max(_WARP_ALIAS_MIP_BIAS_MAX, 1e-6), 1.0)
-    return min(zone * deform_frac * _WARP_EXTERIOR_EDGE_MIP_BIAS_MAX, _WARP_EXTERIOR_EDGE_MIP_BIAS_MAX)
 
 
 def _metal_shader_source() -> str:
@@ -247,23 +203,7 @@ kernel void opticalShellWarp(
         0.0f,
         {_WARP_ALIAS_MIP_BIAS_MAX}f
     );
-    float exteriorEdgeT = clamp(capsuleSdf / max(bleedZone, 1e-4f), 0.0f, 1.0f);
-    float exteriorRampIn = smoothstep(
-        {_WARP_EXTERIOR_EDGE_MIP_START_FRAC}f,
-        {_WARP_EXTERIOR_EDGE_MIP_PEAK_FRAC}f,
-        exteriorEdgeT
-    );
-    float exteriorRampOut = 1.0f - smoothstep(
-        {_WARP_EXTERIOR_EDGE_MIP_PEAK_FRAC}f,
-        {_WARP_EXTERIOR_EDGE_MIP_FADE_FRAC}f,
-        exteriorEdgeT
-    );
-    float exteriorEdgeZone = max(exteriorRampIn * exteriorRampOut, 0.0f);
-    float exteriorEdgeBias = capsuleSdf > 0.0f
-        ? exteriorEdgeZone * min(warpAliasBias / max({_WARP_ALIAS_MIP_BIAS_MAX}f, 1e-4f), 1.0f)
-            * {_WARP_EXTERIOR_EDGE_MIP_BIAS_MAX}f
-        : 0.0f;
-    float mipLod = clamp(baseMipLod + warpAliasBias + exteriorEdgeBias, 0.0f, 6.0f);
+    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 warpedColor;
