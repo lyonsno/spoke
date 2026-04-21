@@ -912,6 +912,10 @@ def _normalize_match_text_with_map(text: str) -> tuple[str, list[int]]:
             normalized_parts.append("\n")
             position_map.append(raw_pos)
 
+    if text and not text.endswith(("\n", "\r")):
+        normalized_parts.append("\n")
+        position_map.append(raw_pos)
+
     return "".join(normalized_parts), position_map
 
 
@@ -922,6 +926,12 @@ def _normalize_match_text(text: str) -> str:
 
 def _apply_newline_style(text: str, newline_style: str) -> str:
     return text.replace("\n", newline_style)
+
+
+def _canonicalize_final_newline(text: str, newline_style: str) -> str:
+    if not text:
+        return text
+    return text.rstrip("\r\n") + newline_style
 
 
 def _execute_edit_file(arguments: dict) -> dict[str, Any]:
@@ -986,6 +996,7 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         newline_style = _preferred_newline_style(raw_content)
         replacement = _apply_newline_style(normalized_new, newline_style)
         updated = raw_content[:raw_start] + replacement + raw_content[raw_end:]
+        updated = _canonicalize_final_newline(updated, newline_style)
         with open(file_path, "w", encoding="utf-8", newline="") as f:
             f.write(updated)
         return {

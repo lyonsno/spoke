@@ -1046,6 +1046,24 @@ class TestExecuteToolIntegration:
         assert parsed.get("match_count") == 1
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
+    def test_execute_edit_file_canonicalizes_final_newline(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-no-final-newline.txt"
+        f.write_text("alpha\nbeta\ngamma", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "gamma\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("match_count") == 1
+        assert f.read_text(encoding="utf-8") == "alpha\nbeta\ndelta\n"
+
     def test_execute_search_file_real(self, tmp_path):
         mod = _import_tools()
         d = tmp_path / "src"
