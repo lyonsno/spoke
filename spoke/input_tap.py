@@ -185,6 +185,10 @@ class SpacebarHoldDetector(NSObject):
         # Tracks whether the command overlay is visible — used by the
         # delegate for toggle logic but no longer drives event suppression.
         self.command_overlay_active = False
+        # Tracks whether a host-side approval card is active on the command
+        # surface. When True, quick taps route to approval/cancel rather than
+        # forwarding a literal space to the foreground app.
+        self.approval_active = False
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -405,6 +409,12 @@ class SpacebarHoldDetector(NSObject):
             if enter_held:
                 # Space released while Enter held = assistant send path
                 self._on_hold_end(shift_held=False, enter_held=True)
+            elif getattr(self, 'approval_active', False):
+                self._on_hold_end(
+                    shift_held=shift_held,
+                    enter_held=False,
+                    approval_tap=True,
+                )
             elif getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.

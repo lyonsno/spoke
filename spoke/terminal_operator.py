@@ -9,6 +9,7 @@ without invoking a shell.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -171,6 +172,7 @@ class TerminalOperator:
         *,
         cwd: str | None = None,
         timeout_seconds: Any = _DEFAULT_TIMEOUT_SECONDS,
+        approval_granted: bool = False,
     ) -> dict[str, Any]:
         normalized_cwd = self._resolve_cwd(cwd)
         normalized_timeout = self._normalize_timeout(timeout_seconds)
@@ -184,7 +186,17 @@ class TerminalOperator:
         }
         if reason:
             result["reason"] = reason
-        if decision != "allow":
+        if decision == "approval_required" and not approval_granted:
+            result["pending_approval"] = True
+            result["approval_request"] = {
+                "kind": "terminal_command",
+                "argv": list(argv) if isinstance(argv, list) else argv,
+                "cwd": normalized_cwd,
+                "reason": reason,
+                "message": self._format_approval_message(argv, normalized_cwd, reason),
+            }
+            return result
+        if decision != "allow" and not (decision == "approval_required" and approval_granted):
             return result
 
         normalized_argv = self._normalized_argv(argv)
@@ -192,7 +204,10 @@ class TerminalOperator:
         resolved_executable = self._resolve_executable(executable_name)
         execution_argv = list(argv)
         execution_argv[0] = resolved_executable
+        result["decision"] = "allow"
         result["executed"] = True
+        if approval_granted:
+            result["approved_by_user"] = True
         try:
             proc = subprocess.run(
                 execution_argv,
@@ -233,6 +248,28 @@ class TerminalOperator:
             }
         )
         return result
+
+    def _format_approval_message(self, argv: Any, cwd: str, reason: str | None) -> str:
+        command_text = self._display_command(argv)
+        lines = [
+            "Approval needed",
+            "",
+            command_text,
+            f"cwd: {cwd}",
+        ]
+        if reason:
+            lines.append(f"reason: {reason}")
+        lines.extend(
+            [
+                "",
+                "space to run  ·  shift to cancel  ·  speak or type to revise",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _display_command(self, argv: Any) -> str:
+        normalized = self._normalized_argv(argv)
+        return shlex.join(normalized)
 
     def _resolve_cwd(self, cwd: str | None) -> str:
         raw = (cwd or "").strip()

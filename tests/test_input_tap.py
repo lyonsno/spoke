@@ -939,6 +939,44 @@ class TestTrayAwareness:
         assert result_up is None
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
+    def test_approval_spacebar_tap_calls_hold_end_not_forward(
+        self, input_tap_module
+    ):
+        """During pending approval, quick spacebar tap should route through on_hold_end."""
+        mod = input_tap_module
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.approval_active = True
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        result = det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        assert result is True
+        on_end.assert_called_once_with(
+            shift_held=False,
+            enter_held=False,
+            approval_tap=True,
+        )
+
+    def test_approval_shift_spacebar_tap_routes_cancel(
+        self, input_tap_module
+    ):
+        """Shift+space during pending approval should route as a cancel tap."""
+        mod = input_tap_module
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.approval_active = True
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, mod.kCGEventFlagMaskShift)
+        result = det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=mod.kCGEventFlagMaskShift)
+
+        assert result is True
+        on_end.assert_called_once_with(
+            shift_held=True,
+            enter_held=False,
+            approval_tap=True,
+        )
+
     def test_tray_shift_hold_then_shift_release_stays_tray_native(
         self, input_tap_module
     ):

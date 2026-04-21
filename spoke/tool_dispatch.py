@@ -814,7 +814,7 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
-def _execute_run_terminal_command(arguments: dict) -> str:
+def _execute_run_terminal_command(arguments: dict, *, approval_granted: bool = False) -> str:
     """Execute the bounded terminal command surface and return JSON."""
     argv = arguments.get("argv")
     cwd = arguments.get("cwd")
@@ -826,6 +826,7 @@ def _execute_run_terminal_command(arguments: dict) -> str:
                 argv,
                 cwd=cwd,
                 timeout_seconds=timeout_seconds,
+                approval_granted=approval_granted,
             )
         )
     except TerminalOperatorError as exc:
@@ -842,6 +843,7 @@ def execute_tool(
     tts_client: Any | None = None,
     tray_writer: Callable[[str], Any] | None = None,
     tool_output_mode: str = "text",
+    approval_granted: bool = False,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.
 
@@ -919,6 +921,9 @@ def execute_tool(
     elif name == "query_gmail":
         return _execute_query_gmail(arguments)
     elif name == "run_terminal_command":
-        return _execute_run_terminal_command(arguments)
+        return _execute_run_terminal_command(
+            arguments,
+            approval_granted=approval_granted,
+        )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

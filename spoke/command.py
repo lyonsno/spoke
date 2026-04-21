@@ -182,10 +182,29 @@ _SYSTEM_PROMPT = (
 class CommandStreamEvent:
     """Semantic event emitted while streaming a command response."""
 
-    kind: Literal["assistant_delta", "assistant_final", "tool_call", "thinking_delta"]
+    kind: Literal[
+        "assistant_delta",
+        "assistant_final",
+        "tool_call",
+        "thinking_delta",
+        "approval_request",
+    ]
     text: str = ""
     tool_name: str | None = None
     tool_arguments: str | None = None
+    approval_request: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PendingToolApproval:
+    """Paused tool-call turn waiting for a host-side user approval gesture."""
+
+    utterance: str
+    messages: list[dict[str, Any]]
+    call: dict[str, Any]
+    remaining_calls: list[dict[str, Any]]
+    round_index: int
+    tools: list[dict] | None
 
 
 class CommandClient:
@@ -232,6 +251,7 @@ class CommandClient:
         # Ring buffer: list of (user_utterance, assistant_response) pairs
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
         self._history: list[tuple[str, str]] = self._load_history()
+        self._pending_tool_approval: PendingToolApproval | None = None
 
     def _load_history(self) -> list[tuple[str, str]]:
         """Load persisted history from disk, or return empty list."""
@@ -322,15 +342,117 @@ class CommandClient:
         tool_executor: Callable[..., Any],
     ) -> bool:
         """Whether tool_executor accepts the tool_output_mode kwarg."""
+        return self._tool_executor_supports_kwarg(tool_executor, "tool_output_mode")
+
+    def _tool_executor_supports_kwarg(
+        self,
+        tool_executor: Callable[..., Any],
+        kwarg_name: str,
+    ) -> bool:
+        """Whether tool_executor accepts a specific keyword argument."""
         try:
             signature = inspect.signature(tool_executor)
         except (TypeError, ValueError):
             return True
         return any(
             param.kind is inspect.Parameter.VAR_KEYWORD
-            or param.name == "tool_output_mode"
+            or param.name == kwarg_name
             for param in signature.parameters.values()
         )
+
+    def _invoke_tool_call(
+        self,
+        call: dict[str, Any],
+        *,
+        tool_executor: Callable[..., Any],
+        approval_granted: bool = False,
+    ) -> Any:
+        fn_name = call["function"]["name"]
+        try:
+            fn_args = json.loads(call["function"]["arguments"])
+        except json.JSONDecodeError:
+            fn_args = {}
+
+        logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
+        tool_kwargs: dict[str, Any] = {
+            "name": fn_name,
+            "arguments": fn_args,
+        }
+        if self._tool_executor_supports_output_mode(tool_executor):
+            tool_kwargs["tool_output_mode"] = (
+                "multimodal"
+                if self._supports_multimodal_tool_content()
+                else "text"
+            )
+        if approval_granted and self._tool_executor_supports_kwarg(
+            tool_executor, "approval_granted"
+        ):
+            tool_kwargs["approval_granted"] = True
+        return tool_executor(**tool_kwargs)
+
+    def _is_pending_approval_result(self, tool_result: Any) -> bool:
+        return (
+            isinstance(tool_result, dict)
+            and bool(tool_result.get("pending_approval"))
+            and isinstance(tool_result.get("approval_request"), dict)
+        )
+
+    def _append_history(self, utterance: str, response: str) -> None:
+        self._history.append((utterance, response))
+        if len(self._history) > self._max_history:
+            self._history.pop(0)
+        self._save_history()
+
+    def _execute_tool_calls(
+        self,
+        *,
+        utterance: str,
+        messages: list[dict[str, Any]],
+        completed_calls: list[dict[str, Any]],
+        tool_executor: Callable[..., Any],
+        round_index: int,
+        tools: list[dict] | None,
+        approval_granted_call_id: str | None = None,
+    ) -> Generator[CommandStreamEvent, None, tuple[list[dict[str, Any]], bool]]:
+        for idx, call in enumerate(completed_calls):
+            tool_result = self._invoke_tool_call(
+                call,
+                tool_executor=tool_executor,
+                approval_granted=(approval_granted_call_id == call["id"]),
+            )
+            if self._is_pending_approval_result(tool_result):
+                approval_request = tool_result["approval_request"]
+                self._pending_tool_approval = PendingToolApproval(
+                    utterance=utterance,
+                    messages=list(messages),
+                    call=call,
+                    remaining_calls=completed_calls[idx + 1:],
+                    round_index=round_index,
+                    tools=tools,
+                )
+                yield CommandStreamEvent(
+                    kind="approval_request",
+                    text=approval_request.get("message", "Approval needed"),
+                    approval_request=approval_request,
+                )
+                return messages, True
+
+            tool_content, tool_preview = self._normalize_tool_result(tool_result)
+            logger.info(
+                "Tool %s result: %d chars (preview: %s)",
+                call["function"]["name"],
+                len(tool_preview),
+                tool_preview[:200],
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": tool_content,
+                }
+            )
+
+        return messages, False
 
     def stream_command(
         self,
@@ -391,7 +513,11 @@ class CommandClient:
             Final canonical assistant text that should be treated as durable.
         tool_call:
             Completed function call emitted by the model for the current round.
+        approval_request:
+            Host-side approval is required before the exact pending tool call
+            can be replayed and the assistant turn may continue.
         """
+        self._pending_tool_approval = None
         messages = self._build_messages(utterance)
         full_response = ""
         visible_response = ""
@@ -677,39 +803,16 @@ class CommandClient:
                     "tool_calls": completed_calls,
                 })
 
-                # Execute each tool and add results
-                for call in completed_calls:
-                    fn_name = call["function"]["name"]
-                    try:
-                        fn_args = json.loads(call["function"]["arguments"])
-                    except json.JSONDecodeError:
-                        fn_args = {}
-
-                    logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
-                    tool_kwargs: dict[str, Any] = {
-                        "name": fn_name,
-                        "arguments": fn_args,
-                    }
-                    if self._tool_executor_supports_output_mode(tool_executor):
-                        tool_kwargs["tool_output_mode"] = (
-                            "multimodal"
-                            if self._supports_multimodal_tool_content()
-                            else "text"
-                        )
-                    tool_result = tool_executor(
-                        **tool_kwargs,
-                    )
-                    tool_content, tool_preview = self._normalize_tool_result(tool_result)
-                    logger.info(
-                        "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_preview), tool_preview[:200],
-                    )
-
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "content": tool_content,
-                    })
+                messages, paused_for_approval = yield from self._execute_tool_calls(
+                    utterance=utterance,
+                    messages=messages,
+                    completed_calls=completed_calls,
+                    tool_executor=tool_executor,
+                    round_index=_round,
+                    tools=tools,
+                )
+                if paused_for_approval:
+                    return full_response
 
                 logger.info(
                     "Sending tool results back to model (round %d, %d messages total)",
@@ -724,12 +827,215 @@ class CommandClient:
             break
 
         # Add to ring buffer (content only, no reasoning)
-        self._history.append((utterance, visible_response or full_response))
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
-        self._save_history()
+        self._append_history(utterance, visible_response or full_response)
 
         return full_response
+
+    def approve_pending_tool_call(
+        self,
+        *,
+        tool_executor: Callable[..., Any],
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Generator[CommandStreamEvent, None, str]:
+        """Resume a paused tool-call turn after the user approved the pending call."""
+        pending = self._pending_tool_approval
+        if pending is None:
+            raise RuntimeError("No pending tool approval to resume")
+
+        self._pending_tool_approval = None
+        messages = list(pending.messages)
+        completed_calls = [pending.call, *pending.remaining_calls]
+        messages, paused_for_approval = yield from self._execute_tool_calls(
+            utterance=pending.utterance,
+            messages=messages,
+            completed_calls=completed_calls,
+            tool_executor=tool_executor,
+            round_index=pending.round_index,
+            tools=pending.tools,
+            approval_granted_call_id=pending.call["id"],
+        )
+        if paused_for_approval:
+            return ""
+
+        full_response = ""
+        visible_response = ""
+        max_tool_rounds = 20
+        for _round in range(pending.round_index + 1, max_tool_rounds + 1):
+            body: dict[str, Any] = {
+                "model": self._model,
+                "messages": messages,
+                "stream": True,
+            }
+            if self._enable_thinking and self._is_openrouter:
+                body["reasoning"] = {"enabled": True}
+            if not self._enable_thinking:
+                body["chat_template_kwargs"] = {"enable_thinking": False}
+            if pending.tools:
+                body["tools"] = pending.tools
+
+            payload = json.dumps(body).encode()
+            headers = {"Content-Type": "application/json"}
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            url = (
+                f"{self._base_url}/chat/completions"
+                if self._url_has_version_prefix
+                else f"{self._base_url}/v1/chat/completions"
+            )
+            req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+            from spoke.tool_dispatch import ToolCallAccumulator
+
+            tool_call_acc = ToolCallAccumulator()
+            emitted_tool_call_indices: set[int] = set()
+            finish_reason = None
+            round_content = ""
+            thinking_state = "detect"
+            thinking_tag_buf = ""
+
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                for raw_line in resp:
+                    if cancel_check is not None and cancel_check():
+                        resp.close()
+                        break
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(": ") or not line.startswith("data: "):
+                        continue
+                    data_str = line[len("data: "):]
+                    if data_str == "[DONE]":
+                        break
+                    chunk = json.loads(data_str)
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta", {})
+                    fr = choice.get("finish_reason")
+                    if fr:
+                        finish_reason = fr
+
+                    for reasoning_token in _extract_reasoning_tokens(delta):
+                        yield CommandStreamEvent(
+                            kind="thinking_delta",
+                            text=reasoning_token,
+                        )
+
+                    token = delta.get("content")
+                    if token is not None:
+                        text_to_process = token
+                        if thinking_state == "detect":
+                            thinking_tag_buf += text_to_process
+                            if thinking_tag_buf.startswith("<think>"):
+                                thinking_state = "thinking"
+                                text_to_process = thinking_tag_buf[len("<think>"):]
+                                thinking_tag_buf = ""
+                                if not text_to_process:
+                                    continue
+                            elif len(thinking_tag_buf) < len("<think>") and "<think>".startswith(thinking_tag_buf):
+                                continue
+                            else:
+                                thinking_state = "content"
+                                text_to_process = thinking_tag_buf
+                                thinking_tag_buf = ""
+
+                        if thinking_state == "thinking":
+                            combined = thinking_tag_buf + text_to_process
+                            thinking_tag_buf = ""
+                            close_idx = combined.find("</think>")
+                            if close_idx >= 0:
+                                before = combined[:close_idx]
+                                after = combined[close_idx + len("</think>"):]
+                                if before:
+                                    yield CommandStreamEvent(kind="thinking_delta", text=before)
+                                thinking_state = "content"
+                                if after:
+                                    text_to_process = after
+                                else:
+                                    continue
+                            else:
+                                for k in range(min(len("</think>"), len(combined)), 0, -1):
+                                    if combined.endswith("</think>"[:k]):
+                                        thinking_tag_buf = combined[-k:]
+                                        combined = combined[:-k]
+                                        break
+                                if combined:
+                                    yield CommandStreamEvent(kind="thinking_delta", text=combined)
+                                continue
+
+                        round_content += text_to_process
+                        visible_response += text_to_process
+                        yield CommandStreamEvent(kind="assistant_delta", text=text_to_process)
+
+                    tool_calls_delta = delta.get("tool_calls")
+                    if tool_calls_delta:
+                        for tc_delta in tool_calls_delta:
+                            tool_call_acc.feed(tc_delta)
+                            idx = tc_delta.get("index")
+                            function_delta = tc_delta.get("function") or {}
+                            tool_name = function_delta.get("name")
+                            if not tool_name or idx is None or idx in emitted_tool_call_indices:
+                                continue
+                            indicator = f"\n[calling {tool_name}…]\n"
+                            round_content += indicator
+                            visible_response += indicator
+                            yield CommandStreamEvent(kind="assistant_delta", text=indicator)
+                            emitted_tool_call_indices.add(idx)
+                            yield CommandStreamEvent(
+                                kind="tool_call",
+                                tool_name=tool_name,
+                                tool_arguments=function_delta.get("arguments"),
+                            )
+
+            has_tool_calls = tool_call_acc.has_calls and tool_executor is not None
+            if has_tool_calls and finish_reason != "tool_calls":
+                logger.warning(
+                    "Model emitted tool call deltas but finish_reason=%r "
+                    "(expected 'tool_calls') — executing anyway",
+                    finish_reason,
+                )
+            if has_tool_calls and cancel_check is not None and cancel_check():
+                full_response = visible_response or round_content
+                yield CommandStreamEvent(kind="assistant_final", text=full_response)
+                break
+            if has_tool_calls:
+                completed_calls = tool_call_acc.finish()
+                for idx, call in enumerate(completed_calls):
+                    if idx in emitted_tool_call_indices:
+                        continue
+                    yield CommandStreamEvent(
+                        kind="tool_call",
+                        tool_name=call["function"]["name"],
+                        tool_arguments=call["function"]["arguments"],
+                    )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": round_content or None,
+                        "tool_calls": completed_calls,
+                    }
+                )
+                messages, paused_for_approval = yield from self._execute_tool_calls(
+                    utterance=pending.utterance,
+                    messages=messages,
+                    completed_calls=completed_calls,
+                    tool_executor=tool_executor,
+                    round_index=_round,
+                    tools=pending.tools,
+                )
+                if paused_for_approval:
+                    return full_response
+                continue
+
+            full_response = round_content
+            yield CommandStreamEvent(kind="assistant_final", text=full_response)
+            break
+
+        self._append_history(pending.utterance, visible_response or full_response)
+        return full_response
+
+    def cancel_pending_tool_call(self) -> None:
+        """Discard a paused tool-call turn without mutating history."""
+        self._pending_tool_approval = None
 
     def clear_history(self) -> None:
         """Clear the conversation ring buffer."""

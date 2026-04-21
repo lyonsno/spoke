@@ -1104,6 +1104,8 @@ class SpokeAppDelegate(NSObject):
         self._recovery_pending_retry_insert = None
         self._recovery_hold_active: bool = False
         self._recovery_retry_pending: bool = False
+        self._pending_command_approval_active: bool = False
+        self._pending_command_approval_request: dict | None = None
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -2093,6 +2095,7 @@ class SpokeAppDelegate(NSObject):
         self,
         shift_held: bool = False,
         enter_held: bool = False,
+        approval_tap: bool = False,
         **_kwargs,  # absorb legacy toggle_command_overlay from any remaining callers
     ) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
@@ -2102,6 +2105,14 @@ class SpokeAppDelegate(NSObject):
             )
             if not getattr(self, "_models_ready", True):
                 self._refresh_startup_status()
+            return
+
+        if approval_tap and getattr(self, "_pending_command_approval_active", False):
+            logger.info("Approval tap — shift=%s", shift_held)
+            if shift_held:
+                self._cancel_pending_command_approval()
+            else:
+                self._approve_pending_command()
             return
 
         # ── Tray intercept ──
@@ -2145,6 +2156,10 @@ class SpokeAppDelegate(NSObject):
             self._pre_stop_tail_wav = None
             self._pre_stop_segment_count = 0
         wav_bytes = self._capture.stop()
+
+        if wav_bytes and getattr(self, "_pending_command_approval_active", False):
+            logger.info("New utterance supersedes pending approval")
+            self._cancel_pending_command_approval(dismiss_overlay=False)
 
         # Short shift-hold (under 800ms of recording) = recall into tray
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
@@ -3076,6 +3091,16 @@ class SpokeAppDelegate(NSObject):
                     elif event.kind == "assistant_final":
                         if not full_response:
                             full_response = event.text
+                    elif event.kind == "approval_request":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandApprovalRequired:",
+                            {
+                                "token": token,
+                                "approval_request": event.approval_request,
+                            },
+                            False,
+                        )
+                        return
             except urllib.error.HTTPError as exc:
                 logger.exception("Command stream failed with HTTP error")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3265,6 +3290,16 @@ class SpokeAppDelegate(NSObject):
                 elif event.kind == "assistant_final":
                     if not full_response:
                         full_response = event.text
+                elif event.kind == "approval_request":
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandApprovalRequired:",
+                        {
+                            "token": token,
+                            "approval_request": event.approval_request,
+                        },
+                        False,
+                    )
+                    return
         except urllib.error.HTTPError as exc:
             logger.exception("Command stream failed with HTTP error")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3310,6 +3345,9 @@ class SpokeAppDelegate(NSObject):
         self._last_command_utterance = utterance
         self._last_command_response = ""
         self._command_streaming_text = ""
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
         # Hide the input overlay
         if self._overlay is not None:
             self._overlay.hide()
@@ -3382,6 +3420,9 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
         # Reset cancel spring if generation finishes while spring is winding
         self._cancel_spring_active = False
         self._detector.cancel_spring_active = False
@@ -3411,6 +3452,111 @@ class SpokeAppDelegate(NSObject):
         self._command_tool_used_tts = False
         if self._glow is not None:
             self._glow.hide()
+
+    def commandApprovalRequired_(self, payload: dict) -> None:
+        """Main thread: present a pending command approval card on the overlay."""
+        if payload["token"] != self._transcription_token:
+            return
+        approval_request = payload.get("approval_request") or {}
+        self._transcribing = False
+        self._pending_command_approval_active = True
+        self._pending_command_approval_request = approval_request
+        self._detector.approval_active = True
+        self._detector.command_overlay_active = True
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        overlay = self._command_overlay
+        if overlay is not None:
+            overlay.set_tool_active(False)
+            try:
+                overlay.set_response_text(approval_request.get("message", "Approval needed"))
+            except Exception:
+                logger.exception("Command overlay failed to apply approval text")
+            try:
+                overlay.finish()
+            except Exception:
+                logger.exception("Command overlay finish failed during approval presentation")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Approval needed")
+
+    def _approve_pending_command(self) -> None:
+        """Resume a paused command turn after the user approved the pending tool call."""
+        if (
+            not getattr(self, "_pending_command_approval_active", False)
+            or self._command_client is None
+        ):
+            return
+        self._transcribing = True
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
+        token = self._transcription_token
+        if self._menubar is not None:
+            self._menubar.set_status_text("Running approved command…")
+
+        def _resume():
+            full_response = ""
+            try:
+                for event in self._command_client.approve_pending_tool_call(
+                    tool_executor=self._make_tool_executor(),
+                    cancel_check=lambda: token != self._transcription_token,
+                ):
+                    if token != self._transcription_token:
+                        break
+                    if event.kind == "assistant_delta":
+                        full_response += event.text
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:", {"token": token, "text": event.text}, False
+                        )
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolEnd:", {"token": token}, False
+                        )
+                    elif event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:", {"token": token, "text": event.text}, False
+                        )
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolStart:", {"token": token}, False
+                        )
+                    elif event.kind == "assistant_final":
+                        if not full_response:
+                            full_response = event.text
+                    elif event.kind == "approval_request":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandApprovalRequired:",
+                            {
+                                "token": token,
+                                "approval_request": event.approval_request,
+                            },
+                            False,
+                        )
+                        return
+            except Exception:
+                logger.exception("Approved command resume failed")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandFailed:", {"token": token, "error": "Command failed"}, False
+                )
+                return
+
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandComplete:", {"token": token, "response": full_response}, False
+            )
+
+        threading.Thread(target=_resume, daemon=True).start()
+
+    def _cancel_pending_command_approval(self, *, dismiss_overlay: bool = True) -> None:
+        """Discard the current pending command approval request."""
+        self._transcribing = False
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
+        if self._command_client is not None:
+            self._command_client.cancel_pending_tool_call()
+        if dismiss_overlay and self._command_overlay is not None:
+            self._command_overlay.cancel_dismiss()
+            self._detector.command_overlay_active = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     def _on_tts_amplitude(self, rms: float) -> None:
         """Called from TTS thread — marshal to main thread."""
@@ -3450,6 +3596,9 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
         error = payload.get("error", "Unknown error")
         error_text = (
             "couldn't reach the model — try again in a moment"

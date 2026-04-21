@@ -3584,6 +3584,38 @@ class TestCommandCallbacks:
         d._command_overlay.set_response_text.assert_called_once_with("Done.")
         d._command_overlay.finish.assert_called_once()
 
+    def test_command_approval_required_shows_pending_approval_card(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandApprovalRequired_(
+            {
+                "token": 1,
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "commit", "-m", "x"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git commit -m",
+                    "message": "Approval needed\n\ngit commit -m x",
+                },
+            }
+        )
+
+        assert d._transcribing is False
+        assert d._pending_command_approval_active is True
+        assert d._detector.approval_active is True
+        assert d._detector.command_overlay_active is True
+        d._command_overlay.set_tool_active.assert_called_once_with(False)
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "Approval needed\n\ngit commit -m x"
+        )
+        d._command_overlay.finish.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_once_with("Approval needed")
+
     def test_command_complete_finish_failure_hides_glow(
         self, main_module, monkeypatch, caplog
     ):
@@ -3650,6 +3682,24 @@ class TestCommandCallbacks:
         built_tts.speak.assert_called_once_with("hello world")
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
+
+    def test_approval_tap_runs_pending_command(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._approve_pending_command = MagicMock()
+        d._pending_command_approval_active = True
+
+        d._on_hold_end(shift_held=False, enter_held=False, approval_tap=True)
+
+        d._approve_pending_command.assert_called_once_with()
+
+    def test_approval_shift_tap_cancels_pending_command(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._cancel_pending_command_approval = MagicMock()
+        d._pending_command_approval_active = True
+
+        d._on_hold_end(shift_held=True, enter_held=False, approval_tap=True)
+
+        d._cancel_pending_command_approval.assert_called_once_with()
 
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
