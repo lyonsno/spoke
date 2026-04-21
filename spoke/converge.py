@@ -130,31 +130,43 @@ class TurnCarver:
             self._thread.start()
 
     def _background_loop(self) -> None:
-        """Background thread: carve and embed pending utterances."""
+        """Background thread: dispatch carve and embed work concurrently.
+
+        OMLX batch parallel gives near-linear throughput scaling, so firing
+        multiple requests simultaneously is better than serializing them.
+        Each pending item gets its own thread; they all batch together on
+        the server side.
+        """
         while True:
-            utterance_to_carve = None
-            utterance_to_embed = None
+            work: list[tuple[str, str]] = []  # (kind, utterance)
 
             with self._lock:
-                if self._pending:
-                    utterance_to_carve = self._pending.pop(0)
-                if self._embed_pending:
-                    utterance_to_embed = self._embed_pending.pop(0)
+                while self._pending:
+                    work.append(("carve", self._pending.pop(0)))
+                while self._embed_pending:
+                    work.append(("embed", self._embed_pending.pop(0)))
 
-            if utterance_to_carve is None and utterance_to_embed is None:
+            if not work:
                 return
 
-            if utterance_to_carve:
-                try:
-                    self._carve_single(utterance_to_carve)
-                except Exception:
-                    logger.debug("Converge carve failed", exc_info=True)
+            # Fire all work items concurrently
+            threads: list[threading.Thread] = []
+            for kind, utterance in work:
+                fn = self._carve_single if kind == "carve" else self._embed_single
+                t = threading.Thread(target=self._safe_call, args=(fn, utterance), daemon=True)
+                t.start()
+                threads.append(t)
 
-            if utterance_to_embed:
-                try:
-                    self._embed_single(utterance_to_embed)
-                except Exception:
-                    logger.debug("Converge embed failed", exc_info=True)
+            # Wait for all to complete before checking for more work
+            for t in threads:
+                t.join(timeout=120)
+
+    @staticmethod
+    def _safe_call(fn, utterance: str) -> None:
+        try:
+            fn(utterance)
+        except Exception:
+            logger.debug("Converge %s failed", fn.__name__, exc_info=True)
 
     def _load_existing_attractors_context(self) -> str:
         """Build a compact summary of existing personal attractors for the prompt."""
