@@ -198,7 +198,7 @@ class TerminalOperator:
                 capture_output=True,
                 cwd=normalized_cwd,
                 env=self._execution_env(executable_name),
-                text=True,
+                text=False,
                 timeout=normalized_timeout,
             )
         except subprocess.TimeoutExpired as exc:
@@ -309,7 +309,9 @@ class TerminalOperator:
         return "approval_required", f"command requires approval: {' '.join(normalized_argv[:3])}"
 
     def _truncate(self, text: Any) -> tuple[str, bool]:
-        if not isinstance(text, str):
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", errors="replace")
+        elif not isinstance(text, str):
             if text is None:
                 return "", False
             text = str(text)
@@ -359,6 +361,8 @@ class TerminalOperator:
             if token in {"-f", "--file"}:
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: rg {token} {target}"
+            if token.startswith("-f") and token not in {"-f"} and not token.startswith("-f="):
+                return f"command requires approval: rg {token}"
             if token.startswith(("-f=", "--file=")):
                 return f"command requires approval: rg {token}"
             if token == "--ignore-file":
@@ -420,6 +424,9 @@ class TerminalOperator:
                 if token in {"-e", "--regexp", "-f", "--file"}:
                     pattern_supplied_by_flag = True
                     skip_next = True
+                    continue
+                if token.startswith("-f") and token not in {"-f"} and not token.startswith("-f="):
+                    pattern_supplied_by_flag = True
                     continue
                 if token in {"-g", "--glob", "--pre", "--pre-glob", "--ignore-file"}:
                     skip_next = True

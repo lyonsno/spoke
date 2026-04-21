@@ -26,6 +26,7 @@ class TestTerminalOperator:
         def fake_run(cmd, capture_output, cwd, text, timeout, env):
             assert cmd == ["/usr/bin/git", "status", "--short"]
             assert cwd == str(tmp_path)
+            assert text is False
             assert timeout == 12
             assert env["PATH"] == terminal_operator._EXECUTABLE_SEARCH_PATH
             assert env["GIT_CONFIG_GLOBAL"] == os.devnull
@@ -34,8 +35,8 @@ class TestTerminalOperator:
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
-                stdout=" M spoke/tool_dispatch.py\n",
-                stderr="",
+                stdout=b" M spoke/tool_dispatch.py\n",
+                stderr=b"",
             )
 
         with (
@@ -60,6 +61,32 @@ class TestTerminalOperator:
         assert result["stderr"] == ""
         assert result["stdout_truncated"] is False
         assert result["stderr_truncated"] is False
+
+    def test_execute_decodes_invalid_binary_output_without_crashing(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"\xff",
+                stderr=b"",
+            )
+
+        with (
+            patch("shutil.which", return_value="/bin/cat"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = TerminalOperator().execute_command(
+                ["cat", "README.md"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "allow"
+        assert result["executed"] is True
+        assert result["exit_code"] == 0
+        assert result["stdout"] == "\ufffd"
+        assert result["stderr"] == ""
 
     def test_execute_blocks_approval_required_command(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
@@ -358,6 +385,20 @@ class TestTerminalOperator:
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["rg", "--ignore-file", "/etc/passwd", "needle", "."],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_rg_attached_short_file_flag(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "-f/etc/passwd", "needle", "."],
                 cwd=str(tmp_path),
             )
 
