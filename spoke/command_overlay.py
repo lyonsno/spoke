@@ -2005,24 +2005,19 @@ class CommandOverlay(NSObject):
 
         try:
             from .overlay import _glow_fill_alpha
+            import numpy as np
 
             _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
-            # Include rounded brightness in cache key only when compositor
-            # is active — the interior floor adapts to brightness in that
-            # mode.  Rounded to 0.05 steps to avoid thrashing.
-            _b_key = round(getattr(self, '_brightness', 0.0) * 20) / 20 if _has_compositor else None
-            cache_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED, _has_compositor, _b_key)
-            cached = getattr(self, '_sdf_cache_key', None)
-            if cached == cache_key:
-                fill_alpha = self._cached_fill_alpha
-            else:
+
+            # ── Stage 1: geometry cache (SDF + derived fields) ──
+            # Pure function of overlay dimensions — never changes with
+            # brightness.  Only rebuilt on resize.
+            geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
+            if getattr(self, '_sdf_geom_key', None) != geom_key:
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                    import numpy as np
                     pw, ph = max(int(total_w), 1), max(int(total_h), 1)
                     xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
                     ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                    # Match the Metal shader's capsule geometry exactly:
-                    # cornerRadius = _OVERLAY_HEIGHT / 4, clamped to halfRect.y
                     half_w = width * 0.5
                     half_h = height * 0.5
                     corner_r = _OVERLAY_HEIGHT / 4.0
@@ -2032,55 +2027,69 @@ class CommandOverlay(NSObject):
                     spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
                     spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
                     sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+
+                    # Pre-compute geometry-derived fields (brightness-independent)
+                    inside_d = np.maximum(-sdf, 0.0)
+                    edge_ridge = np.exp(-((inside_d / (1.5 * scale)) ** 2.0)).astype(np.float32)
+                    # Raw interior curve (no floor) — `_glow_fill_alpha` with
+                    # floor=0 gives the pure exp(-sqrt) shape we'll rescale.
+                    raw_interior = np.exp(-np.sqrt(
+                        np.abs(sdf) / max(2.0 * scale, 1e-6)
+                    )).astype(np.float32)
+                    inside_mask = (sdf <= 0.0)
+
+                    feather_px = _OPTICAL_SHELL_FEATHER * scale
+                    ext_d = np.maximum(sdf, 0.0)
+                    sigma = feather_px / 3.0
+                    exterior = np.exp(-0.5 * (ext_d / sigma) ** 2.0).astype(np.float32)
+                    ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
+                    ext_exterior = (exterior * (0.13 * np.exp(-((ext_t / 0.30) ** 1.5)) + 0.007)).astype(np.float32)
+
+                    self._sdf_raw_interior = raw_interior
+                    self._sdf_edge_ridge = edge_ridge
+                    self._sdf_inside_mask = inside_mask
+                    self._sdf_ext_exterior = ext_exterior
                 else:
                     sdf = _overlay_rounded_rect_sdf(
                         total_w, total_h, width, height,
                         _OVERLAY_CORNER_RADIUS, scale,
                     )
-                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                    import numpy as np
-                    # Glow fill: interior floor adapts to brightness.
-                    # On light backgrounds the fill needs higher alpha
-                    # (less transparent trough) so the dark fill reads
-                    # as a strong surface, not a milky wash.
-                    _b = getattr(self, '_brightness', 0.0)
+                    # Non-compositor path: fill alpha is brightness-independent
+                    self._sdf_fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+
+                self._sdf_geom_key = geom_key
+                # Force appearance rebuild after geometry change
+                self._sdf_appearance_b = -1.0
+
+            # ── Stage 2: appearance (brightness-dependent fill alpha) ──
+            # Cheap scalar ops on cached geometry arrays.  Only rebuilds
+            # when brightness bucket changes (0.02 steps).
+            _b = getattr(self, '_brightness', 0.0)
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
+                _b_rounded = round(_b * 50) / 50  # 0.02 steps
+                if getattr(self, '_sdf_appearance_b', -1.0) != _b_rounded:
                     _ifloor = _lerp(0.55, 0.97, _clamp01(_b))
-                    interior = _glow_fill_alpha(sdf, width=2.0 * scale,
-                                                interior_floor=_ifloor)
-                    # Edge ridge: bright hairline at the boundary.
-                    # Narrow Gaussian (σ ≈ 3px at 2x), strong amplitude.
-                    inside_d = np.maximum(-sdf, 0.0)
-                    edge_ridge = np.exp(-((inside_d / (1.5 * scale)) ** 2.0))
+                    # Rescale raw interior curve to [_ifloor, 1.0] + edge ridge
+                    interior = (_ifloor + (1.0 - _ifloor) * self._sdf_raw_interior)
                     interior = np.clip(
-                        interior + edge_ridge * 0.50,
+                        interior + self._sdf_edge_ridge * 0.50,
                         0.0, 1.0,
                     ).astype(np.float32)
-
-                    # Exterior glow: soft atmospheric tail.
-                    # Gaussian falloff (σ = feather/3) gives a gentle fade
-                    # that avoids the crispy-edge look of super-Gaussian.
-                    feather_px = _OPTICAL_SHELL_FEATHER * scale
-                    ext_d = np.maximum(sdf, 0.0)
-                    sigma = feather_px / 3.0
-                    exterior = np.exp(-0.5 * (ext_d / sigma) ** 2.0).astype(np.float32)
-                    # Opacity envelope: starts at 0.18 at the edge, fades
-                    # to 0.01 floor over the full feather width.
-                    ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
-                    ext_opacity = 0.13 * np.exp(-((ext_t / 0.30) ** 1.5)) + 0.007
-                    fill_alpha = np.where(sdf <= 0.0, interior, exterior * ext_opacity)
-                else:
-                    fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
-                self._sdf_cache_key = cache_key
-                self._cached_fill_alpha = fill_alpha
-
-            if getattr(self, "_fullscreen_compositor", None) is not None:
-                bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(
-                    getattr(self, '_brightness', 0.0)
-                )
+                    fill_alpha = np.where(self._sdf_inside_mask, interior, self._sdf_ext_exterior)
+                    self._cached_fill_alpha = fill_alpha
+                    self._sdf_appearance_b = _b_rounded
+                fill_alpha = self._cached_fill_alpha
+            elif _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                fill_alpha = self._sdf_fallback_alpha
             else:
-                bg_r, bg_g, bg_b = _background_color_for_brightness(
-                    getattr(self, '_brightness', 0.0)
-                )
+                fill_alpha = getattr(self, '_sdf_fallback_alpha', None)
+                if fill_alpha is None:
+                    return
+
+            if _has_compositor:
+                bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(_b)
+            else:
+                bg_r, bg_g, bg_b = _background_color_for_brightness(_b)
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,
                 int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
@@ -2325,7 +2334,7 @@ class CommandOverlay(NSObject):
                 # Force fill image rebuild with compositor-specific
                 # colors and alpha profile (invalidate SDF + brightness
                 # caches so _apply_surface_theme triggers a full rebuild).
-                self._sdf_cache_key = None
+                self._sdf_appearance_b = -1.0
                 self._fill_image_brightness = -1.0
                 self._apply_surface_theme()
                 logger.info("Command overlay: full-screen compositor started")
