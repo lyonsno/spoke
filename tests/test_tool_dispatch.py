@@ -1020,7 +1020,11 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
         assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == original
 
     def test_execute_edit_file_normalizes_line_endings_for_matching(self, tmp_path):

@@ -963,12 +963,6 @@ def _logical_line_count(text: str) -> int:
     return normalized.count("\n") + 1
 
 
-def _edited_range(raw_content: str, raw_start: int, replacement: str) -> dict[str, int]:
-    start_line = _line_number_for_offset(raw_content, raw_start)
-    end_line = start_line + _logical_line_count(replacement) - 1
-    return {"start_line": start_line, "end_line": end_line}
-
-
 def _edited_range_from_diff(old_text: str, new_text: str) -> dict[str, int]:
     old_lines = _normalize_newlines_for_counting(old_text).splitlines()
     new_lines = _normalize_newlines_for_counting(new_text).splitlines()
@@ -1307,17 +1301,15 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             "error": "old_string is required",
         }
     if not isinstance(new_string, str):
-        return {
-            "status": "error",
-            "applied": False,
-            "file": raw_path,
-            "file_path": raw_path,
-            "edited_range": None,
-            "normalization_applied": [],
-            "failure_reason": "malformed_request",
-            "match_count": 0,
-            "error": "new_string is required",
-        }
+        return _edit_result(
+            status="error",
+            file_path=raw_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error="new_string is required",
+        )
     if _contains_lazy_edit_placeholder(new_string):
         return _edit_result(
             status="error",
