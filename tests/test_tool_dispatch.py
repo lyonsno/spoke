@@ -961,7 +961,12 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") is None
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
     def test_execute_edit_file_not_found(self, tmp_path):
@@ -1251,7 +1256,12 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") is None
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 1, "end_line": 1}
         assert f.read_text(encoding="utf-8") == "delta  \nbeta\n"
 
     def test_execute_edit_file_does_not_strip_markdown_trailing_space_for_matching(self, tmp_path):
@@ -1270,7 +1280,11 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
         assert parsed.get("failure_reason") == "not_found"
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == original
 
     def test_execute_search_file_real(self, tmp_path):
