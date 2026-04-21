@@ -343,3 +343,64 @@ class TestSharedFullscreenCompositor:
             "ScreenCaptureKit so sample-buffer callbacks keep a live Python target."
         )
         assert compositor._stream_renderer_proxy is fake_stream.stream_output.renderer
+
+    def test_fullscreen_compositor_installs_stream_ownership_before_start_capture(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        sys.modules.pop("spoke.backdrop_stream", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        backdrop_mod = importlib.import_module("spoke.backdrop_stream")
+
+        compositor = object.__new__(mod.FullScreenCompositor)
+        compositor._screen = _FakeScreen()
+        compositor._pipeline = object()
+        compositor._window = _FakeWindow(88)
+        compositor._stream = None
+        compositor._stream_output = None
+        compositor._stream_renderer_proxy = None
+        compositor._stream_handler_queue = None
+        compositor._capture_content = None
+        compositor._capture_display = None
+        compositor._extra_excluded_ids = set()
+        compositor._excluded_windows = lambda content: []
+
+        fake_display = SimpleNamespace(frame=lambda: _make_rect(0.0, 0.0, 1728.0, 1117.0))
+        fake_content = SimpleNamespace(windows=lambda: [])
+        assertions = {}
+
+        class _AssertingBridgeStream(_FakeSCStream):
+            def startCaptureWithCompletionHandler_(self, completion):
+                assertions["stream_before_start"] = compositor._stream is self
+                assertions["output_before_start"] = compositor._stream_output is self.stream_output
+                assertions["renderer_before_start"] = (
+                    compositor._stream_renderer_proxy is self.stream_output.renderer
+                )
+                super().startCaptureWithCompletionHandler_(completion)
+
+        fake_stream = _AssertingBridgeStream.alloc().initWithFilter_configuration_delegate_(None, None, None)
+
+        monkeypatch.setattr(compositor, "_fetch_shareable_content", lambda bridge: fake_content)
+        monkeypatch.setattr(compositor, "_match_display", lambda content: fake_display)
+        monkeypatch.setattr(backdrop_mod, "_build_stream_output_class", lambda: None, raising=False)
+        monkeypatch.setattr(backdrop_mod, "_ScreenCaptureKitStreamOutput", _FakeCompositorOutput, raising=False)
+        monkeypatch.setattr(
+            mod,
+            "_load_screencapturekit_bridge",
+            lambda: {
+                "SCContentFilter": _FakeContentFilterFactory,
+                "SCStreamConfiguration": _FakeStreamConfiguration,
+                "SCStream": type("BridgeStream", (), {"alloc": classmethod(lambda cls: fake_stream)}),
+                "SCStreamOutputTypeScreen": 1,
+            },
+            raising=False,
+        )
+        monkeypatch.setattr(mod, "_make_stream_handler_queue", lambda name: f"queue:{name}", raising=False)
+
+        compositor._start_capture()
+
+        assert assertions == {
+            "stream_before_start": True,
+            "output_before_start": True,
+            "renderer_before_start": True,
+        }

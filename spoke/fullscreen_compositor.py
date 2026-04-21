@@ -653,6 +653,12 @@ class FullScreenCompositor:
         if not success:
             raise RuntimeError("addStreamOutput failed")
 
+        # Install long-lived ownership before capture starts so ScreenCaptureKit
+        # callbacks never race a dead Python target during startup.
+        self._stream = stream
+        self._stream_output = stream_output
+        self._stream_renderer_proxy = renderer_proxy
+
         started_event = threading.Event()
         started_result = {"error": None}
 
@@ -665,11 +671,10 @@ class FullScreenCompositor:
         started_event.wait(timeout=5.0)
 
         if started_result["error"] is not None:
+            self._stream = None
+            self._stream_output = None
+            self._stream_renderer_proxy = None
             raise RuntimeError(f"startCapture failed: {started_result['error']}")
-
-        self._stream = stream
-        self._stream_output = stream_output
-        self._stream_renderer_proxy = renderer_proxy
         logger.info("FullScreenCompositor: SCK capture started (%dx%d)", pixel_w, pixel_h)
 
     def _stop_capture(self):
