@@ -54,6 +54,16 @@ class TestCommandClient:
         from spoke.command import _SYSTEM_PROMPT
         assert "literal:<exact text to speak>" in _SYSTEM_PROMPT
 
+    def test_system_prompt_mentions_subagent_control_tools(self):
+        """The main operator prompt should describe the subagent control surface."""
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "launch_subagent" in _SYSTEM_PROMPT
+        assert "list_subagents" in _SYSTEM_PROMPT
+        assert "get_subagent_result" in _SYSTEM_PROMPT
+        assert "cancel_subagent" in _SYSTEM_PROMPT
+        assert "do not spin" in _SYSTEM_PROMPT.lower()
+
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""
         client = self._make_client()
@@ -128,6 +138,21 @@ class TestCommandClient:
         assert client._model == "env-model"
         assert client._api_key == "env-key"
         assert client._max_history == 20
+
+    def test_custom_system_prompt_override(self):
+        """Subagents should be able to supply a distinct system prompt."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="test-key",
+            history_path=None,
+            system_prompt="Custom prompt",
+        )
+
+        msgs = client._build_messages("hello world")
+        assert msgs[0] == {"role": "system", "content": "Custom prompt"}
 
     def test_config_kwargs_override_default(self, monkeypatch):
         """Explicit kwargs should take precedence over the built-in default."""

@@ -1621,6 +1621,18 @@ class CommandOverlay(NSObject):
 
     # ── layout ──────────────────────────────────────────────
 
+    def _reset_text_geometry(self, visible_height: float) -> None:
+        """Keep the document view and text container in sync with overlay size."""
+        if self._text_view is None:
+            return
+
+        doc_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, visible_height)
+        self._text_view.setFrame_(doc_frame)
+
+        container = self._text_view.textContainer()
+        if container is not None and hasattr(container, "setContainerSize_"):
+            container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -1657,6 +1669,7 @@ class CommandOverlay(NSObject):
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
 
+            self._reset_text_geometry(max(new_height - 16, text_height))
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')
                    else len(self._response_text))

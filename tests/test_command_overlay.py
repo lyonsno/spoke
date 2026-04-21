@@ -93,6 +93,14 @@ class _FakeLayoutManager:
         return _make_rect(0.0, 0.0, 0.0, self.height)
 
 
+class _FakeTextContainer:
+    def __init__(self):
+        self.size = None
+
+    def setContainerSize_(self, size):
+        self.size = size
+
+
 class TestThinkingTimer:
     """Test the thinking timer state machine."""
 
@@ -607,6 +615,26 @@ class TestGeometryCaps:
             mod._OVERLAY_WIDTH,
             pytest.approx(304.0),
         )
+
+    def test_update_layout_resets_text_geometry_to_match_visible_area(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        container = _FakeTextContainer()
+        overlay._text_view.textContainer.return_value = container
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        doc_frame = overlay._text_view.setFrame_.call_args[0][0]
+        assert doc_frame.size.width == pytest.approx(mod._OVERLAY_WIDTH - 24)
+        assert doc_frame.size.height == pytest.approx(304.0 - 16)
+        assert container.size == (mod._OVERLAY_WIDTH - 24, 1.0e7)
 
 
 class TestToolState:

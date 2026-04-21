@@ -129,6 +129,15 @@ _SYSTEM_PROMPT = (
     "- add_to_tray: saves text for later insertion or sending.\n"
     "- run_epistaxis_ops: bounded Epistaxis state operations in a dedicated worktree.\n"
     "- query_gmail: read-only Gmail search (same syntax as Gmail search bar, up to 10 results).\n"
+    "- launch_subagent: start a background operator-owned subagent job. "
+    "Current support is kind='search' for bounded local file/code search.\n"
+    "- list_subagents: inspect the currently known background subagent jobs.\n"
+    "- get_subagent_result: fetch status or final output for a specific subagent job.\n"
+    "- cancel_subagent: request cancellation for a running subagent job.\n"
+    "Subagents are asynchronous. After launch, do not spin on "
+    "get_subagent_result in a tight loop. If a job is queued or running, "
+    "continue the main conversation and check again later only when useful "
+    "or when the user asks.\n"
     "- compact_history: manage conversation context size. Modes: "
     "drop_tool_results (strip tool messages from oldest N turns), "
     "summarize (replace oldest N turns with your summary), "
@@ -166,6 +175,7 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
         history_path: Path | None | object = _SENTINEL,
+        system_prompt: str | None = None,
     ):
         raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
@@ -199,6 +209,7 @@ class CommandClient:
         # Each entry is the full sequence of messages for one turn:
         # [user, assistant, tool_result, assistant, ...] preserving
         # tool calls and results for multi-turn context.
+        self._system_prompt = system_prompt or _SYSTEM_PROMPT
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
         self._history: list[list[dict]] = self._load_history()
 
@@ -273,7 +284,7 @@ class CommandClient:
         Each history entry is a full message chain including tool calls
         and results from that turn.
         """
-        messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        messages: list[dict] = [{"role": "system", "content": self._system_prompt}]
         for chain in self._history:
             messages.extend(chain)
         messages.append({"role": "user", "content": utterance})
