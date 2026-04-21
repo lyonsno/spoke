@@ -326,19 +326,27 @@ class TurnCarver:
         )
 
     def _embed_single(self, utterance: str) -> None:
-        """Embed a single utterance and append to the rolling cache."""
-        import sys
-
+        """Embed a single utterance via OMLX /v1/embeddings and append to cache."""
         t0 = time.time()
 
-        # Lazy-load the embedding library
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
+        # Use OMLX's embeddings endpoint — same server, no in-process model load,
+        # no Metal race with the command model.
+        omlx_url = os.environ.get("SPOKE_OMLX_URL", "http://localhost:8001")
+        url = f"{omlx_url.rstrip('/')}/v1/embeddings"
+        payload = json.dumps({
+            "model": "Octen-Embedding-8B-mlx",
+            "input": utterance[:500],
+        }).encode("utf-8")
 
-        from converge_embed_lib import embed_texts
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
 
-        embedding = embed_texts([utterance])[0]  # (dim,)
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+
+        embedding = np.array(body["data"][0]["embedding"], dtype=np.float32)
         elapsed = time.time() - t0
 
         # Load existing cache, append, trim to max, save
