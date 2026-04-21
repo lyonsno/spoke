@@ -252,6 +252,23 @@ class TestTranscriptionToken:
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Error — try again")
 
+    def test_current_failure_surfaces_specific_error_when_present(
+        self, main_module, monkeypatch
+    ):
+        """A concrete finalization error should reach the menubar instead of generic text."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 7
+        d._transcribing = True
+
+        d.transcriptionFailed_(
+            {"token": 7, "error": "Local transcription timed out after bounded retries"}
+        )
+
+        assert d._transcribing is False
+        d._menubar.set_status_text.assert_called_with(
+            "Local transcription timed out after bounded retries"
+        )
+
     def test_empty_text_not_injected(self, main_module, monkeypatch):
         """Empty transcription result should not call inject_text."""
         d = _make_delegate(main_module, monkeypatch)
@@ -5015,6 +5032,41 @@ class TestSegmentAcceleratedTranscription:
         d._transcribe_worker(b"full_wav", token=1)
 
         d._client.transcribe.assert_called_once_with(b"full_wav")
+
+    def test_transcribe_worker_retries_local_whisper_after_initial_failure(
+        self, main_module, monkeypatch
+    ):
+        """Local Whisper finalization should retry from cached audio with bounded settings."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._transcribe_start = time.monotonic()
+        d._segment_accumulator = main_module.SegmentAccumulator()
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-large-v3-turbo",
+            decode_timeout=30.0,
+            eager_eval=False,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        attempts: list[tuple[float | None, bool]] = []
+
+        def fake_transcribe(self, wav_bytes):
+            attempts.append((self._decode_timeout, self._eager_eval))
+            if len(attempts) == 1:
+                raise TimeoutError("decode timed out")
+            return "recovered text"
+
+        monkeypatch.setattr(
+            main_module.LocalTranscriptionClient,
+            "transcribe",
+            fake_transcribe,
+            raising=False,
+        )
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "recovered text"
+        assert attempts == [(8.0, False), (8.0, True)]
 
     def test_hold_start_wires_segment_callback_for_sidecar(self, main_module, monkeypatch):
         """_on_hold_start should wire segment_callback when backend is sidecar."""

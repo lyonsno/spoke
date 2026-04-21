@@ -178,6 +178,7 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT = 8.0
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
@@ -2325,6 +2326,86 @@ class SpokeAppDelegate(NSObject):
         )
         return text
 
+    def _transcribe_full_buffer(self, wav_bytes: bytes, client=None) -> str:
+        """Run full-buffer transcription with bounded local-Whisper recovery."""
+        active_client = self._client if client is None else client
+        if isinstance(active_client, LocalTranscriptionClient):
+            return self._transcribe_local_whisper_with_recovery(wav_bytes, active_client)
+        with self._local_inference_context(active_client):
+            return active_client.transcribe(wav_bytes)
+
+    def _transcribe_local_whisper_with_recovery(
+        self, wav_bytes: bytes, client: LocalTranscriptionClient
+    ) -> str:
+        """Retry local Whisper finalization from cached audio with bounded settings."""
+        current_timeout = getattr(
+            client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        )
+        current_eager_eval = getattr(
+            client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
+        )
+        bounded_timeout = current_timeout
+        if (
+            bounded_timeout is None
+            or bounded_timeout > _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
+        ):
+            bounded_timeout = _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
+
+        attempts: list[tuple[str, float | None, bool]] = [
+            ("bounded-config", bounded_timeout, current_eager_eval),
+        ]
+        if supports_eager_eval():
+            attempts.append(("bounded-eager-eval", bounded_timeout, not current_eager_eval))
+
+        errors: list[str] = []
+        attempted_settings: set[tuple[float | None, bool]] = set()
+        for label, decode_timeout, eager_eval in attempts:
+            settings_key = (decode_timeout, eager_eval)
+            if settings_key in attempted_settings:
+                continue
+            attempted_settings.add(settings_key)
+
+            use_existing_client = (
+                client._decode_timeout == decode_timeout
+                and client._eager_eval == eager_eval
+            )
+            attempt_client = client
+            if not use_existing_client:
+                attempt_client = LocalTranscriptionClient(
+                    model=client._model,
+                    decode_timeout=decode_timeout,
+                    eager_eval=eager_eval,
+                )
+
+            attempt_failed = False
+            try:
+                with self._local_inference_context(attempt_client):
+                    return attempt_client.transcribe(wav_bytes)
+            except Exception as exc:
+                attempt_failed = True
+                errors.append(
+                    f"{label}[timeout={decode_timeout!r}, eager_eval={eager_eval}] {exc}"
+                )
+                logger.warning(
+                    "Local Whisper finalization failed via %s (timeout=%r, eager_eval=%s)",
+                    label,
+                    decode_timeout,
+                    eager_eval,
+                    exc_info=True,
+                )
+            finally:
+                if attempt_client is not client:
+                    close = getattr(attempt_client, "close", None)
+                    if callable(close):
+                        close()
+                elif attempt_failed:
+                    unload = getattr(attempt_client, "unload", None)
+                    if callable(unload):
+                        unload()
+
+        detail = "; ".join(errors) if errors else "no bounded local Whisper attempt ran"
+        raise RuntimeError(f"Local transcription timed out after bounded retries: {detail}")
+
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -2343,31 +2424,33 @@ class SpokeAppDelegate(NSObject):
             text = self._transcribe_segments_and_tail(wav_bytes)
             if text is None:
                 # Slow path: full-buffer transcription.
-                with self._local_inference_context(self._client):
-                    # If the preview client was streaming, finalize it for the final text
-                    # (this runs the tail refinement pass with the existing KV cache).
-                    if (
-                        release_cutover
-                        and getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
-                        cancel_stream = getattr(self._client, "cancel_stream", None)
-                        if callable(cancel_stream):
-                            cancel_stream()
-                        text = self._client.transcribe(wav_bytes)
-                    elif (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                # If the preview client was streaming, finalize it for the final text
+                # (this runs the tail refinement pass with the existing KV cache).
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._transcribe_full_buffer(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
-                    else:
-                        text = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    text = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "transcriptionFailed:", {"token": token}, False
+                "transcriptionFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -2392,29 +2475,31 @@ class SpokeAppDelegate(NSObject):
         try:
             text = self._transcribe_segments_and_tail(wav_bytes)
             if text is None:
-                with self._local_inference_context(self._client):
-                    if (
-                        release_cutover
-                        and getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
-                        cancel_stream = getattr(self._client, "cancel_stream", None)
-                        if callable(cancel_stream):
-                            cancel_stream()
-                        text = self._client.transcribe(wav_bytes)
-                    elif (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._transcribe_full_buffer(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
-                    else:
-                        text = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    text = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "parallelTranscriptionFailed:", {"token": token}, False
+                "parallelTranscriptionFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -2514,11 +2599,12 @@ class SpokeAppDelegate(NSObject):
             )
             self._inject_result_text(self._last_preview_text, "Pasted preview")
             return
-        logger.error("Transcription failed — no text injected")
+        error_text = payload.get("error") or "Error — try again"
+        logger.error("Transcription failed — no text injected: %s", error_text)
         if self._overlay is not None:
             self._overlay.hide()
         if not self._resume_handsfree_after_hold() and self._menubar is not None:
-            self._menubar.set_status_text("Error — try again")
+            self._menubar.set_status_text(error_text)
 
     def parallelTranscriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle failure on the parallel insert lane."""
@@ -2615,29 +2701,31 @@ class SpokeAppDelegate(NSObject):
             # Fast path: use cached segment transcriptions + tail only.
             text = self._transcribe_segments_and_tail(wav_bytes)
             if text is None:
-                with self._local_inference_context(self._client):
-                    if (
-                        release_cutover
-                        and getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
-                        cancel_stream = getattr(self._client, "cancel_stream", None)
-                        if callable(cancel_stream):
-                            cancel_stream()
-                        text = self._client.transcribe(wav_bytes)
-                    elif (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._transcribe_full_buffer(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
-                    else:
-                        text = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    text = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "trayTranscriptionFailed:", {"token": token}, False
+                "trayTranscriptionFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -2681,7 +2769,8 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Tray transcription failed — using preview text")
             self._enter_tray(self._last_preview_text)
             return
-        logger.error("Tray transcription failed — no text")
+        error_text = payload.get("error") or "Error — try again"
+        logger.error("Tray transcription failed — no text: %s", error_text)
         if self._overlay is not None:
             self._overlay.hide()
         if self._glow is not None:
@@ -2689,7 +2778,7 @@ class SpokeAppDelegate(NSObject):
         self._tray_active = False
         self._detector.tray_active = False
         if self._menubar is not None:
-            self._menubar.set_status_text("Error — try again")
+            self._menubar.set_status_text(error_text)
 
     def _enter_tray(self, text: str) -> None:
         """Enter the tray with new text, pushing it onto the stack."""
@@ -3201,19 +3290,21 @@ class SpokeAppDelegate(NSObject):
             # Fast path: use cached segment transcriptions + tail only.
             utterance = self._transcribe_segments_and_tail(wav_bytes)
             if utterance is None:
-                with self._local_inference_context(self._client):
-                    if (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                if (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         utterance = self._client.finish_stream()
-                    else:
-                        utterance = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    utterance = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "commandFailed:", {"token": token, "error": "Transcription failed"}, False
+                "commandFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
