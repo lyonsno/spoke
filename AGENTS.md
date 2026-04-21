@@ -19,6 +19,11 @@ restoring or removing a README note about a real capability, check
 For the current `spoke` contract, the public README is intentionally not the
 home for smoke-only runtime affordances or developer-only repair-pass notes.
 
+`spoke` also uses Topothesia for review-authority routing. Before treating
+drift between a main path and a fallback/compatibility path as a material
+regression, check `docs/review_surfaces.toml` and the routed canonical review
+surface first.
+
 ## Epistaxis Intent Model
 
 For `spoke`, do not treat `Repo/task` in `**Current intent**` as a single

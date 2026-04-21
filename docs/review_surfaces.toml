@@ -1,0 +1,16 @@
+[surfaces.optical_shell_renderer_authority]
+canonical_surface = "docs/review-authority-surfaces.md"
+authoritative_paths = ["spoke/metal_warp.py"]
+fallback_paths = ["spoke/backdrop_stream.py"]
+equivalence = "divergence_allowed_during_tuning"
+default_review_action = "design-pressure"
+reason = "Metal is the product-authoritative optical-shell tuning path. The CI/backdrop path remains a compatibility and fallback surface, so constant drift alone is not a material regression while tuning is still active."
+promote_when = "Promote to material only when an executable contract fails, the authoritative path regresses behavior, or the project explicitly re-declares the two renderers equivalent."
+revisit_when = "Revisit when the optical-shell tuning line reaches katastasis or when the CI/backdrop renderer becomes a co-equal production surface."
+canonical_markers = [
+  "Optical Shell Renderer Authority",
+  "spoke/metal_warp.py",
+  "spoke/backdrop_stream.py",
+  "design pressure",
+  "diverge during tuning",
+]
