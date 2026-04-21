@@ -1758,7 +1758,7 @@ class CommandOverlay(NSObject):
                     _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT,
                     t,
                 )
-                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL or getattr(self, "_fullscreen_compositor", None) is not None:
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
                     fill_min = 0.0
                     fill_max = 0.0
             else:

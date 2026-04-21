@@ -746,9 +746,9 @@ class TestAdaptiveCompositing:
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
-            assert mod._assistant_text_alpha_for_breath(0.0) == pytest.approx(0.75)
+            assert mod._assistant_text_alpha_for_breath(0.0) == pytest.approx(1.0)
             assert mod._assistant_text_alpha_for_breath(1.0) == pytest.approx(1.0)
-            assert mod.CommandOverlay._TTS_ALPHA_MIN == pytest.approx(0.75)
+            assert mod.CommandOverlay._TTS_ALPHA_MIN == pytest.approx(1.0)
             assert mod.CommandOverlay._TTS_ALPHA_MAX == pytest.approx(1.0)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
@@ -773,7 +773,8 @@ class TestAdaptiveCompositing:
             dark = mod._user_text_color_for_brightness(0.0)
             light = mod._user_text_color_for_brightness(1.0)
 
-            assert min(dark) > 0.9
+            # User text is now dark gray on both backgrounds
+            assert max(dark) < 0.25
             assert max(light) < 0.17
         finally:
             sys.modules.pop("spoke.command_overlay", None)
