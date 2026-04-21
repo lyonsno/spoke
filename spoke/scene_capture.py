@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 # ── Default configuration ────────────────────────────────────────
 
-# Linear scale factor for model-facing image (0.5 = half each dimension).
-_DEFAULT_SCALE = 0.5
+# Linear scale factor for model-facing image (1/3 keeps enough detail for VLMs
+# to read UI text reliably while cutting vision-token prefill ~9× vs full res).
+_DEFAULT_SCALE = 1.0 / 3.0
 
 # Minimum dimension (px) below which we skip downsampling.
 _MIN_DOWNSAMPLE_DIM = 800
@@ -75,6 +76,8 @@ class SceneCapture:
     ocr_text: str
     ocr_blocks: list[OCRBlock]
     ax_hints: list[AXHint]
+    model_image_path: str | None = None
+    model_image_media_type: str | None = None
 
 
 # ── Scene ref generation ─────────────────────────────────────────
@@ -270,6 +273,128 @@ def _ax_get_string(element, attr_name: bytes) -> str | None:
         _cf.CFRelease(attr)
 
 
+def _ax_get_element(element, attr_name: bytes):
+    """Get an AX element attribute. Caller must CFRelease the returned value."""
+    import ctypes
+
+    from spoke.focus_check import (
+        _cf,
+        _cfstr,
+        _hi,
+        _kAXErrorSuccess,
+    )
+
+    attr = _cfstr(attr_name)
+    if not attr:
+        return None
+    try:
+        value = ctypes.c_void_p()
+        err = _hi.AXUIElementCopyAttributeValue(element, attr, ctypes.byref(value))
+        if err != _kAXErrorSuccess or not value.value:
+            return None
+        return value
+    finally:
+        _cf.CFRelease(attr)
+
+
+def _ax_get_pid(element) -> int | None:
+    """Return the pid for an AX element, or None when unavailable."""
+    import ctypes
+
+    from spoke.focus_check import _hi, _kAXErrorSuccess
+
+    if _hi is None or not hasattr(_hi, "AXUIElementGetPid"):
+        return None
+
+    _hi.AXUIElementGetPid.restype = ctypes.c_int32
+    _hi.AXUIElementGetPid.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_int32),
+    ]
+
+    pid = ctypes.c_int32()
+    err = _hi.AXUIElementGetPid(element, ctypes.byref(pid))
+    if err != _kAXErrorSuccess:
+        return None
+    return int(pid.value)
+
+
+def _get_focused_window_hint() -> tuple[int | None, str | None] | None:
+    """Return (focused_app_pid, focused_window_title) from AX when available."""
+    from spoke.focus_check import _cf, _hi
+
+    if _cf is None or _hi is None:
+        return None
+
+    system_wide = _hi.AXUIElementCreateSystemWide()
+    if not system_wide:
+        return None
+
+    try:
+        focused_app = _ax_get_element(system_wide, b"AXFocusedApplication")
+        if not focused_app:
+            return None
+        try:
+            pid = _ax_get_pid(focused_app)
+            focused_window = _ax_get_element(focused_app, b"AXFocusedWindow")
+            try:
+                title = _ax_get_string(focused_window, b"AXTitle") if focused_window else None
+            finally:
+                if focused_window:
+                    _cf.CFRelease(focused_window)
+            return (pid, title)
+        finally:
+            _cf.CFRelease(focused_app)
+    finally:
+        _cf.CFRelease(system_wide)
+
+
+def _pick_target_window(
+    window_list: list,
+    *,
+    preferred_pid: int | None,
+    preferred_title: str | None,
+    fallback_pid: int | None,
+    my_pid: int,
+):
+    """Choose the best CG window candidate from front-to-back ordered windows."""
+
+    def _reasonable(win) -> bool:
+        bounds = win.get("kCGWindowBounds")
+        return bool(
+            bounds
+            and bounds.get("Height", 0) > 50
+            and bounds.get("Width", 0) > 50
+        )
+
+    def _for_pid(pid: int | None):
+        if pid is None:
+            return []
+        return [
+            win for win in window_list
+            if win.get("kCGWindowOwnerPID") == pid and _reasonable(win)
+        ]
+
+    candidates = _for_pid(preferred_pid)
+    if preferred_title:
+        for win in candidates:
+            if win.get("kCGWindowName") == preferred_title:
+                return win
+    if candidates:
+        return candidates[0]
+
+    fallback_candidates = _for_pid(fallback_pid)
+    if fallback_candidates:
+        return fallback_candidates[0]
+
+    for win in window_list:
+        win_pid = win.get("kCGWindowOwnerPID", 0)
+        if win_pid == my_pid or not _reasonable(win):
+            continue
+        return win
+    return None
+
+
 def _collect_ax_hints(scene_ref: str, timeout: float = _AX_TIMEOUT) -> list[AXHint]:
     """Collect shallow AX hints with a hard timeout.
 
@@ -324,7 +449,7 @@ def _downsample_size(
     if width <= _MIN_DOWNSAMPLE_DIM and height <= _MIN_DOWNSAMPLE_DIM:
         return (width, height)
 
-    return (int(width * scale), int(height * scale))
+    return (max(1, round(width * scale)), max(1, round(height * scale)))
 
 
 def _downsample_image(cg_image, scale: float = _DEFAULT_SCALE):
@@ -373,7 +498,7 @@ def _capture_active_window():
     Returns (cg_image, app_name, bundle_id, window_title) or None on failure.
     """
     try:
-        from AppKit import NSWorkspace
+        from AppKit import NSRunningApplication, NSWorkspace
         from Quartz import (
             CGRectNull,
             CGWindowListCopyWindowInfo,
@@ -394,18 +519,26 @@ def _capture_active_window():
             logger.debug("CGWindowListCopyWindowInfo returned empty")
             return None
 
-        # Try to identify the frontmost app via NSWorkspace
+        # Try to identify the frontmost app via NSWorkspace, but prefer AX
+        # focused-window hints when they exist because the workspace heuristic
+        # has a standing tendency to stick on WezTerm.
+        workspace_pid = None
         app_pid = None
         app_name = None
         bundle_id = None
         window_title = None
+        front_app_name = None
+        front_bundle_id = None
         try:
             workspace = NSWorkspace.sharedWorkspace()
             front_app = workspace.frontmostApplication()
             if front_app is not None:
-                app_pid = front_app.processIdentifier()
+                workspace_pid = front_app.processIdentifier()
+                app_pid = workspace_pid
                 app_name = front_app.localizedName()
                 bundle_id = front_app.bundleIdentifier()
+                front_app_name = app_name
+                front_bundle_id = bundle_id
                 logger.debug(
                     "Frontmost app: %s (pid=%s, bundle=%s)",
                     app_name, app_pid, bundle_id,
@@ -414,33 +547,25 @@ def _capture_active_window():
             logger.debug("NSWorkspace frontmost app lookup failed", exc_info=True)
 
         my_pid = os.getpid()
-        target_window = None
+        ax_pid = None
+        ax_title = None
+        try:
+            ax_hint = _get_focused_window_hint()
+            if ax_hint is not None:
+                ax_pid, ax_title = ax_hint
+        except Exception:
+            logger.debug("AX focused-window lookup failed", exc_info=True)
 
-        if app_pid is not None:
-            # Look for the frontmost app's main window
-            for win in window_list:
-                if win.get("kCGWindowOwnerPID") == app_pid:
-                    bounds = win.get("kCGWindowBounds")
-                    if bounds and bounds.get("Height", 0) > 50 and bounds.get("Width", 0) > 50:
-                        target_window = win
-                        break
+        if ax_pid is not None:
+            app_pid = ax_pid
 
-        if target_window is None:
-            # Fallback: pick the first on-screen window that isn't ours
-            # and has a reasonable size. The window list is front-to-back
-            # ordered, so this gets the topmost visible window.
-            logger.debug("PID-based lookup failed, falling back to first large window")
-            for win in window_list:
-                win_pid = win.get("kCGWindowOwnerPID", 0)
-                if win_pid == my_pid:
-                    continue
-                bounds = win.get("kCGWindowBounds")
-                if bounds and bounds.get("Height", 0) > 50 and bounds.get("Width", 0) > 50:
-                    target_window = win
-                    # Fill in app info from the window if we don't have it
-                    if app_name is None:
-                        app_name = win.get("kCGWindowOwnerName")
-                    break
+        target_window = _pick_target_window(
+            window_list,
+            preferred_pid=ax_pid,
+            preferred_title=ax_title,
+            fallback_pid=workspace_pid,
+            my_pid=my_pid,
+        )
 
         if target_window is None:
             logger.debug("No suitable window found in window list")
@@ -449,12 +574,43 @@ def _capture_active_window():
         window_id = target_window.get("kCGWindowNumber", 0)
         if not window_title:
             window_title = target_window.get("kCGWindowName")
-        if app_name is None:
-            app_name = target_window.get("kCGWindowOwnerName")
+        target_pid = target_window.get("kCGWindowOwnerPID")
+        target_app = None
+        if target_pid not in (None, workspace_pid):
+            try:
+                target_app = NSRunningApplication.runningApplicationWithProcessIdentifier_(
+                    target_pid
+                )
+            except Exception:
+                logger.debug(
+                    "NSRunningApplication lookup failed for pid=%s",
+                    target_pid,
+                    exc_info=True,
+                )
+        if target_app is not None:
+            app_name = target_app.localizedName() or target_window.get("kCGWindowOwnerName")
+            bundle_id = target_app.bundleIdentifier()
+        else:
+            app_name = target_window.get("kCGWindowOwnerName") or app_name
+        target_layer = target_window.get("kCGWindowLayer")
+        bounds = target_window.get("kCGWindowBounds") or {}
 
-        logger.debug(
-            "Capturing window %s: %s — %s",
-            window_id, app_name, window_title,
+        logger.info(
+            "capture_context: selected window id=%s owner_pid=%s owner=%r title=%r "
+            "layer=%s bounds=%sx%s workspace_pid=%s workspace_app=%r bundle=%r "
+            "ax_pid=%s ax_title=%r",
+            window_id,
+            target_pid,
+            app_name,
+            window_title,
+            target_layer,
+            bounds.get("Width"),
+            bounds.get("Height"),
+            workspace_pid,
+            front_app_name,
+            front_bundle_id,
+            ax_pid,
+            ax_title,
         )
 
         # Capture just this window
@@ -556,6 +712,8 @@ class SceneCaptureCache:
             try:
                 if os.path.exists(evicted.image_path):
                     os.remove(evicted.image_path)
+                if evicted.model_image_path and os.path.exists(evicted.model_image_path):
+                    os.remove(evicted.model_image_path)
             except OSError:
                 pass
             logger.debug("Evicted scene capture %s", evicted_ref)
@@ -619,6 +777,7 @@ def capture_context(
     scope: Literal["active_window", "screen"] = "active_window",
     cache: SceneCaptureCache | None = None,
     cache_dir: str | None = None,
+    skip_ocr: bool | None = None,
 ) -> SceneCapture | None:
     """Capture a scene and return a SceneCapture artifact.
 
@@ -664,13 +823,34 @@ def capture_context(
     if not _save_image(cg_image, image_path):
         logger.warning("Failed to save capture image")
         return None
+
+    model_image_path = os.path.join(cache_dir, f"{scene_ref}-model.png")
+    model_image_media_type = "image/png"
+    try:
+        model_image = _downsample_image(cg_image)
+        if not _save_image(model_image, model_image_path):
+            logger.warning("Failed to save model-facing capture image")
+            model_image_path = None
+            model_image_media_type = None
+    except Exception:
+        logger.warning("Failed to build model-facing capture image", exc_info=True)
+        model_image_path = None
+        model_image_media_type = None
     t_save = time.perf_counter()
     logger.info("capture_context: image save %.0fms", (t_save - t_capture) * 1000)
 
-    # OCR
-    ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
+    # OCR (skippable — when the model receives the image directly, OCR text
+    # is redundant and its latency + token cost can be avoided).
+    if skip_ocr is None:
+        skip_ocr = os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes")
+
+    if skip_ocr:
+        ocr_text, ocr_blocks = "", []
+        logger.info("capture_context: OCR skipped")
+    else:
+        ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
+        logger.info("capture_context: OCR %.0fms (%d blocks)", (time.perf_counter() - t_save) * 1000, len(ocr_blocks))
     t_ocr = time.perf_counter()
-    logger.info("capture_context: OCR %.0fms (%d blocks)", (t_ocr - t_save) * 1000, len(ocr_blocks))
 
     # AX hints (best-effort, with timeout)
     ax_hints = _collect_ax_hints(scene_ref)
@@ -690,6 +870,8 @@ def capture_context(
         ocr_text=ocr_text,
         ocr_blocks=ocr_blocks,
         ax_hints=ax_hints,
+        model_image_path=model_image_path,
+        model_image_media_type=model_image_media_type,
     )
 
     if cache is not None:

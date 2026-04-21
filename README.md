@@ -16,8 +16,9 @@ model state in
 
 - Dictate anywhere on the system and paste directly into the focused field
 - Fail open into a stacked tray when insertion cannot be verified or when you want review first
-- Use an assistant that can respond with streamed text, tools, screen context, local files, and Gmail
-- Show brief thinking and loading summaries while the assistant is still working
+- Use an assistant that can respond with streamed text, multimodal capture context, Brave Search, local files, Gmail, and background search subagents
+- Show a narrator-style thinking and loading surface while the assistant is still working
+- Compact long assistant histories so extended sessions can keep going without losing the thread
 - Keep recording hands-free with latched mode or wake words
 - Read results back through local, sidecar, or cloud TTS backends
 - Switch transcription, model, assistant, and TTS choices from the menubar and keep them across relaunches
@@ -120,7 +121,10 @@ chmod 600 ~/.config/spoke/secrets.env
 
 Then populate `~/.config/spoke/secrets.env` from your offline source of truth.
 That keeps secrets out of the repo while giving `spoke` a stable place to find
-cloud and wake-word credentials.
+cloud and wake-word credentials. If you want the assistant's Brave Search web
+lookup, add `BRAVE_SEARCH_API_KEY` there as well; `spoke` also honors
+`SPOKE_BRAVE_SEARCH_API_KEY`, but the provider-native variable is the shared
+default used across local tools.
 
 ## Run
 
@@ -165,8 +169,11 @@ For ordinary use, prefer the menus. The remaining environment variables are
 bootstrap, smoke-surface, or debugging overrides.
 
 When you invoke the assistant, it can work from more than just the transcribed
-utterance: it can inspect the frontmost screen, search and read local files,
-query Gmail, place results into the tray, and speak text back aloud when asked.
+utterance: it can inspect the frontmost screen through multimodal capture
+context, search the web through Brave Search, search locally through
+background subagents, search and read local files, query Gmail, compact older
+history when a session gets long, place results into the tray, and speak text
+back aloud when asked.
 
 ## Remote sidecars
 

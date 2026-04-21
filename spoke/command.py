@@ -8,6 +8,7 @@ conversational context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import re
 import uuid
 from typing import Any, Callable, Generator, Literal
 
+from pathlib import Path
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
@@ -96,34 +98,37 @@ def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
 
 _DEFAULT_COMMAND_URL = "http://localhost:8090"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
-_DEFAULT_RING_BUFFER_SIZE = 10
+_DEFAULT_RING_BUFFER_SIZE = 20
+_HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
+
+
+def _rough_tool_result_tokens(text: str) -> int:
+    """Approximate token count for a tool result."""
+    return int(len(text.split()) * 1.3)
 
 _SYSTEM_PROMPT = (
-    "Respond directly to the user's request. "
-    "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "
-    "'epistaxis/projects/spoke/epistaxis.md' or 'donttype/spoke/command.py'. "
-    "Key repos here include: spoke (this app — voice interface), omlx (local model server), "
-    "mlx-audio (TTS/ASR sidecar), epanorthosis (automated review), and epistaxis "
-    "(cross-session state and coordination).\n\n"
+    "'epistaxis/projects/spoke/epistaxis.md' or 'spoke/spoke/command.py'. "
+    "Key repos: spoke (this app), omlx (local model server), "
+    "mlx-audio (TTS/ASR sidecar), epanorthosis (automated review), epistaxis "
+    "(cross-session state and coordination), grapheus (inference traffic proxy).\n\n"
     "Epistaxis (~/dev/epistaxis/) is the user's durable off-repo state system. Layout:\n"
     "- projects/<repo>/epistaxis.md — per-repo status, lanes, scoped state\n"
     "- attractors/ — atomic units of work: stimulus, source, satisfaction condition\n"
-    "- policy/ — tool-specific policy files (claude/, codex/, gemini/, shared/)\n"
     "- system/epistaxis.md — global system state\n"
-    "- metadosis/ — shared mutable artifacts between lanes\n"
-    "- prs/<repo>/ — PR tracking per repo\n"
     "- sylloge/ — compressed thread→artifact summaries\n"
     "- autopoiesis/ — self-generated concept genesis and traces\n"
     "- auxesis/ — growth/capability emergence traces\n"
     "- machines/ — per-machine context\n"
     "- reviews/ — review artifacts\n"
-    "When the user references epistaxis state, use run_epistaxis_ops.\n\n"
+    "- metadosis/ — shared mutable artifacts between lanes\n"
+    "When the user references epistaxis state, use file tools or run_epistaxis_ops.\n\n"
     "You have tools to resolve exact text and act on it:\n"
     "- capture_context: captures the frontmost window and returns OCR text "
-    "blocks with refs. Use when the user refers to something visible on screen "
-    '(e.g. "read that", "what does this say", "read the tab title").\n'
+    "blocks with refs. On vision-capable backends it can also attach a "
+    "downscaled screenshot for direct visual inspection. Use when the user "
+    'refers to something visible on screen (e.g. "read that", "what does this say", "read the tab title").\n'
     "- read_aloud: resolves a source ref to exact text and speaks it via TTS. "
     "Pass block refs from capture_context directly (e.g., 'scene-abc:block-1'). "
     "Other ref formats: 'clipboard:current', 'selection:frontmost', "
@@ -136,6 +141,20 @@ _SYSTEM_PROMPT = (
     "Epistaxis review-ticket and pointer work in a dedicated Epistaxis "
     "worktree. Use it only for narrow Epistaxis state operations, never for "
     "arbitrary shell or general coding work.\n\n"
+    "You also have search_web: a bounded read-only public web search via "
+    "Brave Search for lightweight fact lookup (up to 10 results).\n\n"
+    "You also have launch_subagent, list_subagents, get_subagent_result, and "
+    "cancel_subagent for operator-owned background jobs. Current support is "
+    "kind='search' for bounded local file/code search. Subagents are "
+    "asynchronous. After launch, do not spin on get_subagent_result in a "
+    "tight loop. If a job is queued or running, continue the main conversation "
+    "and check again later only when useful or when the user asks.\n\n"
+    "You also have compact_history to reduce context size. Modes: "
+    "drop_tool_results (strip tool call/result messages from the oldest N "
+    "turns while keeping user and assistant text), summarize (replace the "
+    "oldest N turns with your summary), and guided (return attractor-aware "
+    "retention flags for the oldest N turns, then follow up with summarize "
+    "using those flags as a safety net).\n\n"
     "You also have query_gmail: a bounded read-only Gmail query tool. Pass "
     "a Gmail search query string (same syntax as the Gmail search bar) and "
     "get back sender, subject, date, and snippet for up to 10 matches. Use "
@@ -152,7 +171,8 @@ _SYSTEM_PROMPT = (
     "capture_context first, then read_aloud with a block ref. For selected text "
     "or the clipboard, use read_aloud directly with selection:frontmost or "
     "clipboard:current. For arbitrary phrases the user asks you to say, use "
-    "read_aloud with literal:<exact text>. Use add_to_tray when the user "
+    "read_aloud with literal:<exact text to speak>. Do not pretend read_aloud "
+    "is limited to visible text. Use add_to_tray when the user "
     "wants content kept for later use rather than spoken immediately.\n\n"
     "Named commands (MUST be executed via tool calls, NEVER as plain text):\n"
     "- WALLACE: This is a COMMAND, not a name. The user is NOT named Wallace. "
@@ -183,12 +203,16 @@ class CommandStreamEvent:
 class CommandClient:
     """Streaming chat client for voice commands via OMLX."""
 
+    _SENTINEL = object()
+
     def __init__(
         self,
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
         max_history: int | None = None,
+        history_path: Path | None | object = _SENTINEL,
+        system_prompt: str | None = None,
     ):
         raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
@@ -218,12 +242,97 @@ class CommandClient:
         )
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
-        # Ring buffer: list of (user_utterance, assistant_response) pairs
-        self._history: list[tuple[str, str]] = []
+        self._system_prompt = system_prompt or _SYSTEM_PROMPT
+        # Ring buffer: list of message chains (each a list[dict]).
+        # Each entry is the full sequence of messages for one turn:
+        # [user, assistant, tool_result, assistant, ...] preserving
+        # tool calls and results for multi-turn context.
+        self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
+        self._history: list[list[dict]] = self._load_history()
+
+    def _load_history(self) -> list[list[dict]]:
+        """Load persisted history from disk, or return empty list.
+
+        Handles migration from old format (list of [user_str, assistant_str]
+        pairs) to new format (list of message chains).
+        """
+        if self._history_path is None:
+            return []
+        try:
+            data = json.loads(self._history_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            converted = []
+            for entry in data:
+                if not isinstance(entry, list) or not entry:
+                    continue
+                if isinstance(entry[0], str):
+                    # Old format: ["user text", "assistant text"]
+                    chain = [{"role": "user", "content": entry[0]}]
+                    if len(entry) > 1 and entry[1]:
+                        chain.append({"role": "assistant", "content": entry[1]})
+                    converted.append(chain)
+                elif isinstance(entry[0], dict):
+                    # New format: list of message dicts
+                    converted.append(entry)
+            return converted
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return []
+
+    def _save_history(self) -> None:
+        """Persist current history to disk."""
+        if self._history_path is None:
+            return
+        self._history_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._history_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(self._history, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(self._history_path)
 
     @property
     def history(self) -> list[tuple[str, str]]:
-        return list(self._history)
+        """Backward-compatible pair view of the stored turn history."""
+        pairs: list[tuple[str, str]] = []
+        for chain in self._history:
+            user_text = ""
+            assistant_parts: list[str] = []
+            for message in chain:
+                role = message.get("role")
+                content = message.get("content")
+                if role == "user" and isinstance(content, str) and not user_text:
+                    user_text = content
+                elif role == "assistant" and isinstance(content, str) and content:
+                    assistant_parts.append(content)
+            pairs.append((user_text, "".join(assistant_parts)))
+        return pairs
+
+    def _normalized_history_turn(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize a turn before storing it in durable history."""
+        turn_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "assistant" and msg.get("content"):
+                cleaned = re.sub(
+                    r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL
+                ).strip()
+                msg = {**msg, "content": cleaned or None}
+            turn_messages.append(msg)
+        return turn_messages
+
+    def append_history_turn(self, messages: list[dict[str, Any]]) -> None:
+        """Append one normalized turn to the bounded history ring."""
+        self._history.append(self._normalized_history_turn(messages))
+        if len(self._history) > self._max_history:
+            self._history.pop(0)
+        self._save_history()
+
+    def append_history_pair(self, user_text: str, assistant_text: str) -> None:
+        """Append a minimal user/assistant exchange to history."""
+        self.append_history_turn([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": assistant_text},
+        ])
 
     def list_models(self) -> list[str]:
         """Return model ids exposed by the OMLX OpenAI-compatible endpoint."""
@@ -248,20 +357,63 @@ class CommandClient:
 
         The history is ordered oldest-first so the stable prefix stays
         KV-cache-friendly — new pairs are appended at the end.
+        Each history entry is a full message chain including tool calls
+        and results from that turn.
         """
-        messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        for user_text, assistant_text in self._history:
-            messages.append({"role": "user", "content": user_text})
-            messages.append({"role": "assistant", "content": assistant_text})
+        messages: list[dict] = [{"role": "system", "content": self._system_prompt}]
+        for chain in self._history:
+            messages.extend(chain)
         messages.append({"role": "user", "content": utterance})
         return messages
+
+    def _supports_multimodal_tool_content(self) -> bool:
+        """Whether the current backend is likely to accept image tool content."""
+        model = self._model.lower()
+        base_url = self._base_url.lower()
+        return (
+            "googleapis.com" in base_url
+            or "gemini" in model
+            or "gpt-4.1" in model
+            or "gpt-4o" in model
+        )
+
+    def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:
+        """Return (message_content, log_preview_text) for a tool result."""
+        if isinstance(tool_result, dict) and "content" in tool_result:
+            content = tool_result["content"]
+            log_text = tool_result.get("log_text")
+            if not isinstance(log_text, str):
+                if isinstance(content, str):
+                    log_text = content
+                else:
+                    log_text = json.dumps(content)
+            return content, log_text
+        if isinstance(tool_result, str):
+            return tool_result, tool_result
+        serialized = json.dumps(tool_result)
+        return serialized, serialized
+
+    def _tool_executor_supports_output_mode(
+        self,
+        tool_executor: Callable[..., Any],
+    ) -> bool:
+        """Whether tool_executor accepts the tool_output_mode kwarg."""
+        try:
+            signature = inspect.signature(tool_executor)
+        except (TypeError, ValueError):
+            return True
+        return any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            or param.name == "tool_output_mode"
+            for param in signature.parameters.values()
+        )
 
     def stream_command(
         self,
         utterance: str,
         *,
         tools: list[dict] | None = None,
-        tool_executor: Callable[..., str] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
     ) -> Generator[str, None, str]:
         """Compatibility wrapper yielding only assistant content deltas.
 
@@ -282,9 +434,8 @@ class CommandClient:
             elif event.kind == "assistant_final":
                 final_response = event.text
 
-        if self._history and self._history[-1][0] == utterance:
-            self._history[-1] = (utterance, visible_response or final_response)
-
+        # History is now managed by stream_command_events() which stores
+        # the full message chain including tool calls and results.
         return visible_response or final_response
 
     def stream_command_events(
@@ -292,7 +443,7 @@ class CommandClient:
         utterance: str,
         *,
         tools: list[dict] | None = None,
-        tool_executor: Callable[..., str] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Generator[CommandStreamEvent, None, str]:
         """Send a command utterance and yield semantic stream events.
@@ -317,6 +468,8 @@ class CommandClient:
             Completed function call emitted by the model for the current round.
         """
         messages = self._build_messages(utterance)
+        # Track where this turn's messages start (after system + history)
+        turn_start_idx = len(messages) - 1  # points to the user message
         full_response = ""
         visible_response = ""
 
@@ -368,6 +521,7 @@ class CommandClient:
 
             finish_reason = None
             first_token_logged = False
+            first_delta_logged = False
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
@@ -379,7 +533,7 @@ class CommandClient:
             thinking_tag_buf = ""  # partial tag accumulator
 
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=300) as resp:
                     for raw_line in resp:
                         # Cancel check between SSE chunks
                         if cancel_check is not None and cancel_check():
@@ -414,6 +568,15 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
+                        # Log first delta for debugging thinking detection (once per round)
+                        if not first_delta_logged and delta:
+                            first_delta_logged = True
+                            logger.info(
+                                "First SSE delta keys on round %d: %s (preview: %s)",
+                                _round, list(delta.keys()),
+                                {k: str(v)[:80] for k, v in delta.items()},
+                            )
+
                         # Reasoning tokens can arrive as plaintext fields
                         # or structured reasoning_details, depending on provider.
                         for reasoning_token in _extract_reasoning_tokens(delta):
@@ -431,14 +594,17 @@ class CommandClient:
                             if thinking_state == "detect":
                                 # Accumulate until we can tell if it starts with <think>
                                 thinking_tag_buf += text_to_process
-                                if thinking_tag_buf.startswith("<think>"):
+                                candidate = thinking_tag_buf.lstrip()
+                                if candidate.startswith("<think>"):
                                     thinking_state = "thinking"
-                                    text_to_process = thinking_tag_buf[len("<think>"):]
+                                    text_to_process = candidate[len("<think>"):]
                                     thinking_tag_buf = ""
                                     if not text_to_process:
                                         continue
                                     # Fall through to "thinking" handler below
-                                elif len(thinking_tag_buf) < len("<think>") and "<think>".startswith(thinking_tag_buf):
+                                elif not candidate:
+                                    continue
+                                elif len(candidate) < len("<think>") and "<think>".startswith(candidate):
                                     # Could still be <think>, keep buffering
                                     continue
                                 else:
@@ -496,7 +662,6 @@ class CommandClient:
                                 if not tool_name or idx is None or idx in emitted_tool_call_indices:
                                     continue
                                 indicator = f"\n[calling {tool_name}…]\n"
-                                round_content += indicator
                                 visible_response += indicator
                                 yield CommandStreamEvent(
                                     kind="assistant_delta",
@@ -539,7 +704,6 @@ class CommandClient:
                     for i, xc in enumerate(xml_calls):
                         tool_call_acc._calls[i] = xc
                         indicator = f"\n[calling {xc['function']['name']}…]\n"
-                        round_content += indicator
                         visible_response += indicator
                         yield CommandStreamEvent(
                             kind="assistant_delta",
@@ -610,16 +774,55 @@ class CommandClient:
                         fn_args = {}
 
                     logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
-                    tool_result = tool_executor(name=fn_name, arguments=fn_args)
-                    logger.info(
-                        "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_result), tool_result[:200],
+                    tool_kwargs: dict[str, Any] = {
+                        "name": fn_name,
+                        "arguments": fn_args,
+                    }
+                    if self._tool_executor_supports_output_mode(tool_executor):
+                        tool_kwargs["tool_output_mode"] = (
+                            "multimodal"
+                            if self._supports_multimodal_tool_content()
+                            else "text"
+                        )
+                    tool_result = tool_executor(
+                        **tool_kwargs,
                     )
+                    tool_content, tool_preview = self._normalize_tool_result(tool_result)
+                    result_tokens = _rough_tool_result_tokens(tool_preview)
+                    logger.info(
+                        "Tool %s result: %d chars (~%d tokens) (preview: %s)",
+                        fn_name, len(tool_preview), result_tokens, tool_preview[:200],
+                    )
+
+                    # Emit a subtext line with tool result info
+                    info_parts = []
+                    if fn_name == "read_file" and fn_args.get("path"):
+                        info_parts.append(fn_args["path"])
+                    elif fn_name == "search_file":
+                        query = fn_args.get("query", "")
+                        path = fn_args.get("path", "")
+                        if query and path:
+                            info_parts.append(f'"{query}" in {path}')
+                        elif query:
+                            info_parts.append(f'"{query}"')
+                        elif path:
+                            info_parts.append(path)
+                    elif fn_name == "capture_context":
+                        info_parts.append("screen capture")
+                    if result_tokens > 0:
+                        info_parts.append(f"~{result_tokens} tokens")
+                    if info_parts:
+                        info_line = f"  [{' · '.join(info_parts)}]\n"
+                        visible_response += info_line
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=info_line,
+                        )
 
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": tool_result,
+                        "content": tool_content,
                     })
 
                 logger.info(
@@ -634,13 +837,13 @@ class CommandClient:
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        # Add to ring buffer (content only, no reasoning)
-        self._history.append((utterance, visible_response or full_response))
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
+        # Add to ring buffer — only this turn's messages (from the user
+        # utterance onward), preserving tool calls and results.
+        self.append_history_turn(messages[turn_start_idx:])
 
         return full_response
 
     def clear_history(self) -> None:
         """Clear the conversation ring buffer."""
         self._history.clear()
+        self._save_history()

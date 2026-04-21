@@ -6,6 +6,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import spoke.command as _cmd_mod
+# Disable history persistence in all tests
+_cmd_mod._HISTORY_PATH = None
+
 
 def _make_sse_response(chunks):
     """Build a fake HTTP response that yields SSE lines."""
@@ -30,6 +34,7 @@ class TestCommandClient:
             "model": "test-model",
             "api_key": "test-key",
             "max_history": 5,
+            "history_path": None,
         }
         defaults.update(kwargs)
         return CommandClient(**defaults)
@@ -48,12 +53,21 @@ class TestCommandClient:
         """The prompt should tell the assistant to use literal refs for arbitrary speech."""
         from spoke.command import _SYSTEM_PROMPT
         assert "literal:<exact text to speak>" in _SYSTEM_PROMPT
-        assert "Do not pretend read_aloud is limited to visible text." in _SYSTEM_PROMPT
+
+    def test_system_prompt_mentions_subagent_control_tools(self):
+        """The main operator prompt should describe the subagent control surface."""
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "launch_subagent" in _SYSTEM_PROMPT
+        assert "list_subagents" in _SYSTEM_PROMPT
+        assert "get_subagent_result" in _SYSTEM_PROMPT
+        assert "cancel_subagent" in _SYSTEM_PROMPT
+        assert "do not spin" in _SYSTEM_PROMPT.lower()
 
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""
         client = self._make_client()
-        client._history = [("first question", "first answer")]
+        client._history = [[{"role": "user", "content": "first question"}, {"role": "assistant", "content": "first answer"}]]
         msgs = client._build_messages("second question")
         assert len(msgs) == 4
         assert msgs[0]["role"] == "system"
@@ -65,9 +79,9 @@ class TestCommandClient:
         """Oldest history comes first (cache-friendly prefix stability)."""
         client = self._make_client()
         client._history = [
-            ("q1", "a1"),
-            ("q2", "a2"),
-            ("q3", "a3"),
+            [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}],
+            [{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}],
+            [{"role": "user", "content": "q3"}, {"role": "assistant", "content": "a3"}],
         ]
         msgs = client._build_messages("q4")
         user_msgs = [m["content"] for m in msgs if m["role"] == "user"]
@@ -91,21 +105,37 @@ class TestCommandClient:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 3
-        assert client._history[0] == ("q2", "a2")
-        assert client._history[2] == ("q4", "a4")
+        # Each chain's last user message is the actual utterance for that turn
+        assert client._history[0][-1] == {"role": "user", "content": "q2"}
+        assert client._history[2][-1] == {"role": "user", "content": "q4"}
 
     def test_history_property_returns_copy(self):
         """history property should return a copy, not a reference."""
         client = self._make_client()
-        client._history.append(("q", "a"))
+        client._history.append([{"role": "user", "content": "q"}])
         h = client.history
         h.clear()
         assert len(client._history) == 1
 
+    def test_history_property_concatenates_multiple_assistant_messages(self):
+        """Backward-compatible history view should preserve multi-assistant turns."""
+        client = self._make_client()
+        client._history = [[
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "First answer. "},
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool output"},
+            {"role": "assistant", "content": "Second answer."},
+        ]]
+
+        assert client.history == [("q", "First answer. Second answer.")]
+
     def test_clear_history(self):
         """clear_history should empty the ring buffer."""
         client = self._make_client()
-        client._history = [("q1", "a1"), ("q2", "a2")]
+        client._history = [
+            [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}],
+            [{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}],
+        ]
         client.clear_history()
         assert client._history == []
 
@@ -115,11 +145,26 @@ class TestCommandClient:
         monkeypatch.setenv("SPOKE_COMMAND_API_KEY", "env-key")
         monkeypatch.setenv("SPOKE_COMMAND_HISTORY", "20")
         from spoke.command import CommandClient
-        client = CommandClient()
+        client = CommandClient(history_path=None)
         assert client._base_url == "http://localhost:8090"
         assert client._model == "env-model"
         assert client._api_key == "env-key"
         assert client._max_history == 20
+
+    def test_custom_system_prompt_override(self):
+        """Subagents should be able to supply a distinct system prompt."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="test-key",
+            history_path=None,
+            system_prompt="Custom prompt",
+        )
+
+        msgs = client._build_messages("hello world")
+        assert msgs[0] == {"role": "system", "content": "Custom prompt"}
 
     def test_config_kwargs_override_default(self, monkeypatch):
         """Explicit kwargs should take precedence over the built-in default."""
@@ -145,6 +190,7 @@ class TestCommandClient:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
 
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
@@ -167,6 +213,7 @@ class TestCommandClient:
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             model="gemini-2.5-flash",
             api_key="key",
+            history_path=None,
         )
 
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
@@ -192,6 +239,7 @@ class TestCommandClient:
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             model="gemini-2.5-flash",
             api_key="key",
+            history_path=None,
         )
 
         with patch("urllib.request.urlopen", return_value=fake_resp):
@@ -244,6 +292,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._role_chunk(),
@@ -264,6 +313,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
 
         tool_round_chunks = [
@@ -297,19 +347,207 @@ class TestStreamCommand:
             )
 
         assert call_count["n"] == 2
-        assert [
+        event_tuples = [
             (event.kind, event.text, event.tool_name)
             for event in events
-        ] == [
-            ("assistant_delta", "Let me check. ", None),
-            ("assistant_delta", "\n[calling capture_context…]\n", None),
-            ("tool_call", "", "capture_context"),
-            ("assistant_delta", "Done.", None),
-            ("assistant_final", "Done.", None),
         ]
-        assert client._history == [
-            ("check it", "Let me check. \n[calling capture_context…]\nDone.")
+        assert event_tuples[0] == ("assistant_delta", "Let me check. ", None)
+        assert event_tuples[1] == ("assistant_delta", "\n[calling capture_context…]\n", None)
+        assert event_tuples[2] == ("tool_call", "", "capture_context")
+        assert event_tuples[3][0] == ("assistant_delta")
+        assert "screen capture" in event_tuples[3][1]
+        assert "tokens" in event_tuples[3][1]
+        assert event_tuples[4] == ("assistant_delta", "Done.", None)
+        assert event_tuples[5] == ("assistant_final", "Done.", None)
+        assert len(client._history) == 1
+        chain = client._history[0]
+        assert chain[0] == {"role": "user", "content": "check it"}
+        assert chain[1]["role"] == "assistant"
+        assert chain[1]["tool_calls"][0]["function"]["name"] == "capture_context"
+        assert chain[2]["role"] == "tool"
+        assert chain[2]["content"] == '{"ok": true}'
+
+    def test_vlm_capture_tool_round_sends_multimodal_tool_content(self):
+        """VLM backends should carry screenshot tool results as multimodal content."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="key",
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
         ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        request_bodies = []
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            request_bodies.append(json.loads(req.data))
+            return first_resp if len(request_bodies) == 1 else second_resp
+
+        def tool_executor(**kwargs):
+            tool_calls.append(kwargs)
+            return {
+                "content": [
+                    {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,QUJD"},
+                    },
+                ],
+                "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
+            }
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert tool_calls[0]["tool_output_mode"] == "multimodal"
+        assert request_bodies[1]["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+
+    def test_local_step_model_remains_text_only_without_capability_signal(self):
+        """Local Step by name alone should not be treated as a multimodal backend."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="http://localhost:8001",
+            model="step-3p5-flash-mixedp-final",
+            api_key="key",
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        request_bodies = []
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            request_bodies.append(json.loads(req.data))
+            return first_resp if len(request_bodies) == 1 else second_resp
+
+        def tool_executor(**kwargs):
+            tool_calls.append(kwargs)
+            if kwargs["tool_output_mode"] == "multimodal":
+                return {
+                    "content": [
+                        {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,QUJD"},
+                        },
+                    ],
+                    "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
+                }
+            return '{"scene_ref":"scene-test"}'
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert tool_calls[0]["tool_output_mode"] == "text"
+        assert request_bodies[1]["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": '{"scene_ref":"scene-test"}',
+        }
+
+    def test_stream_tool_round_accepts_legacy_tool_executor_signature(self):
+        """Older tool executors that only accept name/arguments should still work."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        call_count = {"n": 0}
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            return first_resp if call_count["n"] == 1 else second_resp
+
+        def legacy_tool_executor(name, arguments):
+            tool_calls.append((name, arguments))
+            return '{"ok": true}'
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            events = list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=legacy_tool_executor,
+                )
+            )
+
+        assert tool_calls == [("capture_context", {"scope": "active_window"})]
+        assert events[-1] == _cmd_mod.CommandStreamEvent(
+            kind="assistant_final",
+            text="Done.",
+        )
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
@@ -318,6 +556,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._role_chunk(),
@@ -337,6 +576,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("Hi"),
@@ -345,7 +585,8 @@ class TestStreamCommand:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("hello"))
-        assert client._history == [("hello", "Hi there")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "hello"}
 
     def test_stream_does_not_store_reasoning_in_history(self):
         """Only content should appear in history, not reasoning."""
@@ -354,6 +595,7 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._reasoning_chunk("thinking hard..."),
@@ -362,7 +604,8 @@ class TestStreamCommand:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("do it"))
-        assert client._history == [("do it", "done")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "do it"}
 
     def test_stream_history_eviction(self):
         """History should evict oldest entry when full."""
@@ -379,8 +622,9 @@ class TestStreamCommand:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 2
-        assert client._history[0] == ("q1", "answer1")
-        assert client._history[1] == ("q2", "answer2")
+        # Each chain's last user message is the actual utterance for that turn
+        assert client._history[0][-1] == {"role": "user", "content": "q1"}
+        assert client._history[1][-1] == {"role": "user", "content": "q2"}
 
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
@@ -422,8 +666,9 @@ class TestStreamCommand:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
-        client._history = [("prev question", "prev answer")]
+        client._history = [[{"role": "user", "content": "prev question"}, {"role": "assistant", "content": "prev answer"}]]
         chunks = [self._content_chunk("ok")]
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
@@ -447,6 +692,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
             with pytest.raises(urllib.error.URLError):
@@ -461,6 +707,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         body = b"data: {bad json}\n\ndata: " + json.dumps(
             {"choices": [{"index": 0, "delta": {"content": "ok"}}]}
@@ -479,6 +726,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         # Only role chunk + done, no content
         chunks = [{"choices": [{"index": 0, "delta": {"role": "assistant"}}]}]
@@ -486,7 +734,8 @@ class TestStreamErrorHandling:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("hello"))
         assert tokens == []
-        assert client._history == [("hello", "")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "hello"}
 
     def test_stream_only_reasoning_yields_nothing(self):
         """If OMLX returns only reasoning tokens and no content, yield nothing."""
@@ -495,6 +744,7 @@ class TestStreamErrorHandling:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {"choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}}]},
@@ -504,7 +754,8 @@ class TestStreamErrorHandling:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             tokens = list(client.stream_command("think hard"))
         assert tokens == []
-        assert client._history == [("think hard", "")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "think hard"}
 
 class TestStreamCleanup:
     """Test HTTP connection cleanup and history invariants on partial consumption."""
@@ -516,6 +767,7 @@ class TestStreamCleanup:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
@@ -538,6 +790,7 @@ class TestStreamCleanup:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {"choices": [{"index": 0, "delta": {"content": "tok1"}}]},
@@ -558,6 +811,7 @@ class TestStreamCleanup:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         # First stream: partial consumption
         chunks1 = [
@@ -579,7 +833,8 @@ class TestStreamCleanup:
             tokens = list(client.stream_command("second"))
         assert tokens == ["clean"]
         # Only the completed stream should be in history
-        assert client._history == [("second", "clean")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "second"}
 
 
 class TestToolCallRendering:
@@ -624,6 +879,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("Let me check. "),
@@ -646,6 +902,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("A"),
@@ -656,10 +913,44 @@ class TestToolCallRendering:
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("test"))
         assert len(client._history) == 1
-        _, response = client._history[0]
-        assert "A" in response
-        assert "[calling read_aloud…]" in response
-        assert "B" in response
+        chain = client._history[0]
+        assert chain[0] == {"role": "user", "content": "test"}
+
+    def test_tool_ui_indicators_do_not_pollute_persisted_history(self):
+        """Tool-call UI markers should stay out of persisted assistant history."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            history_path=None,
+        )
+        chunks = [
+            self._content_chunk("Let me check. "),
+            self._tool_call_chunk("capture_context"),
+            {"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]},
+            self._content_chunk("Done."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            list(
+                client.stream_command(
+                    "read the screen",
+                    tool_executor=lambda **kwargs: "screen summary",
+                )
+            )
+
+        chain = client._history[0]
+        assistant_messages = [
+            msg["content"]
+            for msg in chain
+            if msg.get("role") == "assistant" and msg.get("content")
+        ]
+        joined = "".join(assistant_messages)
+        assert joined == "Let me check. Done."
+        assert "[calling capture_context" not in joined
+        assert "~" not in joined
 
     def test_tool_call_without_name_is_silent(self):
         """Tool-call deltas that carry only arguments (no name) should not yield text."""
@@ -668,6 +959,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             self._content_chunk("thinking"),
@@ -685,6 +977,7 @@ class TestToolCallRendering:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
         chunks = [
             {
@@ -783,6 +1076,7 @@ class TestCommandThinking:
             "model": "test-model",
             "api_key": "test-key",
             "max_history": 5,
+            "history_path": None,
         }
         defaults.update(kwargs)
         return CommandClient(**defaults)
@@ -972,6 +1266,23 @@ class TestCommandThinking:
             assert "<think>" not in e.text
             assert "deep thought" not in e.text
 
+    def test_think_tags_with_leading_whitespace_still_yield_thinking_delta(self):
+        """Leading whitespace before <think> should not break narrator thinking extraction."""
+        client = self._make_client()
+        chunks = [
+            self._content_chunk("\n\n<think>"),
+            self._content_chunk("deep thought"),
+            self._content_chunk("</think>"),
+            self._content_chunk("visible answer"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e.text for e in events if e.kind == "thinking_delta"]
+        content = [e.text for e in events if e.kind == "assistant_delta"]
+        assert "".join(thinking) == "deep thought"
+        assert "".join(content) == "visible answer"
+
     def test_think_tags_not_stored_in_history(self):
         """<think> content should not appear in the ring buffer history."""
         client = self._make_client()
@@ -982,7 +1293,8 @@ class TestCommandThinking:
         fake_resp = _make_sse_response(chunks)
         with patch("urllib.request.urlopen", return_value=fake_resp):
             list(client.stream_command("q"))
-        assert client._history == [("q", "public answer")]
+        assert len(client._history) == 1
+        assert client._history[0][0] == {"role": "user", "content": "q"}
 
     def test_no_think_tags_passes_content_through(self):
         """Content without <think> tags should pass through unchanged."""

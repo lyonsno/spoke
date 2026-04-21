@@ -53,12 +53,14 @@ services:
     notes: >
       Falls back to SPOKE_COMMAND_URL if SPOKE_NARRATOR_URL is unset, which
       means the local Grapheus command path by default.
-      Can point at a different OMLX instance (e.g. nlm2pr.local:8001)
+      Can point at a different OMLX instance (e.g. the current Bonsai surface
+      behind the local Grapheus narrator proxy on localhost:8091)
       running a smaller model like Bonsai-8B-mlx-1bit.
     rebuild: |
-      # Same as omlx — just a second instance with a different model.
-      # On the secondary box (nlm2pr.local):
-      omlx serve --port 8001
+      # Canonical local shape on this box:
+      # spoke narrator -> Grapheus narrator proxy (:8091) -> remote Bonsai (:8002)
+      # The upstream Bonsai box is managed outside spoke; the local proxy is
+      # managed through phylax service config.
 
   mlx-audio-sidecar:
     description: "TTS synthesis and Whisper transcription (MLX-audio fork)"

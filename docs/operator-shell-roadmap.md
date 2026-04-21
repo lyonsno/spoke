@@ -45,7 +45,9 @@ cognitive fork at the exact point where cognition should remain continuous.
 2. Command dispatch module (`command.py`). Takes the transcribed command,
    sends it to the local Grapheus endpoint (`/v1/chat/completions`), which
    proxies the local OMLX server, streams the response, and logs the traffic.
-   Configuration via `SPOKE_COMMAND_URL` and `SPOKE_COMMAND_MODEL`.
+   Runtime selection should come from the persisted Assistant backend/model
+   preferences; `SPOKE_COMMAND_URL` and `SPOKE_COMMAND_MODEL` are bootstrap or
+   smoke-surface inputs, not a canonical model contract.
 3. Output overlay. A second overlay surface, visually kin to the input overlay
    — same ethereal transparency, same floating treatment — but differentiated
    by color and rhythm. The input overlay breathes with amplitude (non-

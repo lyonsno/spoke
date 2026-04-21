@@ -198,7 +198,8 @@ class TestTranscriptionToken:
 
         with patch.object(main_module.threading, "Thread"):
             d._on_hold_end()
-        assert d._transcription_token == 2
+        assert d._transcription_token == 1
+        assert d._parallel_insert_token == 1
 
     def test_stale_transcription_is_discarded(self, main_module, monkeypatch):
         """If token doesn't match, result should be silently discarded."""
@@ -251,6 +252,23 @@ class TestTranscriptionToken:
 
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Error — try again")
+
+    def test_current_failure_surfaces_specific_error_when_present(
+        self, main_module, monkeypatch
+    ):
+        """A concrete finalization error should reach the menubar instead of generic text."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 7
+        d._transcribing = True
+
+        d.transcriptionFailed_(
+            {"token": 7, "error": "Local transcription timed out after bounded retries"}
+        )
+
+        assert d._transcribing is False
+        d._menubar.set_status_text.assert_called_with(
+            "Local transcription timed out after bounded retries"
+        )
 
     def test_empty_text_not_injected(self, main_module, monkeypatch):
         """Empty transcription result should not call inject_text."""
@@ -1103,6 +1121,8 @@ class TestDualModelConfiguration:
         d._tts_client._model_id = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
         d._tts_backend = "local"
         d._tts_sidecar_url = ""
+        d._load_preference = lambda key: None
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
 
         model_state = d._handle_model_menu_action(None)
@@ -1112,6 +1132,7 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local runtime", True),
                 ("sidecar", "Sidecar (not configured)", False, False),
+                ("cloud", "Cloud (no API key)", False, False),
                 ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
             ],
         }
@@ -1142,7 +1163,7 @@ class TestDualModelConfiguration:
         assert model_state["tts"]["selected"] == "k2-fsa/OmniVoice"
         assert model_state["tts_voice"] == {
             "type": "choice",
-            "title": "TTS Prompt: Auto voice",
+            "title": "TTS Voice: Auto voice",
             "selected": "",
             "models": [
                 ("", "Auto voice", True),
@@ -1156,7 +1177,7 @@ class TestDualModelConfiguration:
                 ("female, whisper, british accent", "Female whisper, British", True),
                 ("female, high pitch, american accent", "Female, high pitch, American", True),
                 ("male, low pitch, american accent", "Male, low pitch, American", True),
-                ("configure_voice", "Set Custom TTS Prompt…", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -1179,11 +1200,11 @@ class TestDualModelConfiguration:
 
         assert model_state["tts_voice"] == {
             "type": "choice",
-            "title": "TTS Prompt: female, british accent",
+            "title": "TTS Voice: female, british accent",
             "selected": "female, british accent",
             "models": [
-                ("", "Auto voice", True),
                 ("female, british accent", "Custom: female, british accent", True),
+                ("", "Auto voice", True),
                 ("female, child", "Female, child", True),
                 ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
                 ("female, elderly, british accent", "Female, elderly, British", True),
@@ -1194,7 +1215,7 @@ class TestDualModelConfiguration:
                 ("female, whisper, british accent", "Female whisper, British", True),
                 ("female, high pitch, american accent", "Female, high pitch, American", True),
                 ("male, low pitch, american accent", "Male, low pitch, American", True),
-                ("configure_voice", "Set Custom TTS Prompt…", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -1214,7 +1235,7 @@ class TestDualModelConfiguration:
 
         assert model_state["tts_voice"] == {
             "type": "choice",
-            "title": "TTS Prompt: Auto voice",
+            "title": "TTS Voice: Auto voice",
             "selected": "",
             "models": [
                 ("", "Auto voice", True),
@@ -1228,7 +1249,7 @@ class TestDualModelConfiguration:
                 ("female, whisper, british accent", "Female whisper, British", True),
                 ("female, high pitch, american accent", "Female, high pitch, American", True),
                 ("male, low pitch, american accent", "Male, low pitch, American", True),
-                ("configure_voice", "Set Custom TTS Prompt…", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -1251,11 +1272,31 @@ class TestDualModelConfiguration:
         model_state = d._handle_model_menu_action(None)
 
         assert model_state["tts_voice"] == {
-            "type": "toggle",
-            "title": "TTS Voice: casual_female [sidecar /v1/voices needed]",
-            "items": [
-                ("voice_discovery_unavailable", "Voice discovery unavailable on this sidecar", False, False),
-                ("configure_voice", "Set TTS Voice…", False, True),
+            "type": "choice",
+            "title": "TTS Voice: Casual Female",
+            "selected": "casual_female",
+            "models": [
+                ("casual_female", "Casual Female", True),
+                ("casual_male", "Casual Male", True),
+                ("cheerful_female", "Cheerful Female", True),
+                ("neutral_female", "Neutral Female", True),
+                ("neutral_male", "Neutral Male", True),
+                ("fr_female", "French Female", True),
+                ("fr_male", "French Male", True),
+                ("es_female", "Spanish Female", True),
+                ("es_male", "Spanish Male", True),
+                ("de_female", "German Female", True),
+                ("de_male", "German Male", True),
+                ("it_female", "Italian Female", True),
+                ("it_male", "Italian Male", True),
+                ("pt_female", "Portuguese Female", True),
+                ("pt_male", "Portuguese Male", True),
+                ("nl_female", "Dutch Female", True),
+                ("nl_male", "Dutch Male", True),
+                ("ar_male", "Arabic Male", True),
+                ("hi_female", "Hindi Female", True),
+                ("hi_male", "Hindi Male", True),
+                ("configure_voice", "Set Custom Voice…", True),
             ],
         }
 
@@ -2124,12 +2165,10 @@ class TestDualModelConfiguration:
 
         assert result is not None
         assert d._command_model_id == "qwen3-14b"
-        assert d._command_client._model == "qwen3-14b"
-        assert d._command_model_options == [
-            ("qwen3-14b", "qwen3-14b", True),
-            ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
-        ]
-        mock_seed.assert_called_once_with("qwen3-14b")
+        MockCommand.assert_called_once_with(
+            base_url=main_module._DEFAULT_COMMAND_URL,
+            model="qwen3-14b",
+        )
         assert d._command_model_options == [
             (
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
@@ -2137,6 +2176,7 @@ class TestDualModelConfiguration:
                 False,
             )
         ]
+        mock_seed.assert_called_once_with("qwen3-14b")
 
     def test_init_prefers_env_command_model_over_stale_persisted_local_selection(
         self, main_module, monkeypatch
@@ -2168,7 +2208,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
+            base_url=main_module._DEFAULT_COMMAND_URL,
             model="step-3p5-flash-mixedp-final",
         )
         assert d._command_model_id == "step-3p5-flash-mixedp-final"
@@ -2246,7 +2286,7 @@ class TestDualModelConfiguration:
         assert result is not None
         assert d._command_model_id == "qwen3-14b"
         MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
+            base_url=main_module._DEFAULT_COMMAND_URL,
             model="qwen3-14b",
         )
         assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
@@ -2282,7 +2322,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
+            base_url=main_module._DEFAULT_COMMAND_URL,
             model="qwen3-14b",
         )
         command_client.list_models.assert_not_called()
@@ -2937,6 +2977,7 @@ class TestRuntimePhaseLogging:
         d._command_client = MagicMock()
         d._refresh_command_model_options_async = MagicMock()
         d._request_mic_permission = MagicMock()
+        d._setup_event_tap = MagicMock()
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
@@ -2956,10 +2997,13 @@ class TestRuntimePhaseLogging:
             import sys
             sys.modules["spoke.command_overlay"] = MagicMock()
             sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
+            sys.modules["spoke.terraform_hud"] = MagicMock()
+            sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = MagicMock()
 
             d.applicationDidFinishLaunching_(None)
 
         d._refresh_command_model_options_async.assert_called_once_with()
+        d._setup_event_tap.assert_called_once_with()
 
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch
@@ -3437,7 +3481,10 @@ class TestCommandTranscribeWorker:
         assert token_calls[0][0][1]["text"] == "first"
         complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
         assert complete_call[0][1]["response"] == "first"
-        assert d._command_client._history == [("do something", "first")]
+        d._command_client.append_history_pair.assert_called_once_with(
+            "do something",
+            "first",
+        )
 
     def test_streaming_preview_finalize_path(self, main_module, monkeypatch):
         """When client is preview client with active stream, use finish_stream."""
@@ -3631,7 +3678,8 @@ class TestCommandCallbacks:
 
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
-        d._tts_client.speak.assert_called_once_with("hello world")
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+        d._tts_client.speak.assert_not_called()
 
     def test_tool_executor_lazily_builds_tts_client_for_read_aloud(
         self, main_module, monkeypatch
@@ -3647,7 +3695,8 @@ class TestCommandCallbacks:
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
 
         d._ensure_tts_client.assert_called_once_with(allow_default_voice=True)
-        built_tts.speak.assert_called_once_with("hello world")
+        built_tts.speak_async.assert_called_once_with("hello world")
+        built_tts.speak.assert_not_called()
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
 
@@ -3666,6 +3715,112 @@ class TestCommandCallbacks:
         parsed = json.loads(result)
         assert parsed["status"] == "added"
 
+    def test_tool_executor_forwards_tool_output_mode(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        with patch.object(main_module, "execute_tool", return_value='{"ok": true}') as exec_tool:
+            executor = d._make_tool_executor()
+            result = executor(
+                "capture_context",
+                {"scope": "active_window"},
+                tool_output_mode="multimodal",
+            )
+
+        assert result == '{"ok": true}'
+        exec_tool.assert_called_once()
+        assert exec_tool.call_args.kwargs["tool_output_mode"] == "multimodal"
+
+    def test_tool_executor_routes_compact_history_through_delegate_callback(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        with patch.object(main_module, "execute_tool", return_value='{"status": "ok"}') as exec_tool:
+            executor = d._make_tool_executor()
+            result = executor("compact_history", {"mode": "drop_tool_results", "n": 0})
+
+        assert result == '{"status": "ok"}'
+        exec_tool.assert_called_once()
+        history_compactor = exec_tool.call_args.kwargs["history_compactor"]
+        assert callable(history_compactor)
+
+    def test_tool_executor_compact_history_summarize_replaces_oldest_turns(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ],
+            [
+                {"role": "user", "content": "user 2"},
+                {"role": "assistant", "content": "assistant 2"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
+        ]
+        d._command_client.history = list(d._command_client._history)
+        d._command_client._save_history = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        executor = d._make_tool_executor()
+        result = json.loads(
+            executor(
+                "compact_history",
+                {"mode": "summarize", "n": 2, "summary": "compressed summary"},
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "summarize"
+        assert d._command_client._history == [
+            [
+                {"role": "user", "content": "[compacted history]"},
+                {"role": "assistant", "content": "compressed summary"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
+        ]
+        d._command_client._save_history.assert_called_once_with()
+
+    def test_tool_executor_compact_history_guided_routes_to_converge_helper(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ]
+        ]
+        d._command_client.history = list(d._command_client._history)
+        d._command_client._save_history = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=None)
+        compact_history = MagicMock(return_value={"status": "ok", "mode": "guided"})
+        monkeypatch.setattr(main_module, "compact_converge_history", compact_history)
+
+        executor = d._make_tool_executor()
+        result = json.loads(executor("compact_history", {"mode": "guided", "n": 0}))
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "guided"
+        compact_history.assert_called_once_with(
+            d._command_client, {"mode": "guided", "n": 0}
+        )
+
     def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
         self, main_module, monkeypatch
     ):
@@ -3673,7 +3828,7 @@ class TestCommandCallbacks:
         d._command_client = MagicMock()
         d._command_client.history = []
         d._tts_client = MagicMock()
-        d._tts_client.speak.side_effect = RuntimeError("device unavailable")
+        d._tts_client.speak_async.side_effect = RuntimeError("device unavailable")
 
         executor = d._make_tool_executor()
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
@@ -3681,7 +3836,8 @@ class TestCommandCallbacks:
         assert "Error speaking text: TTS playback failed." in result
         assert "device unavailable" in result
         assert d._command_tool_used_tts is False
-        d._tts_client.speak.assert_called_once_with("hello world")
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+        d._tts_client.speak.assert_not_called()
 
     def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -3738,7 +3894,6 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called_with("first")
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
-        assert "Command overlay finish failed" in caplog.text
 
     def test_tts_amplitude_update_failure_is_suppressed(
         self, main_module, monkeypatch, caplog
@@ -4997,6 +5152,41 @@ class TestSegmentAcceleratedTranscription:
         d._transcribe_worker(b"full_wav", token=1)
 
         d._client.transcribe.assert_called_once_with(b"full_wav")
+
+    def test_transcribe_worker_retries_local_whisper_after_initial_failure(
+        self, main_module, monkeypatch
+    ):
+        """Local Whisper finalization should retry from cached audio with bounded settings."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._transcribe_start = time.monotonic()
+        d._segment_accumulator = main_module.SegmentAccumulator()
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-large-v3-turbo",
+            decode_timeout=30.0,
+            eager_eval=False,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        attempts: list[tuple[float | None, bool]] = []
+
+        def fake_transcribe(self, wav_bytes):
+            attempts.append((self._decode_timeout, self._eager_eval))
+            if len(attempts) == 1:
+                raise TimeoutError("decode timed out")
+            return "recovered text"
+
+        monkeypatch.setattr(
+            main_module.LocalTranscriptionClient,
+            "transcribe",
+            fake_transcribe,
+            raising=False,
+        )
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "recovered text"
+        assert attempts == [(8.0, False), (8.0, True)]
 
     def test_hold_start_wires_segment_callback_for_sidecar(self, main_module, monkeypatch):
         """_on_hold_start should wire segment_callback when backend is sidecar."""
