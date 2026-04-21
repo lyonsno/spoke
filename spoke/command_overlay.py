@@ -444,6 +444,30 @@ def _command_backdrop_mask_falloff_width(scale: float) -> float:
     return max(scale, 1e-6) * max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
 
 
+def _stadium_signed_distance_field(
+    width_points: float,
+    height_points: float,
+    corner_radius_points: float,
+    scale: float,
+):
+    """Return a stadium SDF sampled at backing-scale resolution."""
+    import numpy as np
+
+    sample_scale = max(float(scale), 1e-6)
+    pw = max(int(round(width_points * sample_scale)), 1)
+    ph = max(int(round(height_points * sample_scale)), 1)
+    xs = (np.arange(pw, dtype=np.float32)[None, :] + 0.5) / sample_scale - width_points * 0.5
+    ys = (np.arange(ph, dtype=np.float32)[:, None] + 0.5) / sample_scale - height_points * 0.5
+    half_w = width_points * 0.5
+    half_h = height_points * 0.5
+    capsule_radius = max(min(corner_radius_points, half_h), 1.0 / sample_scale)
+    spine_half_x = max(half_w - capsule_radius, 0.0)
+    spine_half_y = max(half_h - capsule_radius, 0.0)
+    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+    return (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+
+
 def _boundary_outline_ci_image(extent, shell_config):
     """Faint pill-shaped outline at the sdf=0 boundary of the optical shell."""
     import numpy as np
@@ -2074,18 +2098,12 @@ class CommandOverlay(NSObject):
             geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
             if getattr(self, '_sdf_geom_key', None) != geom_key:
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                    pw, ph = max(int(total_w), 1), max(int(total_h), 1)
-                    xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
-                    ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                    half_w = width * 0.5
-                    half_h = height * 0.5
-                    corner_r = _OVERLAY_HEIGHT / 4.0
-                    capsule_radius = max(min(corner_r, half_h), 1.0)
-                    spine_half_x = max(half_w - capsule_radius, 0.0)
-                    spine_half_y = max(half_h - capsule_radius, 0.0)
-                    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
-                    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
-                    sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+                    sdf = _stadium_signed_distance_field(
+                        total_w,
+                        total_h,
+                        _OVERLAY_HEIGHT / 4.0,
+                        scale,
+                    )
 
                     # Pre-compute geometry-derived fields (brightness-independent)
                     inside_d = np.maximum(-sdf, 0.0)
@@ -2165,6 +2183,8 @@ class CommandOverlay(NSObject):
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setContentsScale_"):
+                self._fill_layer.setContentsScale_(scale)
             if hasattr(self._fill_layer, "setCompositingFilter_"):
                 if getattr(self, "_fullscreen_compositor", None) is not None:
                     # Graphic mode: normal alpha blending (no additive glow)

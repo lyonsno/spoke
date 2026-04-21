@@ -1337,3 +1337,30 @@ class TestSDFCaching:
 
         overlay._apply_ridge_masks(600.0, 200.0)
         assert call_count == 2, "SDF was not recomputed after height change"
+
+    def test_optical_shell_fill_rasters_at_backing_scale(self, mock_pyobjc, monkeypatch):
+        """Optical-shell fill images should be generated at Retina resolution."""
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = object()
+        overlay._ridge_scale = 2.0
+
+        import spoke.overlay as ov_mod
+
+        captured = {}
+
+        def fake_fill_field_to_image(alpha, r, g, b):
+            captured["shape"] = alpha.shape
+            return "fill-image", b"payload"
+
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", fake_fill_field_to_image)
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        feather = mod._OPTICAL_SHELL_FEATHER
+        expected_shape = (
+            int((80.0 + 2 * feather) * overlay._ridge_scale),
+            int((600.0 + 2 * feather) * overlay._ridge_scale),
+        )
+        assert captured["shape"] == expected_shape

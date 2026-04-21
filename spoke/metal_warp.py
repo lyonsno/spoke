@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
 import struct
 import threading
@@ -42,8 +43,27 @@ _WARP_X_SQUEEZE = 2.5
 _WARP_Y_SQUEEZE = 1.5
 _WARP_EXTERIOR_MAG_STRENGTH = 0.3
 _WARP_EXTERIOR_MAG_DECAY = 2.0
+_WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
+_WARP_ALIAS_MIP_BIAS_SCALE = 1.35
+_WARP_ALIAS_MIP_BIAS_MAX = 2.0
 
 _TEMPORAL_BLEND_FACTOR = 0.25  # EMA blend: 25% new frame, 75% accumulator
+
+
+def _warp_alias_mip_bias(scale_x: float, scale_y: float) -> float:
+    """Return extra mip bias for strongly deformed warp regions.
+
+    Small departures from identity should stay crisp. Once the warp stretches
+    or compresses by a noticeable fraction of an octave, add a controlled mip
+    bias so high-frequency source content does not alias into hard stair-steps.
+    """
+    sx = max(abs(float(scale_x)), 1e-4)
+    sy = max(abs(float(scale_y)), 1e-4)
+    warp_octaves = max(abs(math.log2(sx)), abs(math.log2(sy)))
+    if warp_octaves <= _WARP_ALIAS_MIP_BIAS_DEADZONE:
+        return 0.0
+    bias = (warp_octaves - _WARP_ALIAS_MIP_BIAS_DEADZONE) * _WARP_ALIAS_MIP_BIAS_SCALE
+    return min(bias, _WARP_ALIAS_MIP_BIAS_MAX)
 
 
 def _metal_shader_source() -> str:
@@ -173,7 +193,17 @@ kernel void opticalShellWarp(
     // boundary, so blur should only start ramping once we're past
     // that inflation zone (i.e., inside the fill pill).
     float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f, 0.0f);
-    float mipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
+    float baseMipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
+    float warpAliasOctaves = max(
+        abs(log2(max(abs(scaleX), 1e-4f))),
+        abs(log2(max(abs(scaleY), 1e-4f)))
+    );
+    float warpAliasBias = clamp(
+        (warpAliasOctaves - {_WARP_ALIAS_MIP_BIAS_DEADZONE}f) * {_WARP_ALIAS_MIP_BIAS_SCALE}f,
+        0.0f,
+        {_WARP_ALIAS_MIP_BIAS_MAX}f
+    );
+    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 warpedColor;
