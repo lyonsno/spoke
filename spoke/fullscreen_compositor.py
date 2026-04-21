@@ -151,6 +151,12 @@ class _OverlayCompositorSession:
     def sampled_brightness(self) -> float:
         return self._sampled_brightness
 
+    @property
+    def active_client_count(self) -> int:
+        if self._stopped:
+            return 0
+        return self._host.active_client_count
+
 
 class _SharedOverlayCompositorHost:
     """One fullscreen compositor window per screen, shared by many overlays."""
@@ -166,6 +172,10 @@ class _SharedOverlayCompositorHost:
     @property
     def has_clients(self) -> bool:
         return bool(self._clients)
+
+    @property
+    def active_client_count(self) -> int:
+        return len(self._clients)
 
     def register_client(self, client_id: str, config: dict):
         self._clients[client_id] = dict(config)

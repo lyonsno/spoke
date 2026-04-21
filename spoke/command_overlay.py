@@ -1821,6 +1821,10 @@ class CommandOverlay(NSObject):
         # the pulse-driven rhythm.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             fill_drive = _lerp(breath, breath * breath, t)
+            compositor = getattr(self, "_fullscreen_compositor", None)
+            shared_overlay_count = max(int(getattr(compositor, "active_client_count", 1) or 1), 1)
+            ct = _clamp01((t - 0.45) * 6.0 + 0.5)
+            ct = ct * ct * (3.0 - 2.0 * ct)
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
                 fill_min = _lerp(
                     _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK,
@@ -1835,19 +1839,26 @@ class CommandOverlay(NSObject):
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
                     fill_min = 0.0
                     fill_max = 0.0
-                elif getattr(self, "_fullscreen_compositor", None) is not None:
+                elif compositor is not None:
                     # Graphic mode: dark-on-dark, light-on-light.
                     # Steep sigmoid so mid-tones commit to one side
                     # rather than lingering in a bland middle.
                     fill_drive = 0.5
-                    ct = _clamp01((t - 0.45) * 6.0 + 0.5)
-                    ct = ct * ct * (3.0 - 2.0 * ct)
                     fill_min = _lerp(0.72, 0.96, ct)
                     fill_max = _lerp(0.82, 0.99, ct)
             else:
                 fill_min = _lerp(0.30, 0.84, t)
                 fill_max = _lerp(0.92, 0.99, t)
             new_opacity = min(_lerp(fill_min, fill_max, fill_drive), 0.99)
+            if (
+                _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+                and compositor is not None
+                and shared_overlay_count > 1
+            ):
+                # Shared-host mode needs a materially present assistant body
+                # without burying the fullscreen warp underneath it.
+                shared_fill_cap = _lerp(0.62, 0.80, ct)
+                new_opacity = min(new_opacity, shared_fill_cap)
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity

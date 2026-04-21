@@ -299,6 +299,35 @@ class TestSharedFullscreenCompositor:
         assert snapshot["clients"][0]["content_width_points"] == 680.0
         assert snapshot["clients"][1]["center_y"] == 444.0
 
+    def test_overlay_session_reports_live_shared_client_count(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        monkeypatch.setattr(mod, "FullScreenCompositor", _FakeHostCompositor)
+        monkeypatch.setattr(mod, "_shared_overlay_hosts", {}, raising=False)
+        _FakeHostCompositor.instances.clear()
+
+        screen = _FakeScreen()
+        session_a = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(41),
+            content_view=_FakeContentView(640.0, 120.0),
+            shell_config={"content_width_points": 640.0, "content_height_points": 120.0},
+        )
+        session_b = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(42, y=180.0),
+            content_view=_FakeContentView(640.0, 96.0),
+            shell_config={"content_width_points": 640.0, "content_height_points": 96.0},
+        )
+
+        assert session_a.active_client_count == 2
+        assert session_b.active_client_count == 2
+
+        session_b.stop()
+
+        assert session_a.active_client_count == 1
+        assert session_b.active_client_count == 0
+
     def test_fullscreen_compositor_retains_stream_renderer_proxy(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.fullscreen_compositor", None)
         sys.modules.pop("spoke.backdrop_stream", None)
