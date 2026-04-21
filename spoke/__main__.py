@@ -138,6 +138,7 @@ def _run_modal_with_paste(alert) -> int:
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
+from .converge import TurnCarver
 from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
 from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
@@ -1032,6 +1033,11 @@ class SpokeAppDelegate(NSObject):
                     api_key=cloud_api_key or None,
                     cancel_check=cancel_check,
                 )
+            # Converge: per-turn attractor carver (same model, OMLX batch parallel)
+            self._turn_carver = TurnCarver(
+                base_url=command_url,
+                api_key=cloud_api_key or None,
+                model=self._command_model_id,
             )
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
@@ -1071,6 +1077,7 @@ class SpokeAppDelegate(NSObject):
             self._command_url = None
             self._command_client = None
             self._narrator = None
+            self._turn_carver = None
             self._command_backend = None
             self._command_cloud_provider = self._load_cloud_provider_preference()
             self._command_url = None
@@ -3752,6 +3759,11 @@ class SpokeAppDelegate(NSObject):
         self._command_tool_used_tts = False
         if self._glow is not None:
             self._glow.hide()
+
+        # Converge: fire per-turn attractor carving in background
+        if self._turn_carver is not None and response:
+            utterance = getattr(self, "_last_command_utterance", "")
+            self._turn_carver.on_turn_complete(utterance, response)
 
     def _on_tts_amplitude(self, rms: float) -> None:
         """Called from TTS thread — marshal to main thread."""
