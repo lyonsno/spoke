@@ -127,9 +127,8 @@ kernel void opticalShellWarp(
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{
-        // Outside warp zone: transparent so other compositor windows
-        // and desktop content show through.
-        outTexture.write(float4(0.0f, 0.0f, 0.0f, 0.0f), pixel);
+        // Outside warp zone: pass through unwarped content.
+        outTexture.write(inTexture.sample(bilinearSampler, d), pixel);
         return;
     }}
 
@@ -457,29 +456,10 @@ class MetalWarpPipeline:
 
         command_buffer = self._command_queue.commandBuffer()
 
-        # Clear output to transparent via render pass — a full-screen
-        # write that guarantees the entire drawable is initialized
-        # before presentation (prevents tearing on 120Hz ProMotion).
-        # The compute shader then overwrites the capsule bounding box
-        # with warped content; everything outside stays transparent.
-        try:
-            rpd = objc.lookUpClass("MTLRenderPassDescriptor").renderPassDescriptor()
-            ca = rpd.colorAttachments().objectAtIndexedSubscript_(0)
-            ca.setTexture_(output_texture)
-            ca.setLoadAction_(2)  # MTLLoadActionClear
-            ca.setClearColor_((0.0, 0.0, 0.0, 0.0))  # transparent
-            ca.setStoreAction_(1)  # MTLStoreActionStore
-            clear_enc = command_buffer.renderCommandEncoderWithDescriptor_(rpd)
-            if clear_enc is not None:
-                clear_enc.endEncoding()
-        except Exception:
-            # Fallback: blit input → output (opaque, but no tearing)
-            fb = command_buffer.blitCommandEncoder()
-            fb.copyFromTexture_toTexture_(input_texture, output_texture)
-            fb.endEncoding()
-
-        # Blit input → mip texture for mipmaps.
+        # Full-screen blit: input → output.  Guarantees the entire
+        # drawable is written before presentation (no tearing on 120Hz).
         blit = command_buffer.blitCommandEncoder()
+        blit.copyFromTexture_toTexture_(input_texture, output_texture)
         if self._mip_texture is not None:
             origin = (0, 0, 0)
             size = (in_w, in_h, 1)
