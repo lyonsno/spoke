@@ -1,6 +1,6 @@
 """Hands-free continuous dictation mode.
 
-Coordinates wake word detection (Porcupine), audio capture (VAD-based
+Coordinates wake word detection (Porcupine or openWakeWord), audio capture (VAD-based
 segment slicing), transcription, and text injection into a continuous
 loop:
 
@@ -23,6 +23,17 @@ import time
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+
+def handsfree_env_ready() -> bool:
+    """True when the environment provides a runnable wakeword backend."""
+    backend = os.environ.get("SPOKE_WAKEWORD_BACKEND", "porcupine").strip().lower()
+    if backend == "openwakeword":
+        return bool(
+            os.environ.get("SPOKE_WAKEWORD_LISTEN_MODEL")
+            and os.environ.get("SPOKE_WAKEWORD_SLEEP_MODEL")
+        )
+    return bool(os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"))
 
 
 # ── Voice commands (matched against full transcription, case-insensitive) ──
@@ -104,10 +115,13 @@ class HandsFreeController:
 
         # Resolve wake word configuration
         self._access_key = os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
+        self._wakeword_backend = os.environ.get("SPOKE_WAKEWORD_BACKEND", "porcupine").strip().lower()
         self._listen_keyword = os.environ.get("SPOKE_WAKEWORD_LISTEN", "computer")
         self._sleep_keyword = os.environ.get("SPOKE_WAKEWORD_SLEEP", "terminator")
         self._listen_ppn = os.environ.get("SPOKE_WAKEWORD_LISTEN_PPN")
         self._sleep_ppn = os.environ.get("SPOKE_WAKEWORD_SLEEP_PPN")
+        self._listen_model = os.environ.get("SPOKE_WAKEWORD_LISTEN_MODEL")
+        self._sleep_model = os.environ.get("SPOKE_WAKEWORD_SLEEP_MODEL")
 
         # Callbacks set by the delegate
         self.on_state_change: Callable[[HandsFreeState], None] | None = None
@@ -140,16 +154,34 @@ class HandsFreeController:
             logger.warning("enable() called in state %s", self._state.value)
             return
 
-        if not self._access_key:
+        if self._wakeword_backend != "openwakeword" and not self._access_key:
             logger.error("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY not set — cannot enable hands-free")
             return
 
         from .wakeword import WakeWordListener
 
         # Build keyword lists
-        if self._listen_ppn and self._sleep_ppn:
+        if self._wakeword_backend == "openwakeword":
+            if not self._listen_model or not self._sleep_model:
+                logger.error(
+                    "openWakeWord backend selected but SPOKE_WAKEWORD_LISTEN_MODEL "
+                    "or SPOKE_WAKEWORD_SLEEP_MODEL is not set"
+                )
+                return
+            self._wakeword = WakeWordListener(
+                access_key="",
+                backend="openwakeword",
+                model_paths=[self._listen_model, self._sleep_model],
+                on_wake=self._on_wake_word,
+            )
+            self._keyword_map = {
+                self._listen_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "listen",
+                self._sleep_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "sleep",
+            }
+        elif self._listen_ppn and self._sleep_ppn:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
+                backend="porcupine",
                 keyword_paths=[self._listen_ppn, self._sleep_ppn],
                 on_wake=self._on_wake_word,
             )
@@ -160,6 +192,7 @@ class HandsFreeController:
         else:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
+                backend="porcupine",
                 keywords=[self._listen_keyword, self._sleep_keyword],
                 on_wake=self._on_wake_word,
             )
@@ -196,7 +229,7 @@ class HandsFreeController:
     # ── Wake word callback ───────────────────────────────────
 
     def _on_wake_word(self, keyword: str) -> None:
-        """Called from the Porcupine audio thread."""
+        """Called from the wakeword audio thread."""
         role = self._keyword_map.get(keyword, keyword)
         logger.info("Wake word role: %s (keyword=%s, state=%s)", role, keyword, self._state.value)
 

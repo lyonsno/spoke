@@ -56,7 +56,7 @@ the keyboard gestures above are active.
 While dictating hands-free, simple spoken editing commands such as `new line`,
 `new paragraph`, and `enter` are treated as controls rather than literal text.
 
-If you want to prepare custom Porcupine keyword training material, `spoke`
+If you want to prepare custom wakeword training material, `spoke`
 now also ships a batch sample generator that renders WAVs through the same
 local, sidecar, or Gemini cloud TTS surfaces:
 
@@ -75,8 +75,7 @@ line, switch to `--backend cloud` to use Gemini cloud TTS, or provide
 wakewords, `--max-tokens` is useful when you want to keep the render from
 wandering into trailing filler.
 
-To carve a generated batch into per-keyword upload packs for Picovoice
-Console:
+To carve a generated batch into per-keyword training groups:
 
 ```sh
 uv run python -m spoke.wakeword_training \
@@ -85,7 +84,9 @@ uv run python -m spoke.wakeword_training \
 ```
 
 That writes one directory per keyword, with copied WAVs, a manifest, and a
-ready-to-upload `*-samples.zip` archive for each keyword.
+`*-samples.zip` archive for each keyword. Those grouped artifacts are useful
+for audition, curation, or handing off to whatever training pipeline the lane
+is using.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
@@ -220,8 +221,11 @@ set of env vars is still useful. For normal use, prefer the menus.
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before restoring the saved pasteboard contents. |
 | `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
 | `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` | unset | Enables wake-word hands-free mode. |
+| `SPOKE_WAKEWORD_BACKEND` | `porcupine` | Wake-word backend. Use `openwakeword` for local model files. |
 | `SPOKE_WAKEWORD_LISTEN` | `computer` | Wake word that starts hands-free dictation. |
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
+| `SPOKE_WAKEWORD_LISTEN_MODEL` | unset | Path to the `openWakeWord` model for the listen role. |
+| `SPOKE_WAKEWORD_SLEEP_MODEL` | unset | Path to the `openWakeWord` model for the sleep role. |
 
 If you need deeper backend or smoke-surface plumbing than that, you are in
 developer territory. Use
@@ -246,7 +250,7 @@ spoke/
 ├── input_tap.py          # global key grammar and hold detection
 ├── capture.py            # sounddevice recording and WAV encoding
 ├── handsfree.py          # latched and wake-word-driven dictation controller
-├── wakeword.py           # Picovoice Porcupine listener
+├── wakeword.py           # wakeword listener backends
 ├── wakeword_samples.py   # wake-word sample batch generator
 ├── transcribe.py         # remote OpenAI-compatible transcription client
 ├── transcribe_local.py   # local MLX Whisper backend

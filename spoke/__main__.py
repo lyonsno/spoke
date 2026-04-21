@@ -141,7 +141,12 @@ from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .converge import TurnCarver, compact_history as compact_converge_history
 from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
-from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
+from .handsfree import (
+    HandsFreeController,
+    HandsFreeState,
+    handsfree_env_ready,
+    match_voice_command,
+)
 from .scene_capture import SceneCaptureCache
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
@@ -1197,8 +1202,8 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
-        # Hands-free mode — wire menubar toggle if Porcupine key is available
-        if os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
+        # Hands-free mode — expose the toggle when a wakeword backend is configured
+        if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
 
         # Iron Giant: install event tap and probe mic in parallel.

@@ -1,4 +1,4 @@
-"""Training-pack preparation for custom Porcupine wakeword batches."""
+"""Training-pack preparation for custom wakeword sample batches."""
 
 from __future__ import annotations
 
