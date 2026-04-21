@@ -188,14 +188,12 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur via mipmap LOD.  Wide linear ramp from
-    // sharp at the boundary to fully washed deep in the interior.
-    // No floor, no step — just a smooth continuous gradient.
+    // Depth-dependent blur via mipmap LOD.  sqrt ramp gives gentle
+    // onset near the rim, accelerating toward center.
+    // LOD 0 = full res, LOD 4 = 16× downsample (enough to wash text).
+    // Higher LODs cause visible seams between mip levels.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    // Map to mip LOD: 0 = sharp, 7 = fully washed.
-    // Linear ramp — smoothstep adds unnecessary inflection points
-    // that can read as steps with mip LOD.
-    float mipLod = interiorDepth * 7.0f;
+    float mipLod = sqrt(interiorDepth) * 4.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 finalColor;
@@ -395,6 +393,8 @@ class MetalWarpPipeline:
             mip_desc.setUsage_(1 | 2)  # read | write (write needed for mipmap gen)
             self._mip_texture = self._device.newTextureWithDescriptor_(mip_desc)
             self._mip_texture_size = (out_w, out_h)
+            if self._mip_texture is None:
+                logger.warning("Failed to create mipmapped texture %dx%d", out_w, out_h)
 
         command_buffer = self._command_queue.commandBuffer()
 
@@ -402,8 +402,9 @@ class MetalWarpPipeline:
         # AND blit IOSurface → mip level 0, then generate mipmaps
         blit = command_buffer.blitCommandEncoder()
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
-        blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
-        blit.generateMipmapsForTexture_(self._mip_texture)
+        if self._mip_texture is not None:
+            blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
+            blit.generateMipmapsForTexture_(self._mip_texture)
         blit.endEncoding()
 
         # Pass 2: compute warp over capsule bounding box only
@@ -437,7 +438,8 @@ class MetalWarpPipeline:
 
             encoder = command_buffer.computeCommandEncoder()
             encoder.setComputePipelineState_(self._pipeline)
-            encoder.setTexture_atIndex_(self._mip_texture, 0)  # mipmapped input
+            warp_input = self._mip_texture if self._mip_texture is not None else input_texture
+            encoder.setTexture_atIndex_(warp_input, 0)
             encoder.setTexture_atIndex_(output_texture, 1)
             encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
 

@@ -147,15 +147,11 @@ def _run_ocr(
 ):
     """Run Vision OCR on a CGImage and return (ocr_text, ocr_blocks).
 
-    When *accurate* is True, uses VNRequestTextRecognitionLevelAccurate
-    with language correction enabled.  This is ~5× slower than Fast on
-    a full-res retina screen but dramatically more reliable — Fast mode
-    misreads common characters (r→p, n→fi, etc.) on terminal / dark-bg
-    content.  At half-resolution the Accurate path runs in ~450–500 ms
-    which is acceptable for post-paste verification.
-
-    Returns ("", []) on any failure.
+    OCR is disabled — it lags the interface noticeably (especially with
+    the fullscreen compositor) and has never been reliable enough to
+    justify the cost.  Returns empty results immediately.
     """
+    return "", []
     try:
         from Vision import (
             VNImageRequestHandler,
