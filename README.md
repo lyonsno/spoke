@@ -87,6 +87,22 @@ That writes one directory per keyword, with copied WAVs, a manifest, and a
 for audition, curation, or handing off to whatever training pipeline the lane
 is using.
 
+If you want to train local `openWakeWord` models from that same batch, install
+the training extra and run the trainer directly:
+
+```sh
+uv sync --extra wakeword-training --group dev
+uv run --extra wakeword-training python -m spoke.openwakeword_training \
+  --batch-dir /tmp/mouthfeel-samples \
+  --output-dir /tmp/mouthfeel-openwakeword \
+  --keyword tessera
+```
+
+That writes a local `.onnx` model plus JSON metrics and dataset manifests for
+each requested keyword. The trainer accepts the Kokoro/sidecar sample batches
+that `spoke.wakeword_samples` emits, including 24 kHz mono WAVs, and resamples
+them to the 16 kHz runtime rate during feature extraction.
+
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
 

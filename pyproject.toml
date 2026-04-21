@@ -28,6 +28,11 @@ tts = [
     "torch",
     "torchaudio",
 ]
+wakeword-training = [
+    "onnx",
+    "scipy",
+    "torch",
+]
 
 [dependency-groups]
 dev = [
