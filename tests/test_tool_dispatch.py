@@ -1093,6 +1093,27 @@ class TestExecuteToolIntegration:
         assert parsed.get("edited_range") is None
         assert "file is not a regular file" in parsed.get("error", "")
 
+    def test_execute_edit_file_rejects_binary_target(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "blob.bin"
+        original = b"\x00\xff\x00abc"
+        f.write_bytes(original)
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "abc", "new_string": "xyz"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert "file is not valid UTF-8 text" in parsed.get("error", "")
+        assert f.read_bytes() == original
+
     def test_execute_edit_file_normalizes_line_endings_for_matching(self, tmp_path):
         mod = _import_tools()
         f = tmp_path / "edit-crlf.txt"
