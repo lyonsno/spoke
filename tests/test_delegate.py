@@ -3437,7 +3437,10 @@ class TestCommandTranscribeWorker:
         assert token_calls[0][0][1]["text"] == "first"
         complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
         assert complete_call[0][1]["response"] == "first"
-        assert d._command_client._history == [("do something", "first")]
+        assert d._command_client._history == [[
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "first"},
+        ]]
 
     def test_streaming_preview_finalize_path(self, main_module, monkeypatch):
         """When client is preview client with active stream, use finish_stream."""
@@ -3631,7 +3634,8 @@ class TestCommandCallbacks:
 
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
-        d._tts_client.speak.assert_called_once_with("hello world")
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+        d._tts_client.speak.assert_not_called()
 
     def test_tool_executor_lazily_builds_tts_client_for_read_aloud(
         self, main_module, monkeypatch
@@ -3647,7 +3651,8 @@ class TestCommandCallbacks:
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
 
         d._ensure_tts_client.assert_called_once_with(allow_default_voice=True)
-        built_tts.speak.assert_called_once_with("hello world")
+        built_tts.speak_async.assert_called_once_with("hello world")
+        built_tts.speak.assert_not_called()
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
 
@@ -3691,7 +3696,7 @@ class TestCommandCallbacks:
         d._command_client = MagicMock()
         d._command_client.history = []
         d._tts_client = MagicMock()
-        d._tts_client.speak.side_effect = RuntimeError("device unavailable")
+        d._tts_client.speak_async.side_effect = RuntimeError("device unavailable")
 
         executor = d._make_tool_executor()
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
@@ -3699,7 +3704,8 @@ class TestCommandCallbacks:
         assert "Error speaking text: TTS playback failed." in result
         assert "device unavailable" in result
         assert d._command_tool_used_tts is False
-        d._tts_client.speak.assert_called_once_with("hello world")
+        d._tts_client.speak_async.assert_called_once_with("hello world")
+        d._tts_client.speak.assert_not_called()
 
     def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
