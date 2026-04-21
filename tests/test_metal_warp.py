@@ -20,11 +20,13 @@ def test_pack_warp_params_uses_shell_specific_bleed_zone_frac():
             "content_width_points": 640.0,
             "content_height_points": 120.0,
             "corner_radius_points": 20.0,
-            "bleed_zone_frac": 0.4,
+            "bleed_zone_frac": 0.8,
+            "exterior_mix_width_points": 20.0,
         },
     )
-    values = metal_warp.struct.unpack("17f", payload)
-    assert values[16] == pytest.approx(0.4)
+    values = metal_warp.struct.unpack("18f", payload)
+    assert values[16] == pytest.approx(0.8)
+    assert values[17] == pytest.approx(20.0)
 
 
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
@@ -54,3 +56,10 @@ def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
     assert tight[1] > wide[1]
     assert tight[2] < wide[2]
     assert tight[3] < wide[3]
+
+
+def test_warp_exterior_mix_weight_keeps_boundary_strength_but_starts_later_with_tighter_width():
+    assert metal_warp._warp_exterior_mix_weight(0.0, 40.0) == pytest.approx(1.0)
+    assert metal_warp._warp_exterior_mix_weight(0.0, 20.0) == pytest.approx(1.0)
+    assert metal_warp._warp_exterior_mix_weight(10.0, 20.0) < metal_warp._warp_exterior_mix_weight(10.0, 40.0)
+    assert metal_warp._warp_exterior_mix_weight(30.0, 20.0) == pytest.approx(0.0)

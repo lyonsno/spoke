@@ -46,6 +46,7 @@ _WARP_EXTERIOR_MAG_DECAY = 2.0
 _WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
 _WARP_ALIAS_MIP_BIAS_SCALE = 1.35
 _WARP_ALIAS_MIP_BIAS_MAX = 2.0
+_WARP_EXTERIOR_MIX_WIDTH_POINTS = 40.0
 
 _TEMPORAL_BLEND_FACTOR = 0.25  # EMA blend: 25% new frame, 75% accumulator
 
@@ -68,6 +69,14 @@ def _warp_alias_mip_bias(scale_x: float, scale_y: float) -> float:
 
 def _shell_bleed_zone_frac(shell_config: dict) -> float:
     return max(float(shell_config.get("bleed_zone_frac", _WARP_BLEED_ZONE_FRAC)), 0.0)
+
+
+def _warp_exterior_mix_weight(capsule_sdf: float, mix_width_points: float) -> float:
+    width = max(float(mix_width_points), 1e-6)
+    x = min(max(float(capsule_sdf) / width, 0.0), 1.0)
+    smooth = x * x * (3.0 - 2.0 * x)
+    t = 1.0 - smooth
+    return t * t
 
 
 def _warp_dispatch_box(width: float, height: float, shell_config: dict[str, float]) -> tuple[int, int, int, int]:
@@ -107,6 +116,7 @@ struct WarpParams {{
     float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
     float minBrightness; // floor for interior pixel luminance (0 = no floor)
     float bleedZoneFrac; // exterior warp cutoff relative to capsule radius
+    float exteriorMixWidth; // width of the exterior onset band in pixels
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -200,7 +210,7 @@ kernel void opticalShellWarp(
         float probeSX = pow(max(probeScale, 0.0f), {_WARP_X_SQUEEZE}f);
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
-        float t = 1.0f - smoothstep(0.0f, 40.0f, capsuleSdf);
+        float t = 1.0f - smoothstep(0.0f, max(params.exteriorMixWidth, 1.0f), capsuleSdf);
         t = t * t;
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
         result = mix(d, boundaryWarped, t * 0.50f);
@@ -278,13 +288,13 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("17f")
+_WARP_PARAMS_SIZE = struct.calcsize("18f")
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "17f",
+        "18f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -302,6 +312,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("temporal_blend", _TEMPORAL_BLEND_FACTOR)),
         float(shell_config.get("min_brightness", 0.0)),
         _shell_bleed_zone_frac(shell_config),
+        float(shell_config.get("exterior_mix_width_points", _WARP_EXTERIOR_MIX_WIDTH_POINTS)),
     )
 
 
