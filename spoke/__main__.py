@@ -1488,7 +1488,7 @@ class SpokeAppDelegate(NSObject):
         """Menu/manual toggle for hands-free mode."""
         hf = self._handsfree
         if hf.is_active:
-            hf.disable()
+            hf.disable(reason="menu/manual toggle")
         else:
             hf.enable()
 
@@ -1641,7 +1641,7 @@ class SpokeAppDelegate(NSObject):
         state = getattr(hf, "state", None)
         if state == HandsFreeState.LISTENING:
             logger.info("Suspending wake-word listener for spacebar hold")
-            hf.disable()
+            hf.disable(reason="manual hold suspend")
             self._handsfree_resume_state_for_hold = HandsFreeState.LISTENING
             return
 
@@ -6275,7 +6275,7 @@ class SpokeAppDelegate(NSObject):
         self._preview_active = False
         hf = getattr(self, "_handsfree", None)
         if hf is not None and hf.is_active:
-            hf.disable()
+            hf.disable(reason="app quit")
         if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
             self._terraform_hud.cleanup()
         self._close_clients()

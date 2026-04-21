@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock
 
 from spoke.handsfree import HandsFreeController, HandsFreeState, handsfree_env_ready
@@ -135,6 +136,16 @@ class TestHandsFreeControllerWakeWords:
         controller.enable()
 
         assert created["sensitivities"] == [0.72, 0.43]
+
+    def test_disable_logs_reason(self, caplog):
+        controller = HandsFreeController(delegate=MagicMock())
+        controller._state = HandsFreeState.LISTENING
+        controller._wakeword = MagicMock()
+
+        with caplog.at_level(logging.INFO):
+            controller.disable(reason="manual hold suspend")
+
+        assert "Disabling hands-free: reason=manual hold suspend state=listening" in caplog.text
 
     def test_sleep_wake_word_keeps_listener_active_while_listening(self):
         controller = HandsFreeController(delegate=MagicMock())

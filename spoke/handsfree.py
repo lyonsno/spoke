@@ -270,10 +270,15 @@ class HandsFreeController:
 
         self._set_state(HandsFreeState.LISTENING)
 
-    def disable(self) -> None:
+    def disable(self, *, reason: str = "unspecified") -> None:
         """Fully shut down hands-free mode. Any state → DORMANT."""
         if self._state == HandsFreeState.DORMANT:
             return
+        logger.info(
+            "Disabling hands-free: reason=%s state=%s",
+            reason,
+            self._state.value,
+        )
 
         # Stop any active dictation capture
         if self._state in (HandsFreeState.DICTATING, HandsFreeState.TRANSCRIBING):

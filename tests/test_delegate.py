@@ -116,13 +116,36 @@ class TestHoldCallbacks:
         d._handsfree.state = main_module.HandsFreeState.LISTENING
         d._handsfree.is_dictating = False
         call_order: list[str] = []
-        d._handsfree.disable.side_effect = lambda: call_order.append("disable")
+        d._handsfree.disable.side_effect = lambda **kwargs: call_order.append(
+            f"disable:{kwargs.get('reason')}"
+        )
         d._capture.start.side_effect = lambda **kwargs: call_order.append("capture")
 
         d._on_hold_start()
 
-        assert call_order[:2] == ["disable", "capture"]
+        assert call_order[:2] == ["disable:manual hold suspend", "capture"]
         assert d._handsfree_resume_state_for_hold == main_module.HandsFreeState.LISTENING
+
+    def test_toggle_handsfree_disables_with_reason(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = True
+
+        d._toggle_handsfree()
+
+        d._handsfree.disable.assert_called_once_with(reason="menu/manual toggle")
+
+    def test_quit_disables_handsfree_with_reason(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = True
+        d._terraform_hud = MagicMock()
+
+        with patch.object(main_module.NSApp, "terminate_") as terminate:
+            d._quit()
+
+        d._handsfree.disable.assert_called_once_with(reason="app quit")
+        terminate.assert_called_once_with(None)
 
     def test_hold_end_with_empty_audio_restores_wakeword_listener(
         self, main_module, monkeypatch
