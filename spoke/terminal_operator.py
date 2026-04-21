@@ -8,7 +8,6 @@ without invoking a shell.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
