@@ -425,6 +425,9 @@ class TerminalOperator:
                     pattern_supplied_by_flag = True
                     skip_next = True
                     continue
+                if token.startswith("-e") and token not in {"-e"} and not token.startswith("-e="):
+                    pattern_supplied_by_flag = True
+                    continue
                 if token.startswith("-f") and token not in {"-f"} and not token.startswith("-f="):
                     pattern_supplied_by_flag = True
                     continue

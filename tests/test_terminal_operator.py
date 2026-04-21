@@ -407,6 +407,20 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_rg_attached_short_regexp_flag(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "-eneedle", "/etc/passwd"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_requires_approval_for_ps_eww(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
