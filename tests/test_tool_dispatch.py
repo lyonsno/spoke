@@ -713,7 +713,12 @@ class TestExecuteTool:
 
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("file") == target
+        assert parsed.get("failure_reason") is None
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         m.assert_any_call(target, "r", encoding="utf-8", newline="")
         m.assert_any_call(target, "w", encoding="utf-8", newline="")
         m().write.assert_called_once_with(updated)
@@ -971,8 +976,12 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
         assert parsed.get("failure_reason") == "not_found"
         assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == original
 
     def test_execute_edit_file_not_unique(self, tmp_path):
@@ -987,8 +996,12 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
         assert parsed.get("failure_reason") == "not_unique"
         assert parsed.get("match_count") == 2
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == original
 
     def test_execute_edit_file_rejects_lazy_elision(self, tmp_path):
@@ -1025,7 +1038,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["line_endings"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_bytes() == b"alpha\r\ndelta\r\ngamma\r\n"
 
     def test_execute_edit_file_normalizes_crlf_in_old_string_for_matching(self, tmp_path):
@@ -1043,7 +1059,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["line_endings"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
     def test_execute_edit_file_normalizes_trailing_whitespace_for_matching(self, tmp_path):
@@ -1061,7 +1080,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["trailing_whitespace"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
     def test_execute_edit_file_normalizes_trailing_whitespace_in_old_string_for_matching(
@@ -1081,7 +1103,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["trailing_whitespace"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
     def test_execute_edit_file_canonicalizes_final_newline(self, tmp_path):
@@ -1099,7 +1124,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["final_newline"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
         assert f.read_text(encoding="utf-8") == "alpha\nbeta\ndelta\n"
 
     def test_execute_edit_file_canonicalizes_extra_final_newlines(self, tmp_path):
@@ -1117,7 +1145,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["final_newline"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
         assert f.read_text(encoding="utf-8") == "alpha\nbeta\ndelta\n"
 
     def test_execute_edit_file_normalizes_indentation_width_for_matching(self, tmp_path):
@@ -1140,7 +1171,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["indentation"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
         assert f.read_text(encoding="utf-8") == (
             "if ready:\n"
             "    alpha()\n"
@@ -1162,7 +1196,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["indentation"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
         assert f.read_text(encoding="utf-8") == "if ready:\n\talpha()\n\tgamma()\n"
 
     def test_execute_edit_file_does_not_cross_match_nested_blocks(self, tmp_path):
@@ -1185,7 +1222,10 @@ class TestExecuteToolIntegration:
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
         assert parsed.get("failure_reason") == "not_found"
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == (
             "if ready:\n"
             "    alpha()\n"

@@ -945,6 +945,115 @@ def _canonicalize_final_newline(text: str, newline_style: str) -> str:
     return text.rstrip("\r\n") + newline_style
 
 
+def _normalize_newlines_for_counting(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _line_number_for_offset(text: str, offset: int) -> int:
+    prefix = _normalize_newlines_for_counting(text[:offset])
+    return prefix.count("\n") + 1
+
+
+def _logical_line_count(text: str) -> int:
+    if text == "":
+        return 1
+    normalized = _normalize_newlines_for_counting(text)
+    if normalized.endswith("\n"):
+        return normalized.count("\n")
+    return normalized.count("\n") + 1
+
+
+def _edited_range(raw_content: str, raw_start: int, replacement: str) -> dict[str, int]:
+    start_line = _line_number_for_offset(raw_content, raw_start)
+    end_line = start_line + _logical_line_count(replacement) - 1
+    return {"start_line": start_line, "end_line": end_line}
+
+
+def _edited_range_from_diff(old_text: str, new_text: str) -> dict[str, int]:
+    old_lines = _normalize_newlines_for_counting(old_text).splitlines()
+    new_lines = _normalize_newlines_for_counting(new_text).splitlines()
+
+    prefix = 0
+    while (
+        prefix < len(old_lines)
+        and prefix < len(new_lines)
+        and old_lines[prefix] == new_lines[prefix]
+    ):
+        prefix += 1
+
+    suffix = 0
+    while (
+        suffix < (len(old_lines) - prefix)
+        and suffix < (len(new_lines) - prefix)
+        and old_lines[len(old_lines) - 1 - suffix] == new_lines[len(new_lines) - 1 - suffix]
+    ):
+        suffix += 1
+
+    start_line = prefix + 1
+    end_line = max(start_line, len(new_lines) - suffix)
+    return {"start_line": start_line, "end_line": end_line}
+
+
+def _uses_line_ending_normalization(*texts: str) -> bool:
+    return any("\r" in text for text in texts)
+
+
+def _uses_trailing_whitespace_normalization(*texts: str) -> bool:
+    for text in texts:
+        for line in text.splitlines():
+            if line.rstrip(" \t") != line:
+                return True
+    return False
+
+
+def _normalization_applied(
+    *,
+    raw_content: str,
+    old_string: str,
+    new_string: str,
+    normalize_trailing_whitespace: bool,
+    indentation_used: bool,
+    final_newline_used: bool,
+) -> list[str]:
+    applied: list[str] = []
+    if _uses_line_ending_normalization(raw_content, old_string, new_string):
+        applied.append("line_endings")
+    if normalize_trailing_whitespace and _uses_trailing_whitespace_normalization(
+        raw_content, old_string, new_string
+    ):
+        applied.append("trailing_whitespace")
+    if indentation_used:
+        applied.append("indentation")
+    if final_newline_used:
+        applied.append("final_newline")
+    return applied
+
+
+def _edit_result(
+    *,
+    status: str,
+    file_path: str,
+    match_count: int,
+    failure_reason: str | None,
+    normalization_applied: list[str],
+    edited_range: dict[str, int] | None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": status,
+        "applied": status == "success",
+        "file": file_path,
+        "file_path": file_path,
+        "edited_range": edited_range,
+        "normalization_applied": normalization_applied,
+        "failure_reason": failure_reason,
+        "match_count": match_count,
+    }
+    if error is not None:
+        result["error"] = error
+    return result
+
+
 def _split_lines_with_offsets(text: str) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     raw_pos = 0
@@ -1175,30 +1284,73 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
     new_string = arguments.get("new_string")
 
     if not raw_path or not isinstance(raw_path, str):
-        return {"status": "error", "failure_reason": "malformed_request", "error": "file is required"}
-    if not isinstance(old_string, str) or old_string == "":
-        return {"status": "error", "failure_reason": "malformed_request", "error": "old_string is required"}
-    if not isinstance(new_string, str):
-        return {"status": "error", "failure_reason": "malformed_request", "error": "new_string is required"}
-    if _contains_lazy_edit_placeholder(new_string):
         return {
             "status": "error",
+            "applied": False,
+            "file": "",
+            "edited_range": None,
+            "normalization_applied": [],
             "failure_reason": "malformed_request",
-            "error": "new_string contains lazy placeholder text",
+            "match_count": 0,
+            "error": "file is required",
         }
+    if not isinstance(old_string, str) or old_string == "":
+        return {
+            "status": "error",
+            "applied": False,
+            "file": raw_path,
+            "file_path": raw_path,
+            "edited_range": None,
+            "normalization_applied": [],
+            "failure_reason": "malformed_request",
+            "match_count": 0,
+            "error": "old_string is required",
+        }
+    if not isinstance(new_string, str):
+        return {
+            "status": "error",
+            "applied": False,
+            "file": raw_path,
+            "file_path": raw_path,
+            "edited_range": None,
+            "normalization_applied": [],
+            "failure_reason": "malformed_request",
+            "match_count": 0,
+            "error": "new_string is required",
+        }
+    if _contains_lazy_edit_placeholder(new_string):
+        return _edit_result(
+            status="error",
+            file_path=raw_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error="new_string contains lazy placeholder text",
+        )
 
     file_path = _resolve_tool_path(raw_path)
     access_error = _validate_write_target(file_path)
     if access_error:
-        return {"status": "error", "failure_reason": "malformed_request", "error": access_error}
+        return _edit_result(
+            status="error",
+            file_path=file_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error=access_error,
+        )
 
     if not os.path.isfile(file_path):
-        return {
-            "status": "error",
-            "failure_reason": "not_found",
-            "file_path": file_path,
-            "match_count": 0,
-        }
+        return _edit_result(
+            status="error",
+            file_path=file_path,
+            match_count=0,
+            failure_reason="not_found",
+            normalization_applied=[],
+            edited_range=None,
+        )
 
     try:
         with open(file_path, "r", encoding="utf-8", newline="") as f:
@@ -1214,12 +1366,14 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         if indent_matches:
             match_count = len(indent_matches)
             if match_count > 1:
-                return {
-                    "status": "error",
-                    "failure_reason": "not_unique",
-                    "file_path": file_path,
-                    "match_count": match_count,
-                }
+                return _edit_result(
+                    status="error",
+                    file_path=file_path,
+                    match_count=match_count,
+                    failure_reason="not_unique",
+                    normalization_applied=[],
+                    edited_range=None,
+                )
 
             match = indent_matches[0]
             replacement = _render_indentation_aware_replacement(
@@ -1229,15 +1383,32 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
                 normalize_trailing_whitespace=normalize_trailing_whitespace,
                 newline_style=newline_style,
             )
-            updated = raw_content[: match["raw_start"]] + replacement + raw_content[match["raw_end"] :]
-            updated = _canonicalize_final_newline(updated, newline_style)
+            updated_pre_canonicalization = (
+                raw_content[: match["raw_start"]] + replacement + raw_content[match["raw_end"] :]
+            )
+            updated = _canonicalize_final_newline(updated_pre_canonicalization, newline_style)
+            final_newline_used = (
+                updated != updated_pre_canonicalization
+                or (match["raw_end"] == len(raw_content) and not raw_content.endswith(("\n", "\r")))
+            )
+            applied = _normalization_applied(
+                raw_content=raw_content,
+                old_string=old_string,
+                new_string=new_string,
+                normalize_trailing_whitespace=normalize_trailing_whitespace,
+                indentation_used=True,
+                final_newline_used=final_newline_used,
+            )
             with open(file_path, "w", encoding="utf-8", newline="") as f:
                 f.write(updated)
-            return {
-                "status": "success",
-                "file_path": file_path,
-                "match_count": 1,
-            }
+            return _edit_result(
+                status="success",
+                file_path=file_path,
+                match_count=1,
+                failure_reason=None,
+                normalization_applied=applied,
+                edited_range=_edited_range_from_diff(raw_content, updated),
+            )
 
         normalized_content, position_map = _normalize_match_text_with_map(
             raw_content,
@@ -1254,41 +1425,63 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
 
         match_count = normalized_content.count(normalized_old)
         if match_count == 0:
-            return {
-                "status": "error",
-                "failure_reason": "not_found",
-                "file_path": file_path,
-                "match_count": 0,
-            }
+            return _edit_result(
+                status="error",
+                file_path=file_path,
+                match_count=0,
+                failure_reason="not_found",
+                normalization_applied=[],
+                edited_range=None,
+            )
         if match_count > 1:
-            return {
-                "status": "error",
-                "failure_reason": "not_unique",
-                "file_path": file_path,
-                "match_count": match_count,
-            }
+            return _edit_result(
+                status="error",
+                file_path=file_path,
+                match_count=match_count,
+                failure_reason="not_unique",
+                normalization_applied=[],
+                edited_range=None,
+            )
 
         match_start = normalized_content.find(normalized_old)
         match_end = match_start + len(normalized_old)
         raw_start = position_map[match_start]
         raw_end = position_map[match_end]
         replacement = _apply_newline_style(normalized_new, newline_style)
-        updated = raw_content[:raw_start] + replacement + raw_content[raw_end:]
-        updated = _canonicalize_final_newline(updated, newline_style)
+        updated_pre_canonicalization = raw_content[:raw_start] + replacement + raw_content[raw_end:]
+        updated = _canonicalize_final_newline(updated_pre_canonicalization, newline_style)
+        final_newline_used = (
+            updated != updated_pre_canonicalization
+            or (raw_end == len(raw_content) and not raw_content.endswith(("\n", "\r")))
+        )
+        applied = _normalization_applied(
+            raw_content=raw_content,
+            old_string=old_string,
+            new_string=new_string,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+            indentation_used=False,
+            final_newline_used=final_newline_used,
+        )
         with open(file_path, "w", encoding="utf-8", newline="") as f:
             f.write(updated)
-        return {
-            "status": "success",
-            "file_path": file_path,
-            "match_count": 1,
-        }
+        return _edit_result(
+            status="success",
+            file_path=file_path,
+            match_count=1,
+            failure_reason=None,
+            normalization_applied=applied,
+            edited_range=_edited_range_from_diff(raw_content, updated),
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "failure_reason": "malformed_request",
-            "file_path": file_path,
-            "error": str(e),
-        }
+        return _edit_result(
+            status="error",
+            file_path=file_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error=str(e),
+        )
 
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
     import subprocess
