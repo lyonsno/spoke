@@ -48,7 +48,15 @@ class TestCommandClient:
         assert "add_to_tray" in msgs[0]["content"]
         assert "query_gmail" in msgs[0]["content"]
         assert "search_web" in msgs[0]["content"]
+        assert "run_terminal_command" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
+
+    def test_system_prompt_describes_terminal_argv_contract(self):
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "run_terminal_command" in _SYSTEM_PROMPT
+        assert "argv" in _SYSTEM_PROMPT
+        assert "Do not use shell syntax" in _SYSTEM_PROMPT
 
     def test_system_prompt_explicitly_allows_literal_read_aloud(self):
         """The prompt should tell the assistant to use literal refs for arbitrary speech."""

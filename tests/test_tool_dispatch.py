@@ -109,6 +109,18 @@ class TestToolSchemas:
         assert "query" in params.get("properties", {})
         assert "max_results" in params.get("properties", {})
 
+    def test_run_terminal_command_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "run_terminal_command" in names
+
+        term_schema = next(s for s in schemas if s["function"]["name"] == "run_terminal_command")
+        params = term_schema["function"]["parameters"]
+        assert "argv" in params.get("properties", {})
+        assert "cwd" in params.get("properties", {})
+        assert "timeout_seconds" in params.get("properties", {})
+
     def test_epistaxis_ops_schema(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
@@ -608,6 +620,43 @@ class TestExecuteTool:
 
         parsed = json.loads(result)
         assert parsed["error"] == "missing Brave Search API key"
+
+    def test_execute_run_terminal_command(self):
+        mod = _import_tools()
+        fake_result = {
+            "decision": "allow",
+            "executed": True,
+            "exit_code": 0,
+            "stdout": "main\n",
+            "stderr": "",
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        fake_operator = MagicMock()
+        fake_operator.execute_command.return_value = fake_result
+
+        with patch("spoke.tool_dispatch.TerminalOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="run_terminal_command",
+                arguments={"argv": ["git", "branch", "--show-current"], "cwd": ".", "timeout_seconds": 5},
+            )
+
+        assert json.loads(result) == fake_result
+
+    def test_execute_run_terminal_command_error(self):
+        mod = _import_tools()
+        with patch(
+            "spoke.tool_dispatch.TerminalOperator",
+            side_effect=mod.TerminalOperatorError("bad cwd"),
+        ):
+            result = mod.execute_tool(
+                name="run_terminal_command",
+                arguments={"argv": ["git", "status"], "cwd": "/missing"},
+            )
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "bad cwd"
 
 
 # ── Command client with tools ────────────────────────────────────

@@ -33,6 +33,11 @@ from spoke.gmail_operator import (
     GmailOperatorError,
     tool_schema as gmail_tool_schema,
 )
+from spoke.terminal_operator import (
+    TerminalOperator,
+    TerminalOperatorError,
+    tool_schema as terminal_tool_schema,
+)
 from spoke.scene_capture import SceneCaptureCache
 
 logger = logging.getLogger(__name__)
@@ -235,6 +240,7 @@ _FIND_FILE_SCHEMA = {
 _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
 _SEARCH_WEB_SCHEMA = brave_search_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
+_RUN_TERMINAL_COMMAND_SCHEMA = terminal_tool_schema()
 
 
 def get_tool_schemas() -> list[dict]:
@@ -251,6 +257,7 @@ def get_tool_schemas() -> list[dict]:
         _RUN_EPISTAXIS_OPS_SCHEMA,
         _SEARCH_WEB_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
+        _RUN_TERMINAL_COMMAND_SCHEMA,
     ]
 
 
@@ -714,6 +721,24 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+def _execute_run_terminal_command(arguments: dict) -> str:
+    """Execute the bounded terminal command surface and return JSON."""
+    argv = arguments.get("argv")
+    cwd = arguments.get("cwd")
+    timeout_seconds = arguments.get("timeout_seconds", 10)
+    try:
+        operator = TerminalOperator()
+        return json.dumps(
+            operator.execute_command(
+                argv,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    except TerminalOperatorError as exc:
+        return json.dumps({"error": str(exc)})
+
+
 
 def execute_tool(
     name: str,
@@ -793,6 +818,9 @@ def execute_tool(
 
     elif name == "query_gmail":
         return _execute_query_gmail(arguments)
+
+    elif name == "run_terminal_command":
+        return _execute_run_terminal_command(arguments)
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
