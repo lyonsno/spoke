@@ -72,6 +72,8 @@ def export_training_packs(
         records = sorted(grouped[keyword], key=lambda row: row.relative_path)
         slug = _slugify(keyword)
         pack_root = output_dir / slug
+        if pack_root.exists():
+            shutil.rmtree(pack_root)
         samples_dir = pack_root / "samples"
         samples_dir.mkdir(parents=True, exist_ok=True)
 
