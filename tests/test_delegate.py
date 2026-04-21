@@ -3733,6 +3733,94 @@ class TestCommandCallbacks:
         exec_tool.assert_called_once()
         assert exec_tool.call_args.kwargs["tool_output_mode"] == "multimodal"
 
+    def test_tool_executor_routes_compact_history_through_delegate_callback(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        with patch.object(main_module, "execute_tool", return_value='{"status": "ok"}') as exec_tool:
+            executor = d._make_tool_executor()
+            result = executor("compact_history", {"mode": "drop_tool_results", "n": 0})
+
+        assert result == '{"status": "ok"}'
+        exec_tool.assert_called_once()
+        history_compactor = exec_tool.call_args.kwargs["history_compactor"]
+        assert callable(history_compactor)
+
+    def test_tool_executor_compact_history_summarize_replaces_oldest_turns(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ],
+            [
+                {"role": "user", "content": "user 2"},
+                {"role": "assistant", "content": "assistant 2"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
+        ]
+        d._command_client.history = list(d._command_client._history)
+        d._command_client._save_history = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        executor = d._make_tool_executor()
+        result = json.loads(
+            executor(
+                "compact_history",
+                {"mode": "summarize", "n": 2, "summary": "compressed summary"},
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "summarize"
+        assert d._command_client._history == [
+            [
+                {"role": "user", "content": "[compacted history]"},
+                {"role": "assistant", "content": "compressed summary"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
+        ]
+        d._command_client._save_history.assert_called_once_with()
+
+    def test_tool_executor_compact_history_guided_routes_to_converge_helper(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ]
+        ]
+        d._command_client.history = list(d._command_client._history)
+        d._command_client._save_history = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=None)
+        compact_history = MagicMock(return_value={"status": "ok", "mode": "guided"})
+        monkeypatch.setattr(main_module, "compact_converge_history", compact_history)
+
+        executor = d._make_tool_executor()
+        result = json.loads(executor("compact_history", {"mode": "guided", "n": 0}))
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "guided"
+        compact_history.assert_called_once_with(
+            d._command_client, {"mode": "guided", "n": 0}
+        )
+
     def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
         self, main_module, monkeypatch
     ):

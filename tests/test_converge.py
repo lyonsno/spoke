@@ -47,6 +47,45 @@ class _FakeCommandClient:
 
 
 class TestConvergeService:
+    def test_compact_history_drop_tool_results_strips_tool_calls(self):
+        mod = _import_converge()
+        client = _FakeCommandClient()
+        client._history = [
+            [
+                {"role": "user", "content": "alpha request"},
+                {
+                    "role": "assistant",
+                    "content": "Let me check.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "read_file", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'},
+                {"role": "assistant", "content": "alpha answer"},
+            ]
+        ]
+
+        result = mod.compact_history(client, {"mode": "drop_tool_results", "n": 0})
+
+        assert result == {
+            "status": "ok",
+            "mode": "drop_tool_results",
+            "turns_compacted": 1,
+            "turns_total": 1,
+        }
+        assert client._history == [
+            [
+                {"role": "user", "content": "alpha request"},
+                {"role": "assistant", "content": "Let me check."},
+                {"role": "assistant", "content": "alpha answer"},
+            ]
+        ]
+        assert client.save_calls == 1
+
     def test_compact_history_guided_mode_lives_in_converge_module(self, tmp_path):
         mod = _import_converge()
         client = _FakeCommandClient()

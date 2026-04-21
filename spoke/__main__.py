@@ -3286,63 +3286,9 @@ class SpokeAppDelegate(NSObject):
             return tts_client
 
         def _compact_history(arguments):
-            import json as _json
-            return _json.dumps(compact_converge_history(self._command_client, arguments))
-
-        def _compact_history(arguments):
-            import json as _json
-            mode = arguments.get("mode", "drop_tool_results")
-            n = arguments.get("n", 0)
-            client = self._command_client
-            history = client._history
-            if not history:
-                return _json.dumps({"status": "nothing to compact", "turns": 0})
-
-            target = len(history) if n == 0 else min(n, len(history))
-
-            if mode == "drop_tool_results":
-                compacted = 0
-                for i in range(target):
-                    turn = history[i]
-                    before = len(turn)
-                    history[i] = [
-                        m for m in turn
-                        if m.get("role") in ("user", "assistant", "system")
-                    ]
-                    if len(history[i]) < before:
-                        compacted += 1
-                client._save_history()
-                return _json.dumps({
-                    "status": "ok",
-                    "mode": "drop_tool_results",
-                    "turns_compacted": compacted,
-                    "turns_total": len(history),
-                })
-
-            elif mode == "summarize":
-                summary = arguments.get("summary", "")
-                if not summary:
-                    return _json.dumps({"error": "summary is required for summarize mode"})
-                # Replace the oldest N turns with a single summary turn
-                remaining = history[target:]
-                summary_turn = [
-                    {"role": "user", "content": "[compacted history]"},
-                    {"role": "assistant", "content": summary},
-                ]
-                client._history = [summary_turn] + remaining
-                client._save_history()
-                return _json.dumps({
-                    "status": "ok",
-                    "mode": "summarize",
-                    "turns_replaced": target,
-                    "turns_remaining": len(remaining),
-                })
-
-            return _json.dumps({"error": f"unknown mode: {mode}"})
+            return json.dumps(compact_converge_history(self._command_client, arguments))
 
         def _executor(name, arguments, **kwargs):
-            if name == "compact_history":
-                return _compact_history(arguments)
             return execute_tool(
                 name=name,
                 arguments=arguments,
@@ -3351,6 +3297,7 @@ class SpokeAppDelegate(NSObject):
                 tts_client=_tool_tts_client(name),
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
+                history_compactor=_compact_history,
                 **kwargs,
             )
         return _executor

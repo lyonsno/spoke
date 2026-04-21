@@ -72,3 +72,13 @@ def test_omitted_capabilities_live_off_readme_in_their_canonical_surfaces():
     assert "launch-target switching" in smoke_text
     assert "source/branch visibility" in smoke_text
     assert "Terror Form" in smoke_text
+
+
+def test_readme_mentions_current_public_assistant_capabilities():
+    text = read_readme().lower()
+
+    assert "brave search" in text
+    assert "multimodal" in text
+    assert "subagent" in text
+    assert "narrator" in text
+    assert "compact" in text
