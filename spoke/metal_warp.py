@@ -1,4 +1,4 @@
-"""Metal compute shader pipeline for optical shell warp.
+"""Metal compute shader pipeline for the fullscreen optical shell compositor.
 
 Renders the capsule warp entirely on GPU — no CPU-side pixel copy.
 SCK delivers frames as IOSurface-backed CVPixelBuffers.  We create
@@ -11,8 +11,8 @@ link callback acquires nextDrawable(), dispatches the compute
 shader, and presents.  This prevents buffer pool starvation — the
 SCK handler queue never blocks on drawable availability.
 
-The warp kernel is translated from the CIWarpKernel GLSL source
-in backdrop_stream.py.
+This module owns the fullscreen Metal tuning directly. The older
+CI/backdrop path remains as a fallback surface with its own tuning.
 """
 
 from __future__ import annotations
@@ -27,10 +27,10 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Tuning constants — must stay in sync with backdrop_stream.py
+# Tuning constants for the fullscreen Metal compositor path.
 _WARP_BLEED_ZONE_FRAC = 0.8
-_WARP_CENTER_FLOOR = 0.80
-_WARP_FIELD_EXPONENT = 0.35
+_WARP_CENTER_FLOOR = 0.94
+_WARP_FIELD_EXPONENT = 0.25
 _WARP_REMAP_BASE_EXP_SCALE = 0.98
 _WARP_REMAP_BASE_EXP_FLOOR = 0.02
 _WARP_REMAP_RIM_EXP = 0.1
@@ -41,7 +41,7 @@ _WARP_CURVEBOOST_RING_CAP = 0.55
 _WARP_SPINE_PROXIMITY_BOOST = 1.5
 _WARP_X_SQUEEZE = 2.5
 _WARP_Y_SQUEEZE = 1.5
-_WARP_EXTERIOR_MAG_STRENGTH = 0.6
+_WARP_EXTERIOR_MAG_STRENGTH = 0.3
 _WARP_EXTERIOR_MAG_DECAY = 2.0
 _WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
 _WARP_ALIAS_MIP_BIAS_SCALE = 1.35
