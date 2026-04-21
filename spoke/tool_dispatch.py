@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 from typing import Any, Callable
 
@@ -886,7 +887,14 @@ def _preferred_newline_style(text: str) -> str:
     return "\n"
 
 
-def _normalize_match_text_with_map(text: str) -> tuple[str, list[int]]:
+def _should_normalize_trailing_whitespace(file_path: str) -> bool:
+    suffix = os.path.splitext(file_path)[1].lower()
+    return suffix not in {".md", ".markdown"}
+
+
+def _normalize_match_text_with_map(
+    text: str, *, normalize_trailing_whitespace: bool = True
+) -> tuple[str, list[int]]:
     normalized_parts: list[str] = []
     position_map = [0]
     raw_pos = 0
@@ -901,7 +909,7 @@ def _normalize_match_text_with_map(text: str) -> tuple[str, list[int]]:
             line_ending = raw_line[-1]
             body = raw_line[:-1]
 
-        trimmed_body = body.rstrip(" \t")
+        trimmed_body = body.rstrip(" \t") if normalize_trailing_whitespace else body
         for idx, char in enumerate(trimmed_body, start=1):
             normalized_parts.append(char)
             position_map.append(raw_pos + idx)
@@ -919,8 +927,11 @@ def _normalize_match_text_with_map(text: str) -> tuple[str, list[int]]:
     return "".join(normalized_parts), position_map
 
 
-def _normalize_match_text(text: str) -> str:
-    normalized, _ = _normalize_match_text_with_map(text)
+def _normalize_match_text(text: str, *, normalize_trailing_whitespace: bool = True) -> str:
+    normalized, _ = _normalize_match_text_with_map(
+        text,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+    )
     return normalized
 
 
@@ -932,6 +943,230 @@ def _canonicalize_final_newline(text: str, newline_style: str) -> str:
     if not text:
         return text
     return text.rstrip("\r\n") + newline_style
+
+
+def _split_lines_with_offsets(text: str) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    raw_pos = 0
+    for raw_line in text.splitlines(keepends=True):
+        line_ending = ""
+        body = raw_line
+        if raw_line.endswith("\r\n"):
+            line_ending = "\r\n"
+            body = raw_line[:-2]
+        elif raw_line.endswith("\n") or raw_line.endswith("\r"):
+            line_ending = raw_line[-1]
+            body = raw_line[:-1]
+        line_start = raw_pos
+        raw_pos += len(raw_line)
+        lines.append(
+            {
+                "body": body,
+                "line_ending": line_ending,
+                "start": line_start,
+                "end": raw_pos,
+                "has_line_ending": bool(line_ending),
+            }
+        )
+    if not lines and text == "":
+        return []
+    return lines
+
+
+def _leading_whitespace(text: str) -> str:
+    prefix_len = len(text) - len(text.lstrip(" \t"))
+    return text[:prefix_len]
+
+
+def _indent_width(prefix: str) -> int:
+    return len(prefix.expandtabs(4))
+
+
+def _normalized_line_records(
+    text: str, *, normalize_trailing_whitespace: bool
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for line in _split_lines_with_offsets(text):
+        normalized_body = (
+            line["body"].rstrip(" \t") if normalize_trailing_whitespace else line["body"]
+        )
+        leading = _leading_whitespace(normalized_body)
+        content = normalized_body[len(leading) :]
+        records.append(
+            {
+                **line,
+                "normalized_body": normalized_body,
+                "leading": leading,
+                "content": content,
+                "indent_width": _indent_width(leading),
+            }
+        )
+    return records
+
+
+def _relative_indent_levels(lines: list[dict[str, Any]]) -> list[int | None] | None:
+    nonblank = [line for line in lines if line["content"] != ""]
+    if not nonblank:
+        return [None for _ in lines]
+
+    base_width = nonblank[0]["indent_width"]
+    relative_widths: list[int | None] = []
+    positive_widths: list[int] = []
+    for line in lines:
+        if line["content"] == "":
+            relative_widths.append(None)
+            continue
+        relative = line["indent_width"] - base_width
+        if relative < 0:
+            return None
+        relative_widths.append(relative)
+        if relative > 0:
+            positive_widths.append(relative)
+
+    indent_unit = math.gcd(*positive_widths) if positive_widths else 1
+    levels: list[int | None] = []
+    for relative in relative_widths:
+        if relative is None:
+            levels.append(None)
+            continue
+        levels.append(relative // indent_unit)
+    return levels
+
+
+def _line_block_matches(
+    file_lines: list[dict[str, Any]],
+    old_lines: list[dict[str, Any]],
+) -> tuple[bool, list[int | None] | None]:
+    if len(file_lines) != len(old_lines):
+        return False, None
+    if [line["content"] for line in file_lines] != [line["content"] for line in old_lines]:
+        return False, None
+
+    old_levels = _relative_indent_levels(old_lines)
+    file_levels = _relative_indent_levels(file_lines)
+    if old_levels is None or file_levels is None or old_levels != file_levels:
+        return False, None
+    return True, file_levels
+
+
+def _indent_template(
+    matched_lines: list[dict[str, Any]], levels: list[int | None]
+) -> tuple[str, dict[int, str], str]:
+    nonblank = [
+        (line, level)
+        for line, level in zip(matched_lines, levels, strict=False)
+        if level is not None and line["content"] != ""
+    ]
+    if not nonblank:
+        return "", {0: ""}, ""
+
+    base_prefix = nonblank[0][0]["leading"]
+    prefixes_by_level: dict[int, str] = {}
+    for line, level in nonblank:
+        prefixes_by_level.setdefault(level, line["leading"])
+
+    unit_prefix = ""
+    positive_levels = sorted(level for level in prefixes_by_level if level > 0)
+    if positive_levels:
+        level_one = positive_levels[0]
+        level_one_prefix = prefixes_by_level[level_one]
+        if level_one_prefix.startswith(base_prefix):
+            unit_prefix = level_one_prefix[len(base_prefix) :] or unit_prefix
+        elif base_prefix == "":
+            unit_prefix = level_one_prefix
+
+    return base_prefix, prefixes_by_level, unit_prefix
+
+
+def _prefix_for_level(
+    level: int | None,
+    *,
+    base_prefix: str,
+    prefixes_by_level: dict[int, str],
+    unit_prefix: str,
+) -> str:
+    if level is None:
+        return ""
+    if level in prefixes_by_level:
+        return prefixes_by_level[level]
+    if unit_prefix:
+        return base_prefix + (unit_prefix * level)
+    return prefixes_by_level.get(0, base_prefix)
+
+
+def _render_indentation_aware_replacement(
+    new_string: str,
+    *,
+    matched_lines: list[dict[str, Any]],
+    matched_levels: list[int | None],
+    normalize_trailing_whitespace: bool,
+    newline_style: str,
+) -> str:
+    new_lines = _normalized_line_records(
+        new_string,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+    )
+    new_levels = _relative_indent_levels(new_lines)
+    if new_levels is None:
+        new_levels = [None for _ in new_lines]
+
+    base_prefix, prefixes_by_level, unit_prefix = _indent_template(matched_lines, matched_levels)
+
+    rendered_parts: list[str] = []
+    for line, level in zip(new_lines, new_levels, strict=False):
+        if line["content"] == "":
+            body = ""
+        else:
+            prefix = _prefix_for_level(
+                level,
+                base_prefix=base_prefix,
+                prefixes_by_level=prefixes_by_level,
+                unit_prefix=unit_prefix,
+            )
+            body = prefix + line["content"]
+        rendered_parts.append(body)
+        if line["has_line_ending"]:
+            rendered_parts.append("\n")
+
+    return _apply_newline_style("".join(rendered_parts), newline_style)
+
+
+def _find_indentation_aware_matches(
+    raw_content: str,
+    old_string: str,
+    *,
+    normalize_trailing_whitespace: bool,
+) -> list[dict[str, Any]]:
+    old_lines = _normalized_line_records(
+        old_string,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+    )
+    if len(old_lines) < 2:
+        return []
+
+    file_lines = _normalized_line_records(
+        raw_content,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+    )
+    if len(file_lines) < len(old_lines):
+        return []
+
+    matches: list[dict[str, Any]] = []
+    window = len(old_lines)
+    for start_idx in range(len(file_lines) - window + 1):
+        candidate = file_lines[start_idx : start_idx + window]
+        matched, levels = _line_block_matches(candidate, old_lines)
+        if not matched or levels is None:
+            continue
+        matches.append(
+            {
+                "raw_start": candidate[0]["start"],
+                "raw_end": candidate[-1]["end"],
+                "matched_lines": candidate,
+                "levels": levels,
+            }
+        )
+    return matches
 
 
 def _execute_edit_file(arguments: dict) -> dict[str, Any]:
@@ -969,9 +1204,53 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         with open(file_path, "r", encoding="utf-8", newline="") as f:
             raw_content = f.read()
 
-        normalized_content, position_map = _normalize_match_text_with_map(raw_content)
-        normalized_old = _normalize_match_text(old_string)
-        normalized_new = _normalize_match_text(new_string)
+        normalize_trailing_whitespace = _should_normalize_trailing_whitespace(file_path)
+        newline_style = _preferred_newline_style(raw_content)
+        indent_matches = _find_indentation_aware_matches(
+            raw_content,
+            old_string,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+        )
+        if indent_matches:
+            match_count = len(indent_matches)
+            if match_count > 1:
+                return {
+                    "status": "error",
+                    "failure_reason": "not_unique",
+                    "file_path": file_path,
+                    "match_count": match_count,
+                }
+
+            match = indent_matches[0]
+            replacement = _render_indentation_aware_replacement(
+                new_string,
+                matched_lines=match["matched_lines"],
+                matched_levels=match["levels"],
+                normalize_trailing_whitespace=normalize_trailing_whitespace,
+                newline_style=newline_style,
+            )
+            updated = raw_content[: match["raw_start"]] + replacement + raw_content[match["raw_end"] :]
+            updated = _canonicalize_final_newline(updated, newline_style)
+            with open(file_path, "w", encoding="utf-8", newline="") as f:
+                f.write(updated)
+            return {
+                "status": "success",
+                "file_path": file_path,
+                "match_count": 1,
+            }
+
+        normalized_content, position_map = _normalize_match_text_with_map(
+            raw_content,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+        )
+        normalized_old = _normalize_match_text(
+            old_string,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+        )
+        normalized_new = _normalize_match_text(
+            new_string,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+        )
 
         match_count = normalized_content.count(normalized_old)
         if match_count == 0:
@@ -993,7 +1272,6 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         match_end = match_start + len(normalized_old)
         raw_start = position_map[match_start]
         raw_end = position_map[match_end]
-        newline_style = _preferred_newline_style(raw_content)
         replacement = _apply_newline_style(normalized_new, newline_style)
         updated = raw_content[:raw_start] + replacement + raw_content[raw_end:]
         updated = _canonicalize_final_newline(updated, newline_style)
