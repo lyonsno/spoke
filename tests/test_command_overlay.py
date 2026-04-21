@@ -851,11 +851,11 @@ class TestAdaptiveCompositing:
         overlay._pulseStepInner()
 
         fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-        assert fill_opacity <= 0.80, (
+        assert fill_opacity <= 0.60, (
             "Shared fullscreen-compositor mode should ease the assistant fill enough "
             "to reveal warp under overlap instead of holding the near-solid solo band."
         )
-        assert fill_opacity >= 0.60, (
+        assert fill_opacity >= 0.42, (
             "Shared fullscreen-compositor mode should still keep the assistant body "
             "materially present instead of collapsing into an almost invisible fill."
         )

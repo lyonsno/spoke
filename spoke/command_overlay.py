@@ -1857,8 +1857,10 @@ class CommandOverlay(NSObject):
             ):
                 # Shared-host mode needs a materially present assistant body
                 # without burying the fullscreen warp underneath it.
-                shared_fill_cap = _lerp(0.62, 0.80, ct)
+                shared_fill_floor = _lerp(0.42, 0.48, ct)
+                shared_fill_cap = _lerp(0.46, 0.58, ct)
                 new_opacity = min(new_opacity, shared_fill_cap)
+                new_opacity = max(new_opacity, shared_fill_floor)
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
