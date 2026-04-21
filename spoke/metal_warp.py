@@ -137,15 +137,14 @@ kernel void opticalShellWarp(
 
     float2 result = warped;
     if (capsuleSdf > 0.0f) {{
-        // Exterior pull: smooth falloff over ~40px, mates with interior
-        // rim compression at the boundary.
+        // Exterior pull: gentle attraction toward capsule surface.
+        // Subtle enough that text doesn't fold, strong enough to
+        // read as a gravitational pull near the boundary.
         float exteriorT = capsuleSdf;
-        float pullStrength = 1.0f - smoothstep(0.0f, 40.0f, exteriorT);
-        // Gentle near-boundary boost (1.5× in first 8px) for continuity
-        // with interior rim compression
-        float nearBoost = 1.0f + 0.5f * (1.0f - smoothstep(0.0f, 8.0f, exteriorT));
+        float pullStrength = 1.0f - smoothstep(0.0f, 50.0f, exteriorT);
         float2 n = capsuleGradient(p, spineHalf);
-        float mag = {_WARP_EXTERIOR_MAG_STRENGTH}f * capsuleRadius * pullStrength * nearBoost;
+        // Small fixed displacement (max ~8px at boundary), no capsuleRadius scaling
+        float mag = 8.0f * pullStrength * pullStrength;
         result = warped + n * mag;
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
