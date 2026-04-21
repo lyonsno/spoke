@@ -255,6 +255,20 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_git_blame_contents_equals(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "blame", "--contents=/tmp/outside", "README.md"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_requires_approval_for_rg_e_outside_root(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
@@ -289,6 +303,20 @@ class TestTerminalOperator:
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["rg", "--pre", "python3", "needle", "."],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_rg_pre_equals_helper(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "--pre=python3", "needle", "."],
                 cwd=str(tmp_path),
             )
 

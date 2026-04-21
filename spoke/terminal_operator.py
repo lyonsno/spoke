@@ -302,6 +302,8 @@ class TerminalOperator:
             if subcommand == "blame" and token == "--contents":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: git blame --contents {target}"
+            if subcommand == "blame" and token.startswith("--contents="):
+                return f"command requires approval: git blame {token}"
             if token == "--output":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: git {subcommand} --output {target}"
@@ -322,9 +324,13 @@ class TerminalOperator:
             if token == "--pre":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: rg --pre {target}"
+            if token.startswith("--pre="):
+                return f"command requires approval: rg {token}"
             if token == "--pre-glob":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: rg --pre-glob {target}"
+            if token.startswith("--pre-glob="):
+                return f"command requires approval: rg {token}"
         return None
 
     @staticmethod
