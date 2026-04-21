@@ -54,6 +54,36 @@ class TestWakeWordListenerStop:
         np.testing.assert_array_equal(porcupine.process.call_args.args[0], pcm[:, 0])
         on_wake.assert_called_once_with("computer")
 
+    def test_start_passes_keyword_sensitivities_to_porcupine(self, monkeypatch):
+        porcupine = MagicMock()
+        porcupine.frame_length = 512
+        porcupine.sample_rate = 16000
+        stream = MagicMock()
+        create = MagicMock(return_value=porcupine)
+        monkeypatch.setitem(
+            sys.modules,
+            "pvporcupine",
+            types.SimpleNamespace(create=create),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "sounddevice",
+            types.SimpleNamespace(InputStream=MagicMock(return_value=stream)),
+        )
+        listener = WakeWordListener(
+            access_key="test",
+            keywords=["computer", "terminator"],
+            sensitivities=[0.7, 0.35],
+        )
+
+        listener.start()
+
+        create.assert_called_once_with(
+            access_key="test",
+            keywords=["computer", "terminator"],
+            sensitivities=[0.7, 0.35],
+        )
+
     def test_openwakeword_start_uses_model_paths_and_callback_stream(self, monkeypatch):
         model = MagicMock()
         stream = MagicMock()

@@ -120,6 +120,12 @@ class HandsFreeController:
         self._sleep_keyword = os.environ.get("SPOKE_WAKEWORD_SLEEP", "terminator")
         self._listen_ppn = os.environ.get("SPOKE_WAKEWORD_LISTEN_PPN")
         self._sleep_ppn = os.environ.get("SPOKE_WAKEWORD_SLEEP_PPN")
+        self._listen_sensitivity = self._read_keyword_sensitivity(
+            "SPOKE_WAKEWORD_LISTEN_SENSITIVITY"
+        )
+        self._sleep_sensitivity = self._read_keyword_sensitivity(
+            "SPOKE_WAKEWORD_SLEEP_SENSITIVITY"
+        )
         self._listen_model = os.environ.get("SPOKE_WAKEWORD_LISTEN_MODEL")
         self._sleep_model = os.environ.get("SPOKE_WAKEWORD_SLEEP_MODEL")
         self._tessera_model = os.environ.get("SPOKE_WAKEWORD_TESSERA_MODEL")
@@ -142,6 +148,28 @@ class HandsFreeController:
     def is_dictating(self) -> bool:
         return self._state in (HandsFreeState.DICTATING, HandsFreeState.TRANSCRIBING)
 
+    def _read_keyword_sensitivity(self, env_name: str) -> float | None:
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r (expected 0.0-1.0)", env_name, raw)
+            return None
+        if not 0.0 <= value <= 1.0:
+            logger.warning("Ignoring out-of-range %s=%r (expected 0.0-1.0)", env_name, raw)
+            return None
+        return value
+
+    def _optional_existing_model_path(self, path: str | None, *, label: str) -> str | None:
+        if not path:
+            return None
+        if os.path.exists(path):
+            return path
+        logger.warning("%s missing at %s — continuing without it", label, path)
+        return None
+
     def _set_state(self, new_state: HandsFreeState) -> None:
         old = self._state
         self._state = new_state
@@ -162,6 +190,16 @@ class HandsFreeController:
             return
 
         from .wakeword import WakeWordListener
+        sensitivities = None
+        if self._listen_sensitivity is not None or self._sleep_sensitivity is not None:
+            sensitivities = [
+                self._listen_sensitivity if self._listen_sensitivity is not None else 0.5,
+                self._sleep_sensitivity if self._sleep_sensitivity is not None else 0.5,
+            ]
+        tessera_model = self._optional_existing_model_path(
+            self._tessera_model,
+            label="Optional tessera wakeword model",
+        )
 
         # Build keyword lists
         if self._wakeword_backend == "openwakeword":
@@ -172,8 +210,8 @@ class HandsFreeController:
                 )
                 return
             model_paths = [self._listen_model, self._sleep_model]
-            if self._tessera_model:
-                model_paths.append(self._tessera_model)
+            if tessera_model:
+                model_paths.append(tessera_model)
             self._wakeword = WakeWordListener(
                 access_key="",
                 backend="openwakeword",
@@ -184,41 +222,43 @@ class HandsFreeController:
                 self._listen_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "listen",
                 self._sleep_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "sleep",
             }
-            if self._tessera_model:
+            if tessera_model:
                 self._keyword_map[
-                    self._tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                    tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
                 ] = "tessera"
         elif self._listen_ppn and self._sleep_ppn:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
                 backend="porcupine",
                 keyword_paths=[self._listen_ppn, self._sleep_ppn],
-                model_paths=[self._tessera_model] if self._tessera_model else None,
+                sensitivities=sensitivities,
+                model_paths=[tessera_model] if tessera_model else None,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_ppn: "listen",
                 self._sleep_ppn: "sleep",
             }
-            if self._tessera_model:
+            if tessera_model:
                 self._keyword_map[
-                    self._tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                    tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
                 ] = "tessera"
         else:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
                 backend="porcupine",
                 keywords=[self._listen_keyword, self._sleep_keyword],
-                model_paths=[self._tessera_model] if self._tessera_model else None,
+                sensitivities=sensitivities,
+                model_paths=[tessera_model] if tessera_model else None,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_keyword: "listen",
                 self._sleep_keyword: "sleep",
             }
-            if self._tessera_model:
+            if tessera_model:
                 self._keyword_map[
-                    self._tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                    tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
                 ] = "tessera"
 
         try:

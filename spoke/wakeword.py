@@ -43,6 +43,7 @@ class WakeWordListener:
         backend: str = "porcupine",
         keywords: list[str] | None = None,
         keyword_paths: list[str] | None = None,
+        sensitivities: list[float] | None = None,
         model_paths: list[str] | None = None,
         on_wake: Callable[[str], None] | None = None,
     ) -> None:
@@ -50,6 +51,7 @@ class WakeWordListener:
         self._backend = backend.strip().lower()
         self._keywords = keywords or []
         self._keyword_paths = keyword_paths
+        self._sensitivities = sensitivities
         self._model_paths = model_paths or []
         self._on_wake = on_wake
         self._porcupine = None
@@ -98,6 +100,8 @@ class WakeWordListener:
             else:
                 kw_kwargs["keywords"] = self._keywords
                 self._keyword_labels = self._keywords
+            if self._sensitivities is not None:
+                kw_kwargs["sensitivities"] = self._sensitivities
 
             self._porcupine = pvporcupine.create(
                 access_key=self._access_key,
@@ -108,8 +112,9 @@ class WakeWordListener:
             sample_rate = self._porcupine.sample_rate
 
             logger.info(
-                "Porcupine initialized: keywords=%s frame_length=%d sample_rate=%d",
+                "Porcupine initialized: keywords=%s sensitivities=%s frame_length=%d sample_rate=%d",
                 self._keyword_labels,
+                self._sensitivities,
                 frame_length,
                 sample_rate,
             )
