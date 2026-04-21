@@ -245,6 +245,8 @@ class TerminalOperator:
             return "deny", "command denied: shell syntax tokens are not supported; pass plain argv only"
         if any("\n" in token or "\x00" in token for token in argv):
             return "deny", "command denied: argv tokens must not contain newlines or NUL bytes"
+        if "/" in argv[0]:
+            return "deny", "command denied: pass a bare executable name, not an explicit path"
         normalized_argv = self._normalized_argv(argv)
         git_output_flag_reason = self._git_output_flag_reason(normalized_argv)
         if git_output_flag_reason:
@@ -285,6 +287,8 @@ class TerminalOperator:
     def _git_output_flag_reason(argv: list[str]) -> str | None:
         if len(argv) < 2 or argv[0] != "git" or argv[1] not in {"diff", "show"}:
             return None
+        if argv[1] == "diff" and "--no-index" in argv[2:]:
+            return "command requires approval: git diff --no-index"
         for index, token in enumerate(argv[2:], start=2):
             if token == "--output":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"

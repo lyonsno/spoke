@@ -118,6 +118,20 @@ class TestTerminalOperator:
         assert "denied" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_rejects_explicit_executable_paths(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["/tmp/git", "status"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "deny"
+        assert result["executed"] is False
+        assert "bare executable name" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_rejects_shell_syntax_tokens(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
@@ -177,6 +191,20 @@ class TestTerminalOperator:
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["git", "diff", "--output=/tmp/out.patch"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_git_diff_no_index(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "diff", "--no-index", "/etc/passwd", "/dev/null"],
                 cwd=str(tmp_path),
             )
 
