@@ -117,6 +117,80 @@ print("imported")
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "imported"
 
+    def test_turn_carver_chat_endpoint_respects_existing_version_prefix(
+        self, monkeypatch, tmp_path
+    ):
+        mod = _import_converge()
+        monkeypatch.setattr(mod, "_ATTRACTORS_DIR", tmp_path / "attractors")
+        monkeypatch.setattr(mod, "_TRACE_PATH", tmp_path / "trace.jsonl")
+        mod._ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
+
+        seen = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"choices": [{"message": {"content": "[]"}}]}
+                ).encode("utf-8")
+
+        def fake_urlopen(req, timeout=0):
+            seen["url"] = req.full_url
+            return _Response()
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        carver = mod.TurnCarver(
+            base_url="https://example.test/v1",
+            api_key="token",
+            model="demo-model",
+        )
+
+        carver._carve_single("This is a long enough utterance to carve safely.")
+
+        assert seen["url"] == "https://example.test/v1/chat/completions"
+
+    def test_turn_carver_embeddings_endpoint_respects_existing_version_prefix(
+        self, monkeypatch, tmp_path
+    ):
+        mod = _import_converge()
+        monkeypatch.setattr(mod, "_TURN_EMBEDDINGS_PATH", tmp_path / "turn-embeddings.npz")
+        monkeypatch.setattr(mod, "_TRACE_PATH", tmp_path / "trace.jsonl")
+        monkeypatch.setenv("SPOKE_OMLX_URL", "https://example.test/v1")
+
+        seen = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"data": [{"embedding": [1.0, 0.0, 0.0]}]}
+                ).encode("utf-8")
+
+        def fake_urlopen(req, timeout=0):
+            seen["url"] = req.full_url
+            return _Response()
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        carver = mod.TurnCarver(
+            base_url="http://localhost:8090",
+            api_key="token",
+            model="demo-model",
+        )
+
+        carver._embed_single("hello world")
+
+        assert seen["url"] == "https://example.test/v1/embeddings"
+
 
 class TestConvergeEmbedLib:
     def test_embed_model_path_can_come_from_env(self, monkeypatch):

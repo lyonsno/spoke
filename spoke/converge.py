@@ -28,6 +28,7 @@ import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,22 @@ def _import_numpy(feature: str):
             "dependencies before using guided compaction or turn embeddings."
         ) from exc
     return np
+
+
+def _url_has_version_prefix(raw_url: str) -> bool:
+    path = urlparse(raw_url).path.rstrip("/")
+    return any(
+        seg.startswith("v") and seg[1:].replace("beta", "").isdigit()
+        for seg in path.split("/")
+        if seg
+    )
+
+
+def _openai_endpoint(base_url: str, suffix: str) -> str:
+    normalized = base_url.rstrip("/")
+    if _url_has_version_prefix(normalized):
+        return f"{normalized}/{suffix}"
+    return f"{normalized}/v1/{suffix}"
 
 
 def _append_trace(path: Path, event: str, **kwargs) -> None:
@@ -427,7 +444,7 @@ class TurnCarver:
             user_prompt += f"{existing_context}\n\n"
         user_prompt += "Identify attractor operations for this utterance."
 
-        url = f"{self._base_url}/v1/chat/completions"
+        url = _openai_endpoint(self._base_url, "chat/completions")
         payload = json.dumps({
             "model": self._model,
             "messages": [
@@ -565,7 +582,7 @@ class TurnCarver:
         # Use OMLX's embeddings endpoint — same server, no in-process model load,
         # no Metal race with the command model.
         omlx_url = os.environ.get("SPOKE_OMLX_URL", "http://localhost:8001")
-        url = f"{omlx_url.rstrip('/')}/v1/embeddings"
+        url = _openai_endpoint(omlx_url, "embeddings")
         payload = json.dumps({
             "model": "Octen-Embedding-8B-mlx",
             "input": utterance[:500],
