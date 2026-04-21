@@ -134,7 +134,7 @@ class TestSpacebarStateMachine:
             det.repeatWatchdogFired_(None)
 
         assert det._state == mod._State.IDLE
-        assert det._awaiting_space_release is True
+        assert det._awaiting_space_release is False
         on_start.assert_called_once()
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
@@ -188,6 +188,34 @@ class TestSpacebarStateMachine:
         assert det._awaiting_space_release is False
         on_start.assert_called_once()
         on_end.assert_not_called()
+
+    def test_repeat_watchdog_recovery_allows_immediate_fresh_press(
+        self, input_tap_module
+    ):
+        """After watchdog recovery from a genuinely missed keyUp, the next
+        physical press should arm a fresh hold immediately instead of being
+        swallowed behind a phantom trailing release."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, on_start, on_end = self._make_detector(input_tap_module)
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)  # -> RECORDING
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)  # repeat while recording
+        Quartz.CGEventSourceKeyState.return_value = False
+
+        with patch.object(mod.time, "monotonic", return_value=11.0):
+            det._last_space_keydown_monotonic = 10.0
+            det.repeatWatchdogFired_(None)
+
+        assert det._state == mod._State.IDLE
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det._state == mod._State.WAITING
+        assert det._awaiting_space_release is False
+        on_start.assert_called_once()
 
     def test_safety_timer_stops_recording(self, input_tap_module):
         """Safety timeout should auto-stop recording."""

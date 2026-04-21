@@ -184,6 +184,16 @@ class TestToolSchemas:
         params = add_schema["function"]["parameters"]
         assert "text" in params.get("properties", {})
 
+    def test_subagent_control_schemas(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+
+        assert "launch_subagent" in names
+        assert "list_subagents" in names
+        assert "get_subagent_result" in names
+        assert "cancel_subagent" in names
+
 
 # ── Tool call accumulation ───────────────────────────────────────
 
@@ -870,6 +880,7 @@ class TestCommandClientToolIntegration:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
 
     def test_tools_included_in_request_when_provided(self):
@@ -996,6 +1007,77 @@ class TestExecuteToolIntegration:
         result = mod.execute_tool("search_file", {"pattern": "find_me", "dir_path": str(d)})
         parsed = json.loads(result)
         assert "find_me" in parsed.get("matches", "")
+
+    def test_execute_launch_subagent_routes_to_manager(self):
+        mod = _import_tools()
+        manager = MagicMock()
+        manager.launch.return_value = {
+            "id": "subagent-1",
+            "kind": "search",
+            "state": "queued",
+        }
+
+        result = json.loads(
+            mod.execute_tool(
+                "launch_subagent",
+                {"kind": "search", "prompt": "find narrator proxy code"},
+                subagent_manager=manager,
+            )
+        )
+
+        manager.launch.assert_called_once_with("search", "find narrator proxy code")
+        assert result["id"] == "subagent-1"
+        assert result["state"] == "queued"
+
+    def test_execute_subagent_status_tools_route_to_manager(self):
+        mod = _import_tools()
+        manager = MagicMock()
+        manager.list_jobs.return_value = [{"id": "subagent-1", "state": "running"}]
+        manager.get_job.return_value = {"id": "subagent-1", "state": "completed"}
+        manager.cancel.return_value = {"id": "subagent-1", "state": "cancelling"}
+
+        listed = json.loads(
+            mod.execute_tool("list_subagents", {}, subagent_manager=manager)
+        )
+        fetched = json.loads(
+            mod.execute_tool(
+                "get_subagent_result",
+                {"subagent_id": "subagent-1"},
+                subagent_manager=manager,
+            )
+        )
+        cancelled = json.loads(
+            mod.execute_tool(
+                "cancel_subagent",
+                {"subagent_id": "subagent-1"},
+                subagent_manager=manager,
+            )
+        )
+
+        manager.list_jobs.assert_called_once_with()
+        manager.get_job.assert_called_once_with("subagent-1")
+        manager.cancel.assert_called_once_with("subagent-1")
+        assert listed["jobs"][0]["id"] == "subagent-1"
+        assert fetched["state"] == "completed"
+        assert cancelled["state"] == "cancelling"
+
+    def test_execute_compact_history_routes_to_callback(self):
+        mod = _import_tools()
+        history_compactor = MagicMock(
+            return_value=json.dumps({"status": "ok", "mode": "guided"})
+        )
+
+        result = json.loads(
+            mod.execute_tool(
+                "compact_history",
+                {"mode": "guided", "n": 0},
+                history_compactor=history_compactor,
+            )
+        )
+
+        history_compactor.assert_called_once_with({"mode": "guided", "n": 0})
+        assert result["status"] == "ok"
+        assert result["mode"] == "guided"
 
 
     def test_execute_read_file_edge_cases(self, tmp_path):

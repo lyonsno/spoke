@@ -59,6 +59,17 @@ def _make_fake_quartz():
     q.CFMachPortCreateRunLoopSource = MagicMock(return_value=MagicMock())
     q.CFRunLoopAddSource = MagicMock()
     q.CFRunLoopGetMain = MagicMock(return_value=MagicMock())
+    q.CGRectNull = MagicMock(name="CGRectNull")
+    q.CGRectInfinite = MagicMock(name="CGRectInfinite")
+    q.CGWindowListCopyWindowInfo = MagicMock(return_value=[])
+    q.CGWindowListCreateImage = MagicMock(return_value=None)
+    q.CGImageGetWidth = MagicMock(return_value=0)
+    q.CGImageGetHeight = MagicMock(return_value=0)
+    q.kCGWindowImageBoundsIgnoreFraming = 1
+    q.kCGWindowListExcludeDesktopElements = 1 << 4
+    q.kCGWindowListOptionIncludingWindow = 1 << 0
+    q.kCGWindowListOptionOnScreenOnly = 1 << 1
+    q.kCGNullWindowID = 0
 
     # Glow module (Core Animation / Quartz)
     q.CABasicAnimation = MagicMock()
@@ -118,6 +129,7 @@ def _make_fake_appkit():
         "NSTextView",
         "NSView",
         "NSWindow",
+        "NSRunningApplication",
     ]:
         setattr(a, name, MagicMock())
     a.NSApplicationActivationPolicyAccessory = 2
@@ -148,6 +160,7 @@ def _make_fake_objc():
     o = types.ModuleType("objc")
     o.super = super  # Python super is fine for testing
     o.IBAction = lambda func: func
+    o.arch = "arm64"
     return o
 
 
@@ -166,22 +179,25 @@ def mock_pyobjc():
     # Also need to handle sub-frameworks that PyObjC sometimes imports
     fakes["Quartz.CoreGraphics"] = fakes["Quartz"]
 
-    # Save originals
-    saved = {}
-    for name in fakes:
-        saved[name] = sys.modules.get(name)
+    prefixes = ("objc", "Quartz", "Foundation", "AppKit", "PyObjCTools")
+    saved = {
+        name: module
+        for name, module in sys.modules.items()
+        if any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes)
+    }
+
+    for name in list(saved):
+        sys.modules.pop(name, None)
 
     # Install fakes
     sys.modules.update(fakes)
 
     yield fakes
 
-    # Restore
-    for name, original in saved.items():
-        if original is None:
+    for name in list(sys.modules):
+        if any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes):
             sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = original
+    sys.modules.update(saved)
 
 
 @pytest.fixture

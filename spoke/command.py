@@ -101,6 +101,11 @@ _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 20
 _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 
+
+def _rough_tool_result_tokens(text: str) -> int:
+    """Approximate token count for a tool result."""
+    return int(len(text.split()) * 1.3)
+
 _SYSTEM_PROMPT = (
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "
@@ -138,6 +143,18 @@ _SYSTEM_PROMPT = (
     "arbitrary shell or general coding work.\n\n"
     "You also have search_web: a bounded read-only public web search via "
     "Brave Search for lightweight fact lookup (up to 10 results).\n\n"
+    "You also have launch_subagent, list_subagents, get_subagent_result, and "
+    "cancel_subagent for operator-owned background jobs. Current support is "
+    "kind='search' for bounded local file/code search. Subagents are "
+    "asynchronous. After launch, do not spin on get_subagent_result in a "
+    "tight loop. If a job is queued or running, continue the main conversation "
+    "and check again later only when useful or when the user asks.\n\n"
+    "You also have compact_history to reduce context size. Modes: "
+    "drop_tool_results (strip tool call/result messages from the oldest N "
+    "turns while keeping user and assistant text), summarize (replace the "
+    "oldest N turns with your summary), and guided (return attractor-aware "
+    "retention flags for the oldest N turns, then follow up with summarize "
+    "using those flags as a safety net).\n\n"
     "You also have query_gmail: a bounded read-only Gmail query tool. Pass "
     "a Gmail search query string (same syntax as the Gmail search bar) and "
     "get back sender, subject, date, and snippet for up to 10 matches. Use "
@@ -205,6 +222,7 @@ class PendingToolApproval:
     remaining_calls: list[dict[str, Any]]
     round_index: int
     tools: list[dict] | None
+    turn_start_idx: int
 
 
 class CommandClient:
@@ -219,6 +237,7 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
         history_path: Path | None | object = _SENTINEL,
+        system_prompt: str | None = None,
     ):
         raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
@@ -248,18 +267,41 @@ class CommandClient:
         )
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
-        # Ring buffer: list of (user_utterance, assistant_response) pairs
+        self._system_prompt = system_prompt or _SYSTEM_PROMPT
+        # Ring buffer: list of message chains (each a list[dict]).
+        # Each entry is the full sequence of messages for one turn:
+        # [user, assistant, tool_result, assistant, ...] preserving
+        # tool calls and results for multi-turn context.
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
-        self._history: list[tuple[str, str]] = self._load_history()
+        self._history: list[list[dict]] = self._load_history()
         self._pending_tool_approval: PendingToolApproval | None = None
 
-    def _load_history(self) -> list[tuple[str, str]]:
-        """Load persisted history from disk, or return empty list."""
+    def _load_history(self) -> list[list[dict]]:
+        """Load persisted history from disk, or return empty list.
+
+        Handles migration from old format (list of [user_str, assistant_str]
+        pairs) to new format (list of message chains).
+        """
         if self._history_path is None:
             return []
         try:
             data = json.loads(self._history_path.read_text(encoding="utf-8"))
-            return [(u, a) for u, a in data]
+            if not isinstance(data, list):
+                return []
+            converted = []
+            for entry in data:
+                if not isinstance(entry, list) or not entry:
+                    continue
+                if isinstance(entry[0], str):
+                    # Old format: ["user text", "assistant text"]
+                    chain = [{"role": "user", "content": entry[0]}]
+                    if len(entry) > 1 and entry[1]:
+                        chain.append({"role": "assistant", "content": entry[1]})
+                    converted.append(chain)
+                elif isinstance(entry[0], dict):
+                    # New format: list of message dicts
+                    converted.append(entry)
+            return converted
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             return []
 
@@ -277,7 +319,46 @@ class CommandClient:
 
     @property
     def history(self) -> list[tuple[str, str]]:
-        return list(self._history)
+        """Backward-compatible pair view of the stored turn history."""
+        pairs: list[tuple[str, str]] = []
+        for chain in self._history:
+            user_text = ""
+            assistant_parts: list[str] = []
+            for message in chain:
+                role = message.get("role")
+                content = message.get("content")
+                if role == "user" and isinstance(content, str) and not user_text:
+                    user_text = content
+                elif role == "assistant" and isinstance(content, str) and content:
+                    assistant_parts.append(content)
+            pairs.append((user_text, "".join(assistant_parts)))
+        return pairs
+
+    def _normalized_history_turn(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize a turn before storing it in durable history."""
+        turn_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "assistant" and msg.get("content"):
+                cleaned = re.sub(
+                    r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL
+                ).strip()
+                msg = {**msg, "content": cleaned or None}
+            turn_messages.append(msg)
+        return turn_messages
+
+    def append_history_turn(self, messages: list[dict[str, Any]]) -> None:
+        """Append one normalized turn to the bounded history ring."""
+        self._history.append(self._normalized_history_turn(messages))
+        if len(self._history) > self._max_history:
+            self._history.pop(0)
+        self._save_history()
+
+    def append_history_pair(self, user_text: str, assistant_text: str) -> None:
+        """Append a minimal user/assistant exchange to history."""
+        self.append_history_turn([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": assistant_text},
+        ])
 
     def list_models(self) -> list[str]:
         """Return model ids exposed by the OMLX OpenAI-compatible endpoint."""
@@ -302,11 +383,12 @@ class CommandClient:
 
         The history is ordered oldest-first so the stable prefix stays
         KV-cache-friendly — new pairs are appended at the end.
+        Each history entry is a full message chain including tool calls
+        and results from that turn.
         """
-        messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
-        for user_text, assistant_text in self._history:
-            messages.append({"role": "user", "content": user_text})
-            messages.append({"role": "assistant", "content": assistant_text})
+        messages: list[dict] = [{"role": "system", "content": self._system_prompt}]
+        for chain in self._history:
+            messages.extend(chain)
         messages.append({"role": "user", "content": utterance})
         return messages
 
@@ -397,24 +479,25 @@ class CommandClient:
             and isinstance(tool_result.get("approval_request"), dict)
         )
 
-    def _append_history(self, utterance: str, response: str) -> None:
-        self._history.append((utterance, response))
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
-        self._save_history()
-
     def _execute_tool_calls(
         self,
         *,
         utterance: str,
         messages: list[dict[str, Any]],
+        visible_response: str,
         completed_calls: list[dict[str, Any]],
         tool_executor: Callable[..., Any],
         round_index: int,
         tools: list[dict] | None,
+        turn_start_idx: int,
         approval_granted_call_id: str | None = None,
-    ) -> Generator[CommandStreamEvent, None, tuple[list[dict[str, Any]], bool]]:
+    ) -> Generator[CommandStreamEvent, None, tuple[list[dict[str, Any]], str, bool]]:
         for idx, call in enumerate(completed_calls):
+            fn_name = call["function"]["name"]
+            try:
+                fn_args = json.loads(call["function"]["arguments"])
+            except json.JSONDecodeError:
+                fn_args = {}
             tool_result = self._invoke_tool_call(
                 call,
                 tool_executor=tool_executor,
@@ -429,21 +512,49 @@ class CommandClient:
                     remaining_calls=completed_calls[idx + 1:],
                     round_index=round_index,
                     tools=tools,
+                    turn_start_idx=turn_start_idx,
                 )
                 yield CommandStreamEvent(
                     kind="approval_request",
                     text=approval_request.get("message", "Approval needed"),
                     approval_request=approval_request,
                 )
-                return messages, True
+                return messages, visible_response, True
 
             tool_content, tool_preview = self._normalize_tool_result(tool_result)
+            result_tokens = _rough_tool_result_tokens(tool_preview)
             logger.info(
-                "Tool %s result: %d chars (preview: %s)",
-                call["function"]["name"],
+                "Tool %s result: %d chars (~%d tokens) (preview: %s)",
+                fn_name,
                 len(tool_preview),
+                result_tokens,
                 tool_preview[:200],
             )
+
+            info_parts = []
+            if fn_name == "read_file" and fn_args.get("file_path"):
+                info_parts.append(fn_args["file_path"])
+            elif fn_name == "search_file":
+                pattern = fn_args.get("pattern", "")
+                dir_path = fn_args.get("dir_path", "")
+                if pattern and dir_path:
+                    info_parts.append(f'"{pattern}" in {dir_path}')
+                elif pattern:
+                    info_parts.append(f'"{pattern}"')
+                elif dir_path:
+                    info_parts.append(dir_path)
+            elif fn_name == "capture_context":
+                info_parts.append("screen capture")
+            if result_tokens > 0:
+                info_parts.append(f"~{result_tokens} tokens")
+            if info_parts:
+                info_line = f"  [{' · '.join(info_parts)}]\n"
+                visible_response += info_line
+                yield CommandStreamEvent(
+                    kind="assistant_delta",
+                    text=info_line,
+                )
+
             messages.append(
                 {
                     "role": "tool",
@@ -452,7 +563,7 @@ class CommandClient:
                 }
             )
 
-        return messages, False
+        return messages, visible_response, False
 
     def stream_command(
         self,
@@ -480,9 +591,8 @@ class CommandClient:
             elif event.kind == "assistant_final":
                 final_response = event.text
 
-        if self._history and self._history[-1][0] == utterance:
-            self._history[-1] = (utterance, visible_response or final_response)
-
+        # History is now managed by stream_command_events() which stores
+        # the full message chain including tool calls and results.
         return visible_response or final_response
 
     def stream_command_events(
@@ -519,6 +629,8 @@ class CommandClient:
         """
         self._pending_tool_approval = None
         messages = self._build_messages(utterance)
+        # Track where this turn's messages start (after system + history)
+        turn_start_idx = len(messages) - 1  # points to the user message
         full_response = ""
         visible_response = ""
 
@@ -570,6 +682,7 @@ class CommandClient:
 
             finish_reason = None
             first_token_logged = False
+            first_delta_logged = False
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
@@ -581,7 +694,7 @@ class CommandClient:
             thinking_tag_buf = ""  # partial tag accumulator
 
             try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=300) as resp:
                     for raw_line in resp:
                         # Cancel check between SSE chunks
                         if cancel_check is not None and cancel_check():
@@ -616,6 +729,15 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
+                        # Log first delta for debugging thinking detection (once per round)
+                        if not first_delta_logged and delta:
+                            first_delta_logged = True
+                            logger.info(
+                                "First SSE delta keys on round %d: %s (preview: %s)",
+                                _round, list(delta.keys()),
+                                {k: str(v)[:80] for k, v in delta.items()},
+                            )
+
                         # Reasoning tokens can arrive as plaintext fields
                         # or structured reasoning_details, depending on provider.
                         for reasoning_token in _extract_reasoning_tokens(delta):
@@ -633,14 +755,17 @@ class CommandClient:
                             if thinking_state == "detect":
                                 # Accumulate until we can tell if it starts with <think>
                                 thinking_tag_buf += text_to_process
-                                if thinking_tag_buf.startswith("<think>"):
+                                candidate = thinking_tag_buf.lstrip()
+                                if candidate.startswith("<think>"):
                                     thinking_state = "thinking"
-                                    text_to_process = thinking_tag_buf[len("<think>"):]
+                                    text_to_process = candidate[len("<think>"):]
                                     thinking_tag_buf = ""
                                     if not text_to_process:
                                         continue
                                     # Fall through to "thinking" handler below
-                                elif len(thinking_tag_buf) < len("<think>") and "<think>".startswith(thinking_tag_buf):
+                                elif not candidate:
+                                    continue
+                                elif len(candidate) < len("<think>") and "<think>".startswith(candidate):
                                     # Could still be <think>, keep buffering
                                     continue
                                 else:
@@ -698,7 +823,6 @@ class CommandClient:
                                 if not tool_name or idx is None or idx in emitted_tool_call_indices:
                                     continue
                                 indicator = f"\n[calling {tool_name}…]\n"
-                                round_content += indicator
                                 visible_response += indicator
                                 yield CommandStreamEvent(
                                     kind="assistant_delta",
@@ -741,7 +865,6 @@ class CommandClient:
                     for i, xc in enumerate(xml_calls):
                         tool_call_acc._calls[i] = xc
                         indicator = f"\n[calling {xc['function']['name']}…]\n"
-                        round_content += indicator
                         visible_response += indicator
                         yield CommandStreamEvent(
                             kind="assistant_delta",
@@ -776,6 +899,7 @@ class CommandClient:
                     _round,
                 )
                 full_response = visible_response or round_content
+                messages.append({"role": "assistant", "content": full_response or None})
                 yield CommandStreamEvent(kind="assistant_final", text=full_response)
                 break
 
@@ -803,13 +927,15 @@ class CommandClient:
                     "tool_calls": completed_calls,
                 })
 
-                messages, paused_for_approval = yield from self._execute_tool_calls(
+                messages, visible_response, paused_for_approval = yield from self._execute_tool_calls(
                     utterance=utterance,
                     messages=messages,
+                    visible_response=visible_response,
                     completed_calls=completed_calls,
                     tool_executor=tool_executor,
                     round_index=_round,
                     tools=tools,
+                    turn_start_idx=turn_start_idx,
                 )
                 if paused_for_approval:
                     return full_response
@@ -823,11 +949,13 @@ class CommandClient:
 
             # No tool calls — this round's content is the final response
             full_response = round_content
+            messages.append({"role": "assistant", "content": full_response or None})
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        # Add to ring buffer (content only, no reasoning)
-        self._append_history(utterance, visible_response or full_response)
+        # Add to ring buffer — only this turn's messages (from the user
+        # utterance onward), preserving tool calls and results.
+        self.append_history_turn(messages[turn_start_idx:])
 
         return full_response
 
@@ -845,20 +973,21 @@ class CommandClient:
         self._pending_tool_approval = None
         messages = list(pending.messages)
         completed_calls = [pending.call, *pending.remaining_calls]
-        messages, paused_for_approval = yield from self._execute_tool_calls(
+        messages, visible_response, paused_for_approval = yield from self._execute_tool_calls(
             utterance=pending.utterance,
             messages=messages,
+            visible_response="",
             completed_calls=completed_calls,
             tool_executor=tool_executor,
             round_index=pending.round_index,
             tools=pending.tools,
+            turn_start_idx=pending.turn_start_idx,
             approval_granted_call_id=pending.call["id"],
         )
         if paused_for_approval:
             return ""
 
         full_response = ""
-        visible_response = ""
         max_tool_rounds = 20
         for _round in range(pending.round_index + 1, max_tool_rounds + 1):
             body: dict[str, Any] = {
@@ -995,6 +1124,7 @@ class CommandClient:
                 )
             if has_tool_calls and cancel_check is not None and cancel_check():
                 full_response = visible_response or round_content
+                messages.append({"role": "assistant", "content": full_response or None})
                 yield CommandStreamEvent(kind="assistant_final", text=full_response)
                 break
             if has_tool_calls:
@@ -1014,23 +1144,26 @@ class CommandClient:
                         "tool_calls": completed_calls,
                     }
                 )
-                messages, paused_for_approval = yield from self._execute_tool_calls(
+                messages, visible_response, paused_for_approval = yield from self._execute_tool_calls(
                     utterance=pending.utterance,
                     messages=messages,
+                    visible_response=visible_response,
                     completed_calls=completed_calls,
                     tool_executor=tool_executor,
                     round_index=_round,
                     tools=pending.tools,
+                    turn_start_idx=pending.turn_start_idx,
                 )
                 if paused_for_approval:
                     return full_response
                 continue
 
             full_response = round_content
+            messages.append({"role": "assistant", "content": full_response or None})
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        self._append_history(pending.utterance, visible_response or full_response)
+        self.append_history_turn(messages[pending.turn_start_idx:])
         return full_response
 
     def cancel_pending_tool_call(self) -> None:

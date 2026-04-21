@@ -250,6 +250,132 @@ _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
 _SEARCH_WEB_SCHEMA = brave_search_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 _RUN_TERMINAL_COMMAND_SCHEMA = terminal_tool_schema()
+_LAUNCH_SUBAGENT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "launch_subagent",
+        "description": (
+            "Launch an operator-owned background subagent job. The current "
+            "supported kind is 'search' for bounded local file/code search."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["search"],
+                    "description": "Type of subagent to launch. Currently only 'search' is supported.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Concrete search task for the background subagent.",
+                },
+            },
+            "required": ["kind", "prompt"],
+        },
+    },
+}
+_LIST_SUBAGENTS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "list_subagents",
+        "description": "List background subagent jobs and their current states.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        },
+    },
+}
+_GET_SUBAGENT_RESULT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "get_subagent_result",
+        "description": "Fetch status or final output for a specific background subagent job.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "subagent_id": {
+                    "type": "string",
+                    "description": "The subagent id returned by launch_subagent.",
+                },
+            },
+            "required": ["subagent_id"],
+        },
+    },
+}
+_CANCEL_SUBAGENT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "cancel_subagent",
+        "description": "Request cancellation for a running background subagent job.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "subagent_id": {
+                    "type": "string",
+                    "description": "The subagent id returned by launch_subagent.",
+                },
+            },
+            "required": ["subagent_id"],
+        },
+    },
+}
+_COMPACT_HISTORY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "compact_history",
+        "description": (
+            "Compact the conversation history to reduce context size. "
+            "Three modes:\n"
+            "- drop_tool_results: strip tool call/result messages from "
+            "the oldest N turns, keeping user and assistant text.\n"
+            "- summarize: replace the oldest N turns with a summary you "
+            "provide.\n"
+            "- guided: attractor-aware compaction. The tool reads the "
+            "full attractor set, cross-references against the conversation "
+            "history being compacted, and returns retention flags — a short "
+            "list of things you must preserve because they connect to "
+            "durable intent. Call this first, then call again with "
+            "mode='summarize' using the flags to guide your summary. "
+            "The flags are the safety net; your conversational judgment "
+            "handles everything else."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["drop_tool_results", "summarize", "guided"],
+                    "description": (
+                        "drop_tool_results: strip tool messages from oldest N turns. "
+                        "summarize: replace oldest N turns with a summary. "
+                        "guided: return attractor-aware retention flags for the "
+                        "oldest N turns, then follow up with summarize."
+                    ),
+                },
+                "n": {
+                    "type": "integer",
+                    "description": (
+                        "Number of oldest turns to compact. 0 means all turns."
+                    ),
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Required when mode='summarize'. A brief summary of "
+                        "the compacted turns. When following a guided call, "
+                        "incorporate the retention flags."
+                    ),
+                },
+            },
+            "required": ["mode", "n"],
+        },
+    },
+}
 
 
 def get_tool_schemas() -> list[dict]:
@@ -267,6 +393,21 @@ def get_tool_schemas() -> list[dict]:
         _SEARCH_WEB_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
         _RUN_TERMINAL_COMMAND_SCHEMA,
+        _LAUNCH_SUBAGENT_SCHEMA,
+        _LIST_SUBAGENTS_SCHEMA,
+        _GET_SUBAGENT_RESULT_SCHEMA,
+        _CANCEL_SUBAGENT_SCHEMA,
+        _COMPACT_HISTORY_SCHEMA,
+    ]
+
+
+def get_search_subagent_tool_schemas() -> list[dict]:
+    """Return the bounded read-only tool subset for search subagents."""
+    return [
+        _LIST_DIRECTORY_SCHEMA,
+        _READ_FILE_SCHEMA,
+        _SEARCH_FILE_SCHEMA,
+        _FIND_FILE_SCHEMA,
     ]
 
 
@@ -833,6 +974,47 @@ def _execute_run_terminal_command(arguments: dict, *, approval_granted: bool = F
         return json.dumps({"error": str(exc)})
 
 
+def _execute_launch_subagent(arguments: dict, subagent_manager: Any | None = None) -> dict[str, Any]:
+    if subagent_manager is None:
+        return {"error": "Subagent manager unavailable"}
+    kind = arguments.get("kind", "")
+    prompt = arguments.get("prompt", "")
+    try:
+        return subagent_manager.launch(kind, prompt)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+
+def _execute_list_subagents(subagent_manager: Any | None = None) -> dict[str, Any]:
+    if subagent_manager is None:
+        return {"error": "Subagent manager unavailable"}
+    return {"jobs": subagent_manager.list_jobs()}
+
+
+def _execute_get_subagent_result(
+    arguments: dict,
+    subagent_manager: Any | None = None,
+) -> dict[str, Any]:
+    if subagent_manager is None:
+        return {"error": "Subagent manager unavailable"}
+    subagent_id = arguments.get("subagent_id", "")
+    if not subagent_id:
+        return {"error": "subagent_id is required"}
+    return subagent_manager.get_job(subagent_id)
+
+
+def _execute_cancel_subagent(
+    arguments: dict,
+    subagent_manager: Any | None = None,
+) -> dict[str, Any]:
+    if subagent_manager is None:
+        return {"error": "Subagent manager unavailable"}
+    subagent_id = arguments.get("subagent_id", "")
+    if not subagent_id:
+        return {"error": "subagent_id is required"}
+    return subagent_manager.cancel(subagent_id)
+
+
 
 def execute_tool(
     name: str,
@@ -844,6 +1026,8 @@ def execute_tool(
     tray_writer: Callable[[str], Any] | None = None,
     tool_output_mode: str = "text",
     approval_granted: bool = False,
+    subagent_manager: Any | None = None,
+    history_compactor: Callable[[dict], str] | None = None,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.
 
@@ -925,5 +1109,32 @@ def execute_tool(
             arguments,
             approval_granted=approval_granted,
         )
+    elif name == "launch_subagent":
+        return json.dumps(
+            _execute_launch_subagent(
+                arguments,
+                subagent_manager=subagent_manager,
+            )
+        )
+    elif name == "list_subagents":
+        return json.dumps(_execute_list_subagents(subagent_manager=subagent_manager))
+    elif name == "get_subagent_result":
+        return json.dumps(
+            _execute_get_subagent_result(
+                arguments,
+                subagent_manager=subagent_manager,
+            )
+        )
+    elif name == "cancel_subagent":
+        return json.dumps(
+            _execute_cancel_subagent(
+                arguments,
+                subagent_manager=subagent_manager,
+            )
+        )
+    elif name == "compact_history":
+        if history_compactor is None:
+            return json.dumps({"error": "History compactor unavailable"})
+        return history_compactor(arguments)
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

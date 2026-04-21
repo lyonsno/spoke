@@ -138,11 +138,13 @@ def _run_modal_with_paste(alert) -> int:
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
+from .converge import TurnCarver, compact_history as compact_converge_history
 from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
 from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
-from .tool_dispatch import execute_tool, get_tool_schemas
+from .subagents import SubagentManager, run_search_subagent_query
+from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
 from .inject import inject_text, inject_text_raw, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
@@ -177,6 +179,7 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT = 8.0
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
@@ -999,9 +1002,45 @@ class SpokeAppDelegate(NSObject):
                     on_summary=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "narratorSummary:", {"summary": s}, False
                     ),
+                    on_thinking_collapsed=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "narratorCollapsed:", {"text": s}, False
+                    ),
                 )
             else:
                 self._narrator = None
+            search_subagent_tools = get_search_subagent_tool_schemas()
+            allowed_search_tool_names = {
+                tool["function"]["name"] for tool in search_subagent_tools
+            }
+
+            def _execute_search_subagent_tool(
+                name: str,
+                arguments: dict[str, Any],
+                **_: Any,
+            ) -> str:
+                if name not in allowed_search_tool_names:
+                    return json.dumps(
+                        {"error": f"Tool not allowed for search subagent: {name}"}
+                    )
+                return execute_tool(name=name, arguments=arguments)
+
+            self._subagent_manager = SubagentManager(
+                search_runner=lambda prompt, cancel_check: run_search_subagent_query(
+                    prompt,
+                    base_url=command_url,
+                    model=self._command_model_id,
+                    tools=search_subagent_tools,
+                    tool_executor=_execute_search_subagent_tool,
+                    api_key=cloud_api_key or None,
+                    cancel_check=cancel_check,
+                )
+            )
+            # Converge: per-turn attractor carver (same model, OMLX batch parallel)
+            self._turn_carver = TurnCarver(
+                base_url=command_url,
+                api_key=cloud_api_key or None,
+                model=self._command_model_id,
+            )
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
@@ -1040,6 +1079,7 @@ class SpokeAppDelegate(NSObject):
             self._command_url = None
             self._command_client = None
             self._narrator = None
+            self._turn_carver = None
             self._command_backend = None
             self._command_cloud_provider = self._load_cloud_provider_preference()
             self._command_url = None
@@ -1050,6 +1090,7 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay = None
             self._scene_cache = None
             self._tool_schemas = None
+            self._subagent_manager = None
 
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
@@ -2311,6 +2352,86 @@ class SpokeAppDelegate(NSObject):
         )
         return text
 
+    def _transcribe_full_buffer(self, wav_bytes: bytes, client=None) -> str:
+        """Run full-buffer transcription with bounded local-Whisper recovery."""
+        active_client = self._client if client is None else client
+        if isinstance(active_client, LocalTranscriptionClient):
+            return self._transcribe_local_whisper_with_recovery(wav_bytes, active_client)
+        with self._local_inference_context(active_client):
+            return active_client.transcribe(wav_bytes)
+
+    def _transcribe_local_whisper_with_recovery(
+        self, wav_bytes: bytes, client: LocalTranscriptionClient
+    ) -> str:
+        """Retry local Whisper finalization from cached audio with bounded settings."""
+        current_timeout = getattr(
+            client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        )
+        current_eager_eval = getattr(
+            client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
+        )
+        bounded_timeout = current_timeout
+        if (
+            bounded_timeout is None
+            or bounded_timeout > _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
+        ):
+            bounded_timeout = _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
+
+        attempts: list[tuple[str, float | None, bool]] = [
+            ("bounded-config", bounded_timeout, current_eager_eval),
+        ]
+        if supports_eager_eval():
+            attempts.append(("bounded-eager-eval", bounded_timeout, not current_eager_eval))
+
+        errors: list[str] = []
+        attempted_settings: set[tuple[float | None, bool]] = set()
+        for label, decode_timeout, eager_eval in attempts:
+            settings_key = (decode_timeout, eager_eval)
+            if settings_key in attempted_settings:
+                continue
+            attempted_settings.add(settings_key)
+
+            use_existing_client = (
+                client._decode_timeout == decode_timeout
+                and client._eager_eval == eager_eval
+            )
+            attempt_client = client
+            if not use_existing_client:
+                attempt_client = LocalTranscriptionClient(
+                    model=client._model,
+                    decode_timeout=decode_timeout,
+                    eager_eval=eager_eval,
+                )
+
+            attempt_failed = False
+            try:
+                with self._local_inference_context(attempt_client):
+                    return attempt_client.transcribe(wav_bytes)
+            except Exception as exc:
+                attempt_failed = True
+                errors.append(
+                    f"{label}[timeout={decode_timeout!r}, eager_eval={eager_eval}] {exc}"
+                )
+                logger.warning(
+                    "Local Whisper finalization failed via %s (timeout=%r, eager_eval=%s)",
+                    label,
+                    decode_timeout,
+                    eager_eval,
+                    exc_info=True,
+                )
+            finally:
+                if attempt_client is not client:
+                    close = getattr(attempt_client, "close", None)
+                    if callable(close):
+                        close()
+                elif attempt_failed:
+                    unload = getattr(attempt_client, "unload", None)
+                    if callable(unload):
+                        unload()
+
+        detail = "; ".join(errors) if errors else "no bounded local Whisper attempt ran"
+        raise RuntimeError(f"Local transcription timed out after bounded retries: {detail}")
+
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -2329,31 +2450,33 @@ class SpokeAppDelegate(NSObject):
             text = self._transcribe_segments_and_tail(wav_bytes)
             if text is None:
                 # Slow path: full-buffer transcription.
-                with self._local_inference_context(self._client):
-                    # If the preview client was streaming, finalize it for the final text
-                    # (this runs the tail refinement pass with the existing KV cache).
-                    if (
-                        release_cutover
-                        and getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
-                        cancel_stream = getattr(self._client, "cancel_stream", None)
-                        if callable(cancel_stream):
-                            cancel_stream()
-                        text = self._client.transcribe(wav_bytes)
-                    elif (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                # If the preview client was streaming, finalize it for the final text
+                # (this runs the tail refinement pass with the existing KV cache).
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._transcribe_full_buffer(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
-                    else:
-                        text = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    text = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "transcriptionFailed:", {"token": token}, False
+                "transcriptionFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -2378,29 +2501,31 @@ class SpokeAppDelegate(NSObject):
         try:
             text = self._transcribe_segments_and_tail(wav_bytes)
             if text is None:
-                with self._local_inference_context(self._client):
-                    if (
-                        release_cutover
-                        and getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
-                        cancel_stream = getattr(self._client, "cancel_stream", None)
-                        if callable(cancel_stream):
-                            cancel_stream()
-                        text = self._client.transcribe(wav_bytes)
-                    elif (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._transcribe_full_buffer(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
-                    else:
-                        text = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    text = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "parallelTranscriptionFailed:", {"token": token}, False
+                "parallelTranscriptionFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -2500,11 +2625,12 @@ class SpokeAppDelegate(NSObject):
             )
             self._inject_result_text(self._last_preview_text, "Pasted preview")
             return
-        logger.error("Transcription failed — no text injected")
+        error_text = payload.get("error") or "Error — try again"
+        logger.error("Transcription failed — no text injected: %s", error_text)
         if self._overlay is not None:
             self._overlay.hide()
         if not self._resume_handsfree_after_hold() and self._menubar is not None:
-            self._menubar.set_status_text("Error — try again")
+            self._menubar.set_status_text(error_text)
 
     def parallelTranscriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle failure on the parallel insert lane."""
@@ -2601,29 +2727,31 @@ class SpokeAppDelegate(NSObject):
             # Fast path: use cached segment transcriptions + tail only.
             text = self._transcribe_segments_and_tail(wav_bytes)
             if text is None:
-                with self._local_inference_context(self._client):
-                    if (
-                        release_cutover
-                        and getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
-                        cancel_stream = getattr(self._client, "cancel_stream", None)
-                        if callable(cancel_stream):
-                            cancel_stream()
-                        text = self._client.transcribe(wav_bytes)
-                    elif (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._transcribe_full_buffer(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
-                    else:
-                        text = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    text = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "trayTranscriptionFailed:", {"token": token}, False
+                "trayTranscriptionFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -2667,7 +2795,8 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Tray transcription failed — using preview text")
             self._enter_tray(self._last_preview_text)
             return
-        logger.error("Tray transcription failed — no text")
+        error_text = payload.get("error") or "Error — try again"
+        logger.error("Tray transcription failed — no text: %s", error_text)
         if self._overlay is not None:
             self._overlay.hide()
         if self._glow is not None:
@@ -2675,7 +2804,7 @@ class SpokeAppDelegate(NSObject):
         self._tray_active = False
         self._detector.tray_active = False
         if self._menubar is not None:
-            self._menubar.set_status_text("Error — try again")
+            self._menubar.set_status_text(error_text)
 
     def _enter_tray(self, text: str) -> None:
         """Enter the tray with new text, pushing it onto the stack."""
@@ -3119,12 +3248,11 @@ class SpokeAppDelegate(NSObject):
                 # Repair history only when a stale token break interrupts the
                 # streaming loop before the command client can finalize the turn.
                 if stale_break and full_response:
-                    self._command_client._history.append((text, full_response))
-                    max_h = self._command_client._max_history
-                    if len(self._command_client._history) > max_h:
-                        self._command_client._history.pop(0)
-                    self._command_client._save_history()
-                    logger.info("Command history saved: %d turns", len(self._command_client._history))
+                    self._command_client.append_history_pair(text, full_response)
+                    logger.info(
+                        "Command history saved: %d turns",
+                        len(self._command_client._history),
+                    )
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandComplete:", {"token": token, "response": full_response}, False
@@ -3135,8 +3263,8 @@ class SpokeAppDelegate(NSObject):
     def _make_tool_executor(self):
         """Build a tool executor closure with current app state."""
         scene_cache = self._scene_cache
-        raw_tts_client = self._ensure_tts_client(allow_default_voice=True)
-        tts_client = raw_tts_client
+        raw_tts_client = None
+        tts_client = None
         # Get last assistant response for last_response refs
         last_response = None
         try:
@@ -3146,36 +3274,103 @@ class SpokeAppDelegate(NSObject):
         except (TypeError, ValueError):
             pass
 
-        if raw_tts_client is not None:
-            delegate = self
+        delegate = self
 
-            class _ToolTTSProxy:
-                def __init__(self, client):
-                    self._client = client
+        class _ToolTTSProxy:
+            def __init__(self, client):
+                self._client = client
 
-                def speak_async(self, text, *args, **kwargs):
-                    result = self._client.speak_async(text, *args, **kwargs)
-                    delegate._command_tool_used_tts = True
-                    return result
+            def speak_async(self, text, *args, **kwargs):
+                result = self._client.speak_async(text, *args, **kwargs)
+                delegate._command_tool_used_tts = True
+                return result
 
-                def speak(self, text, *args, **kwargs):
-                    result = self._client.speak(text, *args, **kwargs)
-                    delegate._command_tool_used_tts = True
-                    return result
+            def speak(self, text, *args, **kwargs):
+                result = self._client.speak(text, *args, **kwargs)
+                delegate._command_tool_used_tts = True
+                return result
 
-                def __getattr__(self, name):
-                    return getattr(self._client, name)
+            def __getattr__(self, name):
+                return getattr(self._client, name)
 
+        def _tool_tts_client(tool_name: str):
+            nonlocal raw_tts_client, tts_client
+            if tool_name != "read_aloud":
+                return None
+            if tts_client is not None:
+                return tts_client
+            raw_tts_client = self._ensure_tts_client(allow_default_voice=True)
+            if raw_tts_client is None:
+                return None
             tts_client = _ToolTTSProxy(raw_tts_client)
+            return tts_client
+
+        def _compact_history(arguments):
+            import json as _json
+            return _json.dumps(compact_converge_history(self._command_client, arguments))
+
+        def _compact_history(arguments):
+            import json as _json
+            mode = arguments.get("mode", "drop_tool_results")
+            n = arguments.get("n", 0)
+            client = self._command_client
+            history = client._history
+            if not history:
+                return _json.dumps({"status": "nothing to compact", "turns": 0})
+
+            target = len(history) if n == 0 else min(n, len(history))
+
+            if mode == "drop_tool_results":
+                compacted = 0
+                for i in range(target):
+                    turn = history[i]
+                    before = len(turn)
+                    history[i] = [
+                        m for m in turn
+                        if m.get("role") in ("user", "assistant", "system")
+                    ]
+                    if len(history[i]) < before:
+                        compacted += 1
+                client._save_history()
+                return _json.dumps({
+                    "status": "ok",
+                    "mode": "drop_tool_results",
+                    "turns_compacted": compacted,
+                    "turns_total": len(history),
+                })
+
+            elif mode == "summarize":
+                summary = arguments.get("summary", "")
+                if not summary:
+                    return _json.dumps({"error": "summary is required for summarize mode"})
+                # Replace the oldest N turns with a single summary turn
+                remaining = history[target:]
+                summary_turn = [
+                    {"role": "user", "content": "[compacted history]"},
+                    {"role": "assistant", "content": summary},
+                ]
+                client._history = [summary_turn] + remaining
+                client._save_history()
+                return _json.dumps({
+                    "status": "ok",
+                    "mode": "summarize",
+                    "turns_replaced": target,
+                    "turns_remaining": len(remaining),
+                })
+
+            return _json.dumps({"error": f"unknown mode: {mode}"})
 
         def _executor(name, arguments, **kwargs):
+            if name == "compact_history":
+                return _compact_history(arguments)
             return execute_tool(
                 name=name,
                 arguments=arguments,
                 scene_cache=scene_cache,
                 last_response=last_response,
-                tts_client=tts_client,
+                tts_client=_tool_tts_client(name),
                 tray_writer=self._add_assistant_content_to_tray,
+                subagent_manager=getattr(self, "_subagent_manager", None),
                 **kwargs,
             )
         return _executor
@@ -3195,19 +3390,21 @@ class SpokeAppDelegate(NSObject):
             # Fast path: use cached segment transcriptions + tail only.
             utterance = self._transcribe_segments_and_tail(wav_bytes)
             if utterance is None:
-                with self._local_inference_context(self._client):
-                    if (
-                        getattr(self._client, 'supports_streaming', False)
-                        and self._client is self._preview_client
-                        and getattr(self._client, "has_active_stream", False)
-                    ):
+                if (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    with self._local_inference_context(self._client):
                         utterance = self._client.finish_stream()
-                    else:
-                        utterance = self._client.transcribe(wav_bytes)
-        except Exception:
+                else:
+                    utterance = self._transcribe_full_buffer(wav_bytes)
+        except Exception as exc:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "commandFailed:", {"token": token, "error": "Transcription failed"}, False
+                "commandFailed:",
+                {"token": token, "error": str(exc)},
+                False,
             )
             return
 
@@ -3231,14 +3428,15 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         stale_break = False
-        narrator_started = False
+        narrator_started = False  # tracks thinking narrator state, NOT vamp
         vamp_started = False
         first_event_received = False
         try:
-            # Start the narrator if available
+            # Start loading vamp if narrator is available.
+            # Note: narrator_started stays False — it tracks the thinking
+            # narrator lifecycle, not the vamp. The vamp uses the narrator's
+            # on_summary callback independently.
             if self._narrator is not None:
-                self._narrator.start()
-                narrator_started = True
                 # Start loading vamp — runs in background while the HTTP
                 # request blocks during model loading.  Stops when the
                 # first event arrives (model is loaded and generating).
@@ -3247,6 +3445,11 @@ class SpokeAppDelegate(NSObject):
                     utterance=utterance, model_id=model_id
                 )
                 vamp_started = True
+                # Enable color shimmer — vamp lines will appear after
+                # the grace period if the model is genuinely loading.
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "narratorShimmer:", {"active": True}, False
+                )
 
             for event in self._command_client.stream_command_events(
                 utterance,
@@ -3264,16 +3467,35 @@ class SpokeAppDelegate(NSObject):
                     if vamp_started and self._narrator is not None:
                         self._narrator.stop_loading_vamp()
                         vamp_started = False
+                    # Only hide narrator label if this ISN'T a thinking event —
+                    # thinking will use the label for live summaries.
+                    if event.kind != "thinking_delta":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "narratorHide:", {"token": token}, False
+                        )
 
                 if event.kind == "thinking_delta":
                     # Feed thinking tokens to the narrator sidecar
                     if self._narrator is not None:
+                        if not narrator_started:
+                            self._narrator.start()
+                            narrator_started = True
+                            # Unsuppress and show "Thinking" on main thread
+                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                "narratorUnsuppressAndShow:", {
+                                    "token": token,
+                                }, False
+                            )
                         self._narrator.feed(event.text)
                 elif event.kind == "assistant_delta" or event.kind == "tool_call":
-                    # Stop narrator when visible content starts
+                    # Stop narrator when visible content starts — produce collapsed summary
                     if narrator_started and self._narrator is not None:
-                        self._narrator.stop()
+                        self._narrator.stop_and_summarize()
                         narrator_started = False
+                        # Hide narrator label immediately so it doesn't overlap response
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "narratorHide:", {"token": token}, False
+                        )
                     if event.text:
                         full_response += event.text
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3323,11 +3545,7 @@ class SpokeAppDelegate(NSObject):
             # Repair history only when a stale token break interrupts the
             # streaming loop before the command client can finalize the turn.
             if stale_break and full_response:
-                self._command_client._history.append((utterance, full_response))
-                max_h = self._command_client._max_history
-                if len(self._command_client._history) > max_h:
-                    self._command_client._history.pop(0)
-                self._command_client._save_history()
+                self._command_client.append_history_pair(utterance, full_response)
                 logger.info(
                     "Command history saved after stale token break: %d turns",
                     len(self._command_client._history),
@@ -3375,6 +3593,47 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorUnsuppressAndShow_(self, payload: dict) -> None:
+        """Main thread: unsuppress narrator and show 'Thinking' indicator."""
+        if payload.get("token") != self._transcription_token:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            overlay._narrator_suppressed = False
+            overlay.set_narrator_summary("Thinking")
+
+    def narratorHide_(self, payload: dict) -> None:
+        """Main thread: hide the narrator label immediately."""
+        if payload.get("token") != self._transcription_token:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay._hide_narrator()
+            except Exception:
+                logger.exception("Command overlay failed to hide narrator")
+
+    def narratorShimmer_(self, payload: dict) -> None:
+        """Main thread: enable/disable color shimmer on narrator label."""
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_narrator_shimmer(payload.get("active", False))
+            except Exception:
+                logger.exception("Command overlay failed to set narrator shimmer")
+
+    def narratorCollapsed_(self, payload: dict) -> None:
+        """Main thread: inject collapsed thinking summary into the overlay."""
+        text = payload.get("text", "")
+        if not text:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_thinking_collapsed(text)
+            except Exception:
+                logger.exception("Command overlay failed to set collapsed thinking")
 
     def narratorSummary_(self, payload: dict) -> None:
         """Main thread: update the overlay with a narrator thinking summary."""
@@ -3452,6 +3711,11 @@ class SpokeAppDelegate(NSObject):
         self._command_tool_used_tts = False
         if self._glow is not None:
             self._glow.hide()
+        # Converge: fire per-turn attractor carving in background
+        turn_carver = getattr(self, "_turn_carver", None)
+        if turn_carver is not None and response:
+            utterance = getattr(self, "_last_command_utterance", "")
+            turn_carver.on_turn_complete(utterance, response)
 
     def commandApprovalRequired_(self, payload: dict) -> None:
         """Main thread: present a pending command approval card on the overlay."""

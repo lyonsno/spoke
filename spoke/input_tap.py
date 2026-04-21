@@ -590,7 +590,10 @@ class SpacebarHoldDetector(NSObject):
         logger.warning("Repeat watchdog recovered a missed spacebar keyUp")
         self._cancel_safety_timer()
         self._state = _State.IDLE
-        self._awaiting_space_release = True
+        # Unlike force_end(), this path already has Quartz confirmation that
+        # the physical key is up. Requiring one more release would swallow the
+        # user's first fresh press behind a phantom trailing keyUp.
+        self._awaiting_space_release = False
         # Query Quartz for the real Enter state — _enter_held may be stale if
         # the Enter keyUp was also lost during this chord.
         actual_enter = _current_enter_key_state()
