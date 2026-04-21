@@ -203,6 +203,17 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_preview_optical_shell_config_keeps_assistant_like_envelope_gap(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            cfg = mod._preview_optical_shell_config(600.0, 80.0)
+            capsule_r = mod._OVERLAY_HEIGHT / 4.0
+            assert cfg["content_width_points"] == pytest.approx(600.0 + 2.0 * capsule_r)
+            assert cfg["content_height_points"] == pytest.approx(80.0 + 2.0 * capsule_r)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
 
 class TestAdaptiveOverlayCompositing:
     """Overlay bg/text cross-fades between dark and light with brightness."""
