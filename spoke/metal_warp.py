@@ -99,6 +99,13 @@ constexpr sampler bilinearSampler(
     filter::linear
 );
 
+constexpr sampler mipSampler(
+    coord::normalized,
+    address::clamp_to_edge,
+    filter::linear,
+    mip_filter::linear
+);
+
 kernel void opticalShellWarp(
     texture2d<float, access::sample> inTexture [[texture(0)]],
     texture2d<float, access::write> outTexture [[texture(1)]],
@@ -181,40 +188,26 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur.  Starts immediately at the boundary
-    // with a minimum blur floor, ramps to full wash in interior.
+    // Depth-dependent blur via mipmap LOD.  The input texture has
+    // hardware-generated mipmaps; sampling at a higher LOD reads a
+    // pre-averaged version.  One texture read, no ghosting, smooth
+    // result.  LOD 0 = full res, LOD 8 ≈ 256× downsample.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
     float blurT = smoothstep(0.0f, 0.35f, interiorDepth);
-    // Minimum blur floor at rim so compressed content is always softened
-    float blurFloor = interiorDepth > 0.0f ? 0.15f : 0.0f;
+    // Minimum blur at rim so compressed content is always softened
+    float blurFloor = interiorDepth > 0.0f ? 0.1f : 0.0f;
     blurT = max(blurT, blurFloor);
-    float blurRadius = blurT * 350.0f;
+    // Map to mip LOD: 0 = sharp, 8 = fully washed
+    float mipLod = blurT * 8.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
-
     float4 finalColor;
-    if (blurRadius < 0.25f) {{
+    if (mipLod < 0.1f) {{
         finalColor = inTexture.sample(bilinearSampler, samplePt);
     }} else {{
-        // Box-kernel blur around the warped sample point.
-        // Equal weight for all taps — no Gaussian falloff that
-        // under-weights the outer ring and preserves structure.
-        float r = max(blurRadius, 0.5f);
-        float4 acc = inTexture.sample(bilinearSampler, samplePt);
-        float tw = 1.0f;
-
-        // 5 rings × 6 taps = 30 taps, all equal weight
-        for (int ring = 1; ring <= 5; ring++) {{
-            float rr = r * float(ring) / 5.0f;
-            float phase = (ring % 2 == 0) ? 0.5236f : 0.0f;  // alternate 30°
-            for (int i = 0; i < 6; i++) {{
-                float a = float(i) * 1.0472f + phase;
-                float2 o = float2(cos(a), sin(a)) * rr;
-                acc += inTexture.sample(bilinearSampler, samplePt + o);
-                tw += 1.0f;
-            }}
-        }}
-        finalColor = acc / tw;
+        // Normalized coords for mip-level sampling
+        float2 normPt = samplePt / float2(params.width, params.height);
+        finalColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
     outTexture.write(finalColor, pixel);
@@ -313,6 +306,8 @@ class MetalWarpPipeline:
         self._params_buffer = None
         self._output_texture = None
         self._output_texture_size = None
+        self._mip_texture = None
+        self._mip_texture_size = None
         logger.info("Metal warp pipeline created (threadgroup=%d)", pipeline.maxTotalThreadsPerThreadgroup())
 
     def warp_iosurface(self, input_surface, *, width, height, shell_config):
@@ -372,7 +367,7 @@ class MetalWarpPipeline:
         import objc
         import struct
 
-        # Input texture from IOSurface
+        # Input texture from IOSurface (single-level, no mipmaps)
         tex_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
             80,  # MTLPixelFormatBGRA8Unorm
             width, height, False,
@@ -393,13 +388,25 @@ class MetalWarpPipeline:
         out_w = output_texture.width()
         out_h = output_texture.height()
 
-        # Two-pass: blit full screen (fast memcpy), then compute-warp
-        # only the capsule bounding box (~5% of pixels).
+        # Create or reuse a mipmapped texture for blur LOD sampling.
+        # IOSurface textures don't support mipmaps, so we blit into
+        # a private mipmapped texture and generate mips on GPU.
+        if self._mip_texture is None or self._mip_texture_size != (out_w, out_h):
+            mip_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+                80, out_w, out_h, True,  # mipmapped=True
+            )
+            mip_desc.setUsage_(1 | 2)  # read | write (write needed for mipmap gen)
+            self._mip_texture = self._device.newTextureWithDescriptor_(mip_desc)
+            self._mip_texture_size = (out_w, out_h)
+
         command_buffer = self._command_queue.commandBuffer()
 
-        # Pass 1: blit entire input → output (hardware memcpy, near-free)
+        # Pass 1: blit IOSurface → output (identity passthrough for non-warped pixels)
+        # AND blit IOSurface → mip level 0, then generate mipmaps
         blit = command_buffer.blitCommandEncoder()
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
+        blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
+        blit.generateMipmapsForTexture_(self._mip_texture)
         blit.endEncoding()
 
         # Pass 2: compute warp over capsule bounding box only
@@ -433,7 +440,7 @@ class MetalWarpPipeline:
 
             encoder = command_buffer.computeCommandEncoder()
             encoder.setComputePipelineState_(self._pipeline)
-            encoder.setTexture_atIndex_(input_texture, 0)
+            encoder.setTexture_atIndex_(self._mip_texture, 0)  # mipmapped input
             encoder.setTexture_atIndex_(output_texture, 1)
             encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
 
