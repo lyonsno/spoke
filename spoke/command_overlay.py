@@ -1848,14 +1848,28 @@ class CommandOverlay(NSObject):
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
-        # Boost layer: on light backgrounds (dark fill), brighten the
-        # warped content behind text holes so the cut-out text reads
-        # light against the dark fill.  White layer masked to glyphs.
+        # Brightness floor + boost for punch-through legibility.
+        # On light backgrounds (dark fill), guarantee the warped content
+        # inside the capsule has luminance >= 0.5 so text holes read bright.
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None and getattr(self, "_text_punchthrough", False):
+            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
+            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
+            # Light bg → 0.5 brightness floor; dark bg → no floor
+            min_b = _lerp(0.0, 0.5, _bt)
+            last_min_b = getattr(self, '_last_min_brightness', -1.0)
+            if abs(min_b - last_min_b) > 0.01:
+                compositor.update_shell_config_key("min_brightness", min_b)
+                self._last_min_brightness = min_b
+        elif compositor is not None:
+            if getattr(self, '_last_min_brightness', 0.0) > 0.01:
+                compositor.update_shell_config_key("min_brightness", 0.0)
+                self._last_min_brightness = 0.0
+        # Boost layer: white layer masked to text glyphs for extra lift.
         boost_layer = getattr(self, "_boost_layer", None)
         if boost_layer is not None and getattr(self, "_text_punchthrough", False):
             _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
             _bt = _bt * _bt * (3.0 - 2.0 * _bt)
-            # Light bg (dark fill) → boost; dark bg (light fill) → no boost
             boost_opacity = _lerp(0.0, 0.5, _bt)
             has_mask = getattr(self, "_boost_mask_layer", None) is not None
             if boost_opacity > 0.01 and has_mask:

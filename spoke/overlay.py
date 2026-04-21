@@ -1187,8 +1187,21 @@ class TranscriptionOverlay(NSObject):
                     except Exception:
                         pass
 
-        # Boost layer: on light backgrounds (dark fill), brighten the
-        # warped content behind text holes so cut-out text reads light.
+        # Brightness floor for punch-through legibility.
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None and getattr(self, "_text_punchthrough", False):
+            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
+            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
+            min_b = _lerp(0.0, 0.5, _bt)
+            last_min_b = getattr(self, '_last_min_brightness', -1.0)
+            if abs(min_b - last_min_b) > 0.01:
+                compositor.update_shell_config_key("min_brightness", min_b)
+                self._last_min_brightness = min_b
+        elif compositor is not None:
+            if getattr(self, '_last_min_brightness', 0.0) > 0.01:
+                compositor.update_shell_config_key("min_brightness", 0.0)
+                self._last_min_brightness = 0.0
+        # Boost layer: white layer masked to text glyphs for extra lift.
         boost_layer = getattr(self, "_boost_layer", None)
         if boost_layer is not None and getattr(self, "_text_punchthrough", False):
             _bt = _clamp01((t - 0.45) * 6.0 + 0.5)

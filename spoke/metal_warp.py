@@ -67,6 +67,7 @@ struct WarpParams {{
     float gridOffsetX;  // dispatch grid origin X (for bounding-box dispatch)
     float gridOffsetY;  // dispatch grid origin Y
     float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
+    float minBrightness; // floor for interior pixel luminance (0 = no floor)
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -185,6 +186,16 @@ kernel void opticalShellWarp(
     // Low/zero mip LOD (near boundary) = almost no temporal.
     // Exterior = no temporal at all (pass through).
     if (capsuleSdf <= 0.0f) {{
+        // Brightness floor: guarantee minimum luminance inside the
+        // capsule so text punch-through holes stay legible against
+        // a dark fill.  Lerp toward white until V >= minBrightness.
+        if (params.minBrightness > 0.001f) {{
+            float lum = 0.299f * warpedColor.r + 0.587f * warpedColor.g + 0.114f * warpedColor.b;
+            if (lum < params.minBrightness) {{
+                float lift = (params.minBrightness - lum) / (1.0f - lum + 1e-6f);
+                warpedColor = mix(warpedColor, float4(1.0f, 1.0f, 1.0f, 1.0f), lift);
+            }}
+        }}
         // Interior: temporal weight scales with mip LOD (blur depth).
         // mipLod 0 (rim, no blur) → weight 1.0 (no temporal).
         // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
@@ -225,13 +236,13 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("15f")
+_WARP_PARAMS_SIZE = struct.calcsize("16f")
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "15f",
+        "16f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -247,6 +258,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(grid_offset_x),
         float(grid_offset_y),
         float(shell_config.get("temporal_blend", _TEMPORAL_BLEND_FACTOR)),
+        float(shell_config.get("min_brightness", 0.0)),
     )
 
 
