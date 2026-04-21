@@ -66,15 +66,21 @@ struct WarpParams {{
     float gridOffsetY;  // dispatch grid origin Y
 }};
 
-float sdCapsule(float2 p, float spineHalf, float radius) {{
-    p.x = abs(p.x);
-    float spine_dist = max(p.x - spineHalf, 0.0f);
-    return length(float2(spine_dist, p.y)) - radius;
+float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
+    // Distance to a rounded rectangle whose skeleton is a rectangle
+    // (spineHalfX × spineHalfY), inflated by radius.  When spineHalfY=0
+    // this is a horizontal capsule.  Iso-contours are smaller stadiums
+    // at every depth — no medial-axis degeneration.
+    float dx = max(abs(p.x) - spineHalfX, 0.0f);
+    float dy = max(abs(p.y) - spineHalfY, 0.0f);
+    return length(float2(dx, dy)) - radius;
 }}
 
-float2 capsuleGradient(float2 p, float spineHalf) {{
-    float clampedX = clamp(p.x, -spineHalf, spineHalf);
-    float2 toP = p - float2(clampedX, 0.0f);
+float2 stadiumGradient(float2 p, float spineHalfX, float spineHalfY) {{
+    // Gradient of sdStadium: direction from nearest skeleton point to p.
+    float clampedX = clamp(p.x, -spineHalfX, spineHalfX);
+    float clampedY = clamp(p.y, -spineHalfY, spineHalfY);
+    float2 toP = p - float2(clampedX, clampedY);
     float len = length(toP);
     return len > 1e-6f ? toP / len : float2(0.0f, 1.0f);
 }}
@@ -111,21 +117,17 @@ kernel void opticalShellWarp(
     );
     float2 p = d - c;
     float2 halfRect = float2(params.rectWidth * 0.5f, params.rectHeight * 0.5f);
-    // Cap the capsule radius so taller overlays stretch vertically
-    // without getting rounder.  cornerRadius carries the desired cap
-    // curvature; fall back to half-width capped at a sane maximum.
-    float maxRadius = params.cornerRadius > 0.0f
-        ? params.cornerRadius
+    // cornerRadius carries the endcap radius (initial overlay half-height).
+    // When the overlay grows taller, the extra height becomes straight sides
+    // (spineHalfY > 0) while the semicircular caps stay the same size.
+    float capsuleRadius = params.cornerRadius > 0.0f
+        ? min(params.cornerRadius, halfRect.y)
         : min(halfRect.y, halfRect.x * 0.35f);
-    float capsuleRadius = max(min(halfRect.y, maxRadius), 1.0f);
-    float spineHalf = max(halfRect.x - capsuleRadius, 0.0f);
-    // When content is taller than the capsule diameter, pre-scale
-    // p.y so the SDF sees a pill-shaped space.  The warp result
-    // is un-scaled back to screen coords afterward.
-    float yScale = capsuleRadius / max(halfRect.y, 1.0f);
-    float2 pSdf = float2(p.x, p.y * yScale);
+    capsuleRadius = max(capsuleRadius, 1.0f);
+    float spineHalfX = max(halfRect.x - capsuleRadius, 0.0f);
+    float spineHalfY = max(halfRect.y - capsuleRadius, 0.0f);
 
-    float capsuleSdf = sdCapsule(pSdf, spineHalf, capsuleRadius);
+    float capsuleSdf = sdStadium(p, spineHalfX, spineHalfY, capsuleRadius);
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{
@@ -139,8 +141,8 @@ kernel void opticalShellWarp(
             + min(params.ringAmplitudePoints / {_WARP_CURVEBOOST_RING_DIVISOR}f, {_WARP_CURVEBOOST_RING_CAP}f)
     );
 
-    float distFromTip = max(spineHalf - abs(p.x), 0.0f);
-    float spineProximity = spineHalf > 0.0f ? distFromTip / spineHalf : 0.0f;
+    float distFromTip = max(spineHalfX - abs(p.x), 0.0f);
+    float spineProximity = spineHalfX > 0.0f ? distFromTip / spineHalfX : 0.0f;
 
     float rawField = clamp(1.0f + capsuleSdf / capsuleRadius, 0.0f, 1.0f);
     float localFloor = {_WARP_CENTER_FLOOR}f / (1.0f + spineProximity * {_WARP_SPINE_PROXIMITY_BOOST}f);

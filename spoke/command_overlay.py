@@ -65,7 +65,7 @@ _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
-_FONT_SIZE = 16.0
+_FONT_SIZE = 13.0
 _FADE_IN_S = 0.7
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
@@ -1077,7 +1077,7 @@ class CommandOverlay(NSObject):
             NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
         self._scroll_view.setFrame_(
-            NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+            NSMakeRect(48, 8, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 16)
         )
         self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._fill_image_brightness = self._brightness
@@ -2248,7 +2248,7 @@ class CommandOverlay(NSObject):
                     NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
                 )
                 self._scroll_view.setFrame_(
-                    NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
+                    NSMakeRect(48, 8, _OVERLAY_WIDTH - 96, new_height - 16)
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()
