@@ -1,4 +1,9 @@
-"""Shared backdrop renderer helpers for snapshot and stream-backed overlays."""
+"""Backdrop capture helpers for snapshot and fallback stream-backed overlays.
+
+The fullscreen optical-shell compositor owns the primary live Metal path.
+This module still matters for the non-compositor backdrop surface and for
+fallback operation when the fullscreen/display-link path is unavailable.
+"""
 
 from __future__ import annotations
 

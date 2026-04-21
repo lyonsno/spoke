@@ -1158,6 +1158,23 @@ class TestBackdropRefresh:
         overlay._backdrop_layer.setContents_.assert_not_called()
         overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
 
+    def test_refresh_backdrop_snapshot_bails_out_when_fullscreen_compositor_is_active(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = object()
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_layer = MagicMock()
+        overlay._update_backdrop_capture_geometry = MagicMock(
+            side_effect=AssertionError("fullscreen compositor should bypass backdrop snapshot geometry")
+        )
+
+        result = overlay._refresh_backdrop_snapshot()
+
+        assert result is None
+        overlay._backdrop_renderer.capture_blurred_image.assert_not_called()
+        overlay._backdrop_layer.setFrame_.assert_not_called()
+
     def test_update_backdrop_mask_reuses_cached_mask_when_signature_is_unchanged(
         self, mock_pyobjc, monkeypatch
     ):

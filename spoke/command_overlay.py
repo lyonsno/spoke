@@ -2344,7 +2344,7 @@ class CommandOverlay(NSObject):
         renderer.set_sample_buffer_callback(apply_live_sample_buffer)
 
     def _start_fullscreen_compositor(self):
-        """Start the full-screen compositor for zero-seam optical shell."""
+        """Start the full-screen compositor for the canonical zero-seam shell path."""
         self._stop_fullscreen_compositor()
         try:
             from spoke.fullscreen_compositor import FullScreenCompositor
@@ -2612,8 +2612,8 @@ class CommandOverlay(NSObject):
 
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()
-        # Full-screen compositor handles all rendering — no need for the
-        # old per-overlay backdrop capture/warp/present path.
+        # The fullscreen compositor owns the canonical live shell path.
+        # The old backdrop refresh loop only exists for the fallback surface.
         if getattr(self, "_fullscreen_compositor", None) is not None:
             return
         if self._backdrop_renderer is None or self._backdrop_layer is None:
@@ -2636,7 +2636,7 @@ class CommandOverlay(NSObject):
         self._refresh_backdrop_snapshot()
 
     def _refresh_backdrop_snapshot(self):
-        # Full-screen compositor handles all rendering
+        # The fullscreen compositor replaces the old snapshot path while active.
         if getattr(self, "_fullscreen_compositor", None) is not None:
             return None
         if (
