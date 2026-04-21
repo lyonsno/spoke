@@ -181,28 +181,20 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur.  Starts at the boundary and ramps
-    // smoothly to full wash deep in the interior.
-    // 0-5%%: no blur (sharp rim detail preserved).
-    // 5-40%%: gradual ramp — content softens imperceptibly.
-    // >40%%: holds at full radius (deep interior fully washed).
+    // Depth-dependent blur.  Starts immediately at the boundary
+    // with a minimum blur floor, ramps to full wash in interior.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    float blurT = smoothstep(0.05f, 0.40f, interiorDepth);
-    // Square the ramp for an even gentler onset (cubic feel)
-    blurT = blurT * blurT;
-    float blurRadius = blurT * 1000.0f;
+    float blurT = smoothstep(0.0f, 0.35f, interiorDepth);
+    // Minimum blur floor at rim so compressed content is always softened
+    float blurFloor = interiorDepth > 0.0f ? 0.15f : 0.0f;
+    blurT = max(blurT, blurFloor);
+    float blurRadius = blurT * 350.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
 
-    // DEBUG: tint blur zone red to verify blur branch is entered
     float4 finalColor;
     if (blurRadius < 0.25f) {{
         finalColor = inTexture.sample(bilinearSampler, samplePt);
-    }} else if (blurRadius > 999.0f) {{
-        // Diagnostic: deep interior should be solid magenta
-        finalColor = float4(1.0f, 0.0f, 1.0f, 1.0f);
-        outTexture.write(finalColor, pixel);
-        return;
     }} else {{
         // Box-kernel blur around the warped sample point.
         // Equal weight for all taps — no Gaussian falloff that
