@@ -2141,6 +2141,10 @@ class CommandOverlay(NSObject):
                     ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
                     ext_exterior = (exterior * (0.13 * np.exp(-((ext_t / 0.30) ** 1.5)) + 0.007)).astype(np.float32)
 
+                    # First render and post-stop fallback still need a
+                    # non-compositor fill image before the fullscreen host
+                    # is available again.
+                    self._sdf_fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
                     self._sdf_raw_interior = raw_interior
                     self._sdf_edge_ridge = edge_ridge
                     self._sdf_inside_mask = inside_mask
