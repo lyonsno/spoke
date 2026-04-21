@@ -82,3 +82,9 @@ def test_readme_mentions_current_public_assistant_capabilities():
     assert "subagent" in text
     assert "narrator" in text
     assert "compact" in text
+
+
+def test_readme_mentions_brave_search_api_key_setup():
+    text = read_readme()
+
+    assert "BRAVE_SEARCH_API_KEY" in text or "SPOKE_BRAVE_SEARCH_API_KEY" in text
