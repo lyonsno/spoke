@@ -3756,9 +3756,18 @@ class TestCommandCallbacks:
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_client._history = [
-            ("user 1", "assistant 1"),
-            ("user 2", "assistant 2"),
-            ("user 3", "assistant 3"),
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ],
+            [
+                {"role": "user", "content": "user 2"},
+                {"role": "assistant", "content": "assistant 2"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
         ]
         d._command_client.history = list(d._command_client._history)
         d._command_client._save_history = MagicMock()
@@ -3775,28 +3784,42 @@ class TestCommandCallbacks:
         assert result["status"] == "ok"
         assert result["mode"] == "summarize"
         assert d._command_client._history == [
-            ("[compacted history]", "compressed summary"),
-            ("user 3", "assistant 3"),
+            [
+                {"role": "user", "content": "[compacted history]"},
+                {"role": "assistant", "content": "compressed summary"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
         ]
         d._command_client._save_history.assert_called_once_with()
 
-    def test_tool_executor_compact_history_guided_reports_unavailable_substrate(
+    def test_tool_executor_compact_history_guided_routes_to_converge_helper(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
-        d._command_client._history = [("user 1", "assistant 1")]
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ]
+        ]
         d._command_client.history = list(d._command_client._history)
         d._command_client._save_history = MagicMock()
         d._ensure_tts_client = MagicMock(return_value=None)
+        compact_history = MagicMock(return_value={"status": "ok", "mode": "guided"})
+        monkeypatch.setattr(main_module, "compact_converge_history", compact_history)
 
         executor = d._make_tool_executor()
         result = json.loads(executor("compact_history", {"mode": "guided", "n": 0}))
 
-        assert result["status"] == "error"
+        assert result["status"] == "ok"
         assert result["mode"] == "guided"
-        assert "requires the Converge retrieval carry" in result["error"]
-        d._command_client._save_history.assert_not_called()
+        compact_history.assert_called_once_with(
+            d._command_client, {"mode": "guided", "n": 0}
+        )
 
     def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
         self, main_module, monkeypatch

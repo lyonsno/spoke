@@ -106,11 +106,6 @@ def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
 
-
-def _rough_tool_result_tokens(text: str) -> int:
-    """Approximate token count for a tool result."""
-    return int(len(text.split()) * 1.3)
-
 _SYSTEM_PROMPT = (
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "

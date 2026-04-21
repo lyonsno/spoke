@@ -257,11 +257,14 @@ def compact_history(
         for i in range(target):
             turn = history[i]
             before = len(turn)
-            history[i] = [
-                message
-                for message in turn
-                if message.get("role") in ("user", "assistant", "system")
-            ]
+            cleaned = []
+            for message in turn:
+                if message.get("role") not in ("user", "assistant", "system"):
+                    continue
+                if message.get("role") == "assistant" and "tool_calls" in message:
+                    message = {k: v for k, v in message.items() if k != "tool_calls"}
+                cleaned.append(message)
+            history[i] = cleaned
             if len(history[i]) < before:
                 compacted += 1
         client._save_history()
