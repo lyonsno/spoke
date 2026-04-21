@@ -94,3 +94,32 @@ def test_export_training_packs_can_filter_keywords(tmp_path):
     assert [pack.keyword for pack in packs] == ["tessera"]
     assert (tmp_path / "training" / "tessera").exists()
     assert not (tmp_path / "training" / "alpha").exists()
+
+
+def test_export_training_packs_removes_stale_samples_on_rerun(tmp_path):
+    batch_dir = tmp_path / "batch"
+    batch_dir.mkdir()
+    _write_manifest(batch_dir)
+
+    training_dir = tmp_path / "training"
+    export_training_packs(batch_dir, training_dir, keywords=["tessera"])
+
+    batch_rows = [
+        {
+            "text": "tessera",
+            "backend": "sidecar",
+            "model": "kokoro",
+            "voice": "af_heart",
+            "sample_rate": 16000,
+            "num_samples": 16,
+            "relative_path": "0001_tessera__af-heart__sidecar.wav",
+        }
+    ]
+    (batch_dir / "manifest.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in batch_rows)
+    )
+
+    export_training_packs(batch_dir, training_dir, keywords=["tessera"])
+
+    copied = sorted(path.name for path in (training_dir / "tessera" / "samples").glob("*.wav"))
+    assert copied == ["0001_tessera__af-heart__sidecar.wav"]
