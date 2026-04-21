@@ -99,6 +99,12 @@ _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC = _env(
 _PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS", 20.0
 )
+_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII", 2.0
+)
+_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII", 2.0
+)
 
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -555,12 +561,12 @@ def _preview_optical_shell_config(
     """Return optical shell config dict for the preview overlay compositor."""
     width_points = _OVERLAY_WIDTH if content_width_points is None else max(float(content_width_points), 1.0)
     height_points = _OVERLAY_HEIGHT if content_height_points is None else max(float(content_height_points), 1.0)
-    # The smaller preview bubble needs a full corner-diameter of extra
-    # shell extent to preserve the same visible warp gap the assistant
-    # overlay now has around its fill.
+    # Preview shell inflation is independently tunable in X/Y so its
+    # proportion to the visible rounded rect does not have to mirror
+    # the assistant overlay.
     capsule_r = _OVERLAY_HEIGHT / 4.0
-    width_points += 2.0 * capsule_r
-    height_points += 2.0 * capsule_r
+    width_points += _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII * capsule_r
+    height_points += _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * capsule_r
     band_mm = 4.0
     tail_mm = 3.0
     ring_refraction = 1.0

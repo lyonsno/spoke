@@ -217,6 +217,19 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_preview_optical_shell_config_supports_independent_x_y_inflation(self, mock_pyobjc, monkeypatch):
+        monkeypatch.setenv("SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII", "1.5")
+        monkeypatch.setenv("SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII", "0.75")
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            cfg = mod._preview_optical_shell_config(600.0, 80.0)
+            capsule_r = mod._OVERLAY_HEIGHT / 4.0
+            assert cfg["content_width_points"] == pytest.approx(600.0 + 1.5 * capsule_r)
+            assert cfg["content_height_points"] == pytest.approx(80.0 + 0.75 * capsule_r)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
 
 class TestAdaptiveOverlayCompositing:
     """Overlay bg/text cross-fades between dark and light with brightness."""

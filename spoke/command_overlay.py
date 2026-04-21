@@ -166,6 +166,12 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS = _env(
 _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
 )
+_COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII", 1.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII", 1.0
+)
 _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK", 0.08
 )
@@ -349,11 +355,11 @@ def _command_optical_shell_config(
         if content_height_points is None
         else max(float(content_height_points), 1.0)
     )
-    # Inflate warp capsule by half-radius so the fill pill sits
-    # entirely inside the warped region.
+    # Assistant shell inflation is independently tunable in X/Y rather
+    # than being hard-wired to one radius-derived proportion.
     capsule_r = _OVERLAY_HEIGHT / 4.0
-    width_points += capsule_r
-    height_points += capsule_r
+    width_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII * capsule_r
+    height_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII * capsule_r
     return {
         "enabled": True,
         "content_width_points": width_points,

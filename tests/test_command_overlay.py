@@ -1443,6 +1443,21 @@ def test_command_optical_shell_config_inflates_warp_capsule_past_overlay_body(mo
         sys.modules.pop("spoke.command_overlay", None)
 
 
+def test_command_optical_shell_config_supports_independent_x_y_inflation(mock_pyobjc, monkeypatch):
+    monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+    monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII", "0.5")
+    monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII", "1.75")
+    sys.modules.pop("spoke.command_overlay", None)
+    mod = importlib.import_module("spoke.command_overlay")
+    try:
+        cfg = mod._command_optical_shell_config(600.0, 80.0)
+        capsule_r = mod._OVERLAY_HEIGHT / 4.0
+        assert cfg["content_width_points"] == pytest.approx(600.0 + 0.5 * capsule_r)
+        assert cfg["content_height_points"] == pytest.approx(80.0 + 1.75 * capsule_r)
+    finally:
+        sys.modules.pop("spoke.command_overlay", None)
+
+
 def test_stadium_signed_distance_field_keeps_body_centered_in_padded_field(mock_pyobjc):
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
