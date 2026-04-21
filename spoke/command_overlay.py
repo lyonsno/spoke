@@ -1545,12 +1545,17 @@ class CommandOverlay(NSObject):
         # directly — much more accurate than the glow's 4-patch screen
         # average.  Refresh every ~500ms (15 pulse ticks).
         compositor = getattr(self, "_fullscreen_compositor", None)
+        shared_overlay_count = 0
         if compositor is not None:
+            shared_overlay_count = max(int(getattr(compositor, "active_client_count", 1) or 1), 1)
             _b_tick = getattr(self, '_brightness_sample_tick', 0)
             if _b_tick % 15 == 0:
                 compositor.refresh_brightness()
             self._brightness_sample_tick = _b_tick + 1
             self._brightness_target = compositor.sampled_brightness
+        desired_punchthrough = compositor is not None and shared_overlay_count == 1
+        if desired_punchthrough != getattr(self, "_text_punchthrough", False):
+            self._enable_text_punchthrough(desired_punchthrough)
         target = getattr(self, "_brightness_target", 0.0)
         current = getattr(self, "_brightness", 0.0)
         if abs(target - current) > 0.001:
@@ -1821,8 +1826,6 @@ class CommandOverlay(NSObject):
         # the pulse-driven rhythm.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             fill_drive = _lerp(breath, breath * breath, t)
-            compositor = getattr(self, "_fullscreen_compositor", None)
-            shared_overlay_count = max(int(getattr(compositor, "active_client_count", 1) or 1), 1)
             ct = _clamp01((t - 0.45) * 6.0 + 0.5)
             ct = ct * ct * (3.0 - 2.0 * ct)
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:

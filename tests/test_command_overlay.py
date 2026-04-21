@@ -860,6 +860,33 @@ class TestAdaptiveCompositing:
             "materially present instead of collapsing into an almost invisible fill."
         )
 
+    def test_shared_compositor_mode_restores_real_command_content_over_punchthrough(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._text_punchthrough = True
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._fullscreen_compositor = SimpleNamespace(
+            active_client_count=2,
+            update_shell_config_key=MagicMock(),
+            refresh_brightness=MagicMock(),
+            sampled_brightness=1.0,
+        )
+
+        overlay._pulseStepInner()
+
+        overlay._content_view.setHidden_.assert_any_call(False)
+        overlay._fill_layer.setMask_.assert_any_call(None)
+
     def test_optical_shell_softens_cancel_spring_tint_so_shell_remains_visible(
         self, mock_pyobjc, monkeypatch
     ):
