@@ -386,23 +386,28 @@ class MetalWarpPipeline:
         # Create or reuse a mipmapped texture for blur LOD sampling.
         # IOSurface textures don't support mipmaps, so we blit into
         # a private mipmapped texture and generate mips on GPU.
-        if self._mip_texture is None or self._mip_texture_size != (out_w, out_h):
+        # Must match the INPUT texture dimensions (not output/drawable).
+        in_w = input_texture.width()
+        in_h = input_texture.height()
+        if self._mip_texture is None or self._mip_texture_size != (in_w, in_h):
             mip_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
-                80, out_w, out_h, True,  # mipmapped=True
+                80, in_w, in_h, True,  # mipmapped=True
             )
             mip_desc.setUsage_(1 | 2)  # read | write (write needed for mipmap gen)
             self._mip_texture = self._device.newTextureWithDescriptor_(mip_desc)
-            self._mip_texture_size = (out_w, out_h)
+            self._mip_texture_size = (in_w, in_h)
             if self._mip_texture is None:
-                logger.warning("Failed to create mipmapped texture %dx%d", out_w, out_h)
+                logger.warning("Failed to create mipmapped texture %dx%d", in_w, in_h)
 
         command_buffer = self._command_queue.commandBuffer()
 
         # Pass 1: blit IOSurface → output (identity passthrough for non-warped pixels)
-        # AND blit IOSurface → mip level 0, then generate mipmaps
+        # AND blit IOSurface → mip level 0, then generate mipmaps.
+        # Guard: copyFromTexture requires matching dimensions.
         blit = command_buffer.blitCommandEncoder()
-        blit.copyFromTexture_toTexture_(input_texture, output_texture)
-        if self._mip_texture is not None:
+        if in_w == out_w and in_h == out_h:
+            blit.copyFromTexture_toTexture_(input_texture, output_texture)
+        if self._mip_texture is not None and self._mip_texture_size == (in_w, in_h):
             blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
             blit.generateMipmapsForTexture_(self._mip_texture)
         blit.endEncoding()
