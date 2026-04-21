@@ -290,8 +290,21 @@ class CommandClient:
         tmp.replace(self._history_path)
 
     @property
-    def history(self) -> list[list[dict]]:
-        return list(self._history)
+    def history(self) -> list[tuple[str, str]]:
+        """Backward-compatible pair view of the stored turn history."""
+        pairs: list[tuple[str, str]] = []
+        for chain in self._history:
+            user_text = ""
+            assistant_text = ""
+            for message in chain:
+                role = message.get("role")
+                content = message.get("content")
+                if role == "user" and isinstance(content, str) and not user_text:
+                    user_text = content
+                elif role == "assistant" and isinstance(content, str) and content:
+                    assistant_text = content
+            pairs.append((user_text, assistant_text))
+        return pairs
 
     def list_models(self) -> list[str]:
         """Return model ids exposed by the OMLX OpenAI-compatible endpoint."""

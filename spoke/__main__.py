@@ -3142,8 +3142,8 @@ class SpokeAppDelegate(NSObject):
     def _make_tool_executor(self):
         """Build a tool executor closure with current app state."""
         scene_cache = self._scene_cache
-        raw_tts_client = self._ensure_tts_client(allow_default_voice=True)
-        tts_client = raw_tts_client
+        raw_tts_client = None
+        tts_client = None
         # Get last assistant response for last_response refs
         last_response = None
         try:
@@ -3153,27 +3153,36 @@ class SpokeAppDelegate(NSObject):
         except (TypeError, ValueError):
             pass
 
-        if raw_tts_client is not None:
-            delegate = self
+        delegate = self
 
-            class _ToolTTSProxy:
-                def __init__(self, client):
-                    self._client = client
+        class _ToolTTSProxy:
+            def __init__(self, client):
+                self._client = client
 
-                def speak_async(self, text, *args, **kwargs):
-                    result = self._client.speak_async(text, *args, **kwargs)
-                    delegate._command_tool_used_tts = True
-                    return result
+            def speak_async(self, text, *args, **kwargs):
+                result = self._client.speak_async(text, *args, **kwargs)
+                delegate._command_tool_used_tts = True
+                return result
 
-                def speak(self, text, *args, **kwargs):
-                    result = self._client.speak(text, *args, **kwargs)
-                    delegate._command_tool_used_tts = True
-                    return result
+            def speak(self, text, *args, **kwargs):
+                result = self._client.speak(text, *args, **kwargs)
+                delegate._command_tool_used_tts = True
+                return result
 
-                def __getattr__(self, name):
-                    return getattr(self._client, name)
+            def __getattr__(self, name):
+                return getattr(self._client, name)
 
+        def _tool_tts_client(tool_name: str):
+            nonlocal raw_tts_client, tts_client
+            if tool_name != "read_aloud":
+                return None
+            if tts_client is not None:
+                return tts_client
+            raw_tts_client = self._ensure_tts_client(allow_default_voice=True)
+            if raw_tts_client is None:
+                return None
             tts_client = _ToolTTSProxy(raw_tts_client)
+            return tts_client
 
         def _executor(name, arguments, **kwargs):
             return execute_tool(
@@ -3181,10 +3190,9 @@ class SpokeAppDelegate(NSObject):
                 arguments=arguments,
                 scene_cache=scene_cache,
                 last_response=last_response,
-                tts_client=tts_client,
+                tts_client=_tool_tts_client(name),
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
-                history_compactor=_compact_history,
                 **kwargs,
             )
         return _executor
