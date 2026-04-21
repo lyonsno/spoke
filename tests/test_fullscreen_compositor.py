@@ -101,6 +101,69 @@ class _FakeStream:
         completion(None)
 
 
+class _FakeStreamConfiguration:
+    @classmethod
+    def alloc(cls):
+        return cls()
+
+    def init(self):
+        return self
+
+    def setWidth_(self, width):
+        self.width = width
+
+    def setHeight_(self, height):
+        self.height = height
+
+    def setQueueDepth_(self, depth):
+        self.depth = depth
+
+    def setShowsCursor_(self, shows_cursor):
+        self.shows_cursor = shows_cursor
+
+    def setPixelFormat_(self, pixel_format):
+        self.pixel_format = pixel_format
+
+    def setContentScale_(self, scale):
+        self.scale = scale
+
+
+class _FakeSCStream:
+    @classmethod
+    def alloc(cls):
+        return cls()
+
+    def initWithFilter_configuration_delegate_(self, content_filter, configuration, delegate):
+        self.content_filter = content_filter
+        self.configuration = configuration
+        self.delegate = delegate
+        self.stream_output = None
+        self.output_type = None
+        self.handler_queue = None
+        self.started = False
+        return self
+
+    def addStreamOutput_type_sampleHandlerQueue_error_(self, stream_output, output_type, handler_queue, error):
+        self.stream_output = stream_output
+        self.output_type = output_type
+        self.handler_queue = handler_queue
+        return True
+
+    def startCaptureWithCompletionHandler_(self, completion):
+        self.started = True
+        completion(None)
+
+
+class _FakeCompositorOutput:
+    @classmethod
+    def alloc(cls):
+        return cls()
+
+    def initWithRenderer_(self, renderer):
+        self.renderer = renderer
+        return self
+
+
 class TestSharedFullscreenCompositor:
     def test_same_screen_overlays_share_one_fullscreen_host(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.fullscreen_compositor", None)
@@ -235,3 +298,48 @@ class TestSharedFullscreenCompositor:
         assert [entry["client_id"] for entry in snapshot["clients"]] == ["overlay:31", "overlay:32"]
         assert snapshot["clients"][0]["content_width_points"] == 680.0
         assert snapshot["clients"][1]["center_y"] == 444.0
+
+    def test_fullscreen_compositor_retains_stream_renderer_proxy(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        sys.modules.pop("spoke.backdrop_stream", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        backdrop_mod = importlib.import_module("spoke.backdrop_stream")
+
+        compositor = object.__new__(mod.FullScreenCompositor)
+        compositor._screen = _FakeScreen()
+        compositor._pipeline = object()
+        compositor._window = _FakeWindow(77)
+        compositor._stream = None
+        compositor._stream_output = None
+        compositor._stream_handler_queue = None
+        compositor._capture_content = None
+        compositor._capture_display = None
+        compositor._extra_excluded_ids = set()
+        compositor._excluded_windows = lambda content: []
+
+        fake_display = SimpleNamespace(frame=lambda: _make_rect(0.0, 0.0, 1728.0, 1117.0))
+        fake_content = SimpleNamespace(windows=lambda: [])
+        fake_stream = _FakeSCStream.alloc().initWithFilter_configuration_delegate_(None, None, None)
+
+        monkeypatch.setattr(compositor, "_fetch_shareable_content", lambda bridge: fake_content)
+        monkeypatch.setattr(compositor, "_match_display", lambda content: fake_display)
+        monkeypatch.setattr(backdrop_mod, "_build_stream_output_class", lambda: None, raising=False)
+        monkeypatch.setattr(backdrop_mod, "_ScreenCaptureKitStreamOutput", _FakeCompositorOutput, raising=False)
+        monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: {
+            "SCContentFilter": _FakeContentFilterFactory,
+            "SCStreamConfiguration": _FakeStreamConfiguration,
+            "SCStream": type("BridgeStream", (), {
+                "alloc": classmethod(lambda cls: fake_stream),
+            }),
+            "SCStreamOutputTypeScreen": 1,
+        }, raising=False)
+        monkeypatch.setattr(mod, "_make_stream_handler_queue", lambda name: f"queue:{name}", raising=False)
+
+        compositor._start_capture()
+
+        assert compositor._stream_output is fake_stream.stream_output
+        assert hasattr(compositor, "_stream_renderer_proxy"), (
+            "FullScreenCompositor must retain the renderer proxy it hands to "
+            "ScreenCaptureKit so sample-buffer callbacks keep a live Python target."
+        )
+        assert compositor._stream_renderer_proxy is fake_stream.stream_output.renderer

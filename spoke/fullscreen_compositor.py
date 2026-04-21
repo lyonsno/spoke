@@ -292,6 +292,7 @@ class FullScreenCompositor:
         self._display_link = None
         self._stream = None
         self._stream_output = None
+        self._stream_renderer_proxy = None
         self._stream_handler_queue = None
         self._capture_content = None
         self._capture_display = None
@@ -667,12 +668,14 @@ class FullScreenCompositor:
 
         self._stream = stream
         self._stream_output = stream_output
+        self._stream_renderer_proxy = renderer_proxy
         logger.info("FullScreenCompositor: SCK capture started (%dx%d)", pixel_w, pixel_h)
 
     def _stop_capture(self):
         stream = self._stream
         self._stream = None
         self._stream_output = None
+        self._stream_renderer_proxy = None
         self._capture_content = None
         self._capture_display = None
         if stream is not None:
