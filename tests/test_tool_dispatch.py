@@ -714,8 +714,8 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
         assert parsed.get("match_count") == 1
-        m.assert_any_call(target, "r", encoding="utf-8")
-        m.assert_any_call(target, "w", encoding="utf-8")
+        m.assert_any_call(target, "r", encoding="utf-8", newline="")
+        m.assert_any_call(target, "w", encoding="utf-8", newline="")
         m().write.assert_called_once_with(updated)
 
     def test_execute_search_file(self):
@@ -1009,6 +1009,42 @@ class TestExecuteToolIntegration:
         assert parsed.get("status") == "error"
         assert parsed.get("failure_reason") == "malformed_request"
         assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_normalizes_line_endings_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-crlf.txt"
+        f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("match_count") == 1
+        assert f.read_bytes() == b"alpha\r\ndelta\r\ngamma\r\n"
+
+    def test_execute_edit_file_normalizes_trailing_whitespace_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-trailing-space.txt"
+        f.write_text("alpha\nbeta   \ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("match_count") == 1
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
     def test_execute_search_file_real(self, tmp_path):
         mod = _import_tools()

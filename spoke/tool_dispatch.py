@@ -873,6 +873,57 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 
+def _preferred_newline_style(text: str) -> str:
+    crlf_count = text.count("\r\n")
+    lf_count = text.count("\n") - crlf_count
+    cr_count = text.count("\r") - crlf_count
+    if crlf_count >= lf_count and crlf_count >= cr_count and crlf_count > 0:
+        return "\r\n"
+    if lf_count > 0:
+        return "\n"
+    if cr_count > 0:
+        return "\r"
+    return "\n"
+
+
+def _normalize_match_text_with_map(text: str) -> tuple[str, list[int]]:
+    normalized_parts: list[str] = []
+    position_map = [0]
+    raw_pos = 0
+
+    for raw_line in text.splitlines(keepends=True):
+        line_ending = ""
+        body = raw_line
+        if raw_line.endswith("\r\n"):
+            line_ending = "\r\n"
+            body = raw_line[:-2]
+        elif raw_line.endswith("\n") or raw_line.endswith("\r"):
+            line_ending = raw_line[-1]
+            body = raw_line[:-1]
+
+        trimmed_body = body.rstrip(" \t")
+        for idx, char in enumerate(trimmed_body, start=1):
+            normalized_parts.append(char)
+            position_map.append(raw_pos + idx)
+
+        raw_pos += len(body)
+        if line_ending:
+            raw_pos += len(line_ending)
+            normalized_parts.append("\n")
+            position_map.append(raw_pos)
+
+    return "".join(normalized_parts), position_map
+
+
+def _normalize_match_text(text: str) -> str:
+    normalized, _ = _normalize_match_text_with_map(text)
+    return normalized
+
+
+def _apply_newline_style(text: str, newline_style: str) -> str:
+    return text.replace("\n", newline_style)
+
+
 def _execute_edit_file(arguments: dict) -> dict[str, Any]:
     raw_path = arguments.get("file")
     old_string = arguments.get("old_string")
@@ -905,9 +956,14 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         }
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        match_count = content.count(old_string)
+        with open(file_path, "r", encoding="utf-8", newline="") as f:
+            raw_content = f.read()
+
+        normalized_content, position_map = _normalize_match_text_with_map(raw_content)
+        normalized_old = _normalize_match_text(old_string)
+        normalized_new = _normalize_match_text(new_string)
+
+        match_count = normalized_content.count(normalized_old)
         if match_count == 0:
             return {
                 "status": "error",
@@ -923,8 +979,14 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
                 "match_count": match_count,
             }
 
-        updated = content.replace(old_string, new_string, 1)
-        with open(file_path, "w", encoding="utf-8") as f:
+        match_start = normalized_content.find(normalized_old)
+        match_end = match_start + len(normalized_old)
+        raw_start = position_map[match_start]
+        raw_end = position_map[match_end]
+        newline_style = _preferred_newline_style(raw_content)
+        replacement = _apply_newline_style(normalized_new, newline_style)
+        updated = raw_content[:raw_start] + replacement + raw_content[raw_end:]
+        with open(file_path, "w", encoding="utf-8", newline="") as f:
             f.write(updated)
         return {
             "status": "success",
