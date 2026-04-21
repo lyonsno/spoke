@@ -1388,6 +1388,47 @@ class TestSDFCaching:
         )
         assert captured["shape"] == expected_shape
 
+    def test_optical_shell_fill_builds_before_compositor_starts(self, mock_pyobjc, monkeypatch):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._ridge_scale = 2.0
+
+        import spoke.overlay as ov_mod
+
+        monkeypatch.setattr(
+            ov_mod,
+            "_fill_field_to_image",
+            lambda alpha, r, g, b: ("fill-image", b"payload"),
+        )
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        overlay._fill_layer.setContents_.assert_called_once_with("fill-image")
+
+    def test_optical_shell_fill_rebuilds_after_compositor_stops(self, mock_pyobjc, monkeypatch):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._ridge_scale = 2.0
+        overlay._fullscreen_compositor = object()
+
+        import spoke.overlay as ov_mod
+
+        monkeypatch.setattr(
+            ov_mod,
+            "_fill_field_to_image",
+            lambda alpha, r, g, b: ("fill-image", b"payload"),
+        )
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        overlay._fullscreen_compositor = None
+        overlay._fill_layer.setContents_.reset_mock()
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        overlay._fill_layer.setContents_.assert_called_once_with("fill-image")
+
 
 def test_command_optical_shell_config_inflates_warp_capsule_past_overlay_body(mock_pyobjc, monkeypatch):
     monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")

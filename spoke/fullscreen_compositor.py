@@ -23,6 +23,239 @@ import objc
 
 logger = logging.getLogger(__name__)
 
+_shared_overlay_hosts = {}
+
+
+def _summarize_shell_config(config: dict) -> dict:
+    keys = (
+        "center_x",
+        "center_y",
+        "content_width_points",
+        "content_height_points",
+        "corner_radius_points",
+        "min_brightness",
+    )
+    summary = {}
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, (int, float)):
+            summary[key] = round(float(value), 2)
+        elif value is not None:
+            summary[key] = value
+    return summary
+
+
+def _load_screencapturekit_bridge():
+    from spoke.backdrop_stream import _load_screencapturekit_bridge as _load_bridge
+
+    return _load_bridge()
+
+
+def _scaled_shell_config_for_overlay(*, screen, window, content_view, shell_config: dict | None):
+    """Project overlay-local shell config into fullscreen compositor pixel space."""
+    if shell_config is None or screen is None or window is None or content_view is None:
+        return None
+    config = dict(shell_config)
+    scale = screen.backingScaleFactor() if hasattr(screen, "backingScaleFactor") else 2.0
+    screen_frame = screen.frame()
+    win_frame = window.frame()
+    content_frame = content_view.frame()
+
+    capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+    capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+    capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
+    config["center_x"] = capsule_cx * scale
+    config["center_y"] = capsule_cy_metal * scale
+
+    for key in (
+        "content_width_points",
+        "content_height_points",
+        "corner_radius_points",
+        "band_width_points",
+        "tail_width_points",
+    ):
+        if key in config:
+            config[key] = float(config[key]) * scale
+    return config
+
+
+def start_overlay_compositor(*, screen, window, content_view, shell_config: dict | None):
+    """Register an overlay surface with the shared fullscreen compositor host."""
+    config = _scaled_shell_config_for_overlay(
+        screen=screen,
+        window=window,
+        content_view=content_view,
+        shell_config=shell_config,
+    )
+    if config is None:
+        return None
+    registry_key = _screen_registry_key(screen)
+    host = _shared_overlay_hosts.get(registry_key)
+    if host is None:
+        host = _SharedOverlayCompositorHost(screen=screen, registry_key=registry_key)
+        _shared_overlay_hosts[registry_key] = host
+    try:
+        client_id = f"overlay:{int(window.windowNumber())}"
+    except Exception:
+        client_id = f"overlay:{id(window)}"
+    session = host.register_client(client_id, config)
+    if session is None and not host.has_clients:
+        _shared_overlay_hosts.pop(registry_key, None)
+    return session
+
+
+def _screen_registry_key(screen):
+    try:
+        from spoke.backdrop_stream import _screen_display_id
+
+        display_id = _screen_display_id(screen)
+        if display_id is not None:
+            return ("display", int(display_id))
+    except Exception:
+        pass
+    return ("object", id(screen))
+
+
+class _OverlayCompositorSession:
+    """Per-overlay handle backed by a shared fullscreen compositor host."""
+
+    def __init__(self, host, client_id: str):
+        self._host = host
+        self._client_id = client_id
+        self._sampled_brightness = 0.5
+        self._stopped = False
+
+    def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        self._host.remove_client(self._client_id)
+
+    def update_shell_config(self, config: dict) -> None:
+        if self._stopped:
+            return
+        self._host.update_client_config(self._client_id, config)
+
+    def update_shell_config_key(self, key: str, value) -> None:
+        if self._stopped:
+            return
+        self._host.update_client_config_key(self._client_id, key, value)
+
+    def refresh_brightness(self) -> None:
+        if self._stopped:
+            return
+        self._sampled_brightness = self._host.sample_brightness(self._client_id)
+
+    @property
+    def sampled_brightness(self) -> float:
+        return self._sampled_brightness
+
+
+class _SharedOverlayCompositorHost:
+    """One fullscreen compositor window per screen, with many overlay clients."""
+
+    def __init__(self, *, screen, registry_key):
+        self._screen = screen
+        self._registry_key = registry_key
+        self._compositor = FullScreenCompositor(screen)
+        self._clients: dict[str, dict] = {}
+        self._client_window_ids: dict[str, int] = {}
+        self._running = False
+
+    @property
+    def has_clients(self) -> bool:
+        return bool(self._clients)
+
+    def register_client(self, client_id: str, config: dict):
+        self._clients[client_id] = dict(config)
+        try:
+            self._client_window_ids[client_id] = int(client_id.rsplit(":", 1)[1])
+        except Exception:
+            self._client_window_ids.pop(client_id, None)
+        self._refresh_excluded_window_ids()
+        if not self._running:
+            if not self._compositor.start(self._ordered_shell_configs()):
+                self._clients.pop(client_id, None)
+                self._client_window_ids.pop(client_id, None)
+                self._refresh_excluded_window_ids()
+                return None
+            self._running = True
+        else:
+            self._compositor.reset_temporal_state()
+            self._compositor.update_shell_configs(self._ordered_shell_configs())
+        self._log_state("register_client", client_id)
+        return _OverlayCompositorSession(self, client_id)
+
+    def remove_client(self, client_id: str) -> None:
+        self._clients.pop(client_id, None)
+        self._client_window_ids.pop(client_id, None)
+        self._refresh_excluded_window_ids()
+        if not self._running:
+            return
+        if self._clients:
+            self._compositor.reset_temporal_state()
+            self._compositor.update_shell_configs(self._ordered_shell_configs())
+            self._log_state("remove_client", client_id)
+            return
+        self._compositor.stop()
+        self._running = False
+        _shared_overlay_hosts.pop(self._registry_key, None)
+        self._log_state("remove_client", client_id)
+
+    def update_client_config(self, client_id: str, config: dict) -> None:
+        if client_id not in self._clients:
+            return
+        self._clients[client_id] = dict(config)
+        if self._running:
+            self._compositor.update_shell_configs(self._ordered_shell_configs())
+        self._log_state("update_client_config", client_id)
+
+    def update_client_config_key(self, client_id: str, key: str, value) -> None:
+        config = self._clients.get(client_id)
+        if config is None:
+            return
+        config[key] = value
+        if self._running:
+            self._compositor.update_shell_configs(self._ordered_shell_configs())
+        self._log_state(f"update_client_config_key:{key}", client_id)
+
+    def sample_brightness(self, client_id: str) -> float:
+        config = self._clients.get(client_id)
+        if config is None:
+            return 0.5
+        return self._compositor.sample_brightness_for_config(config)
+
+    def debug_snapshot(self) -> dict:
+        return {
+            "registry_key": self._registry_key,
+            "running": self._running,
+            "client_count": len(self._clients),
+            "clients": [
+                {
+                    "client_id": client_id,
+                    **_summarize_shell_config(config),
+                }
+                for client_id, config in self._clients.items()
+            ],
+        }
+
+    def _ordered_shell_configs(self) -> list[dict]:
+        return [dict(config) for config in self._clients.values()]
+
+    def _refresh_excluded_window_ids(self) -> None:
+        self._compositor.set_excluded_window_ids(sorted(self._client_window_ids.values()))
+
+    def _log_state(self, action: str, client_id: str | None = None) -> None:
+        snapshot = self.debug_snapshot()
+        logger.info(
+            "SharedOverlayHost[%s]: %s client=%s clients=%d snapshot=%s",
+            self._registry_key,
+            action,
+            client_id,
+            snapshot["client_count"],
+            snapshot["clients"],
+        )
+
 
 class FullScreenCompositor:
     """Full-display capture → Metal warp → full-screen presentation."""
@@ -37,8 +270,14 @@ class FullScreenCompositor:
         self._lock = threading.Lock()
         self._running = False
 
-        from spoke.metal_warp import get_metal_warp_pipeline
-        self._pipeline = get_metal_warp_pipeline()
+        # Each compositor gets its own pipeline instance to avoid
+        # racing on shared accum textures / params buffer when two
+        # compositors run concurrently (preview + command).
+        from spoke.metal_warp import MetalWarpPipeline
+        try:
+            self._pipeline = MetalWarpPipeline()
+        except Exception:
+            self._pipeline = None
         if self._pipeline is None:
             raise RuntimeError("Metal warp pipeline unavailable")
 
@@ -47,13 +286,19 @@ class FullScreenCompositor:
         self._latest_pixel_buffer = None
         self._latest_width = 0
         self._latest_height = 0
-        self._shell_config = None
+        self._shell_configs = []
         self._window = None
         self._metal_layer = None
         self._display_link = None
         self._stream = None
         self._stream_output = None
+        self._stream_renderer_proxy = None
         self._stream_handler_queue = None
+        self._capture_content = None
+        self._capture_display = None
+        self._extra_excluded_ids: set[int] = set()
+        self._shell_state_version = 0
+        self._shell_state_log_frames_remaining = 0
 
         # Diagnostics
         self._frame_count = 0
@@ -68,12 +313,12 @@ class FullScreenCompositor:
         self._brightness_sample_frame = 0
         _BRIGHTNESS_SAMPLE_INTERVAL_FRAMES = 15  # every ~250ms at 60fps
 
-    def start(self, shell_config: dict) -> bool:
+    def start(self, shell_config: dict | list[dict]) -> bool:
         """Create the full-screen window and start capture + render loop."""
         if self._running:
             return True
         try:
-            self._shell_config = dict(shell_config) if shell_config else None
+            self._shell_configs = self._normalize_shell_configs(shell_config)
             # Reset temporal accumulation so the first frame doesn't
             # blend with stale content from a previous compositor session.
             if self._pipeline is not None:
@@ -103,16 +348,33 @@ class FullScreenCompositor:
             self._presented_count, self._frame_count,
         )
 
-    def update_shell_config(self, config: dict) -> None:
-        """Update the warp parameters (capsule position, size, etc.)."""
+    def update_shell_configs(self, configs: list[dict]) -> None:
+        """Replace the active overlay shell configs for this screen."""
         with self._lock:
-            self._shell_config = dict(config) if config else None
+            self._shell_configs = self._normalize_shell_configs(configs)
+            self._shell_state_version += 1
+            self._shell_state_log_frames_remaining = 10
+            config_summary = [_summarize_shell_config(config) for config in self._shell_configs]
+        logger.info(
+            "FullScreenCompositor: update_shell_configs version=%d count=%d configs=%s",
+            self._shell_state_version,
+            len(config_summary),
+            config_summary,
+        )
+
+    def update_shell_config(self, config: dict) -> None:
+        """Compatibility wrapper for callers that still manage one shell."""
+        self.update_shell_configs([config] if config else [])
 
     def update_shell_config_key(self, key: str, value) -> None:
-        """Update a single key in the shell config without replacing."""
+        """Compatibility wrapper for callers that still manage one shell."""
         with self._lock:
-            if self._shell_config is not None:
-                self._shell_config[key] = value
+            if self._shell_configs:
+                self._shell_configs[0][key] = value
+
+    def reset_temporal_state(self) -> None:
+        if self._pipeline is not None:
+            self._pipeline.reset_temporal_state()
 
     @property
     def sampled_brightness(self) -> float:
@@ -122,12 +384,22 @@ class FullScreenCompositor:
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
         with self._lock:
-            config = self._shell_config
+            config = self._shell_configs[0] if self._shell_configs else None
             w = self._latest_width
             h = self._latest_height
-        if config is None or w <= 0 or h <= 0:
-            return
-        self._sample_iosurface_brightness(None, w, h, config)
+        self._sampled_brightness = self.sample_brightness_for_config(config, w=w, h=h)
+
+    def sample_brightness_for_config(self, config: dict | None, *, w: int | None = None, h: int | None = None) -> float:
+        """Sample average luminance for one overlay config."""
+        with self._lock:
+            width = self._latest_width if w is None else w
+            height = self._latest_height if h is None else h
+        if config is None or width <= 0 or height <= 0:
+            return self._sampled_brightness
+        brightness = self._sample_iosurface_brightness(None, width, height, config)
+        if brightness is not None:
+            self._sampled_brightness = brightness
+        return self._sampled_brightness
 
     def _sample_iosurface_brightness(self, iosurface, w, h, config):
         """Sample average luminance of the capsule region.
@@ -199,9 +471,10 @@ class FullScreenCompositor:
                         total += lum
                         count += 1
             if count > 0:
-                self._sampled_brightness = total / count
+                return total / count
         except Exception:
             pass  # non-critical — keep previous brightness
+        return None
 
     @property
     def is_running(self) -> bool:
@@ -305,26 +578,13 @@ class FullScreenCompositor:
     # ------------------------------------------------------------------
 
     def _start_capture(self):
-        from spoke.backdrop_stream import _load_screencapturekit_bridge, _make_stream_handler_queue
+        from spoke.backdrop_stream import _make_stream_handler_queue
 
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             raise RuntimeError("ScreenCaptureKit bridge unavailable")
 
-        SCShareableContent = bridge["SCShareableContent"]
-
-        # Synchronous-ish: use a threading event
-        result = {"content": None, "error": None}
-        event = threading.Event()
-
-        def got_content(content, *args):
-            result["content"] = content
-            event.set()
-
-        SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
-        event.wait(timeout=5.0)
-
-        content = result["content"]
+        content = self._fetch_shareable_content(bridge)
         if content is None:
             raise RuntimeError("Failed to get shareable content")
 
@@ -332,6 +592,8 @@ class FullScreenCompositor:
         display = self._match_display(content)
         if display is None:
             raise RuntimeError("No matching display found")
+        self._capture_content = content
+        self._capture_display = display
 
         # Build filter: full display, exclude our compositor window
         SCContentFilter = bridge["SCContentFilter"]
@@ -406,12 +668,16 @@ class FullScreenCompositor:
 
         self._stream = stream
         self._stream_output = stream_output
+        self._stream_renderer_proxy = renderer_proxy
         logger.info("FullScreenCompositor: SCK capture started (%dx%d)", pixel_w, pixel_h)
 
     def _stop_capture(self):
         stream = self._stream
         self._stream = None
         self._stream_output = None
+        self._stream_renderer_proxy = None
+        self._capture_content = None
+        self._capture_display = None
         if stream is not None:
             try:
                 stream.stopCaptureWithCompletionHandler_(lambda *args: None)
@@ -437,6 +703,44 @@ class FullScreenCompositor:
     def set_excluded_window_ids(self, window_ids: list[int]) -> None:
         """Additional window IDs to exclude from capture (e.g. the overlay window)."""
         self._extra_excluded_ids = set(int(x) for x in window_ids)
+        self._refresh_live_capture_filter()
+
+    def _fetch_shareable_content(self, bridge):
+        SCShareableContent = bridge["SCShareableContent"]
+
+        result = {"content": None}
+        event = threading.Event()
+
+        def got_content(content, *args):
+            result["content"] = content
+            event.set()
+
+        SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
+        event.wait(timeout=5.0)
+        return result["content"]
+
+    def _refresh_live_capture_filter(self) -> None:
+        stream = self._stream
+        if stream is None:
+            return
+        bridge = _load_screencapturekit_bridge()
+        if bridge is None:
+            return
+        content = self._fetch_shareable_content(bridge)
+        if content is None:
+            return
+        display = self._match_display(content)
+        if display is None:
+            return
+        self._capture_content = content
+        self._capture_display = display
+        excluded = self._excluded_windows(content)
+        SCContentFilter = bridge["SCContentFilter"]
+        content_filter = SCContentFilter.alloc().initWithDisplay_excludingWindows_(display, excluded)
+        try:
+            stream.updateContentFilter_completionHandler_(content_filter, lambda *args: None)
+        except Exception:
+            logger.debug("FullScreenCompositor: updateContentFilter failed", exc_info=True)
 
     def _excluded_windows(self, content):
         """Exclude all compositor windows + extra windows from capture."""
@@ -503,9 +807,13 @@ class FullScreenCompositor:
             iosurface = self._latest_iosurface
             w = self._latest_width
             h = self._latest_height
-            config = self._shell_config
+            configs = [dict(config) for config in self._shell_configs]
+            shell_state_version = self._shell_state_version
+            shell_state_log_frames_remaining = self._shell_state_log_frames_remaining
+            if shell_state_log_frames_remaining > 0:
+                self._shell_state_log_frames_remaining -= 1
 
-        if iosurface is None or w <= 0 or h <= 0 or config is None:
+        if iosurface is None or w <= 0 or h <= 0 or not configs:
             return
 
         self._frame_count += 1
@@ -532,9 +840,20 @@ class FullScreenCompositor:
             # Validate config before acquiring a drawable — an empty or
             # missing config would default to a full-screen warp that
             # flashes the entire display.
-            warp_config = dict(config)
-            if "content_width_points" not in warp_config or "center_x" not in warp_config:
+            if not any(
+                "content_width_points" in config and "center_x" in config
+                for config in configs
+            ):
                 return
+
+            if shell_state_log_frames_remaining > 0:
+                logger.info(
+                    "Compositor tick[%d]: version=%d active_shells=%d configs=%s",
+                    self._frame_count,
+                    shell_state_version,
+                    len(configs),
+                    [_summarize_shell_config(config) for config in configs],
+                )
 
             if self._last_drawable_size != (w, h):
                 self._metal_layer.setDrawableSize_((w, h))
@@ -544,7 +863,7 @@ class FullScreenCompositor:
                 return
 
             if self._pipeline.warp_to_drawable(
-                iosurface, drawable, width=w, height=h, shell_config=warp_config,
+                iosurface, drawable, width=w, height=h, shell_config=configs,
             ):
                 self._presented_count += 1
                 self._interval_presented += 1
@@ -554,6 +873,14 @@ class FullScreenCompositor:
         except Exception:
             if self._frame_count <= 10:
                 logger.info("Compositor tick[%d] failed", self._frame_count, exc_info=True)
+
+    @staticmethod
+    def _normalize_shell_configs(config_or_configs) -> list[dict]:
+        if not config_or_configs:
+            return []
+        if isinstance(config_or_configs, dict):
+            return [dict(config_or_configs)]
+        return [dict(config) for config in config_or_configs if config]
 
 
 class _CompositorRendererProxy:
