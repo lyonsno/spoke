@@ -624,6 +624,74 @@ class TestWindowLayering:
         overlay._window = None
         overlay.hide()  # should not raise
 
+    def test_command_overlay_fullscreen_compositor_uses_shared_start_helper(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._stop_fullscreen_compositor = MagicMock()
+        overlay._current_optical_shell_config = MagicMock(return_value={"enabled": True})
+        overlay._cancel_backdrop_refresh = MagicMock()
+        overlay._enable_text_punchthrough = MagicMock()
+        overlay._apply_surface_theme = MagicMock()
+        overlay._backdrop_layer = MagicMock()
+        overlay._metal_display_link_renderer = MagicMock()
+        overlay._window.windowNumber.return_value = 17
+
+        fs_mod = importlib.import_module("spoke.fullscreen_compositor")
+        compositor = MagicMock()
+        compositor.start.return_value = True
+        start_helper = MagicMock(return_value=compositor)
+        monkeypatch.setattr(fs_mod, "start_overlay_compositor", start_helper, raising=False)
+        monkeypatch.setattr(fs_mod, "FullScreenCompositor", MagicMock(return_value=compositor))
+
+        overlay._start_fullscreen_compositor()
+
+        start_helper.assert_called_once_with(
+            screen=overlay._screen,
+            window=overlay._window,
+            content_view=overlay._content_view,
+            shell_config={"enabled": True},
+        )
+        assert overlay._fullscreen_compositor is compositor
+
+    def test_preview_overlay_fullscreen_compositor_uses_shared_start_helper(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.overlay", None)
+        overlay_mod = importlib.import_module("spoke.overlay")
+        fs_mod = importlib.import_module("spoke.fullscreen_compositor")
+        try:
+            overlay = overlay_mod.TranscriptionOverlay.__new__(overlay_mod.TranscriptionOverlay)
+            overlay._screen = MagicMock()
+            overlay._window = MagicMock()
+            overlay._window.windowNumber.return_value = 29
+            overlay._content_view = MagicMock()
+            overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 640.0, 120.0)
+            overlay._stop_fullscreen_compositor = MagicMock()
+            overlay._cancel_backdrop_refresh = MagicMock()
+            overlay._enable_text_punchthrough = MagicMock()
+            overlay._backdrop_layer = MagicMock()
+            overlay._metal_display_link_renderer = MagicMock()
+            overlay._apply_ridge_masks = MagicMock()
+
+            compositor = MagicMock()
+            compositor.start.return_value = True
+            start_helper = MagicMock(return_value=compositor)
+            monkeypatch.setattr(fs_mod, "start_overlay_compositor", start_helper, raising=False)
+            monkeypatch.setattr(fs_mod, "FullScreenCompositor", MagicMock(return_value=compositor))
+
+            overlay._start_fullscreen_compositor()
+
+            start_helper.assert_called_once_with(
+                screen=overlay._screen,
+                window=overlay._window,
+                content_view=overlay._content_view,
+                shell_config=overlay_mod._preview_optical_shell_config(640.0, 120.0),
+            )
+            assert overlay._fullscreen_compositor is compositor
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
 
 class TestTimerCancellation:
     """Test timer cleanup methods."""

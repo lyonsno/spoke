@@ -1512,7 +1512,7 @@ class TranscriptionOverlay(NSObject):
         """Start the full-screen compositor for zero-seam optical shell."""
         self._stop_fullscreen_compositor()
         try:
-            from spoke.fullscreen_compositor import FullScreenCompositor
+            from spoke.fullscreen_compositor import start_overlay_compositor
             content = getattr(self, "_content_view", None)
             if content is None or not hasattr(content, "frame"):
                 shell_config = _preview_optical_shell_config()
@@ -1522,28 +1522,13 @@ class TranscriptionOverlay(NSObject):
                     shell_config = _preview_optical_shell_config(frame.size.width, frame.size.height)
                 except Exception:
                     shell_config = _preview_optical_shell_config()
-            scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-            screen_frame = self._screen.frame()
-            win_frame = self._window.frame()
-            content_frame = self._content_view.frame()
-            # Capsule center in screen points
-            capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
-            capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
-            capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
-            shell_config["center_x"] = capsule_cx * scale
-            shell_config["center_y"] = capsule_cy_metal * scale
-            for k in ("content_width_points", "content_height_points",
-                      "corner_radius_points", "band_width_points",
-                      "tail_width_points"):
-                if k in shell_config:
-                    shell_config[k] = float(shell_config[k]) * scale
-            compositor = FullScreenCompositor(self._screen)
-            try:
-                overlay_wid = int(self._window.windowNumber())
-                compositor.set_excluded_window_ids([overlay_wid])
-            except Exception:
-                pass
-            if compositor.start(shell_config):
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=shell_config,
+            )
+            if compositor is not None:
                 self._fullscreen_compositor = compositor
                 self._cancel_backdrop_refresh()
                 if self._backdrop_layer is not None:

@@ -24,6 +24,55 @@ import objc
 logger = logging.getLogger(__name__)
 
 
+def _scaled_shell_config_for_overlay(*, screen, window, content_view, shell_config: dict | None):
+    """Project overlay-local shell config into fullscreen compositor pixel space."""
+    if shell_config is None or screen is None or window is None or content_view is None:
+        return None
+    config = dict(shell_config)
+    scale = screen.backingScaleFactor() if hasattr(screen, "backingScaleFactor") else 2.0
+    screen_frame = screen.frame()
+    win_frame = window.frame()
+    content_frame = content_view.frame()
+
+    capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+    capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+    capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
+    config["center_x"] = capsule_cx * scale
+    config["center_y"] = capsule_cy_metal * scale
+
+    for key in (
+        "content_width_points",
+        "content_height_points",
+        "corner_radius_points",
+        "band_width_points",
+        "tail_width_points",
+    ):
+        if key in config:
+            config[key] = float(config[key]) * scale
+    return config
+
+
+def start_overlay_compositor(*, screen, window, content_view, shell_config: dict | None):
+    """Create and start a fullscreen compositor for an overlay-like surface."""
+    config = _scaled_shell_config_for_overlay(
+        screen=screen,
+        window=window,
+        content_view=content_view,
+        shell_config=shell_config,
+    )
+    if config is None:
+        return None
+
+    compositor = FullScreenCompositor(screen)
+    try:
+        compositor.set_excluded_window_ids([int(window.windowNumber())])
+    except Exception:
+        pass
+    if compositor.start(config):
+        return compositor
+    return None
+
+
 class FullScreenCompositor:
     """Full-display capture → Metal warp → full-screen presentation."""
 
