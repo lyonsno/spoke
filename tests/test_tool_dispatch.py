@@ -698,9 +698,22 @@ class TestExecuteTool:
         target = "/tmp/test.txt"
         original = "alpha\nbeta\n"
         updated = "alpha\ngamma\n"
-        m = unittest.mock.mock_open(read_data=original)
+        writer = MagicMock()
 
-        with patch("builtins.open", m):
+        def fake_open(path, mode="r", encoding=None, newline=None):
+            if mode == "rb":
+                handle = MagicMock()
+                handle.__enter__.return_value = io.BytesIO(original.encode("utf-8"))
+                handle.__exit__.return_value = False
+                return handle
+            if mode == "w":
+                handle = MagicMock()
+                handle.__enter__.return_value = writer
+                handle.__exit__.return_value = False
+                return handle
+            raise AssertionError(f"unexpected open mode: {mode}")
+
+        with patch("builtins.open", side_effect=fake_open) as mock_open:
             with patch("os.path.isfile", return_value=True):
                 result = mod.execute_tool(
                     name="edit_file",
@@ -719,9 +732,9 @@ class TestExecuteTool:
         assert parsed.get("match_count") == 1
         assert parsed.get("normalization_applied") == []
         assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
-        m.assert_any_call(target, "r", encoding="utf-8", newline="")
-        m.assert_any_call(target, "w", encoding="utf-8", newline="")
-        m().write.assert_called_once_with(updated)
+        mock_open.assert_any_call(target, "rb")
+        mock_open.assert_any_call(target, "w", encoding="utf-8", newline="")
+        writer.write.assert_called_once_with(updated)
 
     def test_execute_search_file(self):
         mod = _import_tools()

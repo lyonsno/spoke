@@ -1453,8 +1453,20 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         )
 
     try:
-        with open(file_path, "r", encoding="utf-8", newline="") as f:
-            raw_content = f.read()
+        with open(file_path, "rb") as f:
+            raw_bytes = f.read()
+        try:
+            raw_content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return _edit_result(
+                status="error",
+                file_path=file_path,
+                match_count=0,
+                failure_reason="malformed_request",
+                normalization_applied=[],
+                edited_range=None,
+                error="file is not valid UTF-8 text",
+            )
 
         normalize_trailing_whitespace = _should_normalize_trailing_whitespace(file_path)
         newline_style = _preferred_newline_style(raw_content)
