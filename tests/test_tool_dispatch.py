@@ -162,6 +162,16 @@ class TestToolSchemas:
         params = add_schema["function"]["parameters"]
         assert "text" in params.get("properties", {})
 
+    def test_subagent_control_schemas(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+
+        assert "launch_subagent" in names
+        assert "list_subagents" in names
+        assert "get_subagent_result" in names
+        assert "cancel_subagent" in names
+
 
 # ── Tool call accumulation ───────────────────────────────────────
 
@@ -263,6 +273,207 @@ class TestExecuteTool:
         assert parsed["ocr_blocks"][0]["text"] == "Hello"
         assert len(parsed["ax_hints"]) == 1
         assert parsed["ax_hints"][0]["role"] == "AXTextField"
+
+    def test_execute_capture_context_text_mode_does_not_expose_model_image_path(self):
+        """Text-mode tool results should not expose a local-only screenshot artifact."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        cache = sc_mod.SceneCaptureCache(max_captures=5)
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+            model_image_path="/tmp/test-model.png",
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": True},
+                scene_cache=cache,
+                tool_output_mode="text",
+            )
+
+        parsed = json.loads(result)
+        assert "model_image" not in parsed
+
+    def test_execute_capture_context_multimodal_without_image_request_omits_image_part(
+        self, tmp_path
+    ):
+        """Multimodal tool payloads should not inline an image unless requested."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        cache = sc_mod.SceneCaptureCache(max_captures=5)
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": False},
+                scene_cache=cache,
+                tool_output_mode="multimodal",
+            )
+
+        assert [part["type"] for part in result["content"]] == ["text"]
+        summary = json.loads(result["content"][0]["text"])
+        assert summary["scene_ref"] == "scene-test"
+
+    def test_execute_capture_context_text_mode_forces_ocr_even_when_env_requests_skip(
+        self, monkeypatch
+    ):
+        """Text-mode callers should keep OCR refs even if the smoke env prefers image-only capture."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        monkeypatch.setenv("SPOKE_SKIP_OCR", "1")
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture) as mock_capture:
+            mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": True},
+                tool_output_mode="text",
+            )
+
+        assert mock_capture.call_args.kwargs["skip_ocr"] is False
+
+    def test_execute_capture_context_multimodal_image_request_can_skip_ocr(
+        self, monkeypatch
+    ):
+        """Image-requesting multimodal callers may honor the smoke env OCR skip."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        monkeypatch.setenv("SPOKE_SKIP_OCR", "1")
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture) as mock_capture:
+            mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": True},
+                tool_output_mode="multimodal",
+            )
+
+        assert mock_capture.call_args.kwargs["skip_ocr"] is True
+
+    def test_multimodal_capture_context_summary_omits_local_model_image_path(self, tmp_path):
+        """Multimodal text summaries should describe the scene, not a local path."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        result = mod._capture_context_multimodal_result(fake_capture)
+        summary = json.loads(result["content"][0]["text"])
+
+        assert "model_image" not in summary
+        assert result["content"][1]["image_url"]["url"] == "data:image/png;base64,YWJj"
+
+    def test_execute_capture_context_multimodal_honors_explicit_include_image_false(self, tmp_path):
+        """Explicitly disabling image attachment should win even on multimodal backends."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[],
+            ax_hints=[],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_image": False},
+                tool_output_mode="multimodal",
+            )
+
+        assert isinstance(result, dict)
+        assert result["content"] == [
+            {"type": "text", "text": '{"scene_ref": "scene-test", "scope": "active_window", "app_name": "Safari", "bundle_id": "com.apple.Safari", "window_title": "Test Page", "image_size": [2560, 1440], "model_image_size": [853, 480], "ocr_blocks": [], "ax_hints": []}'}
+        ]
 
     def test_execute_capture_context_failure(self):
         """When capture fails, execute_tool returns an error JSON."""
@@ -579,6 +790,7 @@ class TestCommandClientToolIntegration:
             base_url="http://localhost:9999",
             model="test",
             api_key="key",
+            history_path=None,
         )
 
     def test_tools_included_in_request_when_provided(self):
@@ -705,6 +917,77 @@ class TestExecuteToolIntegration:
         result = mod.execute_tool("search_file", {"pattern": "find_me", "dir_path": str(d)})
         parsed = json.loads(result)
         assert "find_me" in parsed.get("matches", "")
+
+    def test_execute_launch_subagent_routes_to_manager(self):
+        mod = _import_tools()
+        manager = MagicMock()
+        manager.launch.return_value = {
+            "id": "subagent-1",
+            "kind": "search",
+            "state": "queued",
+        }
+
+        result = json.loads(
+            mod.execute_tool(
+                "launch_subagent",
+                {"kind": "search", "prompt": "find narrator proxy code"},
+                subagent_manager=manager,
+            )
+        )
+
+        manager.launch.assert_called_once_with("search", "find narrator proxy code")
+        assert result["id"] == "subagent-1"
+        assert result["state"] == "queued"
+
+    def test_execute_subagent_status_tools_route_to_manager(self):
+        mod = _import_tools()
+        manager = MagicMock()
+        manager.list_jobs.return_value = [{"id": "subagent-1", "state": "running"}]
+        manager.get_job.return_value = {"id": "subagent-1", "state": "completed"}
+        manager.cancel.return_value = {"id": "subagent-1", "state": "cancelling"}
+
+        listed = json.loads(
+            mod.execute_tool("list_subagents", {}, subagent_manager=manager)
+        )
+        fetched = json.loads(
+            mod.execute_tool(
+                "get_subagent_result",
+                {"subagent_id": "subagent-1"},
+                subagent_manager=manager,
+            )
+        )
+        cancelled = json.loads(
+            mod.execute_tool(
+                "cancel_subagent",
+                {"subagent_id": "subagent-1"},
+                subagent_manager=manager,
+            )
+        )
+
+        manager.list_jobs.assert_called_once_with()
+        manager.get_job.assert_called_once_with("subagent-1")
+        manager.cancel.assert_called_once_with("subagent-1")
+        assert listed["jobs"][0]["id"] == "subagent-1"
+        assert fetched["state"] == "completed"
+        assert cancelled["state"] == "cancelling"
+
+    def test_execute_compact_history_routes_to_callback(self):
+        mod = _import_tools()
+        history_compactor = MagicMock(
+            return_value=json.dumps({"status": "ok", "mode": "guided"})
+        )
+
+        result = json.loads(
+            mod.execute_tool(
+                "compact_history",
+                {"mode": "guided", "n": 0},
+                history_compactor=history_compactor,
+            )
+        )
+
+        history_compactor.assert_called_once_with({"mode": "guided", "n": 0})
+        assert result["status"] == "ok"
+        assert result["mode"] == "guided"
 
 
     def test_execute_read_file_edge_cases(self, tmp_path):

@@ -730,6 +730,7 @@ class CommandOverlay(NSObject):
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
+        self._narrator_shimmer_active = False
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -838,8 +839,11 @@ class CommandOverlay(NSObject):
         # Uses the inverse of the punch-through mask (opaque where text is).
         self._boost_layer = CALayer.alloc().init()
         self._boost_layer.setFrame_(((0, 0), (win_w, win_h)))
-        from Quartz import CGColorCreateSRGB
-        self._boost_layer.setBackgroundColor_(CGColorCreateSRGB(1.0, 1.0, 1.0, 1.0))
+        try:
+            from Quartz import CGColorCreateSRGB
+            self._boost_layer.setBackgroundColor_(CGColorCreateSRGB(1.0, 1.0, 1.0, 1.0))
+        except ImportError:
+            pass
         self._boost_layer.setOpacity_(0.0)
         self._boost_layer.setHidden_(True)
 
@@ -2038,13 +2042,24 @@ class CommandOverlay(NSObject):
             self._narrator_label.setHidden_(False)
             self._apply_narrator_theme()
 
+    def set_narrator_shimmer(self, active: bool) -> None:
+        """Toggle the narrator label's higher-contrast shimmer state."""
+        self._narrator_shimmer_active = bool(active)
+        self._apply_narrator_theme()
+
+    def set_thinking_collapsed(self, text: str) -> None:
+        """Replace the live thinking timer with a collapsed narrator summary."""
+        self._stop_thinking_timer()
+        self.set_narrator_summary(text)
+
     def _apply_narrator_theme(self) -> None:
         """Match narrator label color to user utterance style."""
         if self._narrator_label is None or self._narrator_label.isHidden():
             return
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        alpha = 0.7 if getattr(self, "_narrator_shimmer_active", False) else 0.4
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, alpha)
         )
 
     def _hide_narrator(self) -> None:
@@ -2704,6 +2719,11 @@ class CommandOverlay(NSObject):
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
+
+            # Hide narrator label when response content is streaming
+            if self._response_text and getattr(self, '_narrator_label', None) is not None:
+                if not self._narrator_label.isHidden():
+                    self._hide_narrator()
 
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
             win_frame = self._window.frame()

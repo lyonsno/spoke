@@ -12,7 +12,8 @@ from __future__ import annotations
 import importlib
 import sys
 import time
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -230,10 +231,10 @@ class TestCollectAXHints:
 
 
 class TestDownsampleSize:
-    def test_halves_dimensions_by_default(self):
+    def test_defaults_to_one_third_resolution(self):
         mod = _import_module()
         result = mod._downsample_size(2560, 1440)
-        assert result == (1280, 720)
+        assert result == (853, 480)
 
     def test_skips_if_already_small(self):
         """Small windows should not be downsampled below a usable size."""
@@ -246,6 +247,194 @@ class TestDownsampleSize:
         mod = _import_module()
         result = mod._downsample_size(2560, 1440, scale=0.25)
         assert result == (640, 360)
+
+
+class TestPickTargetWindow:
+    def test_prefers_ax_focused_pid_over_workspace_pid(self):
+        mod = _import_module()
+        windows = [
+            {
+                "kCGWindowOwnerPID": 101,
+                "kCGWindowOwnerName": "WezTerm",
+                "kCGWindowName": "terminal",
+                "kCGWindowBounds": {"Width": 1200, "Height": 800},
+            },
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "GitHub - Avatar",
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+        ]
+
+        picked = mod._pick_target_window(
+            windows,
+            preferred_pid=202,
+            preferred_title="GitHub - Avatar",
+            fallback_pid=101,
+            my_pid=999,
+        )
+
+        assert picked is windows[1]
+
+    def test_prefers_title_match_within_ax_pid_candidates(self):
+        mod = _import_module()
+        windows = [
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "Other Tab",
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "GitHub - Avatar",
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+        ]
+
+        picked = mod._pick_target_window(
+            windows,
+            preferred_pid=202,
+            preferred_title="GitHub - Avatar",
+            fallback_pid=None,
+            my_pid=999,
+        )
+
+        assert picked is windows[1]
+
+
+class TestCaptureContext:
+    def test_capture_context_saves_model_image_artifact(self, tmp_path):
+        mod = _import_module()
+        raw_image = object()
+        model_image = object()
+
+        with (
+            patch.object(mod, "_generate_scene_ref", return_value="scene-test"),
+            patch.object(
+                mod,
+                "_capture_active_window",
+                return_value=(
+                    raw_image,
+                    "Safari",
+                    "com.apple.Safari",
+                    "Test Page",
+                ),
+            ),
+            patch.object(mod, "_image_dimensions", return_value=(2560, 1440)),
+            patch.object(mod, "_downsample_image", return_value=model_image) as downsample,
+            patch.object(mod, "_save_image", return_value=True) as save_image,
+            patch.object(mod, "_run_ocr", return_value=("Hello", [])),
+            patch.object(mod, "_collect_ax_hints", return_value=[]),
+        ):
+            capture = mod.capture_context(cache_dir=str(tmp_path))
+
+        assert capture is not None
+        assert capture.image_path == str(tmp_path / "scene-test.png")
+        assert capture.model_image_path == str(tmp_path / "scene-test-model.png")
+        assert capture.model_image_size == (853, 480)
+        downsample.assert_called_once_with(raw_image)
+        assert save_image.call_args_list == [
+            call(raw_image, str(tmp_path / "scene-test.png")),
+            call(model_image, str(tmp_path / "scene-test-model.png")),
+        ]
+
+    def test_capture_context_skips_ocr_when_env_enabled(self, tmp_path, monkeypatch):
+        mod = _import_module()
+        raw_image = object()
+        model_image = object()
+        monkeypatch.setenv("SPOKE_SKIP_OCR", "1")
+
+        with (
+            patch.object(mod, "_generate_scene_ref", return_value="scene-test"),
+            patch.object(
+                mod,
+                "_capture_active_window",
+                return_value=(
+                    raw_image,
+                    "Safari",
+                    "com.apple.Safari",
+                    "Test Page",
+                ),
+            ),
+            patch.object(mod, "_image_dimensions", return_value=(2560, 1440)),
+            patch.object(mod, "_downsample_image", return_value=model_image),
+            patch.object(mod, "_save_image", return_value=True),
+            patch.object(mod, "_run_ocr") as run_ocr,
+            patch.object(mod, "_collect_ax_hints", return_value=[]),
+        ):
+            capture = mod.capture_context(cache_dir=str(tmp_path))
+
+        assert capture is not None
+        assert capture.ocr_text == ""
+        assert capture.ocr_blocks == []
+        run_ocr.assert_not_called()
+
+
+class TestCaptureActiveWindow:
+    def test_ax_selected_window_refreshes_app_metadata(self):
+        mod = _import_module()
+        image = object()
+        workspace_app = MagicMock()
+        workspace_app.processIdentifier.return_value = 101
+        workspace_app.localizedName.return_value = "WezTerm"
+        workspace_app.bundleIdentifier.return_value = "com.github.wez.wezterm"
+
+        target_app = MagicMock()
+        target_app.localizedName.return_value = "Safari"
+        target_app.bundleIdentifier.return_value = "com.apple.Safari"
+
+        fake_workspace = MagicMock()
+        fake_workspace.frontmostApplication.return_value = workspace_app
+
+        fake_appkit = SimpleNamespace(
+            NSWorkspace=SimpleNamespace(sharedWorkspace=lambda: fake_workspace),
+            NSRunningApplication=SimpleNamespace(
+                runningApplicationWithProcessIdentifier_=lambda pid: target_app if pid == 202 else None
+            ),
+        )
+        fake_quartz = SimpleNamespace(
+            CGRectNull=None,
+            CGWindowListCopyWindowInfo=lambda options, window_id: [
+                {
+                    "kCGWindowNumber": 41,
+                    "kCGWindowOwnerPID": 202,
+                    "kCGWindowOwnerName": "Safari",
+                    "kCGWindowName": "GitHub - Avatar",
+                    "kCGWindowLayer": 0,
+                    "kCGWindowBounds": {"Width": 1400, "Height": 900},
+                },
+                {
+                    "kCGWindowNumber": 42,
+                    "kCGWindowOwnerPID": 101,
+                    "kCGWindowOwnerName": "WezTerm",
+                    "kCGWindowName": "terminal",
+                    "kCGWindowLayer": 0,
+                    "kCGWindowBounds": {"Width": 1200, "Height": 800},
+                },
+            ],
+            CGWindowListCreateImage=lambda *args: image,
+            kCGWindowImageBoundsIgnoreFraming=1,
+            kCGWindowListExcludeDesktopElements=2,
+            kCGWindowListOptionIncludingWindow=4,
+            kCGWindowListOptionOnScreenOnly=8,
+        )
+
+        with (
+            patch.dict(sys.modules, {"AppKit": fake_appkit, "Quartz": fake_quartz}),
+            patch.object(mod, "_get_focused_window_hint", return_value=(202, "GitHub - Avatar")),
+            patch.object(mod.os, "getpid", return_value=999),
+        ):
+            result = mod._capture_active_window()
+
+        assert result == (
+            image,
+            "Safari",
+            "com.apple.Safari",
+            "GitHub - Avatar",
+        )
 
 
 # ── Artifact cache ───────────────────────────────────────────────

@@ -135,6 +135,29 @@ class TestThinkingTimer:
         assert overlay._thinking_timer is None
         overlay._stop_thinking_timer()  # should not raise
 
+    def test_set_narrator_shimmer_updates_flag_and_reapplies_theme(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._apply_narrator_theme = MagicMock()
+
+        overlay.set_narrator_shimmer(True)
+
+        assert overlay._narrator_shimmer_active is True
+        overlay._apply_narrator_theme.assert_called_once_with()
+
+    def test_set_thinking_collapsed_updates_narrator_and_stops_timer(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._thinking_timer = MagicMock()
+        overlay._hide_narrator = MagicMock()
+        overlay._apply_narrator_theme = MagicMock()
+
+        overlay.set_thinking_collapsed("condensed summary")
+
+        assert overlay._thinking_timer is None
+        overlay._thinking_label.setHidden_.assert_called_with(True)
+        overlay._narrator_label.setStringValue_.assert_called_with("condensed summary")
+        overlay._narrator_label.setHidden_.assert_called_with(False)
+        overlay._apply_narrator_theme.assert_called_once_with()
+
     def test_init_uses_shared_backdrop_renderer_factory(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")

@@ -40,38 +40,46 @@ Rules:
 Breaking down, Checking, Debugging, Revisiting, Weighing, Testing, etc.
 - Be specific: name the concrete thing (algorithm, variable, edge case, \
 tradeoff). Never generic ("Thinking about the problem").
-- Focus on what CHANGED or is NEW in this excerpt compared to before.
+- IMPORTANT: Each summary MUST describe something different from your \
+previous summaries. Even if the AI is still on the same broad topic, \
+zoom in on the specific sub-step, detail, or angle that is NEW in \
+this excerpt. What changed? What shifted? What is it drilling into now \
+that it wasn't before? If it's reconsidering something, say what and why.
 - Say what the AI is doing, not "the user".
 - No preamble, no commentary. Output ONLY the status line."""
 
 _LOADING_VAMP_SYSTEM_PROMPT = """\
-You write short, fun, varied status lines for a voice assistant while \
-a large AI model is loading into GPU memory. The user is waiting and \
-can see your messages, so be entertaining and informative.
+You write short, fun, varied status lines while a large AI model \
+is loading into GPU memory. The user is waiting and can see your \
+messages, so be entertaining and informative.
 
 Rules:
-- ONE line only. 8–20 words.
-- Be creative, varied, and fun. Mix humor, tech facts, encouragement, \
-and playful commentary. Never repeat yourself.
-- You can reference: the model name, how long it's been loading, the \
-size, what the user asked, the hardware, AI in general, the wait itself.
-- Tone: friendly, slightly irreverent, like a witty loading screen.
+- ONE line only. 10–18 words. Must fit on one line of a small overlay.
+- NEVER repeat a previous line. Each must be completely different in \
+structure, topic, angle, and wording. Read your previous messages — \
+if your new line resembles ANY of them, throw it out and try again.
+- Vary your approach: alternate between humor, technical commentary, \
+encouragement, fun facts, and observations about the wait.
+- You can reference: the model name, how long it's been loading, GPU \
+memory, what the user asked, the hardware, AI trivia.
+- Tone: witty, slightly irreverent, like a clever loading screen.
 - No preamble, no quotes. Output ONLY the status line.
 
-Examples of good lines:
-- Waking up a 27-billion-parameter brain — neurons need their coffee too
-- 45 seconds in — still cheaper than waiting for a human expert
-- Shuffling 15GB of weights onto the GPU like a very expensive game of Tetris
-- Almost there — the model is doing its stretches before the big performance
-- Loading layer 34 of 80 — each one a little smarter than the last"""
+Examples (do NOT reuse these, they show the range of styles):
+- Waking up 27 billion parameters — neurons need their coffee too
+- Tetris but the blocks are 15GB weight matrices
+- Your question is in the queue, the GPU just needs a minute
+- Fun fact: this model has more parameters than you have neurons
+- Almost there — stretching before the big performance"""
 
-_LOADING_VAMP_INTERVAL_S = 6.0  # seconds between vamp lines
+_LOADING_VAMP_INTERVAL_S = 8.0  # seconds between subsequent vamp lines
 
 # ── chunking parameters ─────────────────────────────────────────────
 
-_TARGET_CHUNK_TOKENS = 300
-_MIN_INTERVAL_S = 5.0  # minimum seconds between narrator calls
-_MAX_TOKENS = 30        # generation budget for each summary
+_TARGET_CHUNK_TOKENS = 80   # lowered to catch short-reasoner bursts
+_MIN_INTERVAL_S = 3.0   # minimum seconds between narrator calls
+_MAX_INTERVAL_S = 6.0   # dispatch even with few tokens after this long
+_MAX_TOKENS = 30         # generation budget for each summary
 
 
 def _rough_token_count(text: str) -> int:
@@ -101,12 +109,14 @@ class ThinkingNarrator:
     def __init__(
         self,
         on_summary: Callable[[str], None],
+        on_thinking_collapsed: Callable[[str], None] | None = None,
         *,
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
     ):
         self._on_summary = on_summary
+        self._on_thinking_collapsed = on_thinking_collapsed
 
         # Endpoint config — fall back to command URL, then localhost
         raw_url = (
@@ -161,6 +171,7 @@ class ThinkingNarrator:
         """Begin a new narration session (new thinking phase)."""
         with self._lock:
             self._buffer = ""
+            self._thinking_start = 0.0  # set on first thinking token, not here
             self._last_dispatch = time.monotonic()
             self._messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
             self._active = True
@@ -168,26 +179,110 @@ class ThinkingNarrator:
         logger.info("Narrator session started")
 
     def stop(self) -> None:
-        """End the narration session."""
+        """End the narration session without a collapsed summary."""
         with self._lock:
             self._active = False
             self._buffer = ""
         logger.info("Narrator session stopped")
+
+    def stop_and_summarize(self) -> None:
+        """End the narration session and produce a collapsed summary.
+
+        Fires one final call to the narrator model asking for a concise
+        wrap-up of what was thought about.  The result is delivered via
+        on_thinking_collapsed as "Thought for Xs · {summary}".
+        Always produces a topic summary for thinking >1s, even if no
+        live narrator summaries were dispatched during the session.
+        """
+        with self._lock:
+            self._active = False
+            remaining_buffer = self._buffer
+            buffer_tokens = _rough_token_count(remaining_buffer)
+            self._buffer = ""
+            if self._thinking_start > 0:
+                elapsed = time.monotonic() - self._thinking_start
+            else:
+                elapsed = 0.0  # no thinking tokens were received
+            messages = list(self._messages)
+            num_summaries = (len(messages) - 1) // 2  # system + pairs
+
+        logger.info(
+            "Narrator stop_and_summarize: elapsed=%.1fs buffer_tokens=%d summaries=%d",
+            elapsed, buffer_tokens, num_summaries,
+        )
+
+        if not self._on_thinking_collapsed:
+            return
+        if elapsed < 1.0:
+            logger.info("Narrator: sub-second thinking, skipping collapsed summary")
+            return  # sub-second thinking — not worth reporting
+
+        # Immediately emit the bare duration so it's in the overlay
+        # before response tokens start flowing. The topic will be
+        # appended when Bonsai returns.
+        self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
+
+        # Fire async wrap-up — always call Bonsai for the topic summary.
+        # If no live summaries were produced, feed the raw thinking buffer
+        # directly so the model has something to summarize.
+        if len(messages) < 3 and remaining_buffer:
+            messages.append({
+                "role": "user",
+                "content": f"Current reasoning excerpt:\n\n{remaining_buffer}",
+            })
+
+        t = threading.Thread(
+            target=self._produce_collapsed_summary,
+            args=(messages, elapsed),
+            daemon=True,
+        )
+        t.start()
+
+    def _produce_collapsed_summary(self, messages: list[dict], elapsed: float) -> None:
+        """Generate and deliver the collapsed thinking summary."""
+        try:
+            messages = list(messages)
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The AI has finished thinking. Write a single short phrase "
+                    "(5-10 words, no participle needed) summarizing WHAT it "
+                    "thought about overall. Like a section heading. "
+                    "Examples: 'palindrome algorithm design and edge cases', "
+                    "'debugging the auth token refresh flow', "
+                    "'weighing three caching strategies'. "
+                    "Output ONLY the phrase."
+                ),
+            })
+            topic = self._chat_completion(messages, max_tokens=25)
+            if topic:
+                # Append topic to the already-displayed duration line
+                logger.info("Thinking topic: %s", topic)
+                self._on_thinking_collapsed(f" · {topic}")
+        except Exception:
+            logger.exception("Failed to produce collapsed summary")
 
     def feed(self, token: str) -> None:
         """Feed a thinking token.  May trigger an async narrator call."""
         with self._lock:
             if not self._active:
                 return
+            # Start the thinking clock on the first actual thinking token,
+            # not when start() was called (which may include model load time).
+            if self._thinking_start == 0.0:
+                self._thinking_start = time.monotonic()
             self._buffer += token
             now = time.monotonic()
             elapsed = now - self._last_dispatch
             tokens = _rough_token_count(self._buffer)
 
-            # Dispatch when BOTH conditions met: enough tokens AND enough time
+            # Dispatch when enough tokens have accumulated (with a minimum
+            # cooldown), OR unconditionally after _MAX_INTERVAL_S so the
+            # user always sees a fresh summary even during slow thinking.
+            enough_tokens = tokens >= _TARGET_CHUNK_TOKENS and elapsed >= _MIN_INTERVAL_S
+            time_ceiling = elapsed >= _MAX_INTERVAL_S and tokens > 0
             should_dispatch = (
-                tokens >= _TARGET_CHUNK_TOKENS
-                and elapsed >= _MIN_INTERVAL_S
+                (enough_tokens or time_ceiling)
                 and not self._pending_dispatch
             )
             if not should_dispatch:
@@ -269,7 +364,7 @@ class ThinkingNarrator:
     def _vamp_loop(self, utterance: str, model_id: str) -> None:
         """Background loop that generates vamp lines every few seconds."""
         # Wait before starting — don't vamp on fast responses
-        _VAMP_GRACE_PERIOD_S = 4.0
+        _VAMP_GRACE_PERIOD_S = 3.0
         grace_slept = 0.0
         while grace_slept < _VAMP_GRACE_PERIOD_S:
             time.sleep(0.5)
@@ -278,8 +373,24 @@ class ThinkingNarrator:
                 if not self._vamp_active:
                     return
 
+        # Grace period expired — model hasn't responded yet, show loading indicator
+        loading_label = f"Loading {model_id}…" if model_id else "Loading model…"
+        self._on_summary(loading_label)
+        logger.info("Loading indicator shown: %s", loading_label)
+
         vamp_messages: list[dict] = [
             {"role": "system", "content": _LOADING_VAMP_SYSTEM_PROMPT},
+        ]
+
+        consecutive_rejects = 0
+        _DIVERSITY_NUDGES = [
+            "IMPORTANT: Your previous lines all mentioned memory/GPU stats. "
+            "Try a completely different angle: humor, fun facts, encouragement, "
+            "or observations about AI. Do NOT mention GB, memory, or loading progress.",
+            "IMPORTANT: Be creative! Try a joke, a fun analogy, or something "
+            "the user hasn't seen yet. Avoid technical stats entirely.",
+            "IMPORTANT: Pretend you can't see the GPU stats. Write something "
+            "entertaining that has nothing to do with memory or loading numbers.",
         ]
 
         while True:
@@ -293,31 +404,75 @@ class ThinkingNarrator:
             context_parts = []
             if model_id:
                 context_parts.append(f"Model being loaded: {model_id}")
-            if loading_context:
+            # Suppress stats context after repeated rejections to break the loop
+            if loading_context and consecutive_rejects < 2:
                 context_parts.append(loading_context)
             context_parts.append(f"Time waiting so far: {elapsed:.0f} seconds")
             if utterance:
                 context_parts.append(f"The user asked: \"{utterance}\"")
 
             user_content = "Generate the next loading status line.\n\n" + "\n".join(context_parts)
+            if consecutive_rejects > 0:
+                nudge = _DIVERSITY_NUDGES[
+                    min(consecutive_rejects - 1, len(_DIVERSITY_NUDGES) - 1)
+                ]
+                user_content += "\n\n" + nudge
+
             vamp_messages.append({"role": "user", "content": user_content})
+            # Escalate temperature and widen top_k when stuck in a rut
+            temp = min(0.8 + consecutive_rejects * 0.15, 1.5)
+            tk = min(20 + consecutive_rejects * 10, 80)
 
             try:
                 summary = self._chat_completion(
-                    vamp_messages, temperature=0.9, max_tokens=40
+                    vamp_messages, temperature=temp, max_tokens=40, top_k=tk
                 )
                 if summary:
-                    vamp_messages.append({"role": "assistant", "content": summary})
-                    with self._lock:
-                        if not self._vamp_active:
-                            return
-                    logger.info("Vamp line: %s", summary)
-                    self._on_summary(summary)
+                    # Deduplicate: skip if too similar to ANY previous line
+                    prev_assistants = [
+                        m["content"] for m in vamp_messages
+                        if m["role"] == "assistant"
+                    ]
+                    is_similar = any(
+                        self._lines_too_similar(summary, prev)
+                        for prev in prev_assistants
+                    )
+                    if is_similar:
+                        logger.info("Vamp line too similar (streak=%d), skipping: %s",
+                                    consecutive_rejects + 1, summary)
+                        consecutive_rejects += 1
+                        # Remove the user message we just added so history stays clean
+                        vamp_messages.pop()
+                    else:
+                        consecutive_rejects = 0
+                        vamp_messages.append({"role": "assistant", "content": summary})
+                        with self._lock:
+                            if not self._vamp_active:
+                                return
+                        logger.info("Vamp line: %s", summary)
+                        self._on_summary(summary)
             except Exception:
                 logger.exception("Vamp dispatch failed")
 
-            # Wait before next vamp line
-            time.sleep(_LOADING_VAMP_INTERVAL_S)
+            # Wait before next vamp line (check for stop every 500ms)
+            waited = 0.0
+            while waited < _LOADING_VAMP_INTERVAL_S:
+                time.sleep(0.5)
+                waited += 0.5
+                with self._lock:
+                    if not self._vamp_active:
+                        return
+
+    @staticmethod
+    def _lines_too_similar(a: str, b: str, threshold: float = 0.6) -> bool:
+        """Return True if two lines share more than threshold of their words."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
+            return False
+        overlap = len(words_a & words_b)
+        smaller = min(len(words_a), len(words_b))
+        return (overlap / smaller) > threshold
 
     def _poll_loading_status(self) -> str:
         """Poll OMLX /api/status for loading context."""
@@ -351,13 +506,23 @@ class ThinkingNarrator:
             logger.debug("Failed to poll OMLX status", exc_info=True)
             return ""
 
-    def _chat_completion(self, messages: list[dict], *, temperature: float = 0.3, max_tokens: int = _MAX_TOKENS) -> str:
+    def _chat_completion(
+        self,
+        messages: list[dict],
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = _MAX_TOKENS,
+        top_p: float = 0.95,
+        top_k: int = 20,
+    ) -> str:
         """Synchronous chat completion call."""
         body = {
             "model": self._model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
             "stream": False,
         }
 
