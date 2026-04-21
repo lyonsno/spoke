@@ -203,14 +203,31 @@ class CommandClient:
         self._history: list[list[dict]] = self._load_history()
 
     def _load_history(self) -> list[list[dict]]:
-        """Load persisted history from disk, or return empty list."""
+        """Load persisted history from disk, or return empty list.
+
+        Handles migration from old format (list of [user_str, assistant_str]
+        pairs) to new format (list of message chains).
+        """
         if self._history_path is None:
             return []
         try:
             data = json.loads(self._history_path.read_text(encoding="utf-8"))
             if not isinstance(data, list):
                 return []
-            return data
+            converted = []
+            for entry in data:
+                if not isinstance(entry, list) or not entry:
+                    continue
+                if isinstance(entry[0], str):
+                    # Old format: ["user text", "assistant text"]
+                    chain = [{"role": "user", "content": entry[0]}]
+                    if len(entry) > 1 and entry[1]:
+                        chain.append({"role": "assistant", "content": entry[1]})
+                    converted.append(chain)
+                elif isinstance(entry[0], dict):
+                    # New format: list of message dicts
+                    converted.append(entry)
+            return converted
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             return []
 
