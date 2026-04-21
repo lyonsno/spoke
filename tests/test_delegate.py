@@ -1848,6 +1848,34 @@ class TestDualModelConfiguration:
         ]
         d._menubar.refresh_menu.assert_called_once_with()
 
+    def test_command_models_discovered_syncs_turn_carver_after_local_heal(
+        self, main_module, monkeypatch
+    ):
+        """Async local healing should keep the Converge turn carver on the live assistant model."""
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "local"
+        d._command_model_id = "step-3p5-flash-mixedp-final"
+        d._command_client = MagicMock()
+        d._turn_carver = MagicMock()
+        d._turn_carver._model = "step-3p5-flash-mixedp-final"
+        d._menubar = MagicMock()
+        d._load_command_model_preference = MagicMock(return_value="qwen3-14b")
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    ("qwen3-14b", "qwen3-14b", False),
+                    ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True),
+                ]
+            }
+        )
+
+        assert d._command_model_id == "qwen3-14b"
+        assert d._command_client._model == "qwen3-14b"
+        assert d._turn_carver._model == "qwen3-14b"
+        d._menubar.refresh_menu.assert_called_once_with()
+
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):
@@ -2251,6 +2279,53 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", True),
             ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
         ]
+
+    def test_init_reconciles_turn_carver_model_with_healed_local_selection(
+        self, main_module, monkeypatch
+    ):
+        """Startup reconciliation should not leave the Converge carver on the smoke-env model."""
+        monkeypatch.delenv("SPOKE_RELAUNCH_COMMAND_MODEL", raising=False)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "Qwen3.6-35B-A3B-oQ8",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
+        turn_carver = MagicMock()
+        turn_carver._model = "step-3p5-flash-mixedp-final"
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module, "TurnCarver", return_value=turn_carver
+            ) as MockTurnCarver:
+                with patch.object(
+                    main_module.SpokeAppDelegate,
+                    "_seed_command_model_options",
+                    return_value=[
+                        ("Qwen3.6-35B-A3B-oQ8", "Qwen3.6-35B-A3B-oQ8", False),
+                        ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True),
+                    ],
+                ):
+                    d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                    result = d.init()
+
+        assert result is not None
+        MockTurnCarver.assert_called_once_with(
+            base_url=main_module._DEFAULT_COMMAND_URL,
+            api_key=None,
+            model="step-3p5-flash-mixedp-final",
+        )
+        assert d._command_model_id == "Qwen3.6-35B-A3B-oQ8"
+        assert d._command_client._model == "Qwen3.6-35B-A3B-oQ8"
+        assert d._turn_carver._model == "Qwen3.6-35B-A3B-oQ8"
 
     def test_init_prefers_relaunch_command_model_override_over_smoke_env(
         self, main_module, monkeypatch

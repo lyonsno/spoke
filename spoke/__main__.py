@@ -1061,6 +1061,7 @@ class SpokeAppDelegate(NSObject):
                     self._command_model_id = reconciled_command_model_id
                     if self._command_client is not None:
                         self._command_client._model = reconciled_command_model_id
+                    self._sync_turn_carver_model(reconciled_command_model_id)
                     self._command_model_options = [
                         (model_id, label, model_id == reconciled_command_model_id)
                         for model_id, label, _selected in self._command_model_options
@@ -5238,6 +5239,13 @@ class SpokeAppDelegate(NSObject):
             name="command-model-refresh",
         ).start()
 
+    def _sync_turn_carver_model(self, model_id: str | None) -> None:
+        """Keep the background Converge carver aligned with the active assistant model."""
+        turn_carver = getattr(self, "_turn_carver", None)
+        if turn_carver is None or not model_id:
+            return
+        turn_carver._model = model_id
+
     def commandModelsDiscovered_(self, payload: dict) -> None:
         command_backend = getattr(self, "_command_backend", "local")
         self._command_models_refresh_in_flight = False
@@ -5260,6 +5268,7 @@ class SpokeAppDelegate(NSObject):
                 self._command_model_id = healed_model_id
                 if self._command_client is not None:
                     self._command_client._model = healed_model_id
+                self._sync_turn_carver_model(healed_model_id)
                 self._command_model_options = [
                     (model_id, label, model_id == healed_model_id)
                     for model_id, label, _selected in options
@@ -5278,6 +5287,7 @@ class SpokeAppDelegate(NSObject):
             self._command_model_id = healed_model_id
             if self._command_client is not None:
                 self._command_client._model = healed_model_id
+            self._sync_turn_carver_model(healed_model_id)
             if not self._save_command_model_preference(healed_model_id):
                 logger.warning(
                     "Failed to persist healed sidecar assistant model: %s",
