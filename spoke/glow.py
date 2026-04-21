@@ -164,12 +164,16 @@ _SCREEN_CORNER_HELPER_CORNER_SMOOTHING = 40.0
 _SCREEN_CORNER_HELPER_FALLOFF_SCALE = 1.4
 
 
-def _sample_screen_brightness(screen) -> float:
+def _sample_screen_brightness(screen, below_window_id: int = 0) -> float:
     """Sample average brightness from 4 small patches (one per quadrant).
 
     Each patch is 50x50 pixels, inset 25% from each screen edge to avoid
     our own glow/vignette. Returns 0.0 (black) to 1.0 (white).
     ~4x faster than a fullscreen capture on retina displays.
+
+    Pass ``below_window_id`` (a Cocoa windowNumber) to exclude that
+    window and everything above it from the capture — this gives the
+    raw desktop content beneath Spoke's own windows.
     """
     try:
         from Quartz import (
@@ -185,6 +189,7 @@ def _sample_screen_brightness(screen) -> float:
         fw, fh = frame.size.width, frame.size.height
         ox, oy = frame.origin.x, frame.origin.y
         ps = _BRIGHTNESS_PATCH_SIZE
+        wid = below_window_id if below_window_id > 0 else kCGNullWindowID
 
         # 4 patches at 25%/75% of each axis
         patch_centers = [
@@ -205,7 +210,7 @@ def _sample_screen_brightness(screen) -> float:
             image = CGWindowListCreateImage(
                 rect,
                 kCGWindowListOptionOnScreenBelowWindow,
-                kCGNullWindowID,
+                wid,
                 0,
             )
             if image is None:
@@ -1123,7 +1128,8 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
-        brightness = _sample_screen_brightness(self._screen)
+        _wid = int(self._window.windowNumber()) if self._window is not None else 0
+        brightness = _sample_screen_brightness(self._screen, below_window_id=_wid)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
         self._brightness = brightness
@@ -1181,7 +1187,8 @@ class GlowOverlay(NSObject):
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
         if not self._visible:
             return
-        new_brightness = _sample_screen_brightness(self._screen)
+        _wid = int(self._window.windowNumber()) if self._window is not None else 0
+        new_brightness = _sample_screen_brightness(self._screen, below_window_id=_wid)
         if abs(new_brightness - self._brightness) < 0.02:
             return  # no meaningful change
         self._brightness = new_brightness

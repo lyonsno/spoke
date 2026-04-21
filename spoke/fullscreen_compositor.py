@@ -131,9 +131,12 @@ class FullScreenCompositor:
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, 0, NSBackingStoreBuffered, False,
         )
-        # Command overlay is at level 26 (_OVERLAY_WINDOW_LEVEL + 1).
-        # Compositor sits at 25 — above normal windows but below the overlay.
-        self._window.setLevel_(25)
+        # Command overlay is at level 26 (_OVERLAY_WINDOW_LEVEL + 1),
+        # glow is at 25.  Compositor sits at 24 — above normal windows
+        # but below both, so brightness sampling with
+        # kCGWindowListOptionOnScreenBelowWindow from the glow window
+        # captures the warped content (what the user sees through the fill).
+        self._window.setLevel_(24)
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         self._window.setIgnoresMouseEvents_(True)

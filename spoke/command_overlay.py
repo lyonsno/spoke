@@ -255,10 +255,14 @@ _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds �
 
 
 def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
-    # Smoothstep: commits near the extremes, transitions cleanly
-    # through the middle.  Light fill on dark, dark fill on light.
+    # Steep sigmoid: commits to light or dark fill quickly, doesn't
+    # linger in a bland mid-tone.  The transition is centered at 0.45
+    # (biased slightly toward dark-fill) and covers ~0.15 of the
+    # brightness range, so most backgrounds get a decisive choice.
     t = _clamp01(brightness)
-    t = t * t * (3.0 - 2.0 * t)  # smoothstep
+    # Remap to steep sigmoid: 6x gain centered at 0.45
+    t = _clamp01((t - 0.45) * 6.0 + 0.5)
+    t = t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
     return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
 
 
@@ -833,7 +837,7 @@ class CommandOverlay(NSObject):
         self._content_view = content
 
         # Scroll view with text view for response text
-        scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+        scroll_frame = NSMakeRect(24, 16, _OVERLAY_WIDTH - 48, _OVERLAY_HEIGHT - 32)
         self._scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
         self._scroll_view.setHasVerticalScroller_(False)
         self._scroll_view.setHasHorizontalScroller_(False)
@@ -848,7 +852,7 @@ class CommandOverlay(NSObject):
             clip_view.setWantsLayer_(True)
             clip_view.layer().setBackgroundColor_(None)
 
-        text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+        text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 48, _OVERLAY_HEIGHT - 32)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
         self._text_view.setEditable_(False)
         self._text_view.setSelectable_(False)
@@ -1094,7 +1098,7 @@ class CommandOverlay(NSObject):
             NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
         self._scroll_view.setFrame_(
-            NSMakeRect(48, 8, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 16)
+            NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
         )
         self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._fill_image_brightness = self._brightness
@@ -1718,8 +1722,9 @@ class CommandOverlay(NSObject):
                     )
                     try:
                         if _punchthrough:
-                            # Punch-through mode: uniform white at full alpha
-                            # for clean destinationOut erasure.
+                            # Punch-through mode: uniform white at full alpha.
+                            # Text glyphs are the mask — alpha 1.0 erases
+                            # the fill via CISourceOutCompositing.
                             ts.addAttribute_value_range_(
                                 _FG_pulse,
                                 NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -1802,11 +1807,13 @@ class CommandOverlay(NSObject):
                     fill_max = 0.0
                 elif getattr(self, "_fullscreen_compositor", None) is not None:
                     # Graphic mode: dark-on-dark, light-on-light.
-                    # High opacity so text punch-through carves
-                    # visible contrast.  Sinusoid killed for tuning.
+                    # Steep sigmoid so mid-tones commit to one side
+                    # rather than lingering in a bland middle.
                     fill_drive = 0.5
-                    fill_min = _lerp(0.72, 0.94, t)
-                    fill_max = _lerp(0.82, 0.98, t)
+                    ct = _clamp01((t - 0.45) * 6.0 + 0.5)
+                    ct = ct * ct * (3.0 - 2.0 * ct)
+                    fill_min = _lerp(0.72, 0.96, ct)
+                    fill_max = _lerp(0.82, 0.99, ct)
             else:
                 fill_min = _lerp(0.30, 0.84, t)
                 fill_max = _lerp(0.92, 0.99, t)
@@ -1814,6 +1821,9 @@ class CommandOverlay(NSObject):
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
+        # Update text punch-through mask (if active)
+        if getattr(self, "_text_punchthrough", False):
+            self._update_punchthrough_mask()
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
@@ -2034,7 +2044,7 @@ class CommandOverlay(NSObject):
                     # (less transparent trough) so the dark fill reads
                     # as a strong surface, not a milky wash.
                     _b = getattr(self, '_brightness', 0.0)
-                    _ifloor = _lerp(0.55, 0.72, _clamp01(_b))
+                    _ifloor = _lerp(0.55, 0.97, _clamp01(_b))
                     interior = _glow_fill_alpha(sdf, width=2.0 * scale,
                                                 interior_floor=_ifloor)
                     # Edge ridge: bright hairline at the boundary.
@@ -2046,13 +2056,17 @@ class CommandOverlay(NSObject):
                         0.0, 1.0,
                     ).astype(np.float32)
 
-                    # Exterior glow: cut to ~1/4 of previous levels.
-                    # Faint atmospheric haze, not a visible halo.
+                    # Exterior glow: soft atmospheric tail.
+                    # Gaussian falloff (σ = feather/3) gives a gentle fade
+                    # that avoids the crispy-edge look of super-Gaussian.
                     feather_px = _OPTICAL_SHELL_FEATHER * scale
                     ext_d = np.maximum(sdf, 0.0)
-                    exterior = np.exp(-((ext_d / (feather_px / 2.0)) ** 2.5)).astype(np.float32)
+                    sigma = feather_px / 3.0
+                    exterior = np.exp(-0.5 * (ext_d / sigma) ** 2.0).astype(np.float32)
+                    # Opacity envelope: starts at 0.18 at the edge, fades
+                    # to 0.01 floor over the full feather width.
                     ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
-                    ext_opacity = 0.10 * np.exp(-((ext_t / 0.12) ** 1.5)) + 0.008
+                    ext_opacity = 0.13 * np.exp(-((ext_t / 0.30) ** 1.5)) + 0.007
                     fill_alpha = np.where(sdf <= 0.0, interior, exterior * ext_opacity)
                 else:
                     fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
@@ -2323,26 +2337,140 @@ class CommandOverlay(NSObject):
     def _enable_text_punchthrough(self, enabled: bool) -> None:
         """Toggle text punch-through mode.
 
-        When enabled, the content view's layer uses ``destinationOut``
-        compositing so that drawn text erases the fill layer below it
-        in the wrapper, creating negative-space letterforms that reveal
-        the warped backdrop from the compositor window underneath.
+        When enabled, the fill layer gets a mask that is opaque
+        everywhere except where text glyphs are.  The mask is
+        regenerated each pulse tick via ``_update_punchthrough_mask``.
+        Text-shaped holes in the fill reveal the warped compositor
+        content underneath.
         """
+        self._text_punchthrough = enabled
+        fill = getattr(self, "_fill_layer", None)
         content = getattr(self, "_content_view", None)
-        if content is None:
-            return
-        layer = content.layer() if hasattr(content, "layer") else None
-        if layer is None or not hasattr(layer, "setCompositingFilter_"):
+        if fill is None:
             return
         if enabled:
-            # Use xor blend: erases destination where source has alpha,
-            # preserves destination where source is transparent.
-            # Text glyphs (alpha 1.0) punch holes in the fill layer.
-            layer.setCompositingFilter_("xor")
-            self._text_punchthrough = True
+            # Hide the real text — the mask IS the text now
+            if content is not None:
+                content.setHidden_(True)
         else:
-            layer.setCompositingFilter_(None)
-            self._text_punchthrough = False
+            fill.setMask_(None)
+            self._punchthrough_mask_layer = None
+            if content is not None:
+                content.setHidden_(False)
+
+    def _update_punchthrough_mask(self) -> None:
+        """Render text into an inverted mask for the fill layer.
+
+        Called each pulse tick when punch-through is active.  Draws a
+        white (opaque) rect, then stamps the current attributed text
+        with kCGBlendModeDestinationOut to create transparent holes
+        where text glyphs are — revealing the warped compositor
+        content underneath.
+
+        Uses NSAttributedString.drawInRect_ via NSGraphicsContext
+        (no CoreText dependency).
+        """
+        fill = getattr(self, "_fill_layer", None)
+        content = getattr(self, "_content_view", None)
+        if fill is None or content is None:
+            return
+        ts = self._text_view.textStorage()
+        if ts is None or (hasattr(ts, 'length') and ts.length() == 0):
+            fill.setMask_(None)
+            return
+        try:
+            from Quartz import (
+                CGBitmapContextCreate,
+                CGBitmapContextCreateImage,
+                CGColorSpaceCreateDeviceRGB,
+                kCGImageAlphaPremultipliedLast,
+                kCGBlendModeDestinationOut,
+                CGRectMake,
+                CGContextSetRGBFillColor,
+                CGContextFillRect,
+                CGContextSetBlendMode,
+                CGContextSaveGState,
+                CGContextRestoreGState,
+                CGContextTranslateCTM,
+            )
+            from AppKit import NSGraphicsContext
+            from Foundation import NSMakeRect
+
+            fill_frame = fill.frame()
+            fw = int(fill_frame[1][0])
+            fh = int(fill_frame[1][1])
+            if fw <= 0 or fh <= 0:
+                return
+
+            # Content offset within the fill layer
+            content_frame = content.frame()
+            cx = content_frame[0][0]
+            cy = content_frame[0][1]
+
+            # Scroll offset and text frame
+            scroll_origin = self._scroll_view.contentView().bounds().origin
+            text_frame = self._text_view.frame()
+
+            cs = CGColorSpaceCreateDeviceRGB()
+            ctx = CGBitmapContextCreate(
+                None, fw, fh, 8, fw * 4,
+                cs, kCGImageAlphaPremultipliedLast,
+            )
+            if ctx is None:
+                return
+
+            # Fill entire mask white (opaque) — fill shows through here
+            CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0)
+            CGContextFillRect(ctx, CGRectMake(0, 0, fw, fh))
+
+            # Use NSGraphicsContext (flipped to match NSTextView) to
+            # draw the attributed string with destinationOut blending.
+            nsctx = NSGraphicsContext.graphicsContextWithCGContext_flipped_(ctx, True)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.setCurrentContext_(nsctx)
+
+            CGContextSaveGState(ctx)
+            CGContextSetBlendMode(ctx, kCGBlendModeDestinationOut)
+
+            # In a flipped context, (0,0) is top-left.  The fill layer
+            # covers the full window including feather; text sits at
+            # (feather + scroll_inset_x, feather + scroll_inset_y).
+            # CG origin is bottom-left, but we flipped the NSGraphicsContext
+            # so we need to flip Y for the CTM.
+            from Quartz import CGContextScaleCTM
+            CGContextTranslateCTM(ctx, 0, fh)
+            CGContextScaleCTM(ctx, 1.0, -1.0)
+
+            # Now (0,0) is top-left in the flipped sense.
+            # Content view is at (cx, cy) in wrapper coords (bottom-up).
+            # In top-down: content top = fh - cy - content_h
+            content_h = content_frame[1][1]
+            text_x = cx + 24.0
+            text_y = (fh - cy - content_h) + 16.0 - scroll_origin.y
+
+            text_w = text_frame.size.width
+            text_h = text_frame.size.height
+            ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
+
+            CGContextRestoreGState(ctx)
+            NSGraphicsContext.restoreGraphicsState()
+
+            mask_image = CGBitmapContextCreateImage(ctx)
+            if mask_image is None:
+                return
+
+            # Update or create mask layer
+            mask_layer = getattr(self, "_punchthrough_mask_layer", None)
+            if mask_layer is None:
+                mask_layer = CALayer.alloc().init()
+                mask_layer.setContentsGravity_("resize")
+                self._punchthrough_mask_layer = mask_layer
+            mask_layer.setFrame_(((0, 0), (fw, fh)))
+            mask_layer.setContents_(mask_image)
+            if fill.mask() is not mask_layer:
+                fill.setMask_(mask_layer)
+        except Exception:
+            logger.debug("Failed to update punch-through mask", exc_info=True)
 
     def _stop_fullscreen_compositor(self):
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -2456,7 +2584,7 @@ class CommandOverlay(NSObject):
                 text_rect = layout.usedRectForTextContainer_(container)
                 text_height = text_rect.size.height
             else:
-                text_height = _OVERLAY_HEIGHT - 16
+                text_height = _OVERLAY_HEIGHT - 32
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
