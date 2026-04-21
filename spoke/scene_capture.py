@@ -502,7 +502,7 @@ def _capture_active_window():
     Returns (cg_image, app_name, bundle_id, window_title) or None on failure.
     """
     try:
-        from AppKit import NSWorkspace
+        from AppKit import NSRunningApplication, NSWorkspace
         from Quartz import (
             CGRectNull,
             CGWindowListCopyWindowInfo,
@@ -578,9 +578,24 @@ def _capture_active_window():
         window_id = target_window.get("kCGWindowNumber", 0)
         if not window_title:
             window_title = target_window.get("kCGWindowName")
-        if app_name is None:
-            app_name = target_window.get("kCGWindowOwnerName") or app_name
         target_pid = target_window.get("kCGWindowOwnerPID")
+        target_app = None
+        if target_pid not in (None, workspace_pid):
+            try:
+                target_app = NSRunningApplication.runningApplicationWithProcessIdentifier_(
+                    target_pid
+                )
+            except Exception:
+                logger.debug(
+                    "NSRunningApplication lookup failed for pid=%s",
+                    target_pid,
+                    exc_info=True,
+                )
+        if target_app is not None:
+            app_name = target_app.localizedName() or target_window.get("kCGWindowOwnerName")
+            bundle_id = target_app.bundleIdentifier()
+        else:
+            app_name = target_window.get("kCGWindowOwnerName") or app_name
         target_layer = target_window.get("kCGWindowLayer")
         bounds = target_window.get("kCGWindowBounds") or {}
 
