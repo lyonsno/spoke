@@ -569,7 +569,7 @@ def _preview_optical_shell_config(
         "enabled": True,
         "content_width_points": width_points,
         "content_height_points": height_points,
-        "corner_radius_points": _OVERLAY_HEIGHT / 4.0,
+        "corner_radius_points": _OVERLAY_CORNER_RADIUS,
         "core_magnification": 1.55,
         "band_width_points": _cm_to_points(band_mm / 10.0),
         "tail_width_points": _cm_to_points(tail_mm / 10.0),
@@ -1356,7 +1356,7 @@ class TranscriptionOverlay(NSObject):
                         total_h,
                         width,
                         height,
-                        _OVERLAY_HEIGHT / 4.0,
+                        _OVERLAY_CORNER_RADIUS,
                         scale,
                     )
 
