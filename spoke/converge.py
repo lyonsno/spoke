@@ -1,13 +1,19 @@
-"""Converge — per-turn attractor carving via OMLX batch parallel.
+"""Converge — per-turn attractor carving and embedding via OMLX batch parallel.
 
 After each command response completes, fires an async request to the local
 model (same endpoint, same model) asking it to identify personal attractors
-from that turn. OMLX's batch parallel scheduling handles contention with
-interactive command requests — carve requests simply wait in the queue when
-the user is actively talking.
+from that turn. Also embeds the user utterance via the local embedding model
+and appends to a rolling turn-embedding cache so that guided compaction can
+do pure-numpy cosine search without loading any model at tool-call time.
 
-The carver writes identified attractors to ~/.config/spoke/attractors/ and
-appends to the trace log at ~/.config/spoke/converge-trace.jsonl.
+OMLX's batch parallel scheduling handles contention with interactive command
+requests — carve/embed requests simply wait in the queue when the user is
+actively talking.
+
+Outputs:
+- Personal attractors: ~/.config/spoke/attractors/
+- Turn embedding cache: ~/.config/spoke/turn-embeddings.npz
+- Trace log: ~/.config/spoke/converge-trace.jsonl
 """
 
 from __future__ import annotations
@@ -22,10 +28,14 @@ import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 _ATTRACTORS_DIR = Path.home() / ".config" / "spoke" / "attractors"
 _TRACE_PATH = Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
+_TURN_EMBEDDINGS_PATH = Path.home() / ".config" / "spoke" / "turn-embeddings.npz"
+_MAX_CACHED_EMBEDDINGS = 100  # rolling window of recent turn embeddings
 
 _CARVE_SYSTEM_PROMPT = """\
 You are a personal attractor carver. You observe a single turn of voice
@@ -77,39 +87,55 @@ class TurnCarver:
             or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-bf16")
         )
         self._pending: list[str] = []  # user utterances not yet carved
+        self._embed_pending: list[str] = []  # user utterances not yet embedded
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._embed_model_loaded = False
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_turn_complete(self, user_utterance: str, assistant_response: str) -> None:
-        """Called after each command turn. Fires async carve."""
+        """Called after each command turn. Fires async carve + embed."""
         if not user_utterance or not user_utterance.strip():
-            return
-        # Don't carve trivial turns (< 10 words)
-        if len(user_utterance.split()) < 10:
-            logger.debug("Converge: skipping short utterance (%d words)", len(user_utterance.split()))
             return
 
         with self._lock:
-            self._pending.append(user_utterance)
+            # Always embed (even short turns have semantic content)
+            self._embed_pending.append(user_utterance)
+            # Only carve substantive turns (>= 10 words)
+            if len(user_utterance.split()) >= 10:
+                self._pending.append(user_utterance)
 
-        # Fire background carve if not already running
+        # Fire background worker if not already running
         if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._carve_loop, daemon=True)
+            self._thread = threading.Thread(target=self._background_loop, daemon=True)
             self._thread.start()
 
-    def _carve_loop(self) -> None:
-        """Background thread: carve pending utterances one at a time."""
+    def _background_loop(self) -> None:
+        """Background thread: carve and embed pending utterances."""
         while True:
-            with self._lock:
-                if not self._pending:
-                    return
-                utterance = self._pending.pop(0)
+            utterance_to_carve = None
+            utterance_to_embed = None
 
-            try:
-                self._carve_single(utterance)
-            except Exception:
-                logger.debug("Converge carve failed", exc_info=True)
+            with self._lock:
+                if self._pending:
+                    utterance_to_carve = self._pending.pop(0)
+                if self._embed_pending:
+                    utterance_to_embed = self._embed_pending.pop(0)
+
+            if utterance_to_carve is None and utterance_to_embed is None:
+                return
+
+            if utterance_to_carve:
+                try:
+                    self._carve_single(utterance_to_carve)
+                except Exception:
+                    logger.debug("Converge carve failed", exc_info=True)
+
+            if utterance_to_embed:
+                try:
+                    self._embed_single(utterance_to_embed)
+                except Exception:
+                    logger.debug("Converge embed failed", exc_info=True)
 
     def _carve_single(self, utterance: str) -> None:
         """Send one utterance to the model for attractor carving."""
@@ -196,6 +222,55 @@ class TurnCarver:
             slugs=[a.get("slug", "") for a in attractors],
         )
 
+    def _embed_single(self, utterance: str) -> None:
+        """Embed a single utterance and append to the rolling cache."""
+        import sys
+
+        t0 = time.time()
+
+        # Lazy-load the embedding library
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+
+        from converge_embed_lib import embed_texts
+
+        embedding = embed_texts([utterance])[0]  # (dim,)
+        elapsed = time.time() - t0
+
+        # Load existing cache, append, trim to max, save
+        texts = []
+        embeddings = np.empty((0, embedding.shape[0]), dtype=np.float32)
+
+        if _TURN_EMBEDDINGS_PATH.exists():
+            try:
+                data = np.load(_TURN_EMBEDDINGS_PATH, allow_pickle=False)
+                embeddings = data["embeddings"]
+                texts = json.loads(str(data["texts"]))
+            except Exception:
+                pass
+
+        texts.append(utterance[:500])
+        embeddings = np.vstack([embeddings, embedding[np.newaxis, :]])
+
+        # Trim to rolling window
+        if len(texts) > _MAX_CACHED_EMBEDDINGS:
+            texts = texts[-_MAX_CACHED_EMBEDDINGS:]
+            embeddings = embeddings[-_MAX_CACHED_EMBEDDINGS:]
+
+        # Atomic write
+        tmp_path = _TURN_EMBEDDINGS_PATH.with_suffix(".tmp.npz")
+        np.savez(tmp_path, embeddings=embeddings, texts=json.dumps(texts))
+        tmp_path.replace(_TURN_EMBEDDINGS_PATH)
+
+        self._trace(
+            "embed_complete",
+            elapsed=round(elapsed, 2),
+            utterance=utterance[:80],
+            cache_size=len(texts),
+        )
+        logger.debug("Converge: embedded turn in %.1fs (cache: %d)", elapsed, len(texts))
+
     def _trace(self, event: str, **kwargs) -> None:
         """Append to the trace log."""
         try:
@@ -204,3 +279,20 @@ class TurnCarver:
                 f.write(json.dumps(entry) + "\n")
         except Exception:
             pass
+
+
+def load_turn_embeddings() -> tuple[np.ndarray, list[str]] | None:
+    """Load the pre-computed turn embedding cache.
+
+    Returns (embeddings, texts) or None if no cache exists.
+    Used by the guided compaction mode for pure-numpy cosine search.
+    """
+    if not _TURN_EMBEDDINGS_PATH.exists():
+        return None
+    try:
+        data = np.load(_TURN_EMBEDDINGS_PATH, allow_pickle=False)
+        embeddings = data["embeddings"]
+        texts = json.loads(str(data["texts"]))
+        return embeddings, texts
+    except Exception:
+        return None

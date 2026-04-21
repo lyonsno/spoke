@@ -3211,36 +3211,35 @@ class SpokeAppDelegate(NSObject):
                 return _json.dumps(_summ_result)
 
             elif mode == "guided":
-                # Phase 1: Semantic search against the attractor vector index.
-                # Embeds user turns from the target history window, queries the
-                # pre-built attractor index via cosine similarity, returns
-                # top-k matches as retention flags.
+                # Semantic search using pre-computed turn embeddings (from the
+                # background carver) against the attractor vector index.
+                # No model loading at tool-call time — pure numpy cosine.
                 import numpy as _np
                 import time as _time
+                from .converge import load_turn_embeddings as _load_turn_emb
 
                 _index_path = _Path.home() / ".config" / "spoke" / "attractor-index.npz"
                 _trace_path = _Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
                 _t0 = _time.time()
 
-                # Extract user text from the target turns
-                user_texts = []
+                # Build turn preview from history
                 turn_preview = []
                 for i in range(target):
                     turn = history[i]
-                    for m in turn:
-                        role = m.get("role", "")
-                        content = m.get("content", "")
-                        if role == "user" and content:
-                            user_texts.append(content[:500])
-                    # Preview for display
-                    parts = []
-                    for m in turn:
-                        role = m.get("role", "")
-                        content = m.get("content", "")
-                        if role in ("user", "assistant") and content:
-                            parts.append(f"{role}: {content[:200]}")
-                    if parts:
-                        turn_preview.append(f"Turn {i+1}: " + " | ".join(parts))
+                    if isinstance(turn, (list, tuple)) and len(turn) >= 2 and isinstance(turn[0], str):
+                        # Old format: (user, assistant) tuple
+                        turn_preview.append(f"Turn {i+1}: user: {turn[0][:200]}")
+                    elif isinstance(turn, list):
+                        # New format: list of message dicts
+                        parts = []
+                        for m in turn:
+                            if isinstance(m, dict):
+                                role = m.get("role", "")
+                                content = m.get("content", "")
+                                if role in ("user", "assistant") and content:
+                                    parts.append(f"{role}: {content[:200]}")
+                        if parts:
+                            turn_preview.append(f"Turn {i+1}: " + " | ".join(parts))
 
                 if not _index_path.is_file():
                     return _json.dumps({
@@ -3249,62 +3248,30 @@ class SpokeAppDelegate(NSObject):
                         "turn_preview": turn_preview[:5],
                     })
 
-                if not user_texts:
+                # Load pre-computed turn embeddings from background carver
+                turn_cache = _load_turn_emb()
+                if turn_cache is None or turn_cache[0].shape[0] == 0:
                     return _json.dumps({
-                        "status": "ok",
-                        "mode": "guided",
-                        "retention_flags": [],
-                        "instruction": "No user text found in target turns. Use your own judgment.",
+                        "status": "error",
+                        "error": (
+                            "No turn embeddings cached yet. The background carver "
+                            "embeds turns after each response — try again after a "
+                            "few more exchanges."
+                        ),
                         "turn_preview": turn_preview[:5],
                     })
 
-                # Load the index
+                turn_embeddings, turn_texts = turn_cache
+
+                # Load the attractor index
                 try:
                     data = _np.load(_index_path, allow_pickle=False)
                     full_emb = data["full_embeddings"]
-                    summary_emb = data["summary_embeddings"]
                     metadata = _json.loads(str(data["metadata"]))
                 except Exception as e:
                     return _json.dumps({"status": "error", "error": f"index load failed: {e}"})
 
-                # Embed user turns via the embedding model
-                try:
-                    sys_path = str(_Path(__file__).resolve().parent.parent / "scripts")
-                    if sys_path not in __import__("sys").path:
-                        __import__("sys").path.insert(0, sys_path)
-                    # Import inline to avoid loading the embedding model at startup
-                    from converge_embed_lib import embed_texts as _embed_texts
-                    turn_embeddings = _embed_texts(user_texts)
-                except ImportError:
-                    # Fallback: use subprocess to call the embed script
-                    import subprocess as _sp
-                    import tempfile as _tmp
-                    with _tmp.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
-                        _json.dump(user_texts, tf)
-                        tf_path = tf.name
-                    result = _sp.run(
-                        ["uv", "run", "python3", "-c",
-                         f"import json, numpy as np, sys; sys.path.insert(0, '{sys_path}'); "
-                         f"from converge_embed_lib import embed_texts; "
-                         f"texts = json.loads(open('{tf_path}').read()); "
-                         f"emb = embed_texts(texts); "
-                         f"np.save('{tf_path}.npy', emb)"],
-                        capture_output=True, timeout=120,
-                    )
-                    _Path(tf_path).unlink(missing_ok=True)
-                    if result.returncode != 0:
-                        return _json.dumps({
-                            "status": "error",
-                            "error": f"embedding failed: {result.stderr.decode()[:200]}",
-                        })
-                    turn_embeddings = _np.load(f"{tf_path}.npy")
-                    _Path(f"{tf_path}.npy").unlink(missing_ok=True)
-
-                # Cosine similarity — full-text embeddings only.
-                # Summary embeddings are stored in the index for future use but
-                # currently ~18% of attractors have degenerate summaries ("---")
-                # that produce identical garbage vectors. Full-text embeddings
-                # are unique and meaningful for all attractors.
+                # Cosine similarity — pure numpy, sub-millisecond
                 full_scores = full_emb @ turn_embeddings.T  # (attractors, turns)
                 combined = full_scores.max(axis=1)
 
@@ -3349,7 +3316,7 @@ class SpokeAppDelegate(NSObject):
                         "timestamp": _dt.now().isoformat(),
                         "event": "guided_compaction",
                         "elapsed_s": round(_elapsed, 2),
-                        "turns_embedded": len(user_texts),
+                        "turns_embedded": len(turn_texts),
                         "attractors_searched": len(metadata),
                         "matches_returned": len(matched_attractors),
                         "top_scores": [a["score"] for a in matched_attractors[:5]],
