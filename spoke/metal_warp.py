@@ -110,15 +110,6 @@ def _warp_exterior_edge_mip_bias(
     return min(zone * deform_frac * _WARP_EXTERIOR_EDGE_MIP_BIAS_MAX, _WARP_EXTERIOR_EDGE_MIP_BIAS_MAX)
 
 
-def _warp_exterior_mix_weight(capsule_sdf: float, bleed_zone: float) -> float:
-    """Fade exterior warp smoothly back to identity at the bleed edge."""
-    if capsule_sdf <= 0.0 or bleed_zone <= 0.0:
-        return 0.0
-    edge_t = min(max(float(capsule_sdf) / float(bleed_zone), 0.0), 1.0)
-    fade = 1.0 - _smoothstep01(edge_t)
-    return 0.5 * fade * fade
-
-
 def _metal_shader_source() -> str:
     return f"""
 #include <metal_stdlib>
@@ -234,9 +225,10 @@ kernel void opticalShellWarp(
         float probeSX = pow(max(probeScale, 0.0f), {_WARP_X_SQUEEZE}f);
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
+        float t = 1.0f - smoothstep(0.0f, 40.0f, capsuleSdf);
+        t = t * t;
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
-        float exteriorMix = 0.5f * pow(1.0f - smoothstep(0.0f, max(bleedZone, 1e-4f), capsuleSdf), 2.0f);
-        result = mix(d, boundaryWarped, exteriorMix);
+        result = mix(d, boundaryWarped, t * 0.50f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
