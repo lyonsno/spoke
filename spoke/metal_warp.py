@@ -142,7 +142,7 @@ kernel void opticalShellWarp(
     float tipDist = max(abs(p.x) - spineHalf, 0.0f);
     float tipAtten = 1.0f - smoothstep(0.0f, capsuleRadius * 0.8f, tipDist);
     float mag = {_WARP_EXTERIOR_MAG_STRENGTH}f * capsuleRadius * seamRamp * magDecay * tipAtten;
-    float2 result = warped - n * mag;
+    float2 result = warped + n * mag;
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
     // Depth-dependent blur.  Radius is in source pixels but taps are
