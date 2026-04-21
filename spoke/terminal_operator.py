@@ -19,7 +19,7 @@ _DEFAULT_TIMEOUT_SECONDS = 10
 _DEFAULT_MAX_OUTPUT_CHARS = 4000
 _SHELL_CONTROL_TOKENS = frozenset({"|", "||", "&&", ";", "<", ">", ">>", "&", "2>", "2>>"})
 _ALLOWED_CWD_ROOTS = (
-    Path.home(),
+    _DEFAULT_CWD,
     Path("/private/tmp"),
     Path("/tmp"),
     Path("/var/folders"),
@@ -80,6 +80,7 @@ _APPROVAL_PREFIXES = (
     ("open",),
     ("osascript",),
 )
+_PATH_SCOPED_ALLOW_COMMANDS = frozenset({"cat", "head", "tail", "ls", "rg"})
 
 
 class TerminalOperatorError(RuntimeError):
@@ -151,7 +152,7 @@ class TerminalOperator:
     ) -> dict[str, Any]:
         normalized_cwd = self._resolve_cwd(cwd)
         normalized_timeout = self._normalize_timeout(timeout_seconds)
-        decision, reason = self._classify(argv)
+        decision, reason = self._classify(argv, cwd=normalized_cwd)
         result: dict[str, Any] = {
             "decision": decision,
             "executed": False,
@@ -233,7 +234,7 @@ class TerminalOperator:
             )
         return timeout
 
-    def _classify(self, argv: Any) -> tuple[str, str | None]:
+    def _classify(self, argv: Any, *, cwd: str) -> tuple[str, str | None]:
         if not isinstance(argv, list) or not argv:
             return "deny", "command denied: argv must be a non-empty list of strings"
         if not all(isinstance(token, str) for token in argv):
@@ -248,6 +249,10 @@ class TerminalOperator:
         git_output_flag_reason = self._git_output_flag_reason(normalized_argv)
         if git_output_flag_reason:
             return "approval_required", git_output_flag_reason
+
+        path_scope_reason = self._path_scope_reason(normalized_argv, cwd=cwd)
+        if path_scope_reason:
+            return "approval_required", path_scope_reason
 
         if self._matches_any_prefix(normalized_argv, _DENY_PREFIXES):
             return "deny", f"command denied by terminal policy: {' '.join(normalized_argv[:3])}"
@@ -287,6 +292,36 @@ class TerminalOperator:
             if token.startswith("--output="):
                 return f"command requires approval: git {argv[1]} {token}"
         return None
+
+    @staticmethod
+    def _path_scope_reason(argv: list[str], *, cwd: str) -> str | None:
+        if not argv or argv[0] not in _PATH_SCOPED_ALLOW_COMMANDS:
+            return None
+        base = Path(cwd)
+        for token in argv[1:]:
+            if not TerminalOperator._looks_like_path_token(token):
+                continue
+            resolved = Path(token).expanduser()
+            if not resolved.is_absolute():
+                resolved = (base / resolved).resolve()
+            else:
+                resolved = resolved.resolve()
+            if not any(TerminalOperator._is_within(resolved, root) for root in _ALLOWED_CWD_ROOTS):
+                return f"command requires approval: path escapes allowed local roots ({token})"
+        return None
+
+    @staticmethod
+    def _looks_like_path_token(token: str) -> bool:
+        if not token or token == "-":
+            return False
+        if token.startswith("-"):
+            return False
+        return (
+            token.startswith("/")
+            or token.startswith("~")
+            or token.startswith(".")
+            or "/" in token
+        )
 
     @staticmethod
     def _starts_with(argv: list[str], prefix: tuple[str, ...]) -> bool:

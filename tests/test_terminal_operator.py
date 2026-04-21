@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -214,6 +215,29 @@ class TestTerminalOperator:
                 ["git", "status"],
                 cwd="/etc",
             )
+
+    def test_execute_rejects_home_root_as_cwd(self):
+        from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
+
+        with pytest.raises(TerminalOperatorError, match="outside allowed local roots"):
+            TerminalOperator().execute_command(
+                ["git", "status"],
+                cwd=str(Path.home()),
+            )
+
+    def test_execute_requires_approval_for_sensitive_home_path(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["cat", str(Path.home() / ".ssh" / "id_rsa")],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
 
     def test_execute_rejects_non_integer_timeout(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
