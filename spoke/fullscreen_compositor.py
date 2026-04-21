@@ -37,14 +37,8 @@ class FullScreenCompositor:
         self._lock = threading.Lock()
         self._running = False
 
-        # Each compositor gets its own pipeline instance to avoid
-        # racing on shared accum textures / params buffer when two
-        # compositors run concurrently (preview + command).
-        from spoke.metal_warp import MetalWarpPipeline
-        try:
-            self._pipeline = MetalWarpPipeline()
-        except Exception:
-            self._pipeline = None
+        from spoke.metal_warp import get_metal_warp_pipeline
+        self._pipeline = get_metal_warp_pipeline()
         if self._pipeline is None:
             raise RuntimeError("Metal warp pipeline unavailable")
 
