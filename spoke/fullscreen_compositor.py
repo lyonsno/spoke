@@ -23,6 +23,7 @@ _shared_overlay_hosts = {}
 
 def _summarize_shell_config(config: dict) -> dict:
     keys = (
+        "overlay_kind",
         "center_x",
         "center_y",
         "content_width_points",
@@ -251,7 +252,17 @@ class _SharedOverlayCompositorHost:
         }
 
     def _ordered_shell_configs(self) -> list[dict]:
-        return [dict(config) for config in self._clients.values()]
+        def _overlay_priority(item: tuple[str, dict]) -> tuple[int, int]:
+            _, config = item
+            kind = config.get("overlay_kind")
+            if kind == "preview":
+                return (0, 0)
+            if kind == "assistant":
+                return (1, 0)
+            return (0, 1)
+
+        ordered_items = sorted(self._clients.items(), key=_overlay_priority)
+        return [dict(config) for _, config in ordered_items]
 
     def _refresh_excluded_window_ids(self) -> None:
         self._compositor.set_excluded_window_ids(sorted(self._client_window_ids.values()))

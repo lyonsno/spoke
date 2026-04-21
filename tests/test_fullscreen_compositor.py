@@ -195,6 +195,42 @@ class TestSharedFullscreenCompositor:
         assert len(host.updated_with[-1]) == 2
         assert host.excluded_window_ids[-1] == [11, 12]
 
+    def test_shared_host_orders_preview_before_assistant_for_compositor_updates(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        monkeypatch.setattr(mod, "FullScreenCompositor", _FakeHostCompositor)
+        monkeypatch.setattr(mod, "_shared_overlay_hosts", {}, raising=False)
+        _FakeHostCompositor.instances.clear()
+
+        screen = _FakeScreen()
+        session_preview = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(51),
+            content_view=_FakeContentView(640.0, 96.0),
+            shell_config={
+                "overlay_kind": "preview",
+                "content_width_points": 640.0,
+                "content_height_points": 96.0,
+            },
+        )
+        session_assistant = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(52, y=180.0),
+            content_view=_FakeContentView(1240.0, 200.0),
+            shell_config={
+                "overlay_kind": "assistant",
+                "content_width_points": 1240.0,
+                "content_height_points": 200.0,
+            },
+        )
+
+        assert session_preview is not None
+        assert session_assistant is not None
+        host = _FakeHostCompositor.instances[0]
+        assert [cfg["overlay_kind"] for cfg in host.updated_with[-1]] == ["preview", "assistant"]
+
     def test_shared_host_only_stops_after_last_overlay_releases(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.fullscreen_compositor", None)
         mod = importlib.import_module("spoke.fullscreen_compositor")
