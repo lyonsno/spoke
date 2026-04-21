@@ -194,9 +194,15 @@ kernel void opticalShellWarp(
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
 
+    // DEBUG: tint blur zone red to verify blur branch is entered
     float4 finalColor;
     if (blurRadius < 0.25f) {{
         finalColor = inTexture.sample(bilinearSampler, samplePt);
+    }} else if (blurRadius > 999.0f) {{
+        // Diagnostic: deep interior should be solid magenta
+        finalColor = float4(1.0f, 0.0f, 1.0f, 1.0f);
+        outTexture.write(finalColor, pixel);
+        return;
     }} else {{
         // Box-kernel blur around the warped sample point.
         // Equal weight for all taps — no Gaussian falloff that
