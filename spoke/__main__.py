@@ -1299,6 +1299,7 @@ class SpokeAppDelegate(NSObject):
         self._mic_ready = True
         if self._menubar is not None and self._models_ready:
             self._menubar.set_status_text("Ready — hold spacebar")
+        self._maybe_auto_enable_handsfree()
 
     def micPermissionDenied_(self, _sender) -> None:
         """Main-thread callback after mic probe fails — schedule retry."""
@@ -1401,6 +1402,7 @@ class SpokeAppDelegate(NSObject):
         # Register loaded models with the heartbeat manager.
         self._register_loaded_models()
         self._start_heartbeat_timer()
+        self._maybe_auto_enable_handsfree()
 
         # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
         # MLX lock transcription uses, which starves preview/final text on
@@ -1414,6 +1416,23 @@ class SpokeAppDelegate(NSObject):
         self._show_model_load_alert(exc)
 
     # ── Hands-free mode ────────────────────────────────────────
+
+    def _handsfree_default_on_requested(self) -> bool:
+        value = os.environ.get("SPOKE_HANDSFREE_DEFAULT_ON", "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _maybe_auto_enable_handsfree(self) -> None:
+        if not self._handsfree_default_on_requested():
+            return
+        if not handsfree_env_ready():
+            return
+        if not getattr(self, "_models_ready", False) or not getattr(self, "_mic_ready", False):
+            return
+        hf = getattr(self, "_handsfree", None)
+        if hf is None or hf.is_active:
+            return
+        logger.info("Auto-enabling hands-free after startup readiness")
+        hf.enable()
 
     def _toggle_handsfree(self) -> None:
         """Menu/manual toggle for hands-free mode."""

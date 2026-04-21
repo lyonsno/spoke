@@ -237,6 +237,7 @@ set of env vars is still useful. For normal use, prefer the menus.
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before restoring the saved pasteboard contents. |
 | `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
 | `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` | unset | Enables wake-word hands-free mode. |
+| `SPOKE_HANDSFREE_DEFAULT_ON` | unset | When truthy, auto-enables hands-free after startup once both models and mic permission are ready. Useful for smoke surfaces that should start listening immediately. |
 | `SPOKE_WAKEWORD_BACKEND` | `porcupine` | Wake-word backend. Use `openwakeword` for local model files. |
 | `SPOKE_WAKEWORD_LISTEN` | `computer` | Wake word that starts hands-free dictation. |
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |

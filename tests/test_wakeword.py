@@ -81,6 +81,29 @@ class TestWakeWordListenerStop:
         assert callable(kwargs["callback"])
         stream.start.assert_called_once_with()
 
+    def test_openwakeword_start_forces_onnx_inference_for_onnx_models(self, monkeypatch):
+        model = MagicMock()
+        stream = MagicMock()
+        fake_module = types.SimpleNamespace(Model=MagicMock(return_value=model))
+        monkeypatch.setitem(sys.modules, "openwakeword.model", fake_module)
+        monkeypatch.setitem(
+            sys.modules,
+            "sounddevice",
+            types.SimpleNamespace(InputStream=MagicMock(return_value=stream)),
+        )
+        listener = WakeWordListener(
+            access_key="unused",
+            backend="openwakeword",
+            model_paths=["/tmp/tessera.onnx"],
+        )
+
+        listener.start()
+
+        fake_module.Model.assert_called_once_with(
+            wakeword_models=["/tmp/tessera.onnx"],
+            inference_framework="onnx",
+        )
+
     def test_openwakeword_callback_emits_threshold_crossing_once_until_reset(self):
         on_wake = MagicMock()
         model = MagicMock()

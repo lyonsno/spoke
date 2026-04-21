@@ -2860,6 +2860,35 @@ class TestWarmupContract:
 
         d._handsfree.enable.assert_not_called()
 
+    def test_warmup_success_auto_enables_handsfree_when_requested(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._mic_ready = True
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.clientWarmupSucceeded_(None)
+
+        d._handsfree.enable.assert_called_once_with()
+
+    def test_mic_granted_auto_enables_handsfree_when_requested_and_models_ready(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._models_ready = True
+        d._mic_ready = False
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.micPermissionGranted_(None)
+
+        d._handsfree.enable.assert_called_once_with()
+
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""
 
