@@ -26,6 +26,25 @@ logger = logging.getLogger(__name__)
 _shared_overlay_hosts = {}
 
 
+def _summarize_shell_config(config: dict) -> dict:
+    keys = (
+        "center_x",
+        "center_y",
+        "content_width_points",
+        "content_height_points",
+        "corner_radius_points",
+        "min_brightness",
+    )
+    summary = {}
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, (int, float)):
+            summary[key] = round(float(value), 2)
+        elif value is not None:
+            summary[key] = value
+    return summary
+
+
 def _load_screencapturekit_bridge():
     from spoke.backdrop_stream import _load_screencapturekit_bridge as _load_bridge
 
@@ -164,6 +183,7 @@ class _SharedOverlayCompositorHost:
         else:
             self._compositor.reset_temporal_state()
             self._compositor.update_shell_configs(self._ordered_shell_configs())
+        self._log_state("register_client", client_id)
         return _OverlayCompositorSession(self, client_id)
 
     def remove_client(self, client_id: str) -> None:
@@ -175,10 +195,12 @@ class _SharedOverlayCompositorHost:
         if self._clients:
             self._compositor.reset_temporal_state()
             self._compositor.update_shell_configs(self._ordered_shell_configs())
+            self._log_state("remove_client", client_id)
             return
         self._compositor.stop()
         self._running = False
         _shared_overlay_hosts.pop(self._registry_key, None)
+        self._log_state("remove_client", client_id)
 
     def update_client_config(self, client_id: str, config: dict) -> None:
         if client_id not in self._clients:
@@ -186,6 +208,7 @@ class _SharedOverlayCompositorHost:
         self._clients[client_id] = dict(config)
         if self._running:
             self._compositor.update_shell_configs(self._ordered_shell_configs())
+        self._log_state("update_client_config", client_id)
 
     def update_client_config_key(self, client_id: str, key: str, value) -> None:
         config = self._clients.get(client_id)
@@ -194,6 +217,7 @@ class _SharedOverlayCompositorHost:
         config[key] = value
         if self._running:
             self._compositor.update_shell_configs(self._ordered_shell_configs())
+        self._log_state(f"update_client_config_key:{key}", client_id)
 
     def sample_brightness(self, client_id: str) -> float:
         config = self._clients.get(client_id)
@@ -201,11 +225,36 @@ class _SharedOverlayCompositorHost:
             return 0.5
         return self._compositor.sample_brightness_for_config(config)
 
+    def debug_snapshot(self) -> dict:
+        return {
+            "registry_key": self._registry_key,
+            "running": self._running,
+            "client_count": len(self._clients),
+            "clients": [
+                {
+                    "client_id": client_id,
+                    **_summarize_shell_config(config),
+                }
+                for client_id, config in self._clients.items()
+            ],
+        }
+
     def _ordered_shell_configs(self) -> list[dict]:
         return [dict(config) for config in self._clients.values()]
 
     def _refresh_excluded_window_ids(self) -> None:
         self._compositor.set_excluded_window_ids(sorted(self._client_window_ids.values()))
+
+    def _log_state(self, action: str, client_id: str | None = None) -> None:
+        snapshot = self.debug_snapshot()
+        logger.info(
+            "SharedOverlayHost[%s]: %s client=%s clients=%d snapshot=%s",
+            self._registry_key,
+            action,
+            client_id,
+            snapshot["client_count"],
+            snapshot["clients"],
+        )
 
 
 class FullScreenCompositor:
@@ -247,6 +296,8 @@ class FullScreenCompositor:
         self._capture_content = None
         self._capture_display = None
         self._extra_excluded_ids: set[int] = set()
+        self._shell_state_version = 0
+        self._shell_state_log_frames_remaining = 0
 
         # Diagnostics
         self._frame_count = 0
@@ -300,6 +351,15 @@ class FullScreenCompositor:
         """Replace the active overlay shell configs for this screen."""
         with self._lock:
             self._shell_configs = self._normalize_shell_configs(configs)
+            self._shell_state_version += 1
+            self._shell_state_log_frames_remaining = 10
+            config_summary = [_summarize_shell_config(config) for config in self._shell_configs]
+        logger.info(
+            "FullScreenCompositor: update_shell_configs version=%d count=%d configs=%s",
+            self._shell_state_version,
+            len(config_summary),
+            config_summary,
+        )
 
     def update_shell_config(self, config: dict) -> None:
         """Compatibility wrapper for callers that still manage one shell."""
@@ -745,6 +805,10 @@ class FullScreenCompositor:
             w = self._latest_width
             h = self._latest_height
             configs = [dict(config) for config in self._shell_configs]
+            shell_state_version = self._shell_state_version
+            shell_state_log_frames_remaining = self._shell_state_log_frames_remaining
+            if shell_state_log_frames_remaining > 0:
+                self._shell_state_log_frames_remaining -= 1
 
         if iosurface is None or w <= 0 or h <= 0 or not configs:
             return
@@ -778,6 +842,15 @@ class FullScreenCompositor:
                 for config in configs
             ):
                 return
+
+            if shell_state_log_frames_remaining > 0:
+                logger.info(
+                    "Compositor tick[%d]: version=%d active_shells=%d configs=%s",
+                    self._frame_count,
+                    shell_state_version,
+                    len(configs),
+                    [_summarize_shell_config(config) for config in configs],
+                )
 
             if self._last_drawable_size != (w, h):
                 self._metal_layer.setDrawableSize_((w, h))

@@ -187,3 +187,51 @@ class TestSharedFullscreenCompositor:
         assert compositor._stream.updated_filters, "live capture filter should refresh when exclusion IDs change"
         excluded_ids = sorted(int(window.windowID()) for window in compositor._stream.updated_filters[-1].excluded_windows)
         assert excluded_ids == [11, 12]
+
+    def test_shared_host_snapshot_preserves_both_clients_across_mixed_updates(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        monkeypatch.setattr(mod, "FullScreenCompositor", _FakeHostCompositor)
+        monkeypatch.setattr(mod, "_shared_overlay_hosts", {}, raising=False)
+        _FakeHostCompositor.instances.clear()
+
+        screen = _FakeScreen()
+        session_a = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(31),
+            content_view=_FakeContentView(640.0, 120.0),
+            shell_config={
+                "content_width_points": 640.0,
+                "content_height_points": 120.0,
+                "center_x": 320.0,
+                "center_y": 240.0,
+            },
+        )
+        session_b = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(32, y=180.0),
+            content_view=_FakeContentView(640.0, 96.0),
+            shell_config={
+                "content_width_points": 640.0,
+                "content_height_points": 96.0,
+                "center_x": 320.0,
+                "center_y": 420.0,
+            },
+        )
+        session_a.update_shell_config(
+            {
+                "content_width_points": 680.0,
+                "content_height_points": 120.0,
+                "center_x": 340.0,
+                "center_y": 240.0,
+            }
+        )
+        session_b.update_shell_config_key("center_y", 444.0)
+
+        host = mod._shared_overlay_hosts[mod._screen_registry_key(screen)]
+        snapshot = host.debug_snapshot()
+
+        assert snapshot["client_count"] == 2
+        assert [entry["client_id"] for entry in snapshot["clients"]] == ["overlay:31", "overlay:32"]
+        assert snapshot["clients"][0]["content_width_points"] == 680.0
+        assert snapshot["clients"][1]["center_y"] == 444.0
