@@ -1,5 +1,7 @@
 """Tests for internal operator subagent support."""
 
+import ast
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from spoke.command import CommandStreamEvent
@@ -87,6 +89,18 @@ class TestSubagentManager:
         assert running["state"] == "queued"
         assert "do not poll" in running["poll_hint"].lower()
 
+    def test_subagents_module_does_not_import_tool_dispatch(self):
+        module_path = Path(__file__).resolve().parents[1] / "spoke" / "subagents.py"
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = {alias.name for alias in node.names}
+                assert "spoke.tool_dispatch" not in names
+            elif isinstance(node, ast.ImportFrom):
+                assert node.module != "spoke.tool_dispatch"
+                assert node.module != "tool_dispatch"
+
 
 class TestSearchRunner:
     def test_run_search_subagent_uses_isolated_history_and_search_tools(self):
@@ -105,6 +119,8 @@ class TestSearchRunner:
             "find narrator proxy code",
             base_url="http://localhost:8090",
             model="qwen-test",
+            tools=[{"function": {"name": "search_file"}}],
+            tool_executor=MagicMock(return_value='{"matches": ""}'),
             api_key="secret",
             command_client_factory=fake_factory,
         )
@@ -114,7 +130,7 @@ class TestSearchRunner:
         assert kwargs["system_prompt"] == sub_mod._SEARCH_SUBAGENT_SYSTEM_PROMPT
         stream_kwargs = fake_client.stream_command_events.call_args.kwargs
         tool_names = {tool["function"]["name"] for tool in stream_kwargs["tools"]}
-        assert tool_names == {"list_directory", "read_file", "search_file", "find_file"}
+        assert tool_names == {"search_file"}
         assert result == "Searching..."
 
     def test_run_search_subagent_honors_cancel_check(self):
@@ -133,6 +149,8 @@ class TestSearchRunner:
             "find command history handling",
             base_url="http://localhost:8090",
             model="qwen-test",
+            tools=[{"function": {"name": "find_file"}}],
+            tool_executor=MagicMock(return_value='{"matches": []}'),
             command_client_factory=fake_factory,
             cancel_check=cancel_check,
         )
