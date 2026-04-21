@@ -240,6 +240,11 @@ def _normalize_shell_configs(shell_config) -> list[dict]:
     return [dict(config) for config in shell_config if config]
 
 
+def _requires_sequential_shell_composition(shell_configs: list[dict]) -> bool:
+    """Multiple active shells must compose over the prior warped result."""
+    return len(shell_configs) > 1
+
+
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
@@ -312,6 +317,8 @@ class MetalWarpPipeline:
         self._output_texture_size = None
         self._mip_texture = None
         self._mip_texture_size = None
+        self._staging_textures = [None, None]
+        self._staging_texture_size = None
         self._accum_textures = [None, None]  # ping-pong accumulation buffers
         self._accum_texture_size = None
         self._accum_index = 0
@@ -405,6 +412,117 @@ class MetalWarpPipeline:
             logger.warning("Failed to create accumulation textures %dx%d", width, height)
             self._accum_textures = [None, None]
 
+    def _ensure_staging_textures(self, width, height):
+        if self._staging_texture_size == (width, height):
+            return
+        import objc
+        desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            80, width, height, False,
+        )
+        desc.setUsage_(1 | 2)
+        self._staging_textures = [
+            self._device.newTextureWithDescriptor_(desc),
+            self._device.newTextureWithDescriptor_(desc),
+        ]
+        self._staging_texture_size = (width, height)
+        if self._staging_textures[0] is None or self._staging_textures[1] is None:
+            logger.warning("Failed to create staging textures %dx%d", width, height)
+            self._staging_textures = [None, None]
+
+    def _encode_copy_texture(self, command_buffer, source_texture, target_texture):
+        blit = command_buffer.blitCommandEncoder()
+        blit.copyFromTexture_toTexture_(source_texture, target_texture)
+        blit.endEncoding()
+
+    def _encode_refresh_mipmaps(self, command_buffer, source_texture, width, height):
+        if self._mip_texture is None:
+            return source_texture
+        blit = command_buffer.blitCommandEncoder()
+        origin = (0, 0, 0)
+        size = (width, height, 1)
+        try:
+            blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+                source_texture, 0, 0, origin, size,
+                self._mip_texture, 0, 0, origin,
+            )
+        except Exception:
+            try:
+                blit.copyFromTexture_toTexture_(source_texture, self._mip_texture)
+            except Exception:
+                blit.endEncoding()
+                return source_texture
+        blit.generateMipmapsForTexture_(self._mip_texture)
+        blit.endEncoding()
+        return self._mip_texture
+
+    def _encode_shell_dispatch(
+        self,
+        command_buffer,
+        *,
+        source_texture,
+        output_texture,
+        accum_read,
+        accum_write,
+        out_w,
+        out_h,
+        config,
+        gen_before,
+    ) -> bool:
+        cx = config.get("center_x", out_w * 0.5)
+        cy = config.get("center_y", out_h * 0.5)
+        rect_w = config.get("content_width_points", out_w)
+        rect_h = config.get("content_height_points", out_h)
+        capsule_r = max(rect_h * 0.5, 1.0)
+        bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
+        box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
+        box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
+        box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
+        box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, out_h)
+        box_w = box_x1 - box_x0
+        box_h = box_y1 - box_y0
+        if box_w <= 0 or box_h <= 0:
+            return False
+
+        warp_config = config
+        if gen_before != getattr(self, "_accum_last_used_gen", -1):
+            warp_config = dict(config)
+            warp_config["temporal_blend"] = 1.0
+
+        params_data = _pack_warp_params(
+            out_w, out_h, warp_config,
+            grid_offset_x=float(box_x0),
+            grid_offset_y=float(box_y0),
+        )
+        if self._params_buffer is not None:
+            contents_ptr = self._params_buffer.contents()
+            if contents_ptr is not None:
+                ctypes.memmove(contents_ptr, params_data, len(params_data))
+                params_buffer = self._params_buffer
+            else:
+                params_buffer = _create_metal_buffer(self._device, params_data)
+        else:
+            params_buffer = _create_metal_buffer(self._device, params_data)
+
+        if params_buffer is None:
+            return False
+
+        warp_input = self._encode_refresh_mipmaps(command_buffer, source_texture, out_w, out_h)
+
+        encoder = command_buffer.computeCommandEncoder()
+        encoder.setComputePipelineState_(self._pipeline)
+        encoder.setTexture_atIndex_(warp_input, 0)
+        encoder.setTexture_atIndex_(output_texture, 1)
+        if accum_read is not None and accum_write is not None:
+            encoder.setTexture_atIndex_(accum_read, 2)
+            encoder.setTexture_atIndex_(accum_write, 3)
+        encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
+
+        threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, box_h), 1)
+        grid_size = (box_w, box_h, 1)
+        encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
+        encoder.endEncoding()
+        return True
+
     def reset_temporal_state(self):
         """Force next frame to fully replace the accumulator.
 
@@ -467,27 +585,6 @@ class MetalWarpPipeline:
 
         command_buffer = self._command_queue.commandBuffer()
 
-        # Full-screen blit: input → output.  Guarantees the entire
-        # drawable is written before presentation (no tearing on 120Hz).
-        blit = command_buffer.blitCommandEncoder()
-        blit.copyFromTexture_toTexture_(input_texture, output_texture)
-        if self._mip_texture is not None:
-            origin = (0, 0, 0)
-            size = (in_w, in_h, 1)
-            try:
-                blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
-                    input_texture, 0, 0, origin, size,
-                    self._mip_texture, 0, 0, origin,
-                )
-            except Exception:
-                try:
-                    blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
-                except Exception:
-                    pass
-            blit.generateMipmapsForTexture_(self._mip_texture)
-        blit.endEncoding()
-
-        # Pass 2: compute each warp region over its own capsule bounding box.
         # Temporal accumulation uses full-screen textures so multiple overlay
         # regions can coexist in one compositor window.
         self._ensure_accum_textures(out_w, out_h)
@@ -495,63 +592,49 @@ class MetalWarpPipeline:
         accum_read = self._accum_textures[self._accum_index]
         accum_write = self._accum_textures[1 - self._accum_index]
         any_dispatch = False
-
-        for config in shell_configs:
-            cx = config.get("center_x", out_w * 0.5)
-            cy = config.get("center_y", out_h * 0.5)
-            rect_w = config.get("content_width_points", out_w)
-            rect_h = config.get("content_height_points", out_h)
-            capsule_r = max(rect_h * 0.5, 1.0)
-            bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
-            box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
-            box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
-            box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
-            box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, out_h)
-            box_w = box_x1 - box_x0
-            box_h = box_y1 - box_y0
-            if box_w <= 0 or box_h <= 0:
-                continue
-
-            warp_config = config
-            if gen_before != getattr(self, "_accum_last_used_gen", -1):
-                warp_config = dict(config)
-                warp_config["temporal_blend"] = 1.0
-
-            params_data = _pack_warp_params(
-                out_w, out_h, warp_config,
-                grid_offset_x=float(box_x0),
-                grid_offset_y=float(box_y0),
-            )
-            if self._params_buffer is not None:
-                contents_ptr = self._params_buffer.contents()
-                if contents_ptr is not None:
-                    ctypes.memmove(contents_ptr, params_data, len(params_data))
-                    params_buffer = self._params_buffer
-                else:
-                    params_buffer = _create_metal_buffer(self._device, params_data)
-            else:
-                params_buffer = _create_metal_buffer(self._device, params_data)
-
-            if params_buffer is None:
+        if _requires_sequential_shell_composition(shell_configs):
+            self._ensure_staging_textures(out_w, out_h)
+            stage_a, stage_b = self._staging_textures
+            if stage_a is None or stage_b is None:
                 command_buffer.presentDrawable_(drawable)
                 command_buffer.commit()
-                return True  # blit-only frame
-
-            encoder = command_buffer.computeCommandEncoder()
-            encoder.setComputePipelineState_(self._pipeline)
-            warp_input = self._mip_texture if self._mip_texture is not None else input_texture
-            encoder.setTexture_atIndex_(warp_input, 0)
-            encoder.setTexture_atIndex_(output_texture, 1)
-            if accum_read is not None and accum_write is not None:
-                encoder.setTexture_atIndex_(accum_read, 2)
-                encoder.setTexture_atIndex_(accum_write, 3)
-            encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
-
-            threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, box_h), 1)
-            grid_size = (box_w, box_h, 1)
-            encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
-            encoder.endEncoding()
-            any_dispatch = True
+                return True
+            self._encode_copy_texture(command_buffer, input_texture, stage_a)
+            current_source = stage_a
+            for index, config in enumerate(shell_configs):
+                is_last = index == len(shell_configs) - 1
+                current_target = output_texture if is_last else (stage_b if current_source is stage_a else stage_a)
+                self._encode_copy_texture(command_buffer, current_source, current_target)
+                if not self._encode_shell_dispatch(
+                    command_buffer,
+                    source_texture=current_source,
+                    output_texture=current_target,
+                    accum_read=accum_read,
+                    accum_write=accum_write,
+                    out_w=out_w,
+                    out_h=out_h,
+                    config=config,
+                    gen_before=gen_before,
+                ):
+                    continue
+                any_dispatch = True
+                current_source = current_target
+        else:
+            self._encode_copy_texture(command_buffer, input_texture, output_texture)
+            for config in shell_configs:
+                if not self._encode_shell_dispatch(
+                    command_buffer,
+                    source_texture=input_texture,
+                    output_texture=output_texture,
+                    accum_read=accum_read,
+                    accum_write=accum_write,
+                    out_w=out_w,
+                    out_h=out_h,
+                    config=config,
+                    gen_before=gen_before,
+                ):
+                    continue
+                any_dispatch = True
 
         if any_dispatch and self._accum_generation == gen_before:
             self._accum_index = 1 - self._accum_index
