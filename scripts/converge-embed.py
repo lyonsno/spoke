@@ -30,10 +30,14 @@ _ATTRACTOR_SOURCES = [
 ]
 
 
-def embed_texts(texts: list[str]) -> np.ndarray:
+def embed_texts(
+    texts: list[str],
+    *,
+    model_path: str | Path | None = None,
+) -> np.ndarray:
     """Embed a list of texts via the shared library."""
     from converge_embed_lib import embed_texts as _embed
-    return _embed(texts)
+    return _embed(texts, model_path=model_path)
 
 
 def _load_attractors() -> list[dict]:
@@ -70,7 +74,7 @@ def _load_attractors() -> list[dict]:
     return entries
 
 
-def build_index():
+def build_index(model_path: str | Path | None = None):
     """Build the attractor vector index."""
     entries = _load_attractors()
     if not entries:
@@ -82,7 +86,7 @@ def build_index():
     # Embed full texts
     full_texts = [e["full_text"] for e in entries]
     t0 = time.time()
-    full_embeddings = embed_texts(full_texts)
+    full_embeddings = embed_texts(full_texts, model_path=model_path)
     t_full = time.time() - t0
     print(f"  Full text embeddings: {t_full:.1f}s ({t_full/len(entries)*1000:.0f}ms/attractor)",
           file=sys.stderr)
@@ -90,7 +94,7 @@ def build_index():
     # Embed summaries
     summaries = [e["summary"] for e in entries]
     t0 = time.time()
-    summary_embeddings = embed_texts(summaries)
+    summary_embeddings = embed_texts(summaries, model_path=model_path)
     t_summ = time.time() - t0
     print(f"  Summary embeddings: {t_summ:.1f}s ({t_summ/len(entries)*1000:.0f}ms/attractor)",
           file=sys.stderr)
@@ -126,7 +130,13 @@ def load_index() -> tuple[np.ndarray, np.ndarray, list[dict]] | None:
     return full_emb, summary_emb, metadata
 
 
-def query(text: str, top_k: int = 10, threshold: float = 0.3) -> list[dict]:
+def query(
+    text: str,
+    top_k: int = 10,
+    threshold: float = 0.3,
+    *,
+    model_path: str | Path | None = None,
+) -> list[dict]:
     """Query the index with a text, return top-k matching attractors above threshold."""
     index = load_index()
     if index is None:
@@ -136,7 +146,7 @@ def query(text: str, top_k: int = 10, threshold: float = 0.3) -> list[dict]:
     full_emb, summary_emb, metadata = index
 
     # Embed the query
-    query_emb = embed_texts([text])[0]  # (dim,)
+    query_emb = embed_texts([text], model_path=model_path)[0]  # (dim,)
 
     # Full-text embeddings only (summary embeddings have degenerate entries)
     full_scores = full_emb @ query_emb
@@ -156,7 +166,13 @@ def query(text: str, top_k: int = 10, threshold: float = 0.3) -> list[dict]:
     return results
 
 
-def query_turns(turns: list[str], top_k: int = 10, threshold: float = 0.3) -> list[dict]:
+def query_turns(
+    turns: list[str],
+    top_k: int = 10,
+    threshold: float = 0.3,
+    *,
+    model_path: str | Path | None = None,
+) -> list[dict]:
     """Query with multiple conversation turns, return union of matches."""
     index = load_index()
     if index is None:
@@ -167,7 +183,7 @@ def query_turns(turns: list[str], top_k: int = 10, threshold: float = 0.3) -> li
     # Embed all turns at once
     if not turns:
         return []
-    turn_embeddings = embed_texts(turns)  # (N, dim)
+    turn_embeddings = embed_texts(turns, model_path=model_path)  # (N, dim)
 
     # Full-text embeddings only (summary embeddings have degenerate entries)
     full_scores = full_emb @ turn_embeddings.T  # (attractors, turns)
@@ -215,15 +231,27 @@ def main():
     parser.add_argument("text", nargs="?", help="Query text (for 'query' command)")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--threshold", type=float, default=0.3)
+    parser.add_argument(
+        "--model-path",
+        help=(
+            "Optional path to the Octen embedding model. Defaults to "
+            "$SPOKE_CONVERGE_EMBED_MODEL_PATH or the repo-local default."
+        ),
+    )
     args = parser.parse_args()
 
     if args.command == "build":
-        build_index()
+        build_index(model_path=args.model_path)
     elif args.command == "query":
         if not args.text:
             print("Usage: converge-embed.py query \"text to search\"", file=sys.stderr)
             sys.exit(1)
-        results = query(args.text, top_k=args.top_k, threshold=args.threshold)
+        results = query(
+            args.text,
+            top_k=args.top_k,
+            threshold=args.threshold,
+            model_path=args.model_path,
+        )
         if results:
             for r in results:
                 print(f"  {r['score']:.4f}  [{r['source']}] {r['slug']}")

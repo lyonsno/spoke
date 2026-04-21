@@ -27,12 +27,15 @@ import time
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
-
-import numpy as np
+from typing import TYPE_CHECKING, Any, Callable
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    import numpy as np
+
 _ATTRACTORS_DIR = Path.home() / ".config" / "spoke" / "attractors"
+_ATTRACTOR_INDEX_PATH = Path.home() / ".config" / "spoke" / "attractor-index.npz"
 _TRACE_PATH = Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
 _TURN_EMBEDDINGS_PATH = Path.home() / ".config" / "spoke" / "turn-embeddings.npz"
 _MAX_CACHED_EMBEDDINGS = 100  # rolling window of recent turn embeddings
@@ -81,6 +84,223 @@ Rules:
 - Do NOT create attractors about the project's specific features or bugs.
 - Output ONLY the JSON array. No markdown, no commentary.
 """
+
+
+def _import_numpy(feature: str):
+    try:
+        import numpy as np
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            f"numpy is required for {feature}. Install the Converge runtime "
+            "dependencies before using guided compaction or turn embeddings."
+        ) from exc
+    return np
+
+
+def _append_trace(path: Path, event: str, **kwargs) -> None:
+    try:
+        entry = {"timestamp": datetime.now().isoformat(), "event": event, **kwargs}
+        with open(path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def _build_turn_preview(history: list, target: int) -> list[str]:
+    turn_preview = []
+    for i in range(target):
+        turn = history[i]
+        if isinstance(turn, (list, tuple)) and len(turn) >= 2 and isinstance(turn[0], str):
+            turn_preview.append(f"Turn {i+1}: user: {turn[0][:200]}")
+            continue
+        if not isinstance(turn, list):
+            continue
+        parts = []
+        for message in turn:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role", "")
+            content = message.get("content", "")
+            if role in ("user", "assistant") and content:
+                parts.append(f"{role}: {content[:200]}")
+        if parts:
+            turn_preview.append(f"Turn {i+1}: " + " | ".join(parts))
+    return turn_preview
+
+
+def _guided_compaction(
+    history: list,
+    target: int,
+    arguments: dict[str, Any],
+    *,
+    index_path: Path,
+    trace_path: Path,
+    turn_embeddings_loader: Callable[[], tuple[Any, list[str]] | None],
+) -> dict[str, Any]:
+    turn_preview = _build_turn_preview(history, target)
+    if not index_path.is_file():
+        return {
+            "status": "error",
+            "error": "attractor-index.npz not found. Run: uv run scripts/converge-embed.py build",
+            "turn_preview": turn_preview[:5],
+        }
+
+    turn_cache = turn_embeddings_loader()
+    if turn_cache is None or turn_cache[0].shape[0] == 0:
+        return {
+            "status": "error",
+            "error": (
+                "No turn embeddings cached yet. The background carver embeds turns "
+                "after each response — try again after a few more exchanges."
+            ),
+            "turn_preview": turn_preview[:5],
+        }
+
+    np = _import_numpy("guided compaction")
+    turn_embeddings, turn_texts = turn_cache
+    t0 = time.time()
+
+    try:
+        data = np.load(index_path, allow_pickle=False)
+        full_emb = data["full_embeddings"]
+        metadata = json.loads(str(data["metadata"]))
+    except Exception as exc:
+        return {"status": "error", "error": f"index load failed: {exc}"}
+
+    full_scores = full_emb @ turn_embeddings.T
+    combined = full_scores.max(axis=1)
+
+    top_k = arguments.get("top_k", 10)
+    threshold = arguments.get("threshold", 0.35)
+    top_indices = np.argsort(combined)[::-1][:top_k]
+    matched_attractors = []
+    for idx in top_indices:
+        score = float(combined[idx])
+        if score < threshold:
+            break
+        matched_attractors.append(
+            {
+                "source": metadata[idx]["source"],
+                "attractor": metadata[idx]["slug"],
+                "summary": metadata[idx].get("summary", "")[:100],
+                "score": round(score, 4),
+            }
+        )
+
+    elapsed = time.time() - t0
+    _append_trace(
+        trace_path,
+        "guided_compaction",
+        elapsed_s=round(elapsed, 2),
+        turns_embedded=len(turn_texts),
+        attractors_searched=len(metadata),
+        matches_returned=len(matched_attractors),
+        top_scores=[a["score"] for a in matched_attractors[:5]],
+        top_slugs=[a["attractor"][:50] for a in matched_attractors[:5]],
+        threshold=threshold,
+    )
+
+    return {
+        "status": "ok",
+        "mode": "guided",
+        "turns_targeted": target,
+        "turns_total": len(history),
+        "attractor_count": len(metadata),
+        "retention_flags": matched_attractors,
+        "instruction": (
+            "These attractors are semantically related to the conversation being "
+            "compacted (ranked by cosine similarity). When you call compact_history "
+            "with mode='summarize', preserve any information that connects to these "
+            "attractors. Use your conversational judgment for everything else."
+        ),
+        "turn_preview": turn_preview[:5],
+    }
+
+
+def compact_history(
+    client,
+    arguments: dict[str, Any],
+    *,
+    index_path: Path | None = None,
+    trace_path: Path | None = None,
+    turn_embeddings_loader: Callable[[], tuple[Any, list[str]] | None] | None = None,
+) -> dict[str, Any]:
+    """Execute the compact_history tool on a command client."""
+    history = client._history
+    if not history:
+        return {"status": "nothing to compact", "turns": 0}
+
+    mode = arguments.get("mode", "drop_tool_results")
+    n = arguments.get("n", 0)
+    target = len(history) if n == 0 else min(n, len(history))
+    trace_path = trace_path or _TRACE_PATH
+
+    if mode == "drop_tool_results":
+        compacted = 0
+        for i in range(target):
+            turn = history[i]
+            before = len(turn)
+            history[i] = [
+                message
+                for message in turn
+                if message.get("role") in ("user", "assistant", "system")
+            ]
+            if len(history[i]) < before:
+                compacted += 1
+        client._save_history()
+        _append_trace(
+            trace_path,
+            "compact_drop_tool_results",
+            turns_compacted=compacted,
+            turns_total=len(history),
+        )
+        return {
+            "status": "ok",
+            "mode": "drop_tool_results",
+            "turns_compacted": compacted,
+            "turns_total": len(history),
+        }
+
+    if mode == "summarize":
+        summary = arguments.get("summary", "")
+        if not summary:
+            return {"error": "summary is required for summarize mode"}
+        remaining = history[target:]
+        summary_turn = [
+            {"role": "user", "content": "[compacted history]"},
+            {"role": "assistant", "content": summary},
+        ]
+        client._history = [summary_turn] + remaining
+        client._save_history()
+        _append_trace(
+            trace_path,
+            "compact_summarize",
+            turns_replaced=target,
+            turns_remaining=len(remaining),
+            summary_length=len(summary),
+            summary_preview=summary[:200],
+        )
+        return {
+            "status": "ok",
+            "mode": "summarize",
+            "turns_replaced": target,
+            "turns_remaining": len(remaining),
+        }
+
+    if mode == "guided":
+        try:
+            return _guided_compaction(
+                history,
+                target,
+                arguments,
+                index_path=index_path or _ATTRACTOR_INDEX_PATH,
+                trace_path=trace_path,
+                turn_embeddings_loader=turn_embeddings_loader or load_turn_embeddings,
+            )
+        except RuntimeError as exc:
+            return {"status": "error", "error": str(exc)}
+
+    return {"status": "error", "error": f"unknown compact_history mode: {mode}"}
 
 
 class TurnCarver:
@@ -340,6 +560,7 @@ class TurnCarver:
     def _embed_single(self, utterance: str) -> None:
         """Embed a single utterance via OMLX /v1/embeddings and append to cache."""
         t0 = time.time()
+        np = _import_numpy("Converge turn embedding cache")
 
         # Use OMLX's embeddings endpoint — same server, no in-process model load,
         # no Metal race with the command model.
@@ -396,15 +617,10 @@ class TurnCarver:
 
     def _trace(self, event: str, **kwargs) -> None:
         """Append to the trace log."""
-        try:
-            entry = {"timestamp": datetime.now().isoformat(), "event": event, **kwargs}
-            with open(_TRACE_PATH, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass
+        _append_trace(_TRACE_PATH, event, **kwargs)
 
 
-def load_turn_embeddings() -> tuple[np.ndarray, list[str]] | None:
+def load_turn_embeddings() -> tuple[Any, list[str]] | None:
     """Load the pre-computed turn embedding cache.
 
     Returns (embeddings, texts) or None if no cache exists.
@@ -413,6 +629,7 @@ def load_turn_embeddings() -> tuple[np.ndarray, list[str]] | None:
     if not _TURN_EMBEDDINGS_PATH.exists():
         return None
     try:
+        np = _import_numpy("guided compaction turn cache")
         data = np.load(_TURN_EMBEDDINGS_PATH, allow_pickle=False)
         embeddings = data["embeddings"]
         texts = json.loads(str(data["texts"]))
