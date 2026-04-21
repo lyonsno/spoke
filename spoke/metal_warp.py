@@ -180,22 +180,24 @@ kernel void opticalShellWarp(
         warpedColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
-    // Temporal accumulation: EMA blend with previous frame.
-    // Accum textures are bounding-box-sized — indexed by gid, not pixel.
-    // Interior gets full temporal smoothing; exterior warp zone blends
-    // less to stay responsive.
-    float temporalWeight = params.temporalBlend;
+    // Temporal accumulation: EMA blend tied to blur depth.
+    // High mip LOD (deep interior) = heavy temporal smoothing.
+    // Low/zero mip LOD (near boundary) = almost no temporal.
+    // Exterior = no temporal at all (pass through).
     if (capsuleSdf <= 0.0f) {{
+        // Interior: temporal weight scales with mip LOD (blur depth).
+        // mipLod 0 (rim, no blur) → weight 1.0 (no temporal).
+        // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
+        float mipFrac = clamp(mipLod / 6.0f, 0.0f, 1.0f);
+        float temporalWeight = mix(1.0f, params.temporalBlend, mipFrac);
         float4 prev = accumIn.read(gid);
         float4 blended = mix(prev, warpedColor, temporalWeight);
         accumOut.write(blended, gid);
         outTexture.write(blended, pixel);
     }} else {{
-        float4 prev = accumIn.read(gid);
-        float exteriorBlend = mix(temporalWeight, 1.0f, smoothstep(0.0f, bleedZone, capsuleSdf));
-        float4 blended = mix(prev, warpedColor, exteriorBlend);
-        accumOut.write(blended, gid);
-        outTexture.write(blended, pixel);
+        // Exterior: no temporal smoothing — fully responsive.
+        accumOut.write(warpedColor, gid);
+        outTexture.write(warpedColor, pixel);
     }}
 }}
 """

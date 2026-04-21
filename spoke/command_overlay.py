@@ -349,6 +349,11 @@ def _command_optical_shell_config(
         if content_height_points is None
         else max(float(content_height_points), 1.0)
     )
+    # Inflate warp capsule by half-radius so the fill pill sits
+    # entirely inside the warped region.
+    capsule_r = _OVERLAY_HEIGHT / 4.0
+    width_points += capsule_r
+    height_points += capsule_r
     return {
         "enabled": True,
         "content_width_points": width_points,

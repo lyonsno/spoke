@@ -545,6 +545,11 @@ def _preview_optical_shell_config(
     """Return optical shell config dict for the preview overlay compositor."""
     width_points = _OVERLAY_WIDTH if content_width_points is None else max(float(content_width_points), 1.0)
     height_points = _OVERLAY_HEIGHT if content_height_points is None else max(float(content_height_points), 1.0)
+    # Inflate the warp capsule by a half-radius so the fill pill sits
+    # entirely inside the warped region (including the exterior bleed).
+    capsule_r = _OVERLAY_HEIGHT / 4.0
+    width_points += capsule_r
+    height_points += capsule_r
     band_mm = 4.0
     tail_mm = 3.0
     ring_refraction = 1.0
