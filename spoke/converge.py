@@ -43,6 +43,12 @@ interaction between a user and their assistant, and identify any personal
 attractors revealed — durable concerns, recurring interests, or persistent
 preferences that transcend the immediate task.
 
+The user speaks via voice dictation. Their input contains transcription
+errors, false starts, and informal language. Read through them to the
+intent. Do NOT create attractors from transcription artifacts — if a word
+looks like a garbled version of a technical term, it probably is. "Tractor"
+is almost certainly "attractor." "Epístaxis" is correct Greek, not a typo.
+
 Personal attractors are NOT project-specific tasks or bugs. They are patterns
 like:
 - Aesthetic preferences (visual, auditory, interaction design)
@@ -51,16 +57,29 @@ like:
 - Quality standards they consistently enforce
 - Recurring interests regardless of current task
 
-If this turn reveals NO personal attractor signal (it's purely task-execution,
-a test, or too short), respond with exactly: []
+You will be given the user's EXISTING personal attractors. Before creating
+a new attractor, check if the utterance is evidence for an existing one.
 
-Otherwise, respond with a JSON array of at most 2 attractors:
-[{"slug": "kebab-case-id", "title": "Short title", "evidence": "One sentence of what you observed", "strength": "tentative"}]
+Your response is a JSON array of operations. Each operation is one of:
+
+1. REINFORCE an existing attractor (re-observed evidence):
+   {"op": "reinforce", "slug": "<existing-slug>", "evidence": "New evidence observed"}
+
+2. EXPAND an existing attractor (broaden its scope with new detail):
+   {"op": "expand", "slug": "<existing-slug>", "new_evidence": "Additional detail", "new_title": "Optional broader title"}
+
+3. CORRECT an existing attractor (fix a transcription error or misattribution):
+   {"op": "correct", "slug": "<existing-slug>", "corrected_slug": "fixed-slug", "corrected_title": "Fixed title", "reason": "Why"}
+
+4. CREATE a new attractor (genuinely novel signal not covered by any existing one):
+   {"op": "create", "slug": "kebab-case-id", "title": "Short title", "evidence": "One sentence"}
 
 Rules:
-- Only "tentative" strength on first observation. Only the merge process upgrades to "strong".
-- Be concrete and specific, not vague.
-- Output ONLY the JSON array (or empty array). No markdown, no commentary.
+- Prefer reinforce/expand over create. New attractors need STRONG signal.
+- Be skeptical. Most turns are just task execution and reveal nothing durable.
+- If the turn is a test, a short command, or purely about a specific bug, return [].
+- Do NOT create attractors about the project's specific features or bugs.
+- Output ONLY the JSON array. No markdown, no commentary.
 """
 
 
@@ -137,15 +156,44 @@ class TurnCarver:
                 except Exception:
                     logger.debug("Converge embed failed", exc_info=True)
 
+    def _load_existing_attractors_context(self) -> str:
+        """Build a compact summary of existing personal attractors for the prompt."""
+        if not _ATTRACTORS_DIR.is_dir():
+            return ""
+        lines = []
+        for f in sorted(_ATTRACTORS_DIR.iterdir()):
+            if f.is_file() and f.suffix == ".md":
+                try:
+                    text = f.read_text(encoding="utf-8")
+                    # Extract title and evidence
+                    title = f.stem
+                    for line in text.split("\n"):
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                        elif "Evidence:" in line:
+                            evidence = line.split("Evidence:", 1)[1].strip()
+                            lines.append(f"- {f.stem}: {title} — {evidence}")
+                            break
+                    else:
+                        lines.append(f"- {f.stem}: {title}")
+                except OSError:
+                    continue
+        if not lines:
+            return ""
+        return "Existing personal attractors:\n" + "\n".join(lines)
+
     def _carve_single(self, utterance: str) -> None:
         """Send one utterance to the model for attractor carving."""
         t0 = time.time()
 
+        existing_context = self._load_existing_attractors_context()
         user_prompt = (
             f"User utterance from a voice interaction:\n\n"
             f"\"{utterance}\"\n\n"
-            f"Identify any personal attractors revealed."
         )
+        if existing_context:
+            user_prompt += f"{existing_context}\n\n"
+        user_prompt += "Identify attractor operations for this utterance."
 
         url = f"{self._base_url}/v1/chat/completions"
         payload = json.dumps({
@@ -176,50 +224,105 @@ class TurnCarver:
             cleaned = re.sub(r"\s*```$", "", cleaned)
 
         try:
-            attractors = json.loads(cleaned)
+            ops = json.loads(cleaned)
         except json.JSONDecodeError:
             logger.debug("Converge: failed to parse response: %s", cleaned[:100])
             self._trace("carve_parse_error", elapsed=elapsed, raw=cleaned[:200])
             return
 
-        if not attractors:
+        if not ops:
             self._trace("carve_empty", elapsed=elapsed, utterance=utterance[:100])
             return
 
-        # Write attractors
-        written = 0
-        for a in attractors:
-            slug = a.get("slug", "")
+        # Process operations
+        today = date.today().isoformat()
+        actions = []
+        for op in ops:
+            op_type = op.get("op", "create")
+            slug = op.get("slug", "")
             if not slug:
                 continue
-            title = a.get("title", slug)
-            evidence = a.get("evidence", "")
-            strength = a.get("strength", "tentative")
 
-            path = _ATTRACTORS_DIR / f"{slug}.md"
-            if path.exists():
-                # Already exists — check if we should upgrade strength
-                existing = path.read_text(encoding="utf-8")
-                if "Strength: strong" in existing:
-                    continue  # already strong, don't downgrade
-                if "Strength: tentative" in existing and strength == "tentative":
-                    # Re-observed tentative → upgrade to strong
-                    strength = "strong"
-                    logger.info("Converge: upgrading attractor %s to strong", slug)
+            if op_type == "reinforce":
+                path = _ATTRACTORS_DIR / f"{slug}.md"
+                if path.exists():
+                    existing = path.read_text(encoding="utf-8")
+                    new_evidence = op.get("evidence", "")
+                    if "Strength: tentative" in existing:
+                        # Re-observed → upgrade to strong
+                        existing = existing.replace("Strength: tentative", "Strength: strong")
+                        logger.info("Converge: reinforced %s → strong", slug)
+                    existing = existing.rstrip() + f"\n- Re-observed: {today} — {new_evidence}\n"
+                    path.write_text(existing, encoding="utf-8")
+                    actions.append(f"reinforce:{slug}")
+                else:
+                    logger.debug("Converge: reinforce target %s not found, skipping", slug)
 
-            today = date.today().isoformat()
-            content = f"# {title}\n\n- Evidence: {evidence}\n- Strength: {strength}\n- Observed: {today}\n"
-            path.write_text(content, encoding="utf-8")
-            written += 1
-            logger.info("Converge: wrote attractor %s (%s)", slug, strength)
+            elif op_type == "expand":
+                path = _ATTRACTORS_DIR / f"{slug}.md"
+                if path.exists():
+                    existing = path.read_text(encoding="utf-8")
+                    new_title = op.get("new_title")
+                    new_evidence = op.get("new_evidence", "")
+                    if new_title:
+                        # Replace title line
+                        lines = existing.split("\n")
+                        for i, line in enumerate(lines):
+                            if line.startswith("# "):
+                                lines[i] = f"# {new_title}"
+                                break
+                        existing = "\n".join(lines)
+                    existing = existing.rstrip() + f"\n- Expanded: {today} — {new_evidence}\n"
+                    path.write_text(existing, encoding="utf-8")
+                    actions.append(f"expand:{slug}")
+                    logger.info("Converge: expanded %s", slug)
+
+            elif op_type == "correct":
+                old_path = _ATTRACTORS_DIR / f"{slug}.md"
+                new_slug = op.get("corrected_slug", slug)
+                new_title = op.get("corrected_title", "")
+                reason = op.get("reason", "")
+                if old_path.exists():
+                    existing = old_path.read_text(encoding="utf-8")
+                    if new_title:
+                        lines = existing.split("\n")
+                        for i, line in enumerate(lines):
+                            if line.startswith("# "):
+                                lines[i] = f"# {new_title}"
+                                break
+                        existing = "\n".join(lines)
+                    existing = existing.rstrip() + f"\n- Corrected: {today} — {reason}\n"
+                    new_path = _ATTRACTORS_DIR / f"{new_slug}.md"
+                    new_path.write_text(existing, encoding="utf-8")
+                    if new_slug != slug:
+                        old_path.unlink()
+                    actions.append(f"correct:{slug}→{new_slug}")
+                    logger.info("Converge: corrected %s → %s (%s)", slug, new_slug, reason)
+
+            elif op_type == "create":
+                title = op.get("title", slug)
+                evidence = op.get("evidence", "")
+                path = _ATTRACTORS_DIR / f"{slug}.md"
+                if path.exists():
+                    # Already exists — treat as reinforce
+                    existing = path.read_text(encoding="utf-8")
+                    if "Strength: tentative" in existing:
+                        existing = existing.replace("Strength: tentative", "Strength: strong")
+                    existing = existing.rstrip() + f"\n- Re-observed: {today} — {evidence}\n"
+                    path.write_text(existing, encoding="utf-8")
+                    actions.append(f"reinforce:{slug}")
+                else:
+                    content = f"# {title}\n\n- Evidence: {evidence}\n- Strength: tentative\n- Observed: {today}\n"
+                    path.write_text(content, encoding="utf-8")
+                    actions.append(f"create:{slug}")
+                    logger.info("Converge: created %s", slug)
 
         self._trace(
             "carve_complete",
             elapsed=elapsed,
             utterance=utterance[:100],
-            attractors_found=len(attractors),
-            attractors_written=written,
-            slugs=[a.get("slug", "") for a in attractors],
+            ops_received=len(ops),
+            actions=actions,
         )
 
     def _embed_single(self, utterance: str) -> None:
