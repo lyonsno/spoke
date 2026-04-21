@@ -3729,9 +3729,10 @@ class SpokeAppDelegate(NSObject):
             self._glow.hide()
 
         # Converge: fire per-turn attractor carving in background
-        if self._turn_carver is not None and response:
+        turn_carver = getattr(self, "_turn_carver", None)
+        if turn_carver is not None and response:
             utterance = getattr(self, "_last_command_utterance", "")
-            self._turn_carver.on_turn_complete(utterance, response)
+            turn_carver.on_turn_complete(utterance, response)
 
     def _on_tts_amplitude(self, rms: float) -> None:
         """Called from TTS thread — marshal to main thread."""
