@@ -1288,17 +1288,15 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             error="file is required",
         )
     if not isinstance(old_string, str) or old_string == "":
-        return {
-            "status": "error",
-            "applied": False,
-            "file": raw_path,
-            "file_path": raw_path,
-            "edited_range": None,
-            "normalization_applied": [],
-            "failure_reason": "malformed_request",
-            "match_count": 0,
-            "error": "old_string is required",
-        }
+        return _edit_result(
+            status="error",
+            file_path=raw_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error="old_string is required",
+        )
     if not isinstance(new_string, str):
         return _edit_result(
             status="error",

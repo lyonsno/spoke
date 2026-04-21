@@ -1009,6 +1009,27 @@ class TestExecuteToolIntegration:
         assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == original
 
+    def test_execute_edit_file_rejects_missing_old_string(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert "old_string is required" in parsed.get("error", "")
+        assert f.read_text(encoding="utf-8") == original
+
     def test_execute_edit_file_rejects_lazy_elision(self, tmp_path):
         mod = _import_tools()
         f = tmp_path / "edit.txt"
