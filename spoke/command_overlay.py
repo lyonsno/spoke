@@ -1843,15 +1843,15 @@ class CommandOverlay(NSObject):
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
-        # Boost layer: on dark backgrounds (light fill), brighten the
+        # Boost layer: on light backgrounds (dark fill), brighten the
         # warped content behind text holes so the cut-out text reads
-        # bright.  The boost layer is white, masked to text glyphs only.
+        # light against the dark fill.  White layer masked to glyphs.
         boost_layer = getattr(self, "_boost_layer", None)
         if boost_layer is not None and getattr(self, "_text_punchthrough", False):
             _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
             _bt = _bt * _bt * (3.0 - 2.0 * _bt)
-            # Dark bg → boost; light bg → no boost
-            boost_opacity = _lerp(0.5, 0.0, _bt)
+            # Light bg (dark fill) → boost; dark bg (light fill) → no boost
+            boost_opacity = _lerp(0.0, 0.5, _bt)
             if boost_opacity > 0.01:
                 boost_layer.setHidden_(False)
                 boost_layer.setOpacity_(boost_opacity)
