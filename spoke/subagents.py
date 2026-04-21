@@ -68,7 +68,10 @@ def run_search_subagent_query(
         elif event.kind == "assistant_final":
             final_response = event.text
 
-    return visible_response or final_response
+    # Prefer the canonical final answer over accumulated streaming deltas.
+    # Streaming deltas can include tool-call scaffolding or provisional text
+    # that the model supersedes in its final response.
+    return final_response or visible_response
 
 
 class SubagentManager:

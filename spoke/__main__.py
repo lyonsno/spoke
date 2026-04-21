@@ -3300,10 +3300,18 @@ class SpokeAppDelegate(NSObject):
                 for i in range(target):
                     turn = history[i]
                     before = len(turn)
-                    history[i] = [
-                        m for m in turn
-                        if m.get("role") in ("user", "assistant", "system")
-                    ]
+                    # Keep user/assistant/system messages, drop tool results.
+                    # Also strip tool_calls from assistant messages so the
+                    # remaining chain is valid — tool_calls without matching
+                    # tool results produces invalid conversation context.
+                    cleaned = []
+                    for m in turn:
+                        if m.get("role") not in ("user", "assistant", "system"):
+                            continue
+                        if m.get("role") == "assistant" and "tool_calls" in m:
+                            m = {k: v for k, v in m.items() if k != "tool_calls"}
+                        cleaned.append(m)
+                    history[i] = cleaned
                     if len(history[i]) < before:
                         compacted += 1
                 client._save_history()

@@ -345,6 +345,8 @@ class TurnCarver:
         self._pending: list[str] = []  # user utterances not yet carved
         self._embed_pending: list[str] = []  # user utterances not yet embedded
         self._lock = threading.Lock()
+        self._embed_io_lock = threading.Lock()  # serialize embed cache read-modify-write
+        self._attractor_io_lock = threading.Lock()  # serialize attractor file mutations
         self._thread: threading.Thread | None = None
         self._embed_model_loaded = False
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
@@ -483,88 +485,90 @@ class TurnCarver:
             self._trace("carve_empty", elapsed=elapsed, utterance=utterance[:100])
             return
 
-        # Process operations
+        # Process operations — serialize attractor file mutations so
+        # concurrent carve threads don't clobber each other's writes.
         today = date.today().isoformat()
         actions = []
-        for op in ops:
-            op_type = op.get("op", "create")
-            slug = op.get("slug", "")
-            if not slug:
-                continue
+        with self._attractor_io_lock:
+            for op in ops:
+                op_type = op.get("op", "create")
+                slug = op.get("slug", "")
+                if not slug:
+                    continue
 
-            if op_type == "reinforce":
-                path = _ATTRACTORS_DIR / f"{slug}.md"
-                if path.exists():
-                    existing = path.read_text(encoding="utf-8")
-                    new_evidence = op.get("evidence", "")
-                    if "Strength: tentative" in existing:
-                        # Re-observed → upgrade to strong
-                        existing = existing.replace("Strength: tentative", "Strength: strong")
-                        logger.info("Converge: reinforced %s → strong", slug)
-                    existing = existing.rstrip() + f"\n- Re-observed: {today} — {new_evidence}\n"
-                    path.write_text(existing, encoding="utf-8")
-                    actions.append(f"reinforce:{slug}")
-                else:
-                    logger.debug("Converge: reinforce target %s not found, skipping", slug)
+                if op_type == "reinforce":
+                    path = _ATTRACTORS_DIR / f"{slug}.md"
+                    if path.exists():
+                        existing = path.read_text(encoding="utf-8")
+                        new_evidence = op.get("evidence", "")
+                        if "Strength: tentative" in existing:
+                            # Re-observed → upgrade to strong
+                            existing = existing.replace("Strength: tentative", "Strength: strong")
+                            logger.info("Converge: reinforced %s → strong", slug)
+                        existing = existing.rstrip() + f"\n- Re-observed: {today} — {new_evidence}\n"
+                        path.write_text(existing, encoding="utf-8")
+                        actions.append(f"reinforce:{slug}")
+                    else:
+                        logger.debug("Converge: reinforce target %s not found, skipping", slug)
 
-            elif op_type == "expand":
-                path = _ATTRACTORS_DIR / f"{slug}.md"
-                if path.exists():
-                    existing = path.read_text(encoding="utf-8")
-                    new_title = op.get("new_title")
-                    new_evidence = op.get("new_evidence", "")
-                    if new_title:
-                        # Replace title line
-                        lines = existing.split("\n")
-                        for i, line in enumerate(lines):
-                            if line.startswith("# "):
-                                lines[i] = f"# {new_title}"
-                                break
-                        existing = "\n".join(lines)
-                    existing = existing.rstrip() + f"\n- Expanded: {today} — {new_evidence}\n"
-                    path.write_text(existing, encoding="utf-8")
-                    actions.append(f"expand:{slug}")
-                    logger.info("Converge: expanded %s", slug)
+                elif op_type == "expand":
+                    path = _ATTRACTORS_DIR / f"{slug}.md"
+                    if path.exists():
+                        existing = path.read_text(encoding="utf-8")
+                        new_title = op.get("new_title")
+                        new_evidence = op.get("new_evidence", "")
+                        if new_title:
+                            # Replace title line
+                            lines = existing.split("\n")
+                            for i, line in enumerate(lines):
+                                if line.startswith("# "):
+                                    lines[i] = f"# {new_title}"
+                                    break
+                            existing = "\n".join(lines)
+                        existing = existing.rstrip() + f"\n- Expanded: {today} — {new_evidence}\n"
+                        path.write_text(existing, encoding="utf-8")
+                        actions.append(f"expand:{slug}")
+                        logger.info("Converge: expanded %s", slug)
 
-            elif op_type == "correct":
-                old_path = _ATTRACTORS_DIR / f"{slug}.md"
-                new_slug = op.get("corrected_slug", slug)
-                new_title = op.get("corrected_title", "")
-                reason = op.get("reason", "")
-                if old_path.exists():
-                    existing = old_path.read_text(encoding="utf-8")
-                    if new_title:
-                        lines = existing.split("\n")
-                        for i, line in enumerate(lines):
-                            if line.startswith("# "):
-                                lines[i] = f"# {new_title}"
-                                break
-                        existing = "\n".join(lines)
-                    existing = existing.rstrip() + f"\n- Corrected: {today} — {reason}\n"
-                    new_path = _ATTRACTORS_DIR / f"{new_slug}.md"
-                    new_path.write_text(existing, encoding="utf-8")
-                    if new_slug != slug:
-                        old_path.unlink()
-                    actions.append(f"correct:{slug}→{new_slug}")
-                    logger.info("Converge: corrected %s → %s (%s)", slug, new_slug, reason)
+                elif op_type == "correct":
+                    old_path = _ATTRACTORS_DIR / f"{slug}.md"
+                    new_slug = op.get("corrected_slug", slug)
+                    new_title = op.get("corrected_title", "")
+                    reason = op.get("reason", "")
+                    if old_path.exists():
+                        existing = old_path.read_text(encoding="utf-8")
+                        if new_title:
+                            lines = existing.split("\n")
+                            for i, line in enumerate(lines):
+                                if line.startswith("# "):
+                                    lines[i] = f"# {new_title}"
+                                    break
+                            existing = "\n".join(lines)
+                        existing = existing.rstrip() + f"\n- Corrected: {today} — {reason}\n"
+                        new_path = _ATTRACTORS_DIR / f"{new_slug}.md"
+                        new_path.write_text(existing, encoding="utf-8")
+                        if new_slug != slug:
+                            old_path.unlink()
+                        actions.append(f"correct:{slug}→{new_slug}")
+                        logger.info("Converge: corrected %s → %s (%s)", slug, new_slug, reason)
 
-            elif op_type == "create":
-                title = op.get("title", slug)
-                evidence = op.get("evidence", "")
-                path = _ATTRACTORS_DIR / f"{slug}.md"
-                if path.exists():
-                    # Already exists — treat as reinforce
-                    existing = path.read_text(encoding="utf-8")
-                    if "Strength: tentative" in existing:
-                        existing = existing.replace("Strength: tentative", "Strength: strong")
-                    existing = existing.rstrip() + f"\n- Re-observed: {today} — {evidence}\n"
-                    path.write_text(existing, encoding="utf-8")
-                    actions.append(f"reinforce:{slug}")
-                else:
-                    content = f"# {title}\n\n- Evidence: {evidence}\n- Strength: tentative\n- Observed: {today}\n"
-                    path.write_text(content, encoding="utf-8")
-                    actions.append(f"create:{slug}")
-                    logger.info("Converge: created %s", slug)
+                elif op_type == "create":
+                    title = op.get("title", slug)
+                    evidence = op.get("evidence", "")
+                    path = _ATTRACTORS_DIR / f"{slug}.md"
+                    if path.exists():
+                        # Already exists — treat as reinforce
+                        existing = path.read_text(encoding="utf-8")
+                        if "Strength: tentative" in existing:
+                            existing = existing.replace("Strength: tentative", "Strength: strong")
+                        existing = existing.rstrip() + f"\n- Re-observed: {today} — {evidence}\n"
+                        path.write_text(existing, encoding="utf-8")
+                        actions.append(f"reinforce:{slug}")
+                    else:
+                        content = f"# {title}\n\n- Evidence: {evidence}\n- Strength: tentative\n- Observed: {today}\n"
+                        path.write_text(content, encoding="utf-8")
+                        actions.append(f"create:{slug}")
+                        logger.info("Converge: created %s", slug)
 
         self._trace(
             "carve_complete",
@@ -599,30 +603,32 @@ class TurnCarver:
         embedding = np.array(body["data"][0]["embedding"], dtype=np.float32)
         elapsed = time.time() - t0
 
-        # Load existing cache, append, trim to max, save
-        texts = []
-        embeddings = np.empty((0, embedding.shape[0]), dtype=np.float32)
+        # Serialize the read-modify-write cycle so concurrent embeds
+        # don't clobber each other's appended entries.
+        with self._embed_io_lock:
+            texts = []
+            embeddings = np.empty((0, embedding.shape[0]), dtype=np.float32)
 
-        if _TURN_EMBEDDINGS_PATH.exists():
-            try:
-                data = np.load(_TURN_EMBEDDINGS_PATH, allow_pickle=False)
-                embeddings = data["embeddings"]
-                texts = json.loads(str(data["texts"]))
-            except Exception:
-                pass
+            if _TURN_EMBEDDINGS_PATH.exists():
+                try:
+                    data = np.load(_TURN_EMBEDDINGS_PATH, allow_pickle=False)
+                    embeddings = data["embeddings"]
+                    texts = json.loads(str(data["texts"]))
+                except Exception:
+                    pass
 
-        texts.append(utterance[:500])
-        embeddings = np.vstack([embeddings, embedding[np.newaxis, :]])
+            texts.append(utterance[:500])
+            embeddings = np.vstack([embeddings, embedding[np.newaxis, :]])
 
-        # Trim to rolling window
-        if len(texts) > _MAX_CACHED_EMBEDDINGS:
-            texts = texts[-_MAX_CACHED_EMBEDDINGS:]
-            embeddings = embeddings[-_MAX_CACHED_EMBEDDINGS:]
+            # Trim to rolling window
+            if len(texts) > _MAX_CACHED_EMBEDDINGS:
+                texts = texts[-_MAX_CACHED_EMBEDDINGS:]
+                embeddings = embeddings[-_MAX_CACHED_EMBEDDINGS:]
 
-        # Atomic write
-        tmp_path = _TURN_EMBEDDINGS_PATH.with_suffix(".tmp.npz")
-        np.savez(tmp_path, embeddings=embeddings, texts=json.dumps(texts))
-        tmp_path.replace(_TURN_EMBEDDINGS_PATH)
+            # Atomic write
+            tmp_path = _TURN_EMBEDDINGS_PATH.with_suffix(".tmp.npz")
+            np.savez(tmp_path, embeddings=embeddings, texts=json.dumps(texts))
+            tmp_path.replace(_TURN_EMBEDDINGS_PATH)
 
         self._trace(
             "embed_complete",
