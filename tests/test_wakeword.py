@@ -54,6 +54,60 @@ class TestWakeWordListenerStop:
         np.testing.assert_array_equal(porcupine.process.call_args.args[0], pcm[:, 0])
         on_wake.assert_called_once_with("computer")
 
+    def test_openwakeword_start_uses_model_paths_and_callback_stream(self, monkeypatch):
+        model = MagicMock()
+        stream = MagicMock()
+        fake_module = types.SimpleNamespace(Model=MagicMock(return_value=model))
+        monkeypatch.setitem(sys.modules, "openwakeword.model", fake_module)
+        monkeypatch.setitem(
+            sys.modules,
+            "sounddevice",
+            types.SimpleNamespace(InputStream=MagicMock(return_value=stream)),
+        )
+        listener = WakeWordListener(
+            access_key="unused",
+            backend="openwakeword",
+            model_paths=["/tmp/listen.tflite", "/tmp/sleep.tflite"],
+        )
+
+        listener.start()
+
+        fake_module.Model.assert_called_once_with(
+            wakeword_models=["/tmp/listen.tflite", "/tmp/sleep.tflite"]
+        )
+        kwargs = sys.modules["sounddevice"].InputStream.call_args.kwargs
+        assert kwargs["samplerate"] == 16000
+        assert kwargs["blocksize"] == 1280
+        assert callable(kwargs["callback"])
+        stream.start.assert_called_once_with()
+
+    def test_openwakeword_callback_emits_threshold_crossing_once_until_reset(self):
+        on_wake = MagicMock()
+        model = MagicMock()
+        model.predict.side_effect = [
+            {"listen": 0.62, "sleep": 0.2},
+            {"listen": 0.91, "sleep": 0.3},
+            {"listen": 0.1, "sleep": 0.2},
+            {"listen": 0.8, "sleep": 0.2},
+        ]
+        listener = WakeWordListener(
+            access_key="unused",
+            backend="openwakeword",
+            model_paths=["/tmp/listen_model.tflite", "/tmp/sleep_model.tflite"],
+            on_wake=on_wake,
+        )
+        listener._engine = model
+        listener._running = True
+        listener._keyword_labels = ["listen", "sleep"]
+        pcm = np.array([[1], [2], [3]], dtype=np.int16)
+
+        listener._audio_callback(pcm, 3, None, None)
+        listener._audio_callback(pcm, 3, None, None)
+        listener._audio_callback(pcm, 3, None, None)
+        listener._audio_callback(pcm, 3, None, None)
+
+        assert on_wake.call_args_list == [(( "listen",),), (( "listen",),)]
+
     def test_stop_does_not_delete_porcupine_until_active_callback_finishes(self):
         class BlockingPorcupine:
             def __init__(self) -> None:
@@ -97,6 +151,23 @@ class TestWakeWordListenerStop:
         assert listener._running is False
         assert listener._stream is None
         assert listener._porcupine is None
+
+    def test_stop_releases_openwakeword_engine(self):
+        listener = WakeWordListener(
+            access_key="unused",
+            backend="openwakeword",
+            model_paths=["/tmp/listen.tflite"],
+        )
+        stream = MagicMock()
+        engine = MagicMock()
+        listener._running = True
+        listener._stream = stream
+        listener._engine = engine
+
+        listener.stop()
+
+        engine.reset.assert_called_once_with()
+        assert listener._engine is None
 
     def test_stop_aborts_and_closes_stream_and_clears_state(self):
         listener = WakeWordListener(access_key="test", keywords=["computer"])

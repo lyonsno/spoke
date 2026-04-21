@@ -1,9 +1,41 @@
 from unittest.mock import MagicMock
 
-from spoke.handsfree import HandsFreeController, HandsFreeState
+from spoke.handsfree import HandsFreeController, HandsFreeState, handsfree_env_ready
 
 
 class TestHandsFreeControllerWakeWords:
+    def test_handsfree_env_ready_accepts_openwakeword_models(self, monkeypatch):
+        monkeypatch.delenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", raising=False)
+        monkeypatch.setenv("SPOKE_WAKEWORD_BACKEND", "openwakeword")
+        monkeypatch.setenv("SPOKE_WAKEWORD_LISTEN_MODEL", "/tmp/listen.tflite")
+        monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_MODEL", "/tmp/sleep.tflite")
+
+        assert handsfree_env_ready() is True
+
+    def test_enable_uses_openwakeword_models_when_backend_selected(self, monkeypatch):
+        created = {}
+
+        class FakeWakeWordListener:
+            def __init__(self, **kwargs):
+                created.update(kwargs)
+
+            def start(self):
+                return None
+
+        monkeypatch.setenv("SPOKE_WAKEWORD_BACKEND", "openwakeword")
+        monkeypatch.setenv("SPOKE_WAKEWORD_LISTEN_MODEL", "/tmp/listen.tflite")
+        monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_MODEL", "/tmp/sleep.tflite")
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
+        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+
+        controller = HandsFreeController(delegate=MagicMock())
+
+        controller.enable()
+
+        assert created["backend"] == "openwakeword"
+        assert created["model_paths"] == ["/tmp/listen.tflite", "/tmp/sleep.tflite"]
+        assert controller.state == HandsFreeState.LISTENING
+
     def test_sleep_wake_word_keeps_listener_active_while_listening(self):
         controller = HandsFreeController(delegate=MagicMock())
         controller._state = HandsFreeState.LISTENING
