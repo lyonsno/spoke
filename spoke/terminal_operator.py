@@ -29,6 +29,9 @@ _ALLOWED_CWD_ROOTS = (
     Path("/var/folders"),
     Path("/private/var/folders"),
 )
+_ALLOWED_EXECUTABLE_ROOTS = _ALLOWED_CWD_ROOTS + (
+    Path.home() / ".local" / "bin",
+)
 _DENY_PREFIXES = (
     ("rm",),
     ("sudo",),
@@ -215,7 +218,7 @@ class TerminalOperator:
 
         normalized_argv = self._normalized_argv(argv)
         executable_name = normalized_argv[0]
-        resolved_executable = self._resolve_executable(executable_name)
+        resolved_executable = self._resolve_executable(argv[0], cwd=normalized_cwd)
         execution_argv = list(argv)
         execution_argv[0] = resolved_executable
         result["decision"] = "allow"
@@ -314,7 +317,15 @@ class TerminalOperator:
             )
         return timeout
 
-    def _resolve_executable(self, executable_name: str) -> str:
+    def _resolve_executable(self, executable_name: str, *, cwd: str) -> str:
+        if "/" in executable_name:
+            resolved_path = self._resolve_explicit_executable_path(executable_name, cwd=cwd)
+            if not resolved_path.exists():
+                raise TerminalOperatorError(
+                    f"approved executable path does not exist: {resolved_path}"
+                )
+            return str(resolved_path)
+
         resolved = shutil.which(executable_name, path=_EXECUTABLE_SEARCH_PATH)
         if not resolved:
             raise TerminalOperatorError(
@@ -339,7 +350,17 @@ class TerminalOperator:
         if any("\n" in token or "\x00" in token for token in argv):
             return "deny", "command denied: argv tokens must not contain newlines or NUL bytes"
         if "/" in argv[0]:
-            return "deny", "command denied: pass a bare executable name, not an explicit path"
+            try:
+                resolved_executable = self._resolve_explicit_executable_path(argv[0], cwd=cwd)
+            except TerminalOperatorError as exc:
+                return "deny", str(exc)
+            normalized_argv = self._normalized_argv(argv)
+            if self._matches_any_prefix(normalized_argv, _DENY_PREFIXES):
+                return "deny", f"command denied by terminal policy: {' '.join(normalized_argv[:3])}"
+            return (
+                "approval_required",
+                f"command requires approval: workspace-local executable path ({resolved_executable})",
+            )
         normalized_argv = self._normalized_argv(argv)
         if self._matches_any_prefix(normalized_argv, _DENY_PREFIXES):
             return "deny", f"command denied by terminal policy: {' '.join(normalized_argv[:3])}"
@@ -485,6 +506,20 @@ class TerminalOperator:
             if not any(TerminalOperator._is_within(resolved, root) for root in _ALLOWED_CWD_ROOTS):
                 return f"command requires approval: path escapes allowed local roots ({token})"
         return None
+
+    @staticmethod
+    def _resolve_explicit_executable_path(token: str, *, cwd: str) -> Path:
+        base = Path(cwd)
+        resolved = Path(token).expanduser()
+        if not resolved.is_absolute():
+            resolved = (base / resolved).resolve()
+        else:
+            resolved = resolved.resolve()
+        if not any(TerminalOperator._is_within(resolved, root) for root in _ALLOWED_EXECUTABLE_ROOTS):
+            raise TerminalOperatorError(
+                f"command denied: executable path escapes allowed local roots ({token})"
+            )
+        return resolved
 
     @staticmethod
     def _iter_path_operands(argv: list[str]) -> list[str]:
