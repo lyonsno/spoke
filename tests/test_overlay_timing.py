@@ -211,8 +211,6 @@ class TestOverlayTiming:
             capsule_r = mod._OVERLAY_HEIGHT / 4.0
             assert cfg["content_width_points"] == pytest.approx(600.0 + 2.0 * capsule_r)
             assert cfg["content_height_points"] == pytest.approx(80.0 + 2.0 * capsule_r)
-            assert cfg["bleed_zone_frac"] == pytest.approx(0.8)
-            assert cfg["exterior_mix_width_points"] == pytest.approx(20.0)
             assert cfg["corner_radius_points"] == pytest.approx(mod._OVERLAY_CORNER_RADIUS)
         finally:
             sys.modules.pop("spoke.overlay", None)
@@ -227,6 +225,9 @@ class TestOverlayTiming:
             capsule_r = mod._OVERLAY_HEIGHT / 4.0
             assert cfg["content_width_points"] == pytest.approx(600.0 + 1.5 * capsule_r)
             assert cfg["content_height_points"] == pytest.approx(80.0 + 0.75 * capsule_r)
+=======
+            assert cfg["bleed_zone_frac"] == pytest.approx(0.4)
+>>>>>>> parent of 3fc91f1 (Delay preview warp onset without shrinking shell)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

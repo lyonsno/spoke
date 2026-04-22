@@ -94,10 +94,7 @@ _COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)  # dark fill on light backgrounds
 _OPTICAL_SHELL_FEATHER = 140.0  # narrower feather when compositor is active
 _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC = _env(
-    "SPOKE_PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC", 0.8
-)
-_PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS = _env(
-    "SPOKE_PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS", 20.0
+    "SPOKE_PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC", 0.4
 )
 _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII", 2.0
@@ -582,7 +579,6 @@ def _preview_optical_shell_config(
         "ring_amplitude_points": _cm_to_points(band_mm / 10.0) * ring_refraction,
         "tail_amplitude_points": _cm_to_points(tail_mm / 10.0) * tail_refraction,
         "bleed_zone_frac": _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC,
-        "exterior_mix_width_points": _PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS,
         "debug_visualize": False,
         "debug_grid_spacing_points": 0.0,
         "cleanup_blur_radius_points": 0.75,
