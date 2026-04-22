@@ -1146,6 +1146,7 @@ class TestExecuteToolIntegration:
         timestamp = entries[0].pop("timestamp")
         assert entries[0] == {
             "tool": "edit_file",
+            "source": "pytest",
             "outcome": "success",
             "applied": True,
             "file": str(f),
@@ -1162,6 +1163,30 @@ class TestExecuteToolIntegration:
             },
         }
         assert timestamp
+
+    def test_execute_edit_file_defaults_pytest_telemetry_away_from_runtime_log(
+        self, tmp_path, monkeypatch
+    ):
+        mod = _import_tools()
+        runtime_path = tmp_path / "edit-file-telemetry.jsonl"
+        pytest_path = tmp_path / "edit-file-telemetry-pytest.jsonl"
+        monkeypatch.setattr(mod, "_DEFAULT_EDIT_FILE_TELEMETRY_PATH", runtime_path)
+        monkeypatch.setattr(mod, "_EDIT_FILE_TELEMETRY_PATH", runtime_path)
+        monkeypatch.setenv("SPOKE_EDIT_FILE_PYTEST_TELEMETRY_PATH", str(pytest_path))
+        f = tmp_path / "edit.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert not runtime_path.exists()
+        entries = [json.loads(line) for line in pytest_path.read_text(encoding="utf-8").splitlines()]
+        assert len(entries) == 1
+        assert entries[0]["source"] == "pytest"
 
     def test_execute_edit_file_telemetry_counters_accumulate(self, tmp_path, monkeypatch):
         mod = _import_tools()

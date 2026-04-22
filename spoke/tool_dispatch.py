@@ -36,7 +36,13 @@ from spoke.scene_capture import SceneCaptureCache
 
 logger = logging.getLogger(__name__)
 
-_EDIT_FILE_TELEMETRY_PATH = Path.home() / ".config" / "spoke" / "edit-file-telemetry.jsonl"
+_DEFAULT_EDIT_FILE_TELEMETRY_PATH = (
+    Path.home() / ".config" / "spoke" / "edit-file-telemetry.jsonl"
+)
+_DEFAULT_EDIT_FILE_PYTEST_TELEMETRY_PATH = (
+    Path.home() / ".config" / "spoke" / "edit-file-telemetry-pytest.jsonl"
+)
+_EDIT_FILE_TELEMETRY_PATH = _DEFAULT_EDIT_FILE_TELEMETRY_PATH
 _EDIT_FILE_TELEMETRY_COUNTER_KEYS = (
     "total",
     "success",
@@ -1172,9 +1178,26 @@ def _latest_edit_file_counters(path: Path) -> dict[str, int]:
     return counters
 
 
+def _edit_file_telemetry_path() -> Path:
+    if (
+        "PYTEST_CURRENT_TEST" in os.environ
+        and _EDIT_FILE_TELEMETRY_PATH == _DEFAULT_EDIT_FILE_TELEMETRY_PATH
+    ):
+        override = os.environ.get("SPOKE_EDIT_FILE_PYTEST_TELEMETRY_PATH")
+        if override:
+            return Path(override)
+        return _DEFAULT_EDIT_FILE_PYTEST_TELEMETRY_PATH
+    return _EDIT_FILE_TELEMETRY_PATH
+
+
+def _edit_file_telemetry_source() -> str:
+    return "pytest" if "PYTEST_CURRENT_TEST" in os.environ else "runtime"
+
+
 def _append_edit_file_telemetry(result: dict[str, Any]) -> None:
     try:
-        counters = _latest_edit_file_counters(_EDIT_FILE_TELEMETRY_PATH)
+        telemetry_path = _edit_file_telemetry_path()
+        counters = _latest_edit_file_counters(telemetry_path)
         outcome = (
             "success"
             if result.get("status") == "success"
@@ -1189,6 +1212,7 @@ def _append_edit_file_telemetry(result: dict[str, Any]) -> None:
         entry = {
             "timestamp": datetime.now().isoformat(),
             "tool": "edit_file",
+            "source": _edit_file_telemetry_source(),
             "outcome": outcome,
             "applied": bool(result.get("applied")),
             "file": result.get("file", ""),
@@ -1197,8 +1221,8 @@ def _append_edit_file_telemetry(result: dict[str, Any]) -> None:
             "normalization_applied": normalization_applied,
             "counters": counters,
         }
-        _EDIT_FILE_TELEMETRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_EDIT_FILE_TELEMETRY_PATH, "a", encoding="utf-8") as f:
+        telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(telemetry_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception:
         logger.debug("Failed to append edit_file telemetry", exc_info=True)
