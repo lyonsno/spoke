@@ -172,6 +172,55 @@ class TestTerminalOperator:
         assert "bare executable name" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_workspace_local_executable_path(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        executable = tmp_path / ".venv" / "bin" / "pytest"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("", encoding="utf-8")
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                [str(executable.relative_to(tmp_path)), "-q"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_runs_workspace_local_executable_after_approval(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        executable = tmp_path / ".venv" / "bin" / "pytest"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("", encoding="utf-8")
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == [str(executable), "-q", "tests/test_terminal_operator.py"]
+            assert cwd == str(tmp_path)
+            assert text is False
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"2 passed\n",
+                stderr=b"",
+            )
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = TerminalOperator().execute_command(
+                [str(executable.relative_to(tmp_path)), "-q", "tests/test_terminal_operator.py"],
+                cwd=str(tmp_path),
+                approval_granted=True,
+            )
+
+        assert result["decision"] == "allow"
+        assert result["executed"] is True
+        assert result["approved_by_user"] is True
+        assert result["exit_code"] == 0
+        assert result["stdout"] == "2 passed\n"
+
     def test_execute_rejects_shell_syntax_tokens(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
