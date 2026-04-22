@@ -200,6 +200,7 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS", 18.0
 )
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_FULLSCREEN_COMPOSITOR_WATCHDOG_S = 0.25
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
@@ -756,6 +757,7 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_pixel_size = None
         self._backdrop_timer: NSTimer | None = None
         self._fullscreen_compositor = None
+        self._fullscreen_compositor_watchdog_timer: NSTimer | None = None
         self._force_backdrop_frame_callback = False
 
         return self
@@ -2430,6 +2432,7 @@ class CommandOverlay(NSObject):
                 pass
             if compositor.start(shell_config):
                 self._fullscreen_compositor = compositor
+                self._start_fullscreen_compositor_watchdog()
                 # Cancel the old backdrop refresh timer — compositor replaces it.
                 # Don't call stop_live_stream here (can deadlock if SCK callback
                 # is in progress).  The old stream will be stopped when the
@@ -2643,6 +2646,7 @@ class CommandOverlay(NSObject):
             logger.debug("Failed to update punch-through mask", exc_info=True)
 
     def _stop_fullscreen_compositor(self):
+        self._cancel_fullscreen_compositor_watchdog()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)
@@ -2663,6 +2667,46 @@ class CommandOverlay(NSObject):
         self._sdf_cache_key = None
         self._fill_image_brightness = -1.0
         self._apply_surface_theme()
+
+    def _start_fullscreen_compositor_watchdog(self) -> None:
+        self._cancel_fullscreen_compositor_watchdog()
+        self._fullscreen_compositor_watchdog_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                _FULLSCREEN_COMPOSITOR_WATCHDOG_S,
+                self,
+                "fullscreenCompositorWatchdog:",
+                None,
+                False,
+            )
+        )
+        _pin_timer_to_active_run_loop_modes(self._fullscreen_compositor_watchdog_timer)
+
+    def _cancel_fullscreen_compositor_watchdog(self) -> None:
+        timer = getattr(self, "_fullscreen_compositor_watchdog_timer", None)
+        self._fullscreen_compositor_watchdog_timer = None
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
+
+    def fullscreenCompositorWatchdog_(self, timer) -> None:
+        self._fullscreen_compositor_watchdog_timer = None
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None or not getattr(self, "_visible", False):
+            return
+        presented = int(getattr(compositor, "presented_frame_count", getattr(compositor, "_presented_count", 0)))
+        ticks = int(getattr(compositor, "display_link_tick_count", getattr(compositor, "_frame_count", 0)))
+        if presented > 0:
+            return
+        logger.warning(
+            "Command overlay: fullscreen compositor stalled (%d ticks / %d presented) — falling back",
+            ticks,
+            presented,
+        )
+        self._stop_fullscreen_compositor()
+        self._start_backdrop_refresh_timer()
+        self._refresh_backdrop_snapshot()
 
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()

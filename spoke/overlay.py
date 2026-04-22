@@ -136,6 +136,7 @@ _PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER = _env(
     "SPOKE_PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER", 1.18
 )
 _PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_FULLSCREEN_COMPOSITOR_WATCHDOG_S = 0.25
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
@@ -648,6 +649,8 @@ class TranscriptionOverlay(NSObject):
         self._backdrop_capture_overscan_points = _preview_backdrop_capture_overscan_points()
         self._backdrop_capture_rect = None
         self._backdrop_timer: NSTimer | None = None
+        self._fullscreen_compositor = None
+        self._fullscreen_compositor_watchdog_timer: NSTimer | None = None
 
         # Recovery mode state
         self._recovery_mode = False
@@ -1593,6 +1596,7 @@ class TranscriptionOverlay(NSObject):
                 pass
             if compositor.start(shell_config):
                 self._fullscreen_compositor = compositor
+                self._start_fullscreen_compositor_watchdog()
                 self._cancel_backdrop_refresh()
                 if self._backdrop_layer is not None:
                     self._backdrop_layer.setHidden_(True)
@@ -1625,6 +1629,7 @@ class TranscriptionOverlay(NSObject):
 
     def _stop_fullscreen_compositor(self, *, restore_geometry: bool = True):
         """Stop the full-screen compositor and restore normal backdrop path."""
+        self._cancel_fullscreen_compositor_watchdog()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)
@@ -1651,6 +1656,46 @@ class TranscriptionOverlay(NSObject):
         self._sdf_geom_key = None
         self._sdf_appearance_b = -1.0
         self._fill_image_brightness = -1.0
+
+    def _start_fullscreen_compositor_watchdog(self) -> None:
+        self._cancel_fullscreen_compositor_watchdog()
+        self._fullscreen_compositor_watchdog_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                _FULLSCREEN_COMPOSITOR_WATCHDOG_S,
+                self,
+                "fullscreenCompositorWatchdog:",
+                None,
+                False,
+            )
+        )
+        _pin_timer_to_active_run_loop_modes(self._fullscreen_compositor_watchdog_timer)
+
+    def _cancel_fullscreen_compositor_watchdog(self) -> None:
+        timer = getattr(self, "_fullscreen_compositor_watchdog_timer", None)
+        self._fullscreen_compositor_watchdog_timer = None
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
+
+    def fullscreenCompositorWatchdog_(self, timer) -> None:
+        self._fullscreen_compositor_watchdog_timer = None
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None or not getattr(self, "_visible", False):
+            return
+        presented = int(getattr(compositor, "presented_frame_count", getattr(compositor, "_presented_count", 0)))
+        ticks = int(getattr(compositor, "display_link_tick_count", getattr(compositor, "_frame_count", 0)))
+        if presented > 0:
+            return
+        logger.warning(
+            "Preview overlay: fullscreen compositor stalled (%d ticks / %d presented) — falling back",
+            ticks,
+            presented,
+        )
+        self._stop_fullscreen_compositor()
+        self._start_backdrop_refresh_timer()
+        self._refresh_backdrop_snapshot()
 
     def _enable_text_punchthrough(self, enabled: bool) -> None:
         """Toggle text punch-through mode."""

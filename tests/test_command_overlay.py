@@ -285,6 +285,27 @@ class TestThinkingTimer:
         assert callback_calls[0][0][0] is None
         assert callable(callback_calls[-1][0][0])
 
+    def test_command_fullscreen_watchdog_falls_back_when_compositor_never_presents(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = SimpleNamespace(
+            presented_frame_count=0,
+            display_link_tick_count=0,
+        )
+        overlay._fullscreen_compositor_watchdog_timer = object()
+        overlay._stop_fullscreen_compositor = MagicMock()
+        overlay._start_backdrop_refresh_timer = MagicMock()
+        overlay._refresh_backdrop_snapshot = MagicMock()
+
+        overlay.fullscreenCompositorWatchdog_(None)
+
+        assert overlay._fullscreen_compositor_watchdog_timer is None
+        overlay._stop_fullscreen_compositor.assert_called_once_with()
+        overlay._start_backdrop_refresh_timer.assert_called_once_with()
+        overlay._refresh_backdrop_snapshot.assert_called_once_with()
+
     def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._backdrop_renderer = MagicMock()

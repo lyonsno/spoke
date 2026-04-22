@@ -601,6 +601,27 @@ def test_order_out_stops_live_preview_backdrop_stream(mock_pyobjc):
     overlay._backdrop_renderer.stop_live_stream.assert_called_once_with()
 
 
+def test_preview_fullscreen_watchdog_falls_back_when_compositor_never_presents(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._visible = True
+    overlay._fullscreen_compositor = SimpleNamespace(
+        presented_frame_count=0,
+        display_link_tick_count=0,
+    )
+    overlay._fullscreen_compositor_watchdog_timer = object()
+    overlay._stop_fullscreen_compositor = MagicMock()
+    overlay._start_backdrop_refresh_timer = MagicMock()
+    overlay._refresh_backdrop_snapshot = MagicMock()
+
+    overlay.fullscreenCompositorWatchdog_(None)
+
+    assert overlay._fullscreen_compositor_watchdog_timer is None
+    overlay._stop_fullscreen_compositor.assert_called_once_with()
+    overlay._start_backdrop_refresh_timer.assert_called_once_with()
+    overlay._refresh_backdrop_snapshot.assert_called_once_with()
+
+
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)

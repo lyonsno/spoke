@@ -119,6 +119,16 @@ class FullScreenCompositor:
         """Average brightness of the capsule region."""
         return self._sampled_brightness
 
+    @property
+    def display_link_tick_count(self) -> int:
+        """Number of CVDisplayLink ticks observed for this compositor session."""
+        return int(self._frame_count)
+
+    @property
+    def presented_frame_count(self) -> int:
+        """Number of drawable presentations completed for this session."""
+        return int(self._presented_count)
+
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
         with self._lock:
