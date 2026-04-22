@@ -183,15 +183,23 @@ class TerminalOperator:
         normalized_cwd = self._resolve_cwd(cwd)
         normalized_timeout = self._normalize_timeout(timeout_seconds)
         decision, reason = self._classify(argv, cwd=normalized_cwd)
+        approval_state = "not_needed"
+        if decision == "approval_required":
+            approval_state = "granted" if approval_granted else "pending"
+        elif decision == "deny":
+            approval_state = "not_applicable"
         result: dict[str, Any] = {
             "decision": decision,
+            "policy_decision": decision,
             "executed": False,
             "argv": argv,
             "cwd": normalized_cwd,
             "timed_out": False,
+            "approval_state": approval_state,
         }
         if reason:
             result["reason"] = reason
+            result["policy_reason"] = reason
         if decision == "approval_required" and not approval_granted:
             result["pending_approval"] = True
             result["approval_request"] = {
@@ -214,6 +222,7 @@ class TerminalOperator:
         result["executed"] = True
         if approval_granted:
             result["approved_by_user"] = True
+            result.pop("reason", None)
         try:
             proc = subprocess.run(
                 execution_argv,

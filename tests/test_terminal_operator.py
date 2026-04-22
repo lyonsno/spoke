@@ -164,6 +164,51 @@ class TestTerminalOperator:
         assert result["executed"] is False
         mock_run.assert_not_called()
 
+    def test_pending_approval_result_exposes_policy_and_approval_state(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "commit", "-m", "hello"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert result["policy_decision"] == "approval_required"
+        assert result["policy_reason"] == result["reason"]
+        assert result["approval_state"] == "pending"
+        mock_run.assert_not_called()
+
+    def test_approved_run_separates_policy_reason_from_runtime_state(self, tmp_path):
+        from spoke import terminal_operator as terminal_operator
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == ["/usr/bin/git", "commit", "-m", "hello"]
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"[ok]\n",
+                stderr=b"",
+            )
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/git"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = terminal_operator.TerminalOperator().execute_command(
+                ["git", "commit", "-m", "hello"],
+                cwd=str(tmp_path),
+                approval_granted=True,
+            )
+
+        assert result["decision"] == "allow"
+        assert result["executed"] is True
+        assert result["policy_decision"] == "approval_required"
+        assert result["policy_reason"] == "command requires approval: git commit -m"
+        assert result["approval_state"] == "granted"
+        assert "reason" not in result
+
     def test_execute_requires_approval_for_find_delete(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
