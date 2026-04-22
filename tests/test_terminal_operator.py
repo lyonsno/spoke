@@ -265,7 +265,9 @@ class TestTerminalOperator:
         assert "denied" in result["reason"]
         mock_run.assert_not_called()
 
-    def test_execute_rejects_explicit_executable_paths(self, tmp_path):
+    def test_execute_requires_approval_for_explicit_workspace_local_executable_path(
+        self, tmp_path
+    ):
         from spoke.terminal_operator import TerminalOperator
 
         with patch("subprocess.run") as mock_run:
@@ -274,9 +276,9 @@ class TestTerminalOperator:
                 cwd=str(tmp_path),
             )
 
-        assert result["decision"] == "deny"
+        assert result["decision"] == "approval_required"
         assert result["executed"] is False
-        assert "bare executable name" in result["reason"]
+        assert "workspace-local executable path" in result["reason"]
         mock_run.assert_not_called()
 
     def test_execute_requires_approval_for_workspace_local_executable_path(self, tmp_path):

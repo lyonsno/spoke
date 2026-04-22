@@ -3771,7 +3771,6 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Approval needed")
 
-<<<<<<< HEAD
     def _format_pending_command_acknowledgement(
         self,
         approval_request: dict | None,
