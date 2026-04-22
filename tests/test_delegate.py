@@ -67,6 +67,9 @@ def _make_delegate(main_module, monkeypatch):
     delegate._whisper_backend = "local"
     delegate._preview_backend = "local"
     delegate._segment_accumulator = main_module.SegmentAccumulator()
+    delegate._pending_command_approval_active = False
+    delegate._pending_command_approval_request = None
+    delegate._terminal_session_approval_rules = []
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -3890,23 +3893,44 @@ class TestCommandCallbacks:
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
 
-    def test_approval_tap_runs_pending_command(self, main_module, monkeypatch):
+    def test_infer_terminal_session_rule_for_python_module_family(
+        self, main_module, monkeypatch
+    ):
         d = _make_delegate(main_module, monkeypatch)
+        rule = d._infer_terminal_session_rule(
+            {
+                "argv": ["python3", "-m", "venv", "venv"],
+                "cwd": "/tmp/demo",
+            }
+        )
+
+        assert rule == {
+            "executable": "python3",
+            "argv_prefix": ["python3", "-m", "venv"],
+            "cwd_under": "/tmp/demo",
+        }
+
+    def test_approve_pending_command_for_session_records_rule_and_resumes(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "argv": ["git", "commit", "-m", "hello"],
+            "cwd": "/tmp/repo",
+        }
         d._approve_pending_command = MagicMock()
-        d._pending_command_approval_active = True
 
-        d._on_hold_end(shift_held=False, enter_held=False, approval_tap=True)
+        d._approve_pending_command_for_session()
 
+        assert d._terminal_session_approval_rules == [
+            {
+                "executable": "git",
+                "argv_prefix": ["git", "commit"],
+                "cwd_under": "/tmp/repo",
+            }
+        ]
         d._approve_pending_command.assert_called_once_with()
-
-    def test_approval_shift_tap_cancels_pending_command(self, main_module, monkeypatch):
-        d = _make_delegate(main_module, monkeypatch)
-        d._cancel_pending_command_approval = MagicMock()
-        d._pending_command_approval_active = True
-
-        d._on_hold_end(shift_held=True, enter_held=False, approval_tap=True)
-
-        d._cancel_pending_command_approval.assert_called_once_with()
 
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

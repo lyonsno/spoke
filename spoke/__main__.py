@@ -928,6 +928,9 @@ class SpokeAppDelegate(NSObject):
         # on explicit space-rooted gestures instead of ambient key capture.
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
+        self._detector._on_approval_once = self._approve_pending_command
+        self._detector._on_approval_session = self._approve_pending_command_for_session
+        self._detector._on_approval_reject = self._cancel_pending_command_approval
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
@@ -1154,6 +1157,7 @@ class SpokeAppDelegate(NSObject):
         self._recovery_retry_pending: bool = False
         self._pending_command_approval_active: bool = False
         self._pending_command_approval_request: dict | None = None
+        self._terminal_session_approval_rules: list[dict[str, Any]] = []
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -3393,6 +3397,7 @@ class SpokeAppDelegate(NSObject):
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
                 history_compactor=_compact_history,
+                session_approval_rules=list(self._terminal_session_approval_rules),
                 **kwargs,
             )
         return _executor
@@ -3764,6 +3769,34 @@ class SpokeAppDelegate(NSObject):
                 logger.exception("Command overlay finish failed during approval presentation")
         if self._menubar is not None:
             self._menubar.set_status_text("Approval needed")
+
+    def _infer_terminal_session_rule(self, approval_request: dict) -> dict[str, Any] | None:
+        argv = approval_request.get("argv")
+        cwd = approval_request.get("cwd")
+        if not isinstance(argv, list) or not argv or not isinstance(cwd, str) or not cwd:
+            return None
+        normalized_argv = [str(token) for token in argv]
+        normalized_argv[0] = Path(normalized_argv[0]).name
+        if len(normalized_argv) >= 3 and normalized_argv[1] == "-m":
+            argv_prefix = normalized_argv[:3]
+        elif len(normalized_argv) >= 2 and not normalized_argv[1].startswith("-"):
+            argv_prefix = normalized_argv[:2]
+        else:
+            argv_prefix = normalized_argv[:1]
+        return {
+            "executable": normalized_argv[0],
+            "argv_prefix": argv_prefix,
+            "cwd_under": cwd,
+        }
+
+    def _approve_pending_command_for_session(self) -> None:
+        if not getattr(self, "_pending_command_approval_active", False):
+            return
+        approval_request = getattr(self, "_pending_command_approval_request", None) or {}
+        rule = self._infer_terminal_session_rule(approval_request)
+        if rule is not None and rule not in self._terminal_session_approval_rules:
+            self._terminal_session_approval_rules.append(rule)
+        self._approve_pending_command()
 
     def _approve_pending_command(self) -> None:
         """Resume a paused command turn after the user approved the pending tool call."""

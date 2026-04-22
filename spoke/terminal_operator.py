@@ -163,8 +163,14 @@ def tool_schema() -> dict[str, Any]:
 class TerminalOperator:
     """Execute bounded terminal commands without exposing shell syntax."""
 
-    def __init__(self, *, max_output_chars: int = _DEFAULT_MAX_OUTPUT_CHARS):
+    def __init__(
+        self,
+        *,
+        max_output_chars: int = _DEFAULT_MAX_OUTPUT_CHARS,
+        session_approval_rules: list[dict[str, Any]] | None = None,
+    ):
         self._max_output_chars = max_output_chars
+        self._session_approval_rules = list(session_approval_rules or [])
 
     def execute_command(
         self,
@@ -262,7 +268,7 @@ class TerminalOperator:
         lines.extend(
             [
                 "",
-                "space to run  ·  shift to cancel  ·  speak or type to revise",
+                "Enter to run once  ·  Shift+Enter to approve for session  ·  Delete to reject  ·  speak or type to revise",
             ]
         )
         return "\n".join(lines)
@@ -326,25 +332,44 @@ class TerminalOperator:
         if "/" in argv[0]:
             return "deny", "command denied: pass a bare executable name, not an explicit path"
         normalized_argv = self._normalized_argv(argv)
+        if self._matches_any_prefix(normalized_argv, _DENY_PREFIXES):
+            return "deny", f"command denied by terminal policy: {' '.join(normalized_argv[:3])}"
         git_flag_reason = self._git_flag_approval_reason(normalized_argv)
         if git_flag_reason:
-            return "approval_required", git_flag_reason
+            return self._approval_decision(normalized_argv, cwd=cwd, reason=git_flag_reason)
 
         rg_flag_reason = self._rg_flag_approval_reason(normalized_argv)
         if rg_flag_reason:
-            return "approval_required", rg_flag_reason
+            return self._approval_decision(normalized_argv, cwd=cwd, reason=rg_flag_reason)
 
         path_scope_reason = self._path_scope_reason(normalized_argv, cwd=cwd)
         if path_scope_reason:
-            return "approval_required", path_scope_reason
+            return self._approval_decision(normalized_argv, cwd=cwd, reason=path_scope_reason)
 
-        if self._matches_any_prefix(normalized_argv, _DENY_PREFIXES):
-            return "deny", f"command denied by terminal policy: {' '.join(normalized_argv[:3])}"
         if self._matches_any_prefix(normalized_argv, _ALLOW_PREFIXES):
             return "allow", None
         if self._matches_any_prefix(normalized_argv, _APPROVAL_PREFIXES):
-            return "approval_required", f"command requires approval: {' '.join(normalized_argv[:3])}"
-        return "approval_required", f"command requires approval: {' '.join(normalized_argv[:3])}"
+            return self._approval_decision(
+                normalized_argv,
+                cwd=cwd,
+                reason=f"command requires approval: {' '.join(normalized_argv[:3])}",
+            )
+        return self._approval_decision(
+            normalized_argv,
+            cwd=cwd,
+            reason=f"command requires approval: {' '.join(normalized_argv[:3])}",
+        )
+
+    def _approval_decision(
+        self,
+        argv: list[str],
+        *,
+        cwd: str,
+        reason: str,
+    ) -> tuple[str, str | None]:
+        if self._matches_session_approval_rule(argv, cwd=cwd):
+            return "allow", None
+        return "approval_required", reason
 
     def _truncate(self, text: Any) -> tuple[str, bool]:
         if isinstance(text, bytes):
@@ -360,6 +385,23 @@ class TerminalOperator:
     @staticmethod
     def _matches_any_prefix(argv: list[str], prefixes: tuple[tuple[str, ...], ...]) -> bool:
         return any(TerminalOperator._starts_with(argv, prefix) for prefix in prefixes)
+
+    def _matches_session_approval_rule(self, argv: list[str], *, cwd: str) -> bool:
+        candidate_cwd = Path(cwd).resolve()
+        for rule in self._session_approval_rules:
+            executable = rule.get("executable")
+            argv_prefix = rule.get("argv_prefix")
+            cwd_under = rule.get("cwd_under")
+            if executable != argv[0]:
+                continue
+            if not isinstance(argv_prefix, list) or not self._starts_with(argv, tuple(argv_prefix)):
+                continue
+            if isinstance(cwd_under, str) and cwd_under:
+                rule_root = Path(cwd_under).expanduser().resolve()
+                if not self._is_within(candidate_cwd, rule_root):
+                    continue
+            return True
+        return False
 
     @staticmethod
     def _normalized_argv(argv: list[str]) -> list[str]:

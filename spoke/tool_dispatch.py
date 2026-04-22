@@ -1797,13 +1797,18 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
-def _execute_run_terminal_command(arguments: dict, *, approval_granted: bool = False) -> str:
+def _execute_run_terminal_command(
+    arguments: dict,
+    *,
+    approval_granted: bool = False,
+    session_approval_rules: list[dict[str, Any]] | None = None,
+) -> str:
     """Execute the bounded terminal command surface and return JSON."""
     argv = arguments.get("argv")
     cwd = arguments.get("cwd")
     timeout_seconds = arguments.get("timeout_seconds", 10)
     try:
-        operator = TerminalOperator()
+        operator = TerminalOperator(session_approval_rules=session_approval_rules)
         return json.dumps(
             operator.execute_command(
                 argv,
@@ -1868,6 +1873,7 @@ def execute_tool(
     tray_writer: Callable[[str], Any] | None = None,
     tool_output_mode: str = "text",
     approval_granted: bool = False,
+    session_approval_rules: list[dict[str, Any]] | None = None,
     subagent_manager: Any | None = None,
     history_compactor: Callable[[dict], str] | None = None,
 ) -> Any:
@@ -1952,6 +1958,7 @@ def execute_tool(
         return _execute_run_terminal_command(
             arguments,
             approval_granted=approval_granted,
+            session_approval_rules=session_approval_rules,
         )
     elif name == "launch_subagent":
         return json.dumps(

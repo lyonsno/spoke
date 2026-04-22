@@ -59,6 +59,7 @@ SPACEBAR_KEYCODE = 49
 RETURN_KEYCODE = 36
 ENTER_KEYCODE = RETURN_KEYCODE
 KEYPAD_ENTER_KEYCODE = 76
+DELETE_KEYCODE = 51
 ENTER_KEYCODES = frozenset({ENTER_KEYCODE, KEYPAD_ENTER_KEYCODE})
 # Modifiers that prevent recording when held during spacebar press.
 # Shift is intentionally excluded — shift+space starts recording normally,
@@ -186,14 +187,17 @@ class SpacebarHoldDetector(NSObject):
         # delegate for toggle logic but no longer drives event suppression.
         self.command_overlay_active = False
         # Tracks whether a host-side approval card is active on the command
-        # surface. When True, quick taps route to approval/cancel rather than
-        # forwarding a literal space to the foreground app.
+        # surface. Approval keys are only captured while the overlay is
+        # visible; space itself never becomes a direct approval shortcut.
         self.approval_active = False
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
         self._on_enter_pressed: Callable[[], None] | None = None
         self._on_tray_delete: Callable[[], None] | None = None
+        self._on_approval_once: Callable[[], None] | None = None
+        self._on_approval_session: Callable[[], None] | None = None
+        self._on_approval_reject: Callable[[], None] | None = None
         self._tray_shift_down = False
         self._tray_space_between = False
         self._idle_shift_down = False
@@ -207,6 +211,7 @@ class SpacebarHoldDetector(NSObject):
         self._on_double_tap_shift: Callable[[], None] | None = None
         self._last_idle_shift_up: float = 0.0
         self._shift_single_tap_timer: NSTimer | None = None
+        self._suppress_delete_keyup = False
 
         # Enter during WAITING = toggle command overlay (before hold threshold fires)
         self._on_enter_during_waiting: Callable[[], None] | None = None
@@ -300,6 +305,7 @@ class SpacebarHoldDetector(NSObject):
         self._enter_latched = False
         self._enter_last_down_monotonic = 0.0
         self._suppress_enter_keyup = False
+        self._suppress_delete_keyup = False
         self._awaiting_space_release = False
         self._latched_space_down = False
         self._pending_release_active = False
@@ -409,12 +415,6 @@ class SpacebarHoldDetector(NSObject):
             if enter_held:
                 # Space released while Enter held = assistant send path
                 self._on_hold_end(shift_held=False, enter_held=True)
-            elif getattr(self, 'approval_active', False):
-                self._on_hold_end(
-                    shift_held=shift_held,
-                    enter_held=False,
-                    approval_tap=True,
-                )
             elif getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
@@ -724,6 +724,28 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
         event_timestamp_ns = _event_timestamp_ns(event)
+        approval_visible = (
+            getattr(det, "approval_active", False)
+            and getattr(det, "command_overlay_active", False)
+            and det._state == _State.IDLE
+        )
+        if approval_visible:
+            if keycode in ENTER_KEYCODES:
+                cb = (
+                    getattr(det, "_on_approval_session", None)
+                    if flags & kCGEventFlagMaskShift
+                    else getattr(det, "_on_approval_once", None)
+                )
+                det._suppress_enter_keyup = True
+                if cb is not None:
+                    cb()
+                return None
+            if keycode == DELETE_KEYCODE:
+                cb = getattr(det, "_on_approval_reject", None)
+                det._suppress_delete_keyup = True
+                if cb is not None:
+                    cb()
+                return None
         # Track enter key state for command fast path
         if keycode in ENTER_KEYCODES:
             det._enter_held = True
@@ -800,6 +822,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             return None  # suppress
     elif event_type == kCGEventKeyUp:
         flags = CGEventGetFlags(event)
+        if keycode == DELETE_KEYCODE and getattr(det, "_suppress_delete_keyup", False):
+            det._suppress_delete_keyup = False
+            return None
         # Track enter key release
         if keycode in ENTER_KEYCODES:
             # Cancel spring capture: either key releasing evaluates the spring
