@@ -473,11 +473,23 @@ class CommandClient:
         return tool_executor(**tool_kwargs)
 
     def _is_pending_approval_result(self, tool_result: Any) -> bool:
+        parsed = self._tool_result_mapping(tool_result)
         return (
-            isinstance(tool_result, dict)
-            and bool(tool_result.get("pending_approval"))
-            and isinstance(tool_result.get("approval_request"), dict)
+            isinstance(parsed, dict)
+            and bool(parsed.get("pending_approval"))
+            and isinstance(parsed.get("approval_request"), dict)
         )
+
+    def _tool_result_mapping(self, tool_result: Any) -> dict[str, Any] | None:
+        if isinstance(tool_result, dict):
+            return tool_result
+        if not isinstance(tool_result, str):
+            return None
+        try:
+            parsed = json.loads(tool_result)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _execute_tool_calls(
         self,
@@ -504,7 +516,8 @@ class CommandClient:
                 approval_granted=(approval_granted_call_id == call["id"]),
             )
             if self._is_pending_approval_result(tool_result):
-                approval_request = tool_result["approval_request"]
+                approval_result = self._tool_result_mapping(tool_result) or {}
+                approval_request = approval_result["approval_request"]
                 self._pending_tool_approval = PendingToolApproval(
                     utterance=utterance,
                     messages=list(messages),
