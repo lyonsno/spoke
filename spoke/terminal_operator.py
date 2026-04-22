@@ -507,30 +507,6 @@ class TerminalOperator:
                 return f"command requires approval: path escapes allowed local roots ({token})"
         return None
 
-    def _matches_session_approval_rule(self, argv: list[str], *, cwd: str) -> bool:
-        for rule in self._session_approval_rules:
-            if not isinstance(rule, dict):
-                continue
-            executable = rule.get("executable")
-            argv_prefix = rule.get("argv_prefix")
-            cwd_under = rule.get("cwd_under")
-            if executable != argv[0]:
-                continue
-            if not isinstance(argv_prefix, list) or not argv_prefix:
-                continue
-            normalized_prefix = [str(token) for token in argv_prefix]
-            if argv[: len(normalized_prefix)] != normalized_prefix:
-                continue
-            if not isinstance(cwd_under, str) or not cwd_under:
-                continue
-            try:
-                if not self._is_within(Path(cwd), Path(cwd_under)):
-                    continue
-            except Exception:
-                continue
-            return True
-        return False
-
     @staticmethod
     def _resolve_explicit_executable_path(token: str, *, cwd: str) -> Path:
         base = Path(cwd)
