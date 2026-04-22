@@ -890,7 +890,9 @@ class TestExecuteTool:
         mod = _import_tools()
         fake_result = {
             "decision": "allow",
+            "policy_decision": "allow",
             "executed": True,
+            "approval_state": "not_needed",
             "exit_code": 0,
             "stdout": "main\n",
             "stderr": "",
@@ -907,6 +909,40 @@ class TestExecuteTool:
                 arguments={"argv": ["git", "branch", "--show-current"], "cwd": ".", "timeout_seconds": 5},
             )
 
+        assert json.loads(result) == fake_result
+
+    def test_execute_run_terminal_command_preserves_policy_and_approval_fields(self):
+        mod = _import_tools()
+        fake_result = {
+            "decision": "allow",
+            "policy_decision": "approval_required",
+            "policy_reason": "command requires approval: git commit -m",
+            "approval_state": "granted",
+            "executed": True,
+            "approved_by_user": True,
+            "exit_code": 0,
+            "stdout": "[ok]\n",
+            "stderr": "",
+            "timed_out": False,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        fake_operator = MagicMock()
+        fake_operator.execute_command.return_value = fake_result
+
+        with patch("spoke.tool_dispatch.TerminalOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="run_terminal_command",
+                arguments={"argv": ["git", "commit", "-m", "x"], "cwd": ".", "timeout_seconds": 5},
+                approval_granted=True,
+            )
+
+        fake_operator.execute_command.assert_called_once_with(
+            ["git", "commit", "-m", "x"],
+            cwd=".",
+            timeout_seconds=5,
+            approval_granted=True,
+        )
         assert json.loads(result) == fake_result
 
     def test_execute_run_terminal_command_error(self):
