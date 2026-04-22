@@ -25,27 +25,24 @@ import struct
 import threading
 import time
 
-from .backdrop_stream import (
-    _WARP_BLEED_ZONE_FRAC,
-    _WARP_CENTER_FLOOR,
-    _WARP_CURVEBOOST_CAP,
-    _WARP_CURVEBOOST_MAG_SCALE,
-    _WARP_CURVEBOOST_RING_CAP,
-    _WARP_CURVEBOOST_RING_DIVISOR,
-    _WARP_EXTERIOR_MAG_DECAY,
-    _WARP_EXTERIOR_MAG_STRENGTH,
-    _WARP_FIELD_EXPONENT,
-    _WARP_REMAP_BASE_EXP_FLOOR,
-    _WARP_REMAP_BASE_EXP_SCALE,
-    _WARP_REMAP_RIM_EXP,
-    _WARP_SPINE_PROXIMITY_BOOST,
-    _WARP_X_SQUEEZE,
-    _WARP_Y_SQUEEZE,
-)
-
 logger = logging.getLogger(__name__)
 
 # Tuning constants — must stay in sync with backdrop_stream.py
+_WARP_BLEED_ZONE_FRAC = 0.8
+_WARP_CENTER_FLOOR = 0.94
+_WARP_FIELD_EXPONENT = 0.25
+_WARP_REMAP_BASE_EXP_SCALE = 0.98
+_WARP_REMAP_BASE_EXP_FLOOR = 0.02
+_WARP_REMAP_RIM_EXP = 0.1
+_WARP_CURVEBOOST_CAP = 0.95
+_WARP_CURVEBOOST_MAG_SCALE = 0.35
+_WARP_CURVEBOOST_RING_DIVISOR = 240.0
+_WARP_CURVEBOOST_RING_CAP = 0.55
+_WARP_SPINE_PROXIMITY_BOOST = 1.5
+_WARP_X_SQUEEZE = 2.5
+_WARP_Y_SQUEEZE = 1.5
+_WARP_EXTERIOR_MAG_STRENGTH = 0.3
+_WARP_EXTERIOR_MAG_DECAY = 2.0
 _WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
 _WARP_ALIAS_MIP_BIAS_SCALE = 1.35
 _WARP_ALIAS_MIP_BIAS_MAX = 2.0
@@ -540,120 +537,66 @@ class MetalWarpPipeline:
             blit.generateMipmapsForTexture_(self._mip_texture)
         blit.endEncoding()
 
-        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
-            dict(config) for config in shell_config if config
-        ]
+        # Pass 2: compute warp over capsule bounding box only
+        box_x0, box_y0, box_x1, box_y1 = _warp_dispatch_box(out_w, out_h, shell_config)
+        box_w = box_x1 - box_x0
+        box_h = box_y1 - box_y0
 
-        if len(shell_configs) > 1:
-            # Shared fullscreen hosts can carry multiple overlays on the same
-            # screen. Apply each shell in sequence against the same captured
-            # input, but disable temporal blending for the multi-shell path so
-            # the per-pass accumulation buffer does not cross-contaminate
-            # overlays with different bounding boxes.
-            self._ensure_accum_textures(out_w, out_h)
-            accum_read = self._accum_textures[0]
-            accum_write = self._accum_textures[1]
-            for config in shell_configs:
-                box_x0, box_y0, box_x1, box_y1 = _warp_dispatch_box(out_w, out_h, config)
-                box_w = box_x1 - box_x0
-                box_h = box_y1 - box_y0
-                if box_w <= 0 or box_h <= 0:
-                    continue
-                warp_config = dict(config)
+        if box_w > 0 and box_h > 0:
+            # Accum textures are bounding-box-sized to minimize VRAM.
+            self._ensure_accum_textures(box_w, box_h)
+            gen_before = self._accum_generation
+            accum_read = self._accum_textures[self._accum_index]
+            accum_write = self._accum_textures[1 - self._accum_index]
+
+            # First frame after accum resize: fully replace to avoid
+            # blending with uninitialized texture data.
+            warp_config = shell_config
+            if gen_before != getattr(self, "_accum_last_used_gen", -1):
+                warp_config = dict(shell_config)
                 warp_config["temporal_blend"] = 1.0
-                params_data = _pack_warp_params(
-                    out_w,
-                    out_h,
-                    warp_config,
-                    grid_offset_x=float(box_x0),
-                    grid_offset_y=float(box_y0),
-                )
-                if self._params_buffer is not None:
-                    contents_ptr = self._params_buffer.contents()
-                    if contents_ptr is not None:
-                        ctypes.memmove(contents_ptr, params_data, len(params_data))
-                        params_buffer = self._params_buffer
-                    else:
-                        params_buffer = _create_metal_buffer(self._device, params_data)
+
+            # Update reusable params buffer via memmove (no alloc per frame)
+            params_data = _pack_warp_params(
+                out_w, out_h, warp_config,
+                grid_offset_x=float(box_x0),
+                grid_offset_y=float(box_y0),
+            )
+            if self._params_buffer is not None:
+                contents_ptr = self._params_buffer.contents()
+                if contents_ptr is not None:
+                    ctypes.memmove(contents_ptr, params_data, len(params_data))
+                    params_buffer = self._params_buffer
                 else:
                     params_buffer = _create_metal_buffer(self._device, params_data)
-                if params_buffer is None:
-                    continue
-                encoder = command_buffer.computeCommandEncoder()
-                encoder.setComputePipelineState_(self._pipeline)
-                warp_input = self._mip_texture if self._mip_texture is not None else input_texture
-                encoder.setTexture_atIndex_(warp_input, 0)
-                encoder.setTexture_atIndex_(output_texture, 1)
-                if accum_read is not None and accum_write is not None:
-                    encoder.setTexture_atIndex_(accum_read, 2)
-                    encoder.setTexture_atIndex_(accum_write, 3)
-                encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
-                threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, box_h), 1)
-                grid_size = (box_w, box_h, 1)
-                encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
-                encoder.endEncoding()
-        else:
-            # Pass 2: compute warp over capsule bounding box only
-            active_config = shell_configs[0] if shell_configs else {}
-            box_x0, box_y0, box_x1, box_y1 = _warp_dispatch_box(out_w, out_h, active_config)
-            box_w = box_x1 - box_x0
-            box_h = box_y1 - box_y0
+            else:
+                params_buffer = _create_metal_buffer(self._device, params_data)
 
-            if box_w > 0 and box_h > 0:
-                # Accum textures are bounding-box-sized to minimize VRAM.
-                self._ensure_accum_textures(box_w, box_h)
-                gen_before = self._accum_generation
-                accum_read = self._accum_textures[self._accum_index]
-                accum_write = self._accum_textures[1 - self._accum_index]
+            if params_buffer is None:
+                command_buffer.presentDrawable_(drawable)
+                command_buffer.commit()
+                return True  # blit-only frame
 
-                # First frame after accum resize: fully replace to avoid
-                # blending with uninitialized texture data.
-                warp_config = active_config
-                if gen_before != getattr(self, "_accum_last_used_gen", -1):
-                    warp_config = dict(active_config)
-                    warp_config["temporal_blend"] = 1.0
+            encoder = command_buffer.computeCommandEncoder()
+            encoder.setComputePipelineState_(self._pipeline)
+            warp_input = self._mip_texture if self._mip_texture is not None else input_texture
+            encoder.setTexture_atIndex_(warp_input, 0)
+            encoder.setTexture_atIndex_(output_texture, 1)
+            if accum_read is not None and accum_write is not None:
+                encoder.setTexture_atIndex_(accum_read, 2)
+                encoder.setTexture_atIndex_(accum_write, 3)
+            encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
 
-                # Update reusable params buffer via memmove (no alloc per frame)
-                params_data = _pack_warp_params(
-                    out_w, out_h, warp_config,
-                    grid_offset_x=float(box_x0),
-                    grid_offset_y=float(box_y0),
-                )
-                if self._params_buffer is not None:
-                    contents_ptr = self._params_buffer.contents()
-                    if contents_ptr is not None:
-                        ctypes.memmove(contents_ptr, params_data, len(params_data))
-                        params_buffer = self._params_buffer
-                    else:
-                        params_buffer = _create_metal_buffer(self._device, params_data)
-                else:
-                    params_buffer = _create_metal_buffer(self._device, params_data)
+            threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, box_h), 1)
+            grid_size = (box_w, box_h, 1)
+            encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
+            encoder.endEncoding()
 
-                if params_buffer is None:
-                    command_buffer.presentDrawable_(drawable)
-                    command_buffer.commit()
-                    return True  # blit-only frame
-
-                encoder = command_buffer.computeCommandEncoder()
-                encoder.setComputePipelineState_(self._pipeline)
-                warp_input = self._mip_texture if self._mip_texture is not None else input_texture
-                encoder.setTexture_atIndex_(warp_input, 0)
-                encoder.setTexture_atIndex_(output_texture, 1)
-                if accum_read is not None and accum_write is not None:
-                    encoder.setTexture_atIndex_(accum_read, 2)
-                    encoder.setTexture_atIndex_(accum_write, 3)
-                encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
-
-                threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, box_h), 1)
-                grid_size = (box_w, box_h, 1)
-                encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
-                encoder.endEncoding()
-
-                # Flip accumulation buffer — only if generation hasn't changed
-                # (a resize between dispatch and here would invalidate the flip).
-                if self._accum_generation == gen_before:
-                    self._accum_index = 1 - self._accum_index
-                    self._accum_last_used_gen = gen_before
+            # Flip accumulation buffer — only if generation hasn't changed
+            # (a resize between dispatch and here would invalidate the flip).
+            if self._accum_generation == gen_before:
+                self._accum_index = 1 - self._accum_index
+                self._accum_last_used_gen = gen_before
 
         command_buffer.presentDrawable_(drawable)
         command_buffer.commit()

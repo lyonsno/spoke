@@ -2399,7 +2399,7 @@ class CommandOverlay(NSObject):
         """Start the full-screen compositor for zero-seam optical shell."""
         self._stop_fullscreen_compositor()
         try:
-            from spoke.fullscreen_compositor import start_overlay_compositor
+            from spoke.fullscreen_compositor import FullScreenCompositor
             shell_config = self._current_optical_shell_config()
             if shell_config is None:
                 return
@@ -2421,13 +2421,14 @@ class CommandOverlay(NSObject):
                       "tail_width_points"):
                 if k in shell_config:
                     shell_config[k] = float(shell_config[k]) * scale
-            compositor = start_overlay_compositor(
-                screen=self._screen,
-                window=self._window,
-                content_view=self._content_view,
-                shell_config=shell_config,
-            )
-            if compositor is not None:
+            compositor = FullScreenCompositor(self._screen)
+            # Exclude both the compositor's own window and the spoke overlay
+            try:
+                overlay_wid = int(self._window.windowNumber())
+                compositor.set_excluded_window_ids([overlay_wid])
+            except Exception:
+                pass
+            if compositor.start(shell_config):
                 self._fullscreen_compositor = compositor
                 # Cancel the old backdrop refresh timer — compositor replaces it.
                 # Don't call stop_live_stream here (can deadlock if SCK callback

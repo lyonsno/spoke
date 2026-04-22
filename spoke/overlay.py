@@ -1561,7 +1561,7 @@ class TranscriptionOverlay(NSObject):
         """Start the full-screen compositor for zero-seam optical shell."""
         self._stop_fullscreen_compositor()
         try:
-            from spoke.fullscreen_compositor import start_overlay_compositor
+            from spoke.fullscreen_compositor import FullScreenCompositor
             content = getattr(self, "_content_view", None)
             visible_height = _OVERLAY_HEIGHT
             if content is not None and hasattr(content, "frame"):
@@ -1593,13 +1593,13 @@ class TranscriptionOverlay(NSObject):
                       "tail_width_points"):
                 if k in shell_config:
                     shell_config[k] = float(shell_config[k]) * scale
-            compositor = start_overlay_compositor(
-                screen=self._screen,
-                window=self._window,
-                content_view=self._content_view,
-                shell_config=shell_config,
-            )
-            if compositor is not None:
+            compositor = FullScreenCompositor(self._screen)
+            try:
+                overlay_wid = int(self._window.windowNumber())
+                compositor.set_excluded_window_ids([overlay_wid])
+            except Exception:
+                pass
+            if compositor.start(shell_config):
                 self._fullscreen_compositor = compositor
                 self._cancel_backdrop_refresh()
                 if self._backdrop_layer is not None:
