@@ -1280,6 +1280,122 @@ class TestToolCallRendering:
         assert "\n[calling read_aloud…]\n" in tokens
         assert "All done." in tokens
 
+    def test_run_terminal_command_result_yields_command_and_stdout_preview(self):
+        """Terminal tool execution should surface the exact command and stdout preview."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            history_path=None,
+        )
+
+        tool_round_chunks = [
+            self._tool_call_chunk("run_terminal_command"),
+            self._tool_call_args_chunk('{"argv":["git","status","--short"]}'),
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_round_chunks = [
+            self._content_chunk("Done."),
+        ]
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(tool_round_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(final_round_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        def tool_executor(name, arguments, **kwargs):
+            assert name == "run_terminal_command"
+            assert arguments == {"argv": ["git", "status", "--short"]}
+            return {
+                "decision": "allow",
+                "executed": True,
+                "argv": ["git", "status", "--short"],
+                "exit_code": 0,
+                "stdout": " M spoke/command.py\n",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+            }
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            tokens = list(
+                client.stream_command(
+                    "show git status",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        joined = "".join(tokens)
+        assert "\n[calling run_terminal_command…]\n" in joined
+        assert "\n$ git status --short\n M spoke/command.py\n" in joined
+        assert joined.endswith("Done.")
+
+    def test_run_terminal_command_result_yields_stderr_preview_and_truncation_marker(self):
+        """Terminal stderr previews should be visible and note truncation when present."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            history_path=None,
+        )
+
+        tool_round_chunks = [
+            self._tool_call_chunk("run_terminal_command"),
+            self._tool_call_args_chunk('{"argv":["python","-m","pytest"]}'),
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_round_chunks = [
+            self._content_chunk("Failed."),
+        ]
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(tool_round_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(final_round_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        def tool_executor(name, arguments, **kwargs):
+            assert name == "run_terminal_command"
+            return {
+                "decision": "allow",
+                "executed": True,
+                "argv": ["python", "-m", "pytest"],
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "E   boom\n",
+                "stdout_truncated": False,
+                "stderr_truncated": True,
+            }
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            tokens = list(
+                client.stream_command(
+                    "run pytest",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        joined = "".join(tokens)
+        assert "\n$ python -m pytest\n" in joined
+        assert "\n[stderr]\nE   boom\n" in joined
+        assert "\n[stderr truncated]\n" in joined
+        assert joined.endswith("Failed.")
+
 
 class TestShiftReleaseRouting:
     """Test that shift-release is detected and routes to command path."""

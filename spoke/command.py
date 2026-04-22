@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import uuid
 from typing import Any, Callable, Generator, Literal
 
@@ -105,6 +106,40 @@ _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
+
+
+def _terminal_output_preview(tool_result: dict[str, Any] | None) -> str:
+    """Render terminal tool output as bounded visible preview text."""
+    if not isinstance(tool_result, dict) or not tool_result.get("executed"):
+        return ""
+
+    argv = tool_result.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(token, str) for token in argv):
+        return ""
+
+    lines = ["", f"$ {shlex.join(argv)}"]
+
+    stdout = tool_result.get("stdout")
+    if isinstance(stdout, str) and stdout:
+        lines.append(stdout.rstrip("\n"))
+        if tool_result.get("stdout_truncated"):
+            lines.append("[stdout truncated]")
+
+    stderr = tool_result.get("stderr")
+    if isinstance(stderr, str) and stderr:
+        lines.append("[stderr]")
+        lines.append(stderr.rstrip("\n"))
+        if tool_result.get("stderr_truncated"):
+            lines.append("[stderr truncated]")
+
+    if len(lines) == 2:
+        exit_code = tool_result.get("exit_code")
+        if isinstance(exit_code, int):
+            lines.append(f"[exit {exit_code} · no output]")
+        else:
+            lines.append("[no output]")
+
+    return "\n".join(lines) + "\n"
 
 _SYSTEM_PROMPT = (
     "Environment: your working directory is ~/dev, the user's development root. "
@@ -544,28 +579,35 @@ class CommandClient:
                 tool_preview[:200],
             )
 
-            info_parts = []
-            if fn_name == "read_file" and fn_args.get("file_path"):
-                info_parts.append(fn_args["file_path"])
-            elif fn_name == "search_file":
-                pattern = fn_args.get("pattern", "")
-                dir_path = fn_args.get("dir_path", "")
-                if pattern and dir_path:
-                    info_parts.append(f'"{pattern}" in {dir_path}')
-                elif pattern:
-                    info_parts.append(f'"{pattern}"')
-                elif dir_path:
-                    info_parts.append(dir_path)
-            elif fn_name == "capture_context":
-                info_parts.append("screen capture")
-            if result_tokens > 0:
-                info_parts.append(f"~{result_tokens} tokens")
-            if info_parts:
-                info_line = f"  [{' · '.join(info_parts)}]\n"
-                visible_response += info_line
+            preview_text = ""
+            tool_mapping = tool_result if isinstance(tool_result, dict) else None
+            if fn_name == "run_terminal_command":
+                preview_text = _terminal_output_preview(tool_mapping)
+            else:
+                info_parts = []
+                if fn_name == "read_file" and fn_args.get("file_path"):
+                    info_parts.append(fn_args["file_path"])
+                elif fn_name == "search_file":
+                    pattern = fn_args.get("pattern", "")
+                    dir_path = fn_args.get("dir_path", "")
+                    if pattern and dir_path:
+                        info_parts.append(f'"{pattern}" in {dir_path}')
+                    elif pattern:
+                        info_parts.append(f'"{pattern}"')
+                    elif dir_path:
+                        info_parts.append(dir_path)
+                elif fn_name == "capture_context":
+                    info_parts.append("screen capture")
+                if result_tokens > 0:
+                    info_parts.append(f"~{result_tokens} tokens")
+                if info_parts:
+                    preview_text = f"  [{' · '.join(info_parts)}]\n"
+
+            if preview_text:
+                visible_response += preview_text
                 yield CommandStreamEvent(
                     kind="assistant_delta",
-                    text=info_line,
+                    text=preview_text,
                 )
 
             messages.append(
