@@ -90,6 +90,14 @@ class _FakeLayoutManager:
         return _make_rect(0.0, 0.0, 0.0, self.height)
 
 
+class _FakeTextContainer:
+    def __init__(self):
+        self.size = None
+
+    def setContainerSize_(self, size):
+        self.size = size
+
+
 class TestThinkingTimer:
     """Test the thinking timer state machine."""
 
@@ -192,6 +200,20 @@ class TestThinkingTimer:
 
         overlay._backdrop_renderer.set_frame_callback.assert_called_once_with(None)
 
+    def test_install_backdrop_frame_callback_keeps_image_fallback_for_metal_layer_without_display_link(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_layer = MagicMock()
+        overlay._backdrop_is_metal_layer = True
+        overlay._metal_display_link_renderer = None
+
+        overlay._install_backdrop_frame_callback()
+
+        callback = overlay._backdrop_renderer.set_frame_callback.call_args[0][0]
+        assert callback is not None
+
     def test_install_backdrop_frame_callback_installs_when_optical_shell_enabled(
         self, mock_pyobjc, monkeypatch
     ):
@@ -207,6 +229,74 @@ class TestThinkingTimer:
 
         args = overlay._backdrop_renderer.set_frame_callback.call_args[0]
         assert args[0] is not None
+
+    def test_setup_restores_image_frame_callback_when_metal_display_link_fails(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+
+        metal_layer = MagicMock()
+        metal_layer.setDevice_ = MagicMock()
+        metal_layer.setContents_ = MagicMock()
+        metal_layer.setHidden_ = MagicMock()
+        metal_layer.setFrame_ = MagicMock()
+        metal_layer.setOpacity_ = MagicMock()
+        metal_layer.setContentsGravity_ = MagicMock()
+        metal_layer.setContentsScale_ = MagicMock()
+        metal_layer.setPixelFormat_ = MagicMock()
+        metal_layer.setFramebufferOnly_ = MagicMock()
+        metal_layer.setOpaque_ = MagicMock()
+        metal_layer.mask.return_value = None
+        metal_layer.setMask_ = MagicMock()
+
+        fake_metal_layer_class = MagicMock()
+        fake_metal_layer_class.alloc.return_value.init.return_value = metal_layer
+        monkeypatch.setattr(
+            mod.objc, "lookUpClass", lambda name: fake_metal_layer_class, raising=False
+        )
+
+        fake_pipeline = SimpleNamespace(device=object())
+        fake_dl_renderer = MagicMock()
+        fake_dl_renderer.start.return_value = False
+        fake_metal_module = SimpleNamespace(
+            get_metal_warp_pipeline=MagicMock(return_value=fake_pipeline),
+            MetalDisplayLinkRenderer=MagicMock(return_value=fake_dl_renderer),
+        )
+        sys.modules["spoke.metal_warp"] = fake_metal_module
+        mock_pyobjc["AppKit"].NSTextAlignmentRight = 2
+        mock_pyobjc["AppKit"].NSTextAlignmentLeft = 0
+        mock_pyobjc["AppKit"].NSLineBreakByTruncatingTail = 5
+
+        overlay = mod.CommandOverlay.__new__(mod.CommandOverlay)
+        overlay._screen = MagicMock()
+        overlay._screen.frame.return_value = _make_rect(0.0, 0.0, 1920.0, 1080.0)
+        overlay._screen.backingScaleFactor.return_value = 2.0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_renderer.capture_blurred_image.return_value = None
+        overlay._backdrop_blur_radius_points = 9.0
+        overlay._backdrop_capture_overscan_points = 42.519685
+        overlay._visible = False
+        overlay._streaming = False
+        overlay._response_text = ""
+        overlay._utterance_text = ""
+        overlay._thinking_timer = None
+        overlay._fade_timer = None
+        overlay._pulse_timer = None
+        overlay._linger_timer = None
+        overlay._cancel_timer_anim = None
+        overlay._apply_ridge_masks = MagicMock()
+        overlay._apply_surface_theme = MagicMock()
+        overlay._set_overlay_scale = MagicMock()
+        overlay._update_backdrop_capture_geometry = MagicMock()
+
+        overlay.setup()
+
+        callback_calls = overlay._backdrop_renderer.set_frame_callback.call_args_list
+        assert callable(callback_calls[-1][0][0])
 
     def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1276,9 +1366,49 @@ class TestGeometryCaps:
             pytest.approx(304.0),
         )
 
+    def test_update_layout_resets_text_geometry_to_match_visible_area(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._scroll_view.frame.return_value = _make_rect(
+            48.0, 16.0, mod._OVERLAY_WIDTH - 96, mod._OVERLAY_HEIGHT - 32
+        )
+        overlay._scroll_view.setFrame_.side_effect = (
+            lambda frame: overlay._scroll_view.frame.return_value.__dict__.update(frame.__dict__)
+        )
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        container = _FakeTextContainer()
+        overlay._text_view.textContainer.return_value = container
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        doc_frame = overlay._text_view.setFrame_.call_args[0][0]
+        assert doc_frame.size.width == pytest.approx(mod._OVERLAY_WIDTH - 96)
+        assert doc_frame.size.height == pytest.approx(304.0 - 16)
+        assert container.size == (mod._OVERLAY_WIDTH - 96, 1.0e7)
+
 
 class TestToolState:
     """Test the tool execution visual state machine."""
+
+    def test_enable_text_punchthrough_hides_scroll_view_but_keeps_auxiliary_labels_visible(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay._enable_text_punchthrough(True)
+
+        overlay._scroll_view.setHidden_.assert_called_once_with(True)
+        overlay._content_view.setHidden_.assert_not_called()
+
+        overlay._enable_text_punchthrough(False)
+
+        overlay._scroll_view.setHidden_.assert_called_with(False)
 
     def test_set_tool_active_shows_label(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
