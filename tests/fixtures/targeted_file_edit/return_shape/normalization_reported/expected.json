@@ -1,0 +1,15 @@
+{
+  "outcome": "success",
+  "result": {
+    "status": "success",
+    "applied": true,
+    "file": "__TARGET_FILE__",
+    "failure_reason": null,
+    "match_count": 1,
+    "normalization_applied": ["line_endings"],
+    "edited_range": {
+      "start_line": 2,
+      "end_line": 2
+    }
+  }
+}

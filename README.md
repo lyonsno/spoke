@@ -16,8 +16,9 @@ model state in
 
 - Dictate anywhere on the system and paste directly into the focused field
 - Fail open into a stacked tray when insertion cannot be verified or when you want review first
-- Use an assistant that can respond with streamed text, tools, screen context, local files, and Gmail
-- Show brief thinking and loading summaries while the assistant is still working
+- Use an assistant that can respond with streamed text, multimodal capture context, Brave Search, local files, Gmail, and background search subagents
+- Show a narrator-style thinking and loading surface while the assistant is still working
+- Compact long assistant histories so extended sessions can keep going without losing the thread
 - Keep recording hands-free with latched mode or wake words
 - Read results back through local, sidecar, or cloud TTS backends
 - Switch transcription, model, assistant, and TTS choices from the menubar and keep them across relaunches
@@ -55,24 +56,53 @@ the keyboard gestures above are active.
 While dictating hands-free, simple spoken editing commands such as `new line`,
 `new paragraph`, and `enter` are treated as controls rather than literal text.
 
-If you want to prepare custom Porcupine keyword training material, `spoke`
+If you want to prepare custom wakeword training material, `spoke`
 now also ships a batch sample generator that renders WAVs through the same
 local, sidecar, or Gemini cloud TTS surfaces:
 
 ```sh
 uv run python -m spoke.wakeword_samples \
   --backend local \
-  --text tessera \
-  --voice casual_female \
+  --text-file assets/wakewords/operation_mouthfeel_commands.txt \
+  --voice-file assets/wakewords/kokoro_american_8.txt \
   --max-tokens 32 \
-  --voice neutral_male \
-  --output-dir /tmp/tessera-samples
+  --output-dir /tmp/mouthfeel-samples
 ```
 
-Add `--text-file phrases.txt` for one phrase per line, switch to
-`--backend cloud` to use Gemini cloud TTS, or provide `--sidecar-url` for a
-remote OpenAI-compatible speech sidecar. For short wakewords, `--max-tokens`
-is useful when you want to keep the render from wandering into trailing filler.
+Add `--text-file phrases.txt` or `--voice-file voices.txt` for one item per
+line, switch to `--backend cloud` to use Gemini cloud TTS, or provide
+`--sidecar-url` for a remote OpenAI-compatible speech sidecar. For short
+wakewords, `--max-tokens` is useful when you want to keep the render from
+wandering into trailing filler.
+
+To carve a generated batch into per-keyword training groups:
+
+```sh
+uv run python -m spoke.wakeword_training \
+  --batch-dir /tmp/mouthfeel-samples \
+  --output-dir /tmp/mouthfeel-training
+```
+
+That writes one directory per keyword, with copied WAVs, a manifest, and a
+`*-samples.zip` archive for each keyword. Those grouped artifacts are useful
+for audition, curation, or handing off to whatever training pipeline the lane
+is using.
+
+If you want to train local `openWakeWord` models from that same batch, install
+the training extra and run the trainer directly:
+
+```sh
+uv sync --extra wakeword-training --group dev
+uv run --extra wakeword-training python -m spoke.openwakeword_training \
+  --batch-dir /tmp/mouthfeel-samples \
+  --output-dir /tmp/mouthfeel-openwakeword \
+  --keyword tessera
+```
+
+That writes a local `.onnx` model plus JSON metrics and dataset manifests for
+each requested keyword. The trainer accepts the Kokoro/sidecar sample batches
+that `spoke.wakeword_samples` emits, including 24 kHz mono WAVs, and resamples
+them to the 16 kHz runtime rate during feature extraction.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
@@ -120,7 +150,10 @@ chmod 600 ~/.config/spoke/secrets.env
 
 Then populate `~/.config/spoke/secrets.env` from your offline source of truth.
 That keeps secrets out of the repo while giving `spoke` a stable place to find
-cloud and wake-word credentials.
+cloud and wake-word credentials. If you want the assistant's Brave Search web
+lookup, add `BRAVE_SEARCH_API_KEY` there as well; `spoke` also honors
+`SPOKE_BRAVE_SEARCH_API_KEY`, but the provider-native variable is the shared
+default used across local tools.
 
 ## Run
 
@@ -165,8 +198,11 @@ For ordinary use, prefer the menus. The remaining environment variables are
 bootstrap, smoke-surface, or debugging overrides.
 
 When you invoke the assistant, it can work from more than just the transcribed
-utterance: it can inspect the frontmost screen, search and read local files,
-query Gmail, place results into the tray, and speak text back aloud when asked.
+utterance: it can inspect the frontmost screen through multimodal capture
+context, search the web through Brave Search, search locally through
+background subagents, search and read local files, query Gmail, compact older
+history when a session gets long, place results into the tray, and speak text
+back aloud when asked.
 
 ## Remote sidecars
 
@@ -201,8 +237,13 @@ set of env vars is still useful. For normal use, prefer the menus.
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before restoring the saved pasteboard contents. |
 | `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
 | `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` | unset | Enables wake-word hands-free mode. |
+| `SPOKE_HANDSFREE_DEFAULT_ON` | unset | When truthy, auto-enables hands-free after startup once both models and mic permission are ready. Useful for smoke surfaces that should start listening immediately. |
+| `SPOKE_WAKEWORD_BACKEND` | `porcupine` | Wake-word backend. Use `openwakeword` for local model files. |
 | `SPOKE_WAKEWORD_LISTEN` | `computer` | Wake word that starts hands-free dictation. |
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
+| `SPOKE_WAKEWORD_LISTEN_MODEL` | unset | Path to the `openWakeWord` model for the listen role. |
+| `SPOKE_WAKEWORD_SLEEP_MODEL` | unset | Path to the `openWakeWord` model for the sleep role. |
+| `SPOKE_WAKEWORD_TESSERA_MODEL` | unset | Optional local `openWakeWord` model for the `tessera` Return command. When it fires, the command path wins and the matching Whisper segment is suppressed. |
 
 If you need deeper backend or smoke-surface plumbing than that, you are in
 developer territory. Use
@@ -227,7 +268,7 @@ spoke/
 ├── input_tap.py          # global key grammar and hold detection
 ├── capture.py            # sounddevice recording and WAV encoding
 ├── handsfree.py          # latched and wake-word-driven dictation controller
-├── wakeword.py           # Picovoice Porcupine listener
+├── wakeword.py           # wakeword listener backends
 ├── wakeword_samples.py   # wake-word sample batch generator
 ├── transcribe.py         # remote OpenAI-compatible transcription client
 ├── transcribe_local.py   # local MLX Whisper backend

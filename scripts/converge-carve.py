@@ -68,12 +68,41 @@ Rules:
 
 
 def _load_history_utterances() -> list[dict]:
-    """Load user/assistant pairs from the persisted ring buffer."""
+    """Load user/assistant pairs from the persisted ring buffer.
+
+    The ring buffer stores each turn as a list of message dicts (the full
+    chain including tool calls and results).  Extract the first user and
+    first assistant content messages from each turn.
+    """
     try:
         data = json.loads(_HISTORY_PATH.read_text(encoding="utf-8"))
-        return [{"user": u, "assistant": a} for u, a in data]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+    pairs: list[dict] = []
+    for entry in data:
+        if isinstance(entry, list) and entry and isinstance(entry[0], str):
+            # Legacy format: ["user text", "assistant text"]
+            pairs.append({
+                "user": str(entry[0]),
+                "assistant": str(entry[1]) if len(entry) > 1 else "",
+            })
+        elif isinstance(entry, list):
+            # New format: list of message dicts per turn
+            user_text = ""
+            assistant_text = ""
+            for msg in entry:
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role", "")
+                content = msg.get("content", "") or ""
+                if role == "user" and not user_text:
+                    user_text = content
+                elif role == "assistant" and not assistant_text and content:
+                    assistant_text = content
+            if user_text:
+                pairs.append({"user": user_text, "assistant": assistant_text})
+    return pairs
 
 
 def _load_grapheus_utterances(log_date: str | None = None) -> list[dict]:

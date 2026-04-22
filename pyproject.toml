@@ -11,6 +11,7 @@ dependencies = [
     "httpx",
     "mlx-whisper @ git+https://github.com/lyonsno/mlx-whisper-patched.git@eb06ea05a77037e971139d11195c675277836272",
     "mlx-qwen3-asr>=0.3.2",
+    "openwakeword",
     "pyobjc-framework-vision>=12.1",
     "pvporcupine>=3.0",
 ]
@@ -26,6 +27,11 @@ tts = [
     "omnivoice",
     "torch",
     "torchaudio",
+]
+wakeword-training = [
+    "onnx",
+    "scipy",
+    "torch",
 ]
 
 [dependency-groups]

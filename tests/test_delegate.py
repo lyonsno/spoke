@@ -116,13 +116,36 @@ class TestHoldCallbacks:
         d._handsfree.state = main_module.HandsFreeState.LISTENING
         d._handsfree.is_dictating = False
         call_order: list[str] = []
-        d._handsfree.disable.side_effect = lambda: call_order.append("disable")
+        d._handsfree.disable.side_effect = lambda **kwargs: call_order.append(
+            f"disable:{kwargs.get('reason')}"
+        )
         d._capture.start.side_effect = lambda **kwargs: call_order.append("capture")
 
         d._on_hold_start()
 
-        assert call_order[:2] == ["disable", "capture"]
+        assert call_order[:2] == ["disable:manual hold suspend", "capture"]
         assert d._handsfree_resume_state_for_hold == main_module.HandsFreeState.LISTENING
+
+    def test_toggle_handsfree_disables_with_reason(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = True
+
+        d._toggle_handsfree()
+
+        d._handsfree.disable.assert_called_once_with(reason="menu/manual toggle")
+
+    def test_quit_disables_handsfree_with_reason(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = True
+        d._terraform_hud = MagicMock()
+
+        with patch.object(main_module.NSApp, "terminate_") as terminate:
+            d._quit()
+
+        d._handsfree.disable.assert_called_once_with(reason="app quit")
+        terminate.assert_called_once_with(None)
 
     def test_hold_end_with_empty_audio_restores_wakeword_listener(
         self, main_module, monkeypatch
@@ -1848,6 +1871,34 @@ class TestDualModelConfiguration:
         ]
         d._menubar.refresh_menu.assert_called_once_with()
 
+    def test_command_models_discovered_syncs_turn_carver_after_local_heal(
+        self, main_module, monkeypatch
+    ):
+        """Async local healing should keep the Converge turn carver on the live assistant model."""
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_backend = "local"
+        d._command_model_id = "step-3p5-flash-mixedp-final"
+        d._command_client = MagicMock()
+        d._turn_carver = MagicMock()
+        d._turn_carver._model = "step-3p5-flash-mixedp-final"
+        d._menubar = MagicMock()
+        d._load_command_model_preference = MagicMock(return_value="qwen3-14b")
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    ("qwen3-14b", "qwen3-14b", False),
+                    ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True),
+                ]
+            }
+        )
+
+        assert d._command_model_id == "qwen3-14b"
+        assert d._command_client._model == "qwen3-14b"
+        assert d._turn_carver._model == "qwen3-14b"
+        d._menubar.refresh_menu.assert_called_once_with()
+
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):
@@ -2251,6 +2302,53 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", True),
             ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
         ]
+
+    def test_init_reconciles_turn_carver_model_with_healed_local_selection(
+        self, main_module, monkeypatch
+    ):
+        """Startup reconciliation should not leave the Converge carver on the smoke-env model."""
+        monkeypatch.delenv("SPOKE_RELAUNCH_COMMAND_MODEL", raising=False)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "Qwen3.6-35B-A3B-oQ8",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
+        turn_carver = MagicMock()
+        turn_carver._model = "step-3p5-flash-mixedp-final"
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module, "TurnCarver", return_value=turn_carver
+            ) as MockTurnCarver:
+                with patch.object(
+                    main_module.SpokeAppDelegate,
+                    "_seed_command_model_options",
+                    return_value=[
+                        ("Qwen3.6-35B-A3B-oQ8", "Qwen3.6-35B-A3B-oQ8", False),
+                        ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True),
+                    ],
+                ):
+                    d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                    result = d.init()
+
+        assert result is not None
+        MockTurnCarver.assert_called_once_with(
+            base_url=main_module._DEFAULT_COMMAND_URL,
+            api_key=None,
+            model="step-3p5-flash-mixedp-final",
+        )
+        assert d._command_model_id == "Qwen3.6-35B-A3B-oQ8"
+        assert d._command_client._model == "Qwen3.6-35B-A3B-oQ8"
+        assert d._turn_carver._model == "Qwen3.6-35B-A3B-oQ8"
 
     def test_init_prefers_relaunch_command_model_override_over_smoke_env(
         self, main_module, monkeypatch
@@ -2859,6 +2957,66 @@ class TestWarmupContract:
         d.clientWarmupSucceeded_(None)
 
         d._handsfree.enable.assert_not_called()
+
+    def test_warmup_success_auto_enables_handsfree_when_requested(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._mic_ready = True
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.clientWarmupSucceeded_(None)
+
+        d._handsfree.enable.assert_called_once_with()
+
+    def test_warmup_success_schedules_handsfree_retry_when_still_inactive(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._mic_ready = True
+        d._schedule_handsfree_auto_enable_retry = MagicMock()
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.clientWarmupSucceeded_(None)
+
+        d._schedule_handsfree_auto_enable_retry.assert_called_once_with()
+
+    def test_mic_granted_auto_enables_handsfree_when_requested_and_models_ready(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._models_ready = True
+        d._mic_ready = False
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.micPermissionGranted_(None)
+
+        d._handsfree.enable.assert_called_once_with()
+
+    def test_mic_granted_schedules_handsfree_retry_when_still_inactive(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._models_ready = True
+        d._mic_ready = False
+        d._schedule_handsfree_auto_enable_retry = MagicMock()
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.micPermissionGranted_(None)
+
+        d._schedule_handsfree_auto_enable_retry.assert_called_once_with()
 
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""
@@ -3782,6 +3940,94 @@ class TestCommandCallbacks:
         assert result == '{"ok": true}'
         exec_tool.assert_called_once()
         assert exec_tool.call_args.kwargs["tool_output_mode"] == "multimodal"
+
+    def test_tool_executor_routes_compact_history_through_delegate_callback(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        with patch.object(main_module, "execute_tool", return_value='{"status": "ok"}') as exec_tool:
+            executor = d._make_tool_executor()
+            result = executor("compact_history", {"mode": "drop_tool_results", "n": 0})
+
+        assert result == '{"status": "ok"}'
+        exec_tool.assert_called_once()
+        history_compactor = exec_tool.call_args.kwargs["history_compactor"]
+        assert callable(history_compactor)
+
+    def test_tool_executor_compact_history_summarize_replaces_oldest_turns(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ],
+            [
+                {"role": "user", "content": "user 2"},
+                {"role": "assistant", "content": "assistant 2"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
+        ]
+        d._command_client.history = list(d._command_client._history)
+        d._command_client._save_history = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        executor = d._make_tool_executor()
+        result = json.loads(
+            executor(
+                "compact_history",
+                {"mode": "summarize", "n": 2, "summary": "compressed summary"},
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "summarize"
+        assert d._command_client._history == [
+            [
+                {"role": "user", "content": "[compacted history]"},
+                {"role": "assistant", "content": "compressed summary"},
+            ],
+            [
+                {"role": "user", "content": "user 3"},
+                {"role": "assistant", "content": "assistant 3"},
+            ],
+        ]
+        d._command_client._save_history.assert_called_once_with()
+
+    def test_tool_executor_compact_history_guided_routes_to_converge_helper(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client._history = [
+            [
+                {"role": "user", "content": "user 1"},
+                {"role": "assistant", "content": "assistant 1"},
+            ]
+        ]
+        d._command_client.history = list(d._command_client._history)
+        d._command_client._save_history = MagicMock()
+        d._ensure_tts_client = MagicMock(return_value=None)
+        compact_history = MagicMock(return_value={"status": "ok", "mode": "guided"})
+        monkeypatch.setattr(main_module, "compact_converge_history", compact_history)
+
+        executor = d._make_tool_executor()
+        result = json.loads(executor("compact_history", {"mode": "guided", "n": 0}))
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "guided"
+        compact_history.assert_called_once_with(
+            d._command_client, {"mode": "guided", "n": 0}
+        )
 
     def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
         self, main_module, monkeypatch

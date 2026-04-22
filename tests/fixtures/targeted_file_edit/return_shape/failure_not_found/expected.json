@@ -1,0 +1,12 @@
+{
+  "outcome": "failure",
+  "result": {
+    "status": "error",
+    "applied": false,
+    "file": "__TARGET_FILE__",
+    "failure_reason": "not_found",
+    "match_count": 0,
+    "normalization_applied": [],
+    "edited_range": null
+  }
+}

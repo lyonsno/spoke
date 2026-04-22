@@ -1,6 +1,6 @@
 """Hands-free continuous dictation mode.
 
-Coordinates wake word detection (Porcupine), audio capture (VAD-based
+Coordinates wake word detection (Porcupine or openWakeWord), audio capture (VAD-based
 segment slicing), transcription, and text injection into a continuous
 loop:
 
@@ -23,6 +23,17 @@ import time
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+
+def handsfree_env_ready() -> bool:
+    """True when the environment provides a runnable wakeword backend."""
+    backend = os.environ.get("SPOKE_WAKEWORD_BACKEND", "porcupine").strip().lower()
+    if backend == "openwakeword":
+        return bool(
+            os.environ.get("SPOKE_WAKEWORD_LISTEN_MODEL")
+            and os.environ.get("SPOKE_WAKEWORD_SLEEP_MODEL")
+        )
+    return bool(os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"))
 
 
 # ── Voice commands (matched against full transcription, case-insensitive) ──
@@ -104,10 +115,22 @@ class HandsFreeController:
 
         # Resolve wake word configuration
         self._access_key = os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
+        self._wakeword_backend = os.environ.get("SPOKE_WAKEWORD_BACKEND", "porcupine").strip().lower()
         self._listen_keyword = os.environ.get("SPOKE_WAKEWORD_LISTEN", "computer")
         self._sleep_keyword = os.environ.get("SPOKE_WAKEWORD_SLEEP", "terminator")
         self._listen_ppn = os.environ.get("SPOKE_WAKEWORD_LISTEN_PPN")
         self._sleep_ppn = os.environ.get("SPOKE_WAKEWORD_SLEEP_PPN")
+        self._listen_sensitivity = self._read_keyword_sensitivity(
+            "SPOKE_WAKEWORD_LISTEN_SENSITIVITY"
+        )
+        self._sleep_sensitivity = self._read_keyword_sensitivity(
+            "SPOKE_WAKEWORD_SLEEP_SENSITIVITY"
+        )
+        self._listen_model = os.environ.get("SPOKE_WAKEWORD_LISTEN_MODEL")
+        self._sleep_model = os.environ.get("SPOKE_WAKEWORD_SLEEP_MODEL")
+        self._tessera_model = os.environ.get("SPOKE_WAKEWORD_TESSERA_MODEL")
+        self._pending_transcription_override_phrase: str | None = None
+        self._pending_transcription_override_deadline = 0.0
 
         # Callbacks set by the delegate
         self.on_state_change: Callable[[HandsFreeState], None] | None = None
@@ -125,6 +148,28 @@ class HandsFreeController:
     def is_dictating(self) -> bool:
         return self._state in (HandsFreeState.DICTATING, HandsFreeState.TRANSCRIBING)
 
+    def _read_keyword_sensitivity(self, env_name: str) -> float | None:
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r (expected 0.0-1.0)", env_name, raw)
+            return None
+        if not 0.0 <= value <= 1.0:
+            logger.warning("Ignoring out-of-range %s=%r (expected 0.0-1.0)", env_name, raw)
+            return None
+        return value
+
+    def _optional_existing_model_path(self, path: str | None, *, label: str) -> str | None:
+        if not path:
+            return None
+        if os.path.exists(path):
+            return path
+        logger.warning("%s missing at %s — continuing without it", label, path)
+        return None
+
     def _set_state(self, new_state: HandsFreeState) -> None:
         old = self._state
         self._state = new_state
@@ -140,33 +185,81 @@ class HandsFreeController:
             logger.warning("enable() called in state %s", self._state.value)
             return
 
-        if not self._access_key:
+        if self._wakeword_backend != "openwakeword" and not self._access_key:
             logger.error("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY not set — cannot enable hands-free")
             return
 
         from .wakeword import WakeWordListener
+        sensitivities = None
+        if self._listen_sensitivity is not None or self._sleep_sensitivity is not None:
+            sensitivities = [
+                self._listen_sensitivity if self._listen_sensitivity is not None else 0.5,
+                self._sleep_sensitivity if self._sleep_sensitivity is not None else 0.5,
+            ]
+        tessera_model = self._optional_existing_model_path(
+            self._tessera_model,
+            label="Optional tessera wakeword model",
+        )
 
         # Build keyword lists
-        if self._listen_ppn and self._sleep_ppn:
+        if self._wakeword_backend == "openwakeword":
+            if not self._listen_model or not self._sleep_model:
+                logger.error(
+                    "openWakeWord backend selected but SPOKE_WAKEWORD_LISTEN_MODEL "
+                    "or SPOKE_WAKEWORD_SLEEP_MODEL is not set"
+                )
+                return
+            model_paths = [self._listen_model, self._sleep_model]
+            if tessera_model:
+                model_paths.append(tessera_model)
+            self._wakeword = WakeWordListener(
+                access_key="",
+                backend="openwakeword",
+                model_paths=model_paths,
+                on_wake=self._on_wake_word,
+            )
+            self._keyword_map = {
+                self._listen_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "listen",
+                self._sleep_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "sleep",
+            }
+            if tessera_model:
+                self._keyword_map[
+                    tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                ] = "tessera"
+        elif self._listen_ppn and self._sleep_ppn:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
+                backend="porcupine",
                 keyword_paths=[self._listen_ppn, self._sleep_ppn],
+                sensitivities=sensitivities,
+                model_paths=[tessera_model] if tessera_model else None,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_ppn: "listen",
                 self._sleep_ppn: "sleep",
             }
+            if tessera_model:
+                self._keyword_map[
+                    tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                ] = "tessera"
         else:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
+                backend="porcupine",
                 keywords=[self._listen_keyword, self._sleep_keyword],
+                sensitivities=sensitivities,
+                model_paths=[tessera_model] if tessera_model else None,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_keyword: "listen",
                 self._sleep_keyword: "sleep",
             }
+            if tessera_model:
+                self._keyword_map[
+                    tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                ] = "tessera"
 
         try:
             self._wakeword.start()
@@ -177,10 +270,15 @@ class HandsFreeController:
 
         self._set_state(HandsFreeState.LISTENING)
 
-    def disable(self) -> None:
+    def disable(self, *, reason: str = "unspecified") -> None:
         """Fully shut down hands-free mode. Any state → DORMANT."""
         if self._state == HandsFreeState.DORMANT:
             return
+        logger.info(
+            "Disabling hands-free: reason=%s state=%s",
+            reason,
+            self._state.value,
+        )
 
         # Stop any active dictation capture
         if self._state in (HandsFreeState.DICTATING, HandsFreeState.TRANSCRIBING):
@@ -196,7 +294,7 @@ class HandsFreeController:
     # ── Wake word callback ───────────────────────────────────
 
     def _on_wake_word(self, keyword: str) -> None:
-        """Called from the Porcupine audio thread."""
+        """Called from the wakeword audio thread."""
         role = self._keyword_map.get(keyword, keyword)
         logger.info("Wake word role: %s (keyword=%s, state=%s)", role, keyword, self._state.value)
 
@@ -216,6 +314,9 @@ class HandsFreeController:
                 self._stop_dictating()
             elif self._state == HandsFreeState.LISTENING:
                 logger.info("Sleep wake word received while already passively listening")
+        elif role == "tessera":
+            self._arm_transcription_override("tessera")
+            self._delegate.handsFreeInject_({"text": "tessera", "dest": "cursor"})
 
     # ── Dictation loop ───────────────────────────────────────
 
@@ -265,7 +366,16 @@ class HandsFreeController:
         """Exit dictation mode. DICTATING/TRANSCRIBING → LISTENING."""
         logger.info("Stopping hands-free dictation")
         self._stop_dictation_capture()
+        self._restart_wakeword_listener("post-dictation recovery")
         self._set_state(HandsFreeState.LISTENING)
+
+    def _restart_wakeword_listener(self, reason: str) -> None:
+        listener = self._wakeword
+        if listener is None:
+            return
+        logger.info("Restarting wakeword listener: reason=%s", reason)
+        listener.stop()
+        listener.start()
 
     def _stop_dictation_capture(self) -> None:
         """Stop audio capture and clean up UI."""
@@ -312,13 +422,16 @@ class HandsFreeController:
                 return
 
             if text and text.strip():
-                if _is_repeated_keyword_phrase(text, self._sleep_keyword):
+                normalized = text.strip()
+                if self._consume_pending_transcription_override(normalized):
+                    return
+                if _is_repeated_keyword_phrase(normalized, self._sleep_keyword):
                     self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "handleWakeWord:", {"role": "sleep"}, False,
                     )
                     return
 
-                payload = {"text": text.strip(), "dest": dest or "cursor"}
+                payload = {"text": normalized, "dest": dest or "cursor"}
                 self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "handsFreeInject:", payload, False,
                 )
@@ -333,6 +446,29 @@ class HandsFreeController:
         Resets to cursor after that segment is dispatched."""
         logger.info("Hands-free: next segment → %s", dest)
         self._next_segment_dest = dest
+
+    def _arm_transcription_override(self, phrase: str, window_s: float = 2.0) -> None:
+        self._pending_transcription_override_phrase = phrase
+        self._pending_transcription_override_deadline = time.monotonic() + window_s
+
+    def _consume_pending_transcription_override(self, text: str) -> bool:
+        phrase = self._pending_transcription_override_phrase
+        if not phrase:
+            return False
+        if time.monotonic() > self._pending_transcription_override_deadline:
+            self._pending_transcription_override_phrase = None
+            self._pending_transcription_override_deadline = 0.0
+            return False
+        if _is_repeated_keyword_phrase(text, phrase):
+            logger.info(
+                "Hands-free: suppressing transcription %r because wakeword %r already fired",
+                text,
+                phrase,
+            )
+            self._pending_transcription_override_phrase = None
+            self._pending_transcription_override_deadline = 0.0
+            return True
+        return False
 
     # ── Manual entry (e.g. long-press spacebar) ──────────────
 

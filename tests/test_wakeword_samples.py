@@ -111,3 +111,22 @@ def test_build_synthesizer_passes_max_tokens_to_local_tts(monkeypatch):
         "top_p": 0.95,
         "max_tokens": 64,
     }
+
+
+def test_parse_args_accepts_voice_file(tmp_path):
+    voices = tmp_path / "voices.txt"
+    voices.write_text("\n# comment\n\naf_heart\nam_adam\n")
+
+    args = _parse_args(
+        [
+            "--text", "tessera",
+            "--voice-file", str(voices),
+            "--output-dir", "/tmp/ignored",
+        ]
+    )
+
+    resolved_voices = list(args.voice)
+    for voice_file in args.voice_file:
+        resolved_voices.extend(load_phrase_lines(voice_file))
+
+    assert resolved_voices == ["af_heart", "am_adam"]

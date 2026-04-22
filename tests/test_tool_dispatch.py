@@ -164,6 +164,18 @@ class TestToolSchemas:
         assert "file_path" in params.get("properties", {})
         assert "content" in params.get("properties", {})
 
+    def test_edit_file_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "edit_file" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "edit_file")
+        params = schema["function"]["parameters"]
+        assert "file" in params.get("properties", {})
+        assert "old_string" in params.get("properties", {})
+        assert "new_string" in params.get("properties", {})
+
     def test_search_file_schema(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
@@ -703,6 +715,49 @@ class TestExecuteTool:
         m.assert_called_once_with("/tmp/test.txt", "w", encoding="utf-8")
         m().write.assert_called_once_with("new content")
 
+    def test_execute_edit_file(self):
+        mod = _import_tools()
+        target = "/tmp/test.txt"
+        original = "alpha\nbeta\n"
+        updated = "alpha\ngamma\n"
+        writer = MagicMock()
+
+        def fake_open(path, mode="r", encoding=None, newline=None):
+            if mode == "rb":
+                handle = MagicMock()
+                handle.__enter__.return_value = io.BytesIO(original.encode("utf-8"))
+                handle.__exit__.return_value = False
+                return handle
+            if mode == "w":
+                handle = MagicMock()
+                handle.__enter__.return_value = writer
+                handle.__exit__.return_value = False
+                return handle
+            raise AssertionError(f"unexpected open mode: {mode}")
+
+        with patch("builtins.open", side_effect=fake_open) as mock_open:
+            with patch("os.path.isfile", return_value=True):
+                result = mod.execute_tool(
+                    name="edit_file",
+                    arguments={
+                        "file": target,
+                        "old_string": "beta",
+                        "new_string": "gamma",
+                    },
+                )
+
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("file") == target
+        assert parsed.get("failure_reason") is None
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        mock_open.assert_any_call(target, "rb")
+        mock_open.assert_any_call(target, "w", encoding="utf-8", newline="")
+        writer.write.assert_called_once_with(updated)
+
     def test_execute_search_file(self):
         mod = _import_tools()
         with patch("subprocess.run") as mock_run:
@@ -997,6 +1052,547 @@ class TestExecuteToolIntegration:
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
         assert f.read_text(encoding="utf-8") == "hello there"
+
+    def test_execute_edit_file_real(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") is None
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_not_found(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "delta", "new_string": "epsilon"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "not_found"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_not_unique(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\nbeta\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "not_unique"
+        assert parsed.get("match_count") == 2
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_rejects_missing_old_string(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert "old_string is required" in parsed.get("error", "")
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_rejects_lazy_elision(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta",
+                "new_string": "delta\n// existing code",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_rejects_no_op_edit(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta", "new_string": "beta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert "old_string and new_string must differ" in parsed.get("error", "")
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_rejects_directory_target(self, tmp_path):
+        mod = _import_tools()
+        original_dir = tmp_path / "nested"
+        original_dir.mkdir()
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(original_dir), "old_string": "beta", "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(original_dir)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert "file is not a regular file" in parsed.get("error", "")
+
+    def test_execute_edit_file_rejects_binary_target(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "blob.bin"
+        original = b"\x00\xff\x00abc"
+        f.write_bytes(original)
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "abc", "new_string": "xyz"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert parsed.get("match_count") == 0
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert "file is not valid UTF-8 text" in parsed.get("error", "")
+        assert f.read_bytes() == original
+
+    def test_execute_edit_file_writes_telemetry_entry(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        telemetry_path = tmp_path / "edit-file-telemetry.jsonl"
+        monkeypatch.setattr(mod, "_EDIT_FILE_TELEMETRY_PATH", telemetry_path)
+        f = tmp_path / "edit.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        entries = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
+        assert len(entries) == 1
+        timestamp = entries[0].pop("timestamp")
+        assert entries[0] == {
+            "tool": "edit_file",
+            "outcome": "success",
+            "applied": True,
+            "file": str(f),
+            "failure_reason": None,
+            "match_count": 1,
+            "normalization_applied": [],
+            "counters": {
+                "total": 1,
+                "success": 1,
+                "not_found": 0,
+                "not_unique": 0,
+                "malformed_request": 0,
+                "normalization_assisted": 0,
+            },
+        }
+        assert timestamp
+
+    def test_execute_edit_file_telemetry_counters_accumulate(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        telemetry_path = tmp_path / "edit-file-telemetry.jsonl"
+        monkeypatch.setattr(mod, "_EDIT_FILE_TELEMETRY_PATH", telemetry_path)
+        f = tmp_path / "edit.txt"
+        f.write_bytes(b"alpha\r\nbeta\r\n")
+
+        success = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta\n", "new_string": "delta\n"},
+        )
+        success_parsed = json.loads(success)
+        assert success_parsed.get("normalization_applied") == ["line_endings"]
+
+        failure = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "missing", "new_string": "delta"},
+        )
+        failure_parsed = json.loads(failure)
+        assert failure_parsed.get("failure_reason") == "not_found"
+
+        entries = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
+        assert len(entries) == 2
+        assert entries[0]["counters"] == {
+            "total": 1,
+            "success": 1,
+            "not_found": 0,
+            "not_unique": 0,
+            "malformed_request": 0,
+            "normalization_assisted": 1,
+        }
+        assert entries[1]["counters"] == {
+            "total": 2,
+            "success": 1,
+            "not_found": 1,
+            "not_unique": 0,
+            "malformed_request": 0,
+            "normalization_assisted": 1,
+        }
+
+    def test_execute_edit_file_normalizes_line_endings_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-crlf.txt"
+        f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["line_endings"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_bytes() == b"alpha\r\ndelta\r\ngamma\r\n"
+
+    def test_execute_edit_file_normalizes_crlf_in_old_string_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-lf.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\r\n",
+                "new_string": "delta\r\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["line_endings"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_does_not_report_line_endings_when_exact_match_needs_none(
+        self, tmp_path
+    ):
+        mod = _import_tools()
+        f = tmp_path / "edit-crlf-exact.txt"
+        f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\r\n",
+                "new_string": "delta\r\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_bytes() == b"alpha\r\ndelta\r\ngamma\r\n"
+
+    def test_execute_edit_file_normalizes_trailing_whitespace_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-trailing-space.txt"
+        f.write_text("alpha\nbeta   \ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["trailing_whitespace"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_normalizes_trailing_whitespace_in_old_string_for_matching(
+        self, tmp_path
+    ):
+        mod = _import_tools()
+        f = tmp_path / "edit-old-trailing-space.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta   \n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["trailing_whitespace"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_does_not_report_trailing_whitespace_when_exact_match_needs_none(
+        self, tmp_path
+    ):
+        mod = _import_tools()
+        f = tmp_path / "edit-trailing-space-exact.txt"
+        f.write_text("alpha\nbeta   \ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta   \n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_canonicalizes_final_newline(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-no-final-newline.txt"
+        f.write_text("alpha\nbeta\ngamma", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "gamma\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["final_newline"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
+        assert f.read_text(encoding="utf-8") == "alpha\nbeta\ndelta\n"
+
+    def test_execute_edit_file_canonicalizes_extra_final_newlines(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit-extra-final-newlines.txt"
+        f.write_text("alpha\nbeta\ngamma\n\n\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "gamma\n",
+                "new_string": "delta\n\n\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["final_newline"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
+        assert f.read_text(encoding="utf-8") == "alpha\nbeta\ndelta\n"
+
+    def test_execute_edit_file_normalizes_indentation_width_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "indent-width.py"
+        f.write_text(
+            "if ready:\n"
+            "    alpha()\n"
+            "    beta()\n",
+            encoding="utf-8",
+        )
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "if ready:\n  alpha()\n  beta()\n",
+                "new_string": "if ready:\n  alpha()\n  gamma()\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["indentation"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
+        assert f.read_text(encoding="utf-8") == (
+            "if ready:\n"
+            "    alpha()\n"
+            "    gamma()\n"
+        )
+
+    def test_execute_edit_file_normalizes_tabs_vs_spaces_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "indent-tabs.py"
+        f.write_text("if ready:\n\talpha()\n\tbeta()\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "if ready:\n    alpha()\n    beta()\n",
+                "new_string": "if ready:\n    alpha()\n    gamma()\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == ["indentation"]
+        assert parsed.get("edited_range") == {"start_line": 3, "end_line": 3}
+        assert f.read_text(encoding="utf-8") == "if ready:\n\talpha()\n\tgamma()\n"
+
+    def test_execute_edit_file_does_not_cross_match_nested_blocks(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "indent-cross-nesting.py"
+        f.write_text(
+            "if ready:\n"
+            "    alpha()\n"
+            "        beta()\n",
+            encoding="utf-8",
+        )
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "if ready:\n  alpha()\n  beta()\n",
+                "new_string": "if ready:\n  alpha()\n  gamma()\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("failure_reason") == "not_found"
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert f.read_text(encoding="utf-8") == (
+            "if ready:\n"
+            "    alpha()\n"
+            "        beta()\n"
+        )
+
+    def test_execute_edit_file_preserves_markdown_hard_linebreak_whitespace(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "hard-break.md"
+        f.write_text("alpha  \nbeta\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "alpha  \n",
+                "new_string": "delta  \n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") is None
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 1, "end_line": 1}
+        assert f.read_text(encoding="utf-8") == "delta  \nbeta\n"
+
+    def test_execute_edit_file_does_not_strip_markdown_trailing_space_for_matching(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "strict-hard-break.md"
+        original = "alpha  \nbeta\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "alpha\n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "not_found"
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert f.read_text(encoding="utf-8") == original
 
     def test_execute_search_file_real(self, tmp_path):
         mod = _import_tools()

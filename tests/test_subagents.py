@@ -131,7 +131,27 @@ class TestSearchRunner:
         stream_kwargs = fake_client.stream_command_events.call_args.kwargs
         tool_names = {tool["function"]["name"] for tool in stream_kwargs["tools"]}
         assert tool_names == {"search_file"}
-        assert result == "Searching..."
+        # When both deltas and a final answer are present, prefer the final
+        # canonical answer over the accumulated streaming deltas.
+        assert result == "Found `spoke/narrator.py` and related tests."
+
+    def test_run_search_subagent_falls_back_to_deltas_when_no_final(self):
+        stream_events = [
+            CommandStreamEvent(kind="assistant_delta", text="Only deltas here."),
+        ]
+        fake_client = MagicMock()
+        fake_client.stream_command_events.return_value = iter(stream_events)
+        fake_factory = MagicMock(return_value=fake_client)
+
+        result = sub_mod.run_search_subagent_query(
+            "test query",
+            base_url="http://localhost:8090",
+            model="qwen-test",
+            tools=[],
+            tool_executor=MagicMock(),
+            command_client_factory=fake_factory,
+        )
+        assert result == "Only deltas here."
 
     def test_run_search_subagent_honors_cancel_check(self):
         stream_events = [

@@ -16,6 +16,17 @@ Treat the repo as renamed for documentation purposes and keep naming consistent 
 restoring or removing a README note about a real capability, check
 `docs/documentation_surfaces.toml` and the routed canonical surface first.
 
+When the human says `Make this durable for review`, treat that as a request to
+choose the narrowest durable review-control surface:
+
+- use Topothesia review surfaces when the issue is authority, canonical-vs-
+  fallback interpretation, allowed divergence, or review-routing semantics;
+  consult `docs/review_surfaces.toml` and `docs/review-authority-surfaces.md`
+- use Prilosec when the issue is a recurring acknowledged false positive or
+  accepted finding family that future reviews should suppress or demote
+- use a review-artifact disposition only when the issue is specific to one
+  reviewed commit and does not need a standing repo-level rule
+
 For the current `spoke` contract, the public README is intentionally not the
 home for smoke-only runtime affordances or developer-only repair-pass notes.
 

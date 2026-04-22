@@ -197,6 +197,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--backend", choices=("local", "cloud", "sidecar"), default="local")
     parser.add_argument("--model", default=None)
     parser.add_argument("--voice", action="append", default=[])
+    parser.add_argument("--voice-file", action="append", default=[])
     parser.add_argument("--text", action="append", default=[])
     parser.add_argument("--text-file", action="append", default=[])
     parser.add_argument("--output-dir", required=True)
@@ -220,7 +221,11 @@ def main(argv: list[str] | None = None) -> int:
     if not texts:
         raise SystemExit("Provide at least one --text or --text-file")
 
-    voices = list(args.voice) or [_default_voice_for_backend(args.backend)]
+    voices = list(args.voice)
+    for voice_file in args.voice_file:
+        voices.extend(load_phrase_lines(voice_file))
+    if not voices:
+        voices = [_default_voice_for_backend(args.backend)]
     model = args.model or _default_model_for_backend(args.backend)
     specs = [
         WakewordSampleSpec(text=text, backend=args.backend, model=model, voice=voice)

@@ -1,4 +1,4 @@
-# Smoke env — Operation Eyeball (capture-context image payloads for VLM)
+# Smoke env — Operation Mouthfeel
 export SPOKE_COMMAND_URL="http://localhost:8001"
 export SPOKE_COMMAND_API_KEY="1234"
 export OMLX_SERVER_API_KEY="1234"
@@ -10,3 +10,12 @@ export SPOKE_NARRATOR_API_KEY="1234"
 export SPOKE_NARRATOR_MODEL="Bonsai-8B-mlx-1bit"
 export PYTHONPATH="/Users/noahlyons/dev/mlx-audio"
 export SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY="A+ka4pry7nzXxUL3q8YiOjbDn4i1xjdMYK3Qh1KS2CvPRZ7vvS08vg=="
+export SPOKE_HANDSFREE_DEFAULT_ON="1"
+# Mouthfeel keeps Porcupine for the stock listen/sleep words and layers the
+# local openWakeWord tessera model on top as an auxiliary command detector.
+export SPOKE_WAKEWORD_BACKEND="porcupine"
+export SPOKE_WAKEWORD_LISTEN="computer"
+export SPOKE_WAKEWORD_SLEEP="terminator"
+export SPOKE_WAKEWORD_LISTEN_SENSITIVITY="0.72"
+export SPOKE_WAKEWORD_SLEEP_SENSITIVITY="0.60"
+export SPOKE_WAKEWORD_TESSERA_MODEL="/tmp/operation-mouthfeel-openwakeword-0421/tessera.onnx"

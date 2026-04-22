@@ -110,7 +110,7 @@ _SYSTEM_PROMPT = (
     "Environment: your working directory is ~/dev, the user's development root. "
     "File tool paths resolve relative to ~/dev, so you can use short paths like "
     "'epistaxis/projects/spoke/epistaxis.md' or 'spoke/spoke/command.py'. "
-    "Key repos: spoke (this app — voice interface), omlx (local model server), "
+    "Key repos: spoke (this app), omlx (local model server), "
     "mlx-audio (TTS/ASR sidecar), epanorthosis (automated review), epistaxis "
     "(cross-session state and coordination), grapheus (inference traffic proxy).\n\n"
     "Epistaxis (~/dev/epistaxis/) is the user's durable off-repo state system. Layout:\n"
