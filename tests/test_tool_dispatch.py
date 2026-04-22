@@ -1203,6 +1203,14 @@ class TestExecuteToolIntegration:
             "normalization_assisted": 1,
         }
 
+    def test_edit_file_telemetry_path_honors_env_override(self, tmp_path, monkeypatch):
+        telemetry_path = tmp_path / "custom" / "edit-file-telemetry.jsonl"
+        monkeypatch.setenv("SPOKE_EDIT_FILE_TELEMETRY_PATH", str(telemetry_path))
+
+        mod = _import_tools()
+
+        assert mod._edit_file_telemetry_path() == telemetry_path
+
     def test_execute_edit_file_normalizes_line_endings_for_matching(self, tmp_path):
         mod = _import_tools()
         f = tmp_path / "edit-crlf.txt"

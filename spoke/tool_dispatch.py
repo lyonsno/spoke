@@ -47,6 +47,13 @@ _EDIT_FILE_TELEMETRY_COUNTER_KEYS = (
 )
 
 
+def _edit_file_telemetry_path() -> Path:
+    override = os.environ.get("SPOKE_EDIT_FILE_TELEMETRY_PATH")
+    if override:
+        return Path(override).expanduser()
+    return _EDIT_FILE_TELEMETRY_PATH
+
+
 def _is_local_omnivoice_cold_tts(tts_client: Any) -> bool:
     """Whether the active TTS client is a cold local OmniVoice instance."""
     model_id = getattr(tts_client, "_model_id", "")
@@ -1174,7 +1181,8 @@ def _latest_edit_file_counters(path: Path) -> dict[str, int]:
 
 def _append_edit_file_telemetry(result: dict[str, Any]) -> None:
     try:
-        counters = _latest_edit_file_counters(_EDIT_FILE_TELEMETRY_PATH)
+        telemetry_path = _edit_file_telemetry_path()
+        counters = _latest_edit_file_counters(telemetry_path)
         outcome = (
             "success"
             if result.get("status") == "success"
@@ -1197,8 +1205,8 @@ def _append_edit_file_telemetry(result: dict[str, Any]) -> None:
             "normalization_applied": normalization_applied,
             "counters": counters,
         }
-        _EDIT_FILE_TELEMETRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_EDIT_FILE_TELEMETRY_PATH, "a", encoding="utf-8") as f:
+        telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(telemetry_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception:
         logger.debug("Failed to append edit_file telemetry", exc_info=True)
