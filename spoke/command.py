@@ -601,6 +601,9 @@ class CommandClient:
             if event.kind == "assistant_delta":
                 visible_response += event.text
                 yield event.text
+            elif event.kind == "approval_request":
+                visible_response += event.text
+                yield event.text
             elif event.kind == "assistant_final":
                 final_response = event.text
 
@@ -1067,13 +1070,16 @@ class CommandClient:
                         text_to_process = token
                         if thinking_state == "detect":
                             thinking_tag_buf += text_to_process
-                            if thinking_tag_buf.startswith("<think>"):
+                            candidate = thinking_tag_buf.lstrip()
+                            if candidate.startswith("<think>"):
                                 thinking_state = "thinking"
-                                text_to_process = thinking_tag_buf[len("<think>"):]
+                                text_to_process = candidate[len("<think>"):]
                                 thinking_tag_buf = ""
                                 if not text_to_process:
                                     continue
-                            elif len(thinking_tag_buf) < len("<think>") and "<think>".startswith(thinking_tag_buf):
+                            elif not candidate:
+                                continue
+                            elif len(candidate) < len("<think>") and "<think>".startswith(candidate):
                                 continue
                             else:
                                 thinking_state = "content"
@@ -1118,7 +1124,6 @@ class CommandClient:
                             if not tool_name or idx is None or idx in emitted_tool_call_indices:
                                 continue
                             indicator = f"\n[calling {tool_name}…]\n"
-                            round_content += indicator
                             visible_response += indicator
                             yield CommandStreamEvent(kind="assistant_delta", text=indicator)
                             emitted_tool_call_indices.add(idx)
