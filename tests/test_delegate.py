@@ -4063,6 +4063,75 @@ class TestCommandCallbacks:
         ]
         assert token_calls[0][0][1]["text"] == "\n$ python3 -m venv demo_repo/venv\n[exit 0 · no output]\n"
 
+    def test_approve_pending_command_restores_prior_stream_before_replay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=False)
+        d._command_client = MagicMock()
+        d._make_tool_executor = MagicMock(return_value=MagicMock())
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "kind": "terminal_command",
+            "argv": ["git", "status", "--short"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: git status --short",
+            "message": "Approval needed\n\ngit status --short",
+        }
+        d._command_streaming_text = (
+            "Let me inspect the repo state first.\n\n"
+            "[calling run_terminal_command…]\n"
+            "$ git status --short\n"
+            "[exit 0 · no output]\n"
+        )
+        d._transcription_token = 1
+        d._sync_command_overlay_brightness = MagicMock()
+
+        d._command_client.approve_pending_tool_call.return_value = iter(
+            [
+                MagicMock(
+                    kind="assistant_delta",
+                    text="\n[calling run_terminal_command…]\n$ date\nWed Apr 22 14:35:01 EDT 2026\n",
+                ),
+                MagicMock(kind="assistant_final", text="Done."),
+            ]
+        )
+
+        class _ImmediateThread:
+            def __init__(self, *, target=None, daemon=None):
+                self._target = target
+                self.daemon = daemon
+
+            def start(self):
+                assert self._target is not None
+                self._target()
+
+        with (
+            patch.object(
+                main_module.threading,
+                "Thread",
+                side_effect=lambda *args, **kwargs: _ImmediateThread(*args, **kwargs),
+            ),
+            patch.object(main_module.time, "sleep"),
+        ):
+            d._approve_pending_command()
+
+        selector_calls = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        )
+        restore_call = next(
+            c for c in selector_calls if c[0][0] == "commandRestoreStreamingText:"
+        )
+        assert restore_call[0][1] == {
+            "token": 1,
+            "text": d._command_streaming_text,
+        }
+        restore_index = selector_calls.index(restore_call)
+        first_token_index = next(
+            i for i, c in enumerate(selector_calls) if c[0][0] == "commandToken:"
+        )
+        assert restore_index < first_token_index
+
     def test_approve_pending_command_for_session_records_rule_and_shows_acknowledgement(
         self, main_module, monkeypatch
     ):

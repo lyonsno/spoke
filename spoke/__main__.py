@@ -3779,6 +3779,21 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Approval needed")
 
+    def commandRestoreStreamingText_(self, payload: dict) -> None:
+        """Main thread: restore the pre-approval streamed body before replay."""
+        if payload["token"] != self._transcription_token:
+            return
+        text = payload.get("text", "")
+        if not text:
+            return
+        overlay = self._command_overlay
+        if overlay is None:
+            return
+        try:
+            overlay.set_response_text(text)
+        except Exception:
+            logger.exception("Command overlay failed to restore streamed body")
+
     def _format_pending_command_acknowledgement(
         self,
         approval_request: dict | None,
@@ -3875,6 +3890,13 @@ class SpokeAppDelegate(NSObject):
                     time.sleep(acknowledgement_dwell_s)
                 if token != self._transcription_token:
                     return
+                prior_stream = getattr(self, "_command_streaming_text", "")
+                if prior_stream:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandRestoreStreamingText:",
+                        {"token": token, "text": prior_stream},
+                        False,
+                    )
                 for event in self._command_client.approve_pending_tool_call(
                     tool_executor=self._make_tool_executor(),
                     cancel_check=lambda: token != self._transcription_token,
