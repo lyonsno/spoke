@@ -630,6 +630,30 @@ class TestToolState:
         # Now it should show seconds again
         assert "s" in overlay._thinking_label.setStringValue_.call_args[0][0]
 
+    def test_append_token_splits_leading_tool_block_from_following_prose(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        storage = overlay._text_view.textStorage.return_value
+        storage.appendAttributedString_.reset_mock()
+        overlay._make_tool_indicator_fragment = MagicMock(return_value="TOOL")
+        overlay._make_response_fragment = MagicMock(return_value="RESP")
+        overlay._update_layout = MagicMock()
+
+        overlay.append_token(
+            "\n[calling read_file…]\n[/tmp/demo.md · ~2557 tokens]\n\nAwesome, the tool call worked this time."
+        )
+
+        overlay._make_tool_indicator_fragment.assert_called_once_with(
+            "\n[calling read_file…]\n[/tmp/demo.md · ~2557 tokens]\n\n"
+        )
+        overlay._make_response_fragment.assert_called_once_with(
+            "Awesome, the tool call worked this time."
+        )
+        assert storage.appendAttributedString_.call_args_list == [
+            (( "TOOL",), {}),
+            (( "RESP",), {}),
+        ]
+
 
 class TestSDFCaching:
     """SDF recomputation is skipped when geometry hasn't changed."""

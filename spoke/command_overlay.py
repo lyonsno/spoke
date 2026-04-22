@@ -690,18 +690,56 @@ class CommandOverlay(NSObject):
             )
             self._text_view.textStorage().appendAttributedString_(sep)
 
-        # Style tool call indicators smaller (like collapsed thinking)
-        # Covers: [calling tool…], [~N tokens], [screen capture · ~N tokens],
-        #         ["query" in path], [path · ~N tokens], [100%]
-        stripped = token.lstrip("\n ")
-        is_tool_indicator = stripped.startswith("[") and not stripped.startswith("[!")
-        if is_tool_indicator:
-            frag = self._make_tool_indicator_fragment(token)
-        else:
-            frag = self._make_response_fragment(token)
-        self._text_view.textStorage().appendAttributedString_(frag)
+        for kind, fragment_text in self._split_stream_fragment_styles(token):
+            if not fragment_text:
+                continue
+            if kind == "tool_indicator":
+                frag = self._make_tool_indicator_fragment(fragment_text)
+            else:
+                frag = self._make_response_fragment(fragment_text)
+            self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
+
+    def _split_stream_fragment_styles(self, token: str) -> list[tuple[str, str]]:
+        """Split a streamed chunk into tool-indicator and response fragments.
+
+        The parser can hand us a single chunk that starts with one or more
+        tool-indicator lines and then continues with normal assistant prose.
+        Styling the whole chunk as a tool indicator produces a visible font
+        discontinuity until the next chunk arrives.
+        """
+        stripped = token.lstrip("\n ")
+        if not stripped.startswith("[") or stripped.startswith("[!"):
+            return [("response", token)]
+
+        lines = token.splitlines(keepends=True)
+        tool_prefix: list[str] = []
+        idx = 0
+
+        while idx < len(lines):
+            line = lines[idx]
+            line_stripped = line.lstrip(" \t")
+            if line_stripped.strip() == "":
+                tool_prefix.append(line)
+                idx += 1
+                continue
+            if line_stripped.startswith("[") and not line_stripped.startswith("[!"):
+                tool_prefix.append(line)
+                idx += 1
+                continue
+            break
+
+        if idx >= len(lines):
+            return [("tool_indicator", token)]
+
+        if not tool_prefix:
+            return [("response", token)]
+
+        return [
+            ("tool_indicator", "".join(tool_prefix)),
+            ("response", "".join(lines[idx:])),
+        ]
 
     def set_response_text(self, text: str) -> None:
         """Replace the visible assistant response with final canonical text.
