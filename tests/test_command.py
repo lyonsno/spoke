@@ -73,6 +73,14 @@ class TestCommandClient:
         assert "cancel_subagent" in _SYSTEM_PROMPT
         assert "do not spin" in _SYSTEM_PROMPT.lower()
 
+    def test_system_prompt_marks_local_epistaxis_checkout_as_non_authoritative_by_default(self):
+        """Current Epistaxis state should not default to the nearby local checkout."""
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "not durable truth by default" in _SYSTEM_PROMPT
+        assert "origin/main" in _SYSTEM_PROMPT
+        assert "fresh main-based" in _SYSTEM_PROMPT
+
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""
         client = self._make_client()

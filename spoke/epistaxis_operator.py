@@ -58,7 +58,8 @@ def tool_schema() -> dict[str, Any]:
             "name": "run_epistaxis_ops",
             "description": (
                 "Run a bounded set of Epistaxis-only operations from a dedicated "
-                "Epistaxis worktree. No arbitrary shell or non-Epistaxis writes."
+                "Epistaxis worktree. Not for authoritative current-state reads. "
+                "No arbitrary shell or non-Epistaxis writes."
             ),
             "parameters": {
                 "type": "object",

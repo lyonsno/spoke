@@ -75,7 +75,7 @@ class TestToolSchemas:
             params["properties"]["source_ref"]["description"]
         )
 
-    def test_epistaxis_ops_schema(self):
+    def test_epistaxis_ops_schema_mentions_non_authoritative_current_state_reads(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
         names = {s["function"]["name"] for s in schemas}
@@ -86,6 +86,7 @@ class TestToolSchemas:
         assert "epistaxis_root" in params.get("properties", {})
         assert "target_repo" in params.get("properties", {})
         assert "operations" in params.get("properties", {})
+        assert "not for authoritative current-state reads" in op_schema["function"]["description"].lower()
 
     def test_query_gmail_schema(self):
         mod = _import_tools()
