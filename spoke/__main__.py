@@ -929,6 +929,9 @@ class SpokeAppDelegate(NSObject):
         # on explicit space-rooted gestures instead of ambient key capture.
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
+        self._detector._on_approval_once = self._approve_pending_command
+        self._detector._on_approval_session = self._approve_pending_command_for_session
+        self._detector._on_approval_reject = self._cancel_pending_command_approval
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
@@ -1155,6 +1158,7 @@ class SpokeAppDelegate(NSObject):
         self._recovery_retry_pending: bool = False
         self._pending_command_approval_active: bool = False
         self._pending_command_approval_request: dict | None = None
+        self._terminal_session_approval_rules: list[dict[str, Any]] = []
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -3394,6 +3398,9 @@ class SpokeAppDelegate(NSObject):
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
                 history_compactor=_compact_history,
+                session_approval_rules=list(
+                    getattr(self, "_terminal_session_approval_rules", [])
+                ),
                 **kwargs,
             )
         return _executor
@@ -3780,9 +3787,50 @@ class SpokeAppDelegate(NSObject):
         else:
             command_text = "Approved command"
         headline = "Approved for session" if session_scope else "Accepted"
-        return f"{headline}\n\n{command_text}\n\nRunning approved command…"
+        rule_summary = ""
+        if session_scope:
+            rule = self._infer_terminal_session_rule(request)
+            if rule is not None:
+                prefix = rule.get("argv_prefix") or [rule.get("executable", "command")]
+                command_label = " ".join(str(part) for part in prefix if part)
+                cwd_under = str(rule.get("cwd_under", "")).strip()
+                if command_label and cwd_under:
+                    rule_summary = f"\n\nRule: {command_label} under {cwd_under}"
+        return f"{headline}\n\n{command_text}{rule_summary}\n\nRunning approved command…"
 
-    def _approve_pending_command(self) -> None:
+    def _infer_terminal_session_rule(self, approval_request: dict) -> dict[str, Any] | None:
+        argv = approval_request.get("argv")
+        cwd = approval_request.get("cwd")
+        if not isinstance(argv, list) or not argv or not isinstance(cwd, str) or not cwd:
+            return None
+        normalized_argv = [str(token) for token in argv]
+        normalized_argv[0] = Path(normalized_argv[0]).name
+        if len(normalized_argv) >= 3 and normalized_argv[1] == "-m":
+            argv_prefix = normalized_argv[:3]
+        elif len(normalized_argv) >= 2 and not normalized_argv[1].startswith("-"):
+            argv_prefix = normalized_argv[:2]
+        else:
+            argv_prefix = normalized_argv[:1]
+        return {
+            "executable": normalized_argv[0],
+            "argv_prefix": argv_prefix,
+            "cwd_under": cwd,
+        }
+
+    def _approve_pending_command_for_session(self) -> None:
+        if not getattr(self, "_pending_command_approval_active", False):
+            return
+        approval_request = getattr(self, "_pending_command_approval_request", None) or {}
+        rules = getattr(self, "_terminal_session_approval_rules", None)
+        if rules is None:
+            rules = []
+            self._terminal_session_approval_rules = rules
+        rule = self._infer_terminal_session_rule(approval_request)
+        if rule is not None and rule not in rules:
+            rules.append(rule)
+        self._approve_pending_command(session_scope=True)
+
+    def _approve_pending_command(self, *, session_scope: bool = False) -> None:
         """Resume a paused command turn after the user approved the pending tool call."""
         if (
             not getattr(self, "_pending_command_approval_active", False)
@@ -3796,11 +3844,15 @@ class SpokeAppDelegate(NSObject):
         self._detector.approval_active = False
         token = self._transcription_token
         overlay = self._command_overlay
+        acknowledgement_dwell_s = 0.35 if session_scope else 0.2
         if overlay is not None:
             try:
                 overlay.set_tool_active(True)
                 overlay.set_response_text(
-                    self._format_pending_command_acknowledgement(approval_request)
+                    self._format_pending_command_acknowledgement(
+                        approval_request,
+                        session_scope=session_scope,
+                    )
                 )
             except Exception:
                 logger.exception("Command overlay failed to show approval feedback")
@@ -3810,6 +3862,10 @@ class SpokeAppDelegate(NSObject):
         def _resume():
             full_response = ""
             try:
+                if overlay is not None:
+                    time.sleep(acknowledgement_dwell_s)
+                if token != self._transcription_token:
+                    return
                 for event in self._command_client.approve_pending_tool_call(
                     tool_executor=self._make_tool_executor(),
                     cancel_check=lambda: token != self._transcription_token,

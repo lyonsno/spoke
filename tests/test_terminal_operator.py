@@ -100,6 +100,68 @@ class TestTerminalOperator:
         assert result["decision"] == "approval_required"
         assert result["executed"] is False
         assert "requires approval" in result["reason"]
+        assert (
+            result["approval_request"]["message"]
+            == "Approval needed\n\n"
+            "git commit -m hello\n"
+            f"cwd: {tmp_path}\n"
+            "reason: command requires approval: git commit -m\n\n"
+            "Enter to run once  ·  Shift+Enter to approve for session  ·  Delete to reject  ·  speak or type to revise"
+        )
+        mock_run.assert_not_called()
+
+    def test_execute_allows_matching_session_rule(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == ["/usr/bin/git", "commit", "-m", "bye"]
+            assert cwd == str(tmp_path)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"",
+                stderr=b"",
+            )
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/git"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = TerminalOperator(
+                session_approval_rules=[
+                    {
+                        "executable": "git",
+                        "argv_prefix": ["git", "commit"],
+                        "cwd_under": str(tmp_path),
+                    }
+                ]
+            ).execute_command(
+                ["git", "commit", "-m", "bye"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "allow"
+        assert result["executed"] is True
+
+    def test_execute_keeps_approval_for_non_matching_session_rule(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator(
+                session_approval_rules=[
+                    {
+                        "executable": "git",
+                        "argv_prefix": ["git", "commit"],
+                        "cwd_under": str(tmp_path / "nested"),
+                    }
+                ]
+            ).execute_command(
+                ["git", "commit", "-m", "bye"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
         mock_run.assert_not_called()
 
     def test_execute_requires_approval_for_find_delete(self, tmp_path):

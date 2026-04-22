@@ -50,6 +50,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._scene_cache = None
     delegate._tts_client = None
     delegate._command_tool_used_tts = False
+    delegate._terminal_session_approval_rules = []
     # Tray state
     delegate._tray_stack = []
     delegate._tray_index = 0
@@ -3938,10 +3939,13 @@ class TestCommandCallbacks:
                 assert self._target is not None
                 self._target()
 
-        with patch.object(
-            main_module.threading,
-            "Thread",
-            side_effect=lambda *args, **kwargs: _ImmediateThread(*args, **kwargs),
+        with (
+            patch.object(
+                main_module.threading,
+                "Thread",
+                side_effect=lambda *args, **kwargs: _ImmediateThread(*args, **kwargs),
+            ),
+            patch.object(main_module.time, "sleep") as sleep,
         ):
             d._approve_pending_command()
 
@@ -3950,12 +3954,72 @@ class TestCommandCallbacks:
         )
         d._command_overlay.set_tool_active.assert_any_call(True)
         d._menubar.set_status_text.assert_any_call("Running approved command…")
+        sleep.assert_called_once_with(0.2)
         complete_call = next(
             c
             for c in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
             if c[0][0] == "commandComplete:"
         )
         assert complete_call[0][1]["response"] == "Done."
+
+    def test_approve_pending_command_for_session_records_rule_and_shows_acknowledgement(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_client = MagicMock()
+        d._make_tool_executor = MagicMock(return_value=MagicMock())
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "kind": "terminal_command",
+            "argv": ["git", "commit", "-m", "hello"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: git commit -m",
+            "message": "Approval needed\n\ngit commit -m hello",
+        }
+        d._transcription_token = 1
+
+        d._command_client.approve_pending_tool_call.return_value = iter(
+            [MagicMock(kind="assistant_final", text="Committed.")]
+        )
+
+        class _ImmediateThread:
+            def __init__(self, *, target=None, daemon=None):
+                self._target = target
+                self.daemon = daemon
+
+            def start(self):
+                assert self._target is not None
+                self._target()
+
+        with (
+            patch.object(
+                main_module.threading,
+                "Thread",
+                side_effect=lambda *args, **kwargs: _ImmediateThread(*args, **kwargs),
+            ),
+            patch.object(main_module.time, "sleep") as sleep,
+        ):
+            d._approve_pending_command_for_session()
+
+        assert d._terminal_session_approval_rules == [
+            {
+                "executable": "git",
+                "argv_prefix": ["git", "commit"],
+                "cwd_under": "/tmp/repo",
+            }
+        ]
+        d._command_overlay.set_response_text.assert_any_call(
+            "Approved for session\n\ngit commit -m hello\n\n"
+            "Rule: git commit under /tmp/repo\n\nRunning approved command…"
+        )
+        sleep.assert_called_once_with(0.35)
+        complete_call = next(
+            c
+            for c in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+            if c[0][0] == "commandComplete:"
+        )
+        assert complete_call[0][1]["response"] == "Committed."
 
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

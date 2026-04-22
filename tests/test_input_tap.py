@@ -1005,6 +1005,31 @@ class TestTrayAwareness:
             approval_tap=True,
         )
 
+    def test_approval_shift_enter_tap_approves_for_session(
+        self, input_tap_module
+    ):
+        """Shift+Enter should approve the pending command for the session."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.approval_active = True
+        det.command_overlay_active = True
+        det._on_approval_session = MagicMock()
+        mod._active_detector = det
+        event = MagicMock()
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None
+        assert result_up is None
+        det._on_approval_session.assert_called_once_with()
+        on_end.assert_not_called()
+
     def test_tray_shift_hold_then_shift_release_stays_tray_native(
         self, input_tap_module
     ):
