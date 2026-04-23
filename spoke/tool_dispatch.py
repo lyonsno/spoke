@@ -313,7 +313,7 @@ _LIST_SUBAGENTS_SCHEMA = {
     "type": "function",
     "function": {
         "name": "list_subagents",
-        "description": "List background subagent jobs and their current states.",
+        "description": "List background subagent jobs and their current states. Returns ids, states, and compact previews, not full final results.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -332,7 +332,7 @@ _GET_SUBAGENT_RESULT_SCHEMA = {
             "properties": {
                 "subagent_id": {
                     "type": "string",
-                    "description": "The subagent id returned by launch_subagent.",
+                    "description": "Opaque subagent id. Copy it exactly from launch_subagent or list_subagents.",
                 },
             },
             "required": ["subagent_id"],
@@ -350,7 +350,7 @@ _CANCEL_SUBAGENT_SCHEMA = {
             "properties": {
                 "subagent_id": {
                     "type": "string",
-                    "description": "The subagent id returned by launch_subagent.",
+                    "description": "Opaque subagent id. Copy it exactly from launch_subagent or list_subagents.",
                 },
             },
             "required": ["subagent_id"],

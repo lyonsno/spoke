@@ -55,6 +55,23 @@ class TestSubagentManager:
         assert result["result"] == "Found the relevant code paths."
         assert manager.list_jobs()[0]["id"] == launched["id"]
 
+    def test_list_jobs_exposes_preview_but_not_full_result_payload(self):
+        _DeferredThread.created = []
+
+        manager = sub_mod.SubagentManager(
+            search_runner=lambda prompt, cancel_check: "Found the relevant code paths.",
+            thread_factory=_DeferredThread,
+        )
+
+        launched = manager.launch("search", "find the narrator proxy wiring")
+        _DeferredThread.created[-1].run_now()
+
+        listed = manager.list_jobs()[0]
+        assert listed["id"] == launched["id"]
+        assert listed["result"] is None
+        assert listed["result_preview"] == "Found the relevant code paths."
+        assert listed["result_available"] is True
+
     def test_cancelled_job_does_not_publish_result(self):
         _DeferredThread.created = []
 
@@ -77,6 +94,25 @@ class TestSubagentManager:
         result = manager.get_job(launched["id"])
         assert result["state"] == "cancelled"
         assert result["result"] is None
+
+    def test_unknown_job_errors_surface_known_ids(self):
+        _DeferredThread.created = []
+
+        manager = sub_mod.SubagentManager(
+            search_runner=lambda prompt, cancel_check: "done",
+            thread_factory=_DeferredThread,
+        )
+
+        launched = manager.launch("search", "find overlay clipping bug")
+
+        fetched = manager.get_job("sub_deadbeef")
+        cancelled = manager.cancel("sub_deadbeef")
+
+        assert fetched["error"] == "Unknown subagent: sub_deadbeef"
+        assert fetched["known_ids"] == [launched["id"]]
+        assert fetched["id_format"] == "subagent-N"
+        assert "copy it exactly" in fetched["hint"].lower()
+        assert cancelled["known_ids"] == [launched["id"]]
 
     def test_running_job_advises_against_tight_polling(self):
         manager = sub_mod.SubagentManager(

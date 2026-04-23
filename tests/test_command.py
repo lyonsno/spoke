@@ -72,6 +72,7 @@ class TestCommandClient:
         assert "get_subagent_result" in _SYSTEM_PROMPT
         assert "cancel_subagent" in _SYSTEM_PROMPT
         assert "do not spin" in _SYSTEM_PROMPT.lower()
+        assert "copy them exactly" in _SYSTEM_PROMPT.lower()
 
     def test_system_prompt_marks_local_epistaxis_checkout_as_non_authoritative_by_default(self):
         """Current Epistaxis state should not default to the nearby local checkout."""

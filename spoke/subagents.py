@@ -125,20 +125,23 @@ class SubagentManager:
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [self._public_job(self._jobs[job_id]) for job_id in self._order]
+            return [
+                self._public_job(self._jobs[job_id], include_result=False)
+                for job_id in self._order
+            ]
 
     def get_job(self, subagent_id: str) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(subagent_id)
             if job is None:
-                return {"error": f"Unknown subagent: {subagent_id}"}
+                return self._unknown_job(subagent_id)
             return self._public_job(job)
 
     def cancel(self, subagent_id: str) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(subagent_id)
             if job is None:
-                return {"error": f"Unknown subagent: {subagent_id}"}
+                return self._unknown_job(subagent_id)
             if job["state"] in {"completed", "failed", "cancelled"}:
                 return self._public_job(job)
             job["_cancel_event"].set()
@@ -182,8 +185,20 @@ class SubagentManager:
                 job["result"] = result
             job["finished_at"] = _iso_now()
 
+    def _unknown_job(self, subagent_id: str) -> dict[str, Any]:
+        known_ids = list(self._order)
+        return {
+            "error": f"Unknown subagent: {subagent_id}",
+            "known_ids": known_ids,
+            "id_format": "subagent-N",
+            "hint": (
+                "Use the exact id returned by launch_subagent or list_subagents "
+                "(for example `subagent-1`) and copy it exactly."
+            ),
+        }
+
     @staticmethod
-    def _public_job(job: dict[str, Any]) -> dict[str, Any]:
+    def _public_job(job: dict[str, Any], *, include_result: bool = True) -> dict[str, Any]:
         result = job.get("result")
         preview = None
         if isinstance(result, str) and result:
@@ -202,7 +217,8 @@ class SubagentManager:
             "created_at": job["created_at"],
             "started_at": job["started_at"],
             "finished_at": job["finished_at"],
-            "result": result,
+            "result": result if include_result else None,
+            "result_available": result is not None,
             "result_preview": preview,
             "error": job.get("error"),
             "poll_hint": poll_hint,
