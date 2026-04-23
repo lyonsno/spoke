@@ -2746,6 +2746,26 @@ class SpokeAppDelegate(NSObject):
         utterance = getattr(self, "_last_command_utterance", "")
         response = getattr(self, "_last_command_response", "")
         if self._command_client is not None:
+            client_snapshot_getter = getattr(self._command_client, "last_overlay_snapshot", None)
+            client_snapshot = (
+                client_snapshot_getter()
+                if callable(client_snapshot_getter)
+                else None
+            )
+            if (
+                isinstance(client_snapshot, tuple)
+                and len(client_snapshot) == 2
+                and all(isinstance(part, str) for part in client_snapshot)
+            ):
+                hist_utterance, hist_response = client_snapshot
+                if (
+                    utterance
+                    and response
+                    and hist_utterance == utterance
+                    and len(response) >= len(hist_response)
+                ):
+                    return utterance, response
+                return hist_utterance, hist_response
             history = self._command_client.history
             if history:
                 hist_utterance, hist_response = history[-1]
