@@ -271,7 +271,7 @@ class TerminalOperator:
         lines.extend(
             [
                 "",
-                "space to run  ·  shift to cancel  ·  speak or type to revise",
+                "Enter to run  ·  Delete to cancel  ·  speak or type to revise",
             ]
         )
         return "\n".join(lines)

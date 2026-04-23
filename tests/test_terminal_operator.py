@@ -118,6 +118,22 @@ class TestTerminalOperator:
         assert result["approval_state"] == "pending"
         mock_run.assert_not_called()
 
+    def test_pending_approval_message_matches_enter_delete_contract(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "commit", "-m", "hello"],
+                cwd=str(tmp_path),
+            )
+
+        message = result["approval_request"]["message"]
+        assert "Enter to run" in message
+        assert "Delete to cancel" in message
+        assert "speak or type to revise" in message
+        assert "space to run" not in message
+        mock_run.assert_not_called()
+
     def test_approved_run_separates_policy_reason_from_runtime_state(self, tmp_path):
         from spoke import terminal_operator as terminal_operator
 
