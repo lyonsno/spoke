@@ -3892,12 +3892,27 @@ class SpokeAppDelegate(NSObject):
             else error
         )
         logger.error("Command pathway error: %s", error)
+        current_utterance = getattr(self, "_last_command_utterance", "")
+        current_streaming = getattr(self, "_command_streaming_text", "")
+        prior_snapshot = None
+        if not current_streaming:
+            prior_snapshot = self._last_command_overlay_snapshot()
         if self._glow is not None:
             self._glow.hide()
         if self._overlay is not None:
             self._overlay.hide()
-        if getattr(self, "_last_command_utterance", ""):
-            self._last_command_response = error_text
+        display_utterance = current_utterance
+        display_response = error_text
+        if current_streaming:
+            display_response = f"{current_streaming}\n\n{error_text}"
+        elif prior_snapshot is not None:
+            prior_utterance, prior_response = prior_snapshot
+            if prior_response:
+                display_utterance = prior_utterance
+                display_response = f"{prior_response}\n\n{error_text}"
+        if display_utterance:
+            self._last_command_utterance = display_utterance
+        self._last_command_response = display_response
         # Show the error in the command overlay like a response
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
@@ -3907,9 +3922,11 @@ class SpokeAppDelegate(NSObject):
                 except Exception:
                     logger.exception("Command overlay show failed during error presentation")
             try:
-                self._command_overlay.append_token(error_text)
+                if display_utterance:
+                    self._command_overlay.set_utterance(display_utterance)
+                self._command_overlay.set_response_text(display_response)
             except Exception:
-                logger.exception("Command overlay append failed during error presentation")
+                logger.exception("Command overlay response rebuild failed during error presentation")
             try:
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True

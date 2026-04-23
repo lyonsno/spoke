@@ -360,11 +360,12 @@ def _command_optical_shell_config(
     capsule_r = _OVERLAY_HEIGHT / 4.0
     width_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII * capsule_r
     height_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII * capsule_r
+    corner_radius_points = height_points * 0.5
     return {
         "enabled": True,
         "content_width_points": width_points,
         "content_height_points": height_points,
-        "corner_radius_points": _OVERLAY_HEIGHT / 4.0,
+        "corner_radius_points": corner_radius_points,
         "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
         "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
         "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
@@ -2481,11 +2482,11 @@ class CommandOverlay(NSObject):
         if fill is None:
             return
         if enabled:
-            # Hide only the scroll surface. The punch-through mask renders
-            # the streamed text, while the thinking/narrator labels still
-            # need to remain visible above the compositor.
+            # Keep the transcript surface visible. The punch-through mask can
+            # still open the fill behind the glyphs, but the live text view is
+            # the reliable readable layer the operator actually needs.
             if scroll is not None:
-                scroll.setHidden_(True)
+                scroll.setHidden_(False)
         else:
             fill.setMask_(None)
             self._punchthrough_mask_layer = None

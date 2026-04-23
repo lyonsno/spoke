@@ -516,7 +516,9 @@ class TestShowFinishHide:
         # Warp capsule is inflated by half-radius (_OVERLAY_HEIGHT / 4 = 40)
         assert config["content_width_points"] == pytest.approx(1200.0 + 40.0)
         assert config["content_height_points"] == pytest.approx(160.0 + 40.0)
-        assert config["corner_radius_points"] == pytest.approx(40.0)  # _OVERLAY_HEIGHT / 4
+        assert config["corner_radius_points"] == pytest.approx(
+            config["content_height_points"] * 0.5
+        )
 
     def test_apply_backdrop_pulse_style_uses_current_content_height_for_optical_shell(
         self, mock_pyobjc, monkeypatch
@@ -538,6 +540,9 @@ class TestShowFinishHide:
         config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
         # Warp capsule inflated by half-radius (_OVERLAY_HEIGHT / 4 = 20)
         assert config["content_height_points"] == pytest.approx(196.0 + 20.0)
+        assert config["corner_radius_points"] == pytest.approx(
+            config["content_height_points"] * 0.5
+        )
 
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1396,14 +1401,14 @@ class TestGeometryCaps:
 class TestToolState:
     """Test the tool execution visual state machine."""
 
-    def test_enable_text_punchthrough_hides_scroll_view_but_keeps_auxiliary_labels_visible(
+    def test_enable_text_punchthrough_keeps_scroll_view_visible_with_auxiliary_labels(
         self, mock_pyobjc
     ):
         overlay, _ = _make_overlay(mock_pyobjc)
 
         overlay._enable_text_punchthrough(True)
 
-        overlay._scroll_view.setHidden_.assert_called_once_with(True)
+        overlay._scroll_view.setHidden_.assert_called_once_with(False)
         overlay._content_view.setHidden_.assert_not_called()
 
         overlay._enable_text_punchthrough(False)

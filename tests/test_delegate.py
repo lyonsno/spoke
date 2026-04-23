@@ -4058,7 +4058,7 @@ class TestCommandCallbacks:
 
         assert d._transcribing is False
         d._command_overlay.show.assert_called()
-        d._command_overlay.append_token.assert_called()
+        d._command_overlay.set_response_text.assert_called_once_with("OMLX down")
         d._command_overlay.finish.assert_called()
 
     def test_command_failed_preserves_specific_provider_error_in_overlay(
@@ -4079,12 +4079,39 @@ class TestCommandCallbacks:
             }
         )
 
-        d._command_overlay.append_token.assert_called_once_with(
+        d._command_overlay.set_response_text.assert_called_once_with(
             "HTTP 402 Payment Required — This model requires paid credits."
         )
         assert (
             d._last_command_response
             == "HTTP 402 Payment Required — This model requires paid credits."
+        )
+
+    def test_command_failed_restores_previous_snapshot_when_no_response_tokens_arrived(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._command_client = MagicMock()
+        d._command_client.history = [("previous question", "previous answer")]
+        d._transcription_token = 1
+        d._transcribing = True
+        d._last_command_utterance = "new question"
+        d._last_command_response = ""
+        d._command_streaming_text = ""
+
+        d.commandFailed_({"token": 1, "error": "Command failed"})
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("previous question")
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "previous answer\n\ncouldn't reach the model — try again in a moment"
+        )
+        assert d._last_command_utterance == "previous question"
+        assert (
+            d._last_command_response
+            == "previous answer\n\ncouldn't reach the model — try again in a moment"
         )
 
     def test_command_token_invert_failure_still_appends_token(
@@ -4133,7 +4160,7 @@ class TestCommandCallbacks:
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()
         d._command_overlay._visible = False
-        d._command_overlay.append_token.side_effect = RuntimeError("append")
+        d._command_overlay.set_response_text.side_effect = RuntimeError("rebuild")
         d._transcription_token = 1
         d._transcribing = True
 
@@ -4142,7 +4169,7 @@ class TestCommandCallbacks:
 
         assert d._transcribing is False
         d._command_overlay.show.assert_called()
-        assert "Command overlay append failed during error presentation" in caplog.text
+        assert "Command overlay response rebuild failed during error presentation" in caplog.text
 
     def test_recall_last_response_shows_history(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
