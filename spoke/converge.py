@@ -40,6 +40,12 @@ _ATTRACTOR_INDEX_PATH = Path.home() / ".config" / "spoke" / "attractor-index.npz
 _TRACE_PATH = Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
 _TURN_EMBEDDINGS_PATH = Path.home() / ".config" / "spoke" / "turn-embeddings.npz"
 _MAX_CACHED_EMBEDDINGS = 100  # rolling window of recent turn embeddings
+_MAX_CONTEXT_BUFFER = 4  # recent turns kept as conversational context for carving
+_CARVE_DEBOUNCE_S = 30.0  # seconds to wait after assistant response before carving
+_CARVE_CADENCE = 2  # carve every Nth substantive turn
+_ASSISTANT_TRUNCATE_THRESHOLD = 500  # chars; assistant turns longer than this get middle-out truncated
+_ASSISTANT_KEEP_HEAD = 250  # chars to keep from the start of long assistant turns
+_ASSISTANT_KEEP_TAIL = 250  # chars to keep from the end of long assistant turns
 
 _CARVE_SYSTEM_PROMPT = """\
 You are a personal attractor carver. You observe a single turn of voice
@@ -112,6 +118,18 @@ def _openai_endpoint(base_url: str, suffix: str) -> str:
     if _url_has_version_prefix(normalized):
         return f"{normalized}/{suffix}"
     return f"{normalized}/v1/{suffix}"
+
+
+def _middle_out_truncate(text: str, head: int, tail: int) -> str:
+    """Truncate by cutting the middle, preserving head and tail.
+
+    Long assistant turns are typically agent loops where the intent is at the
+    start and the conclusion at the end.  The middle is tool calls and
+    intermediate reasoning — least useful for attractor carving context.
+    """
+    if len(text) <= head + tail:
+        return text
+    return text[:head] + "\n[...]\n" + text[-tail:]
 
 
 def _append_trace(path: Path, event: str, **kwargs) -> None:
@@ -345,13 +363,17 @@ class TurnCarver:
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-bf16")
         )
-        self._pending: list[str] = []  # user utterances not yet carved
+        self._pending: list[tuple[str, list[dict[str, str]], int]] = []  # (utterance, context_snapshot, current_seq)
         self._embed_pending: list[str] = []  # user utterances not yet embedded
         self._lock = threading.Lock()
         self._embed_io_lock = threading.Lock()  # serialize embed cache read-modify-write
         self._attractor_io_lock = threading.Lock()  # serialize attractor file mutations
         self._thread: threading.Thread | None = None
         self._embed_model_loaded = False
+        self._context_buffer: list[dict[str, str]] = []  # rolling window of recent turns
+        self._substantive_turn_count = 0  # counts substantive turns for cadence
+        self._turn_seq = 0  # monotonic sequence number for context entries
+        self._last_carve_seqs: set[int] = set()  # sequence numbers seen by last carve
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_turn_complete(self, user_utterance: str, assistant_response: str) -> None:
@@ -360,16 +382,52 @@ class TurnCarver:
             return
 
         with self._lock:
+            # Always accumulate context — user turns are never truncated;
+            # assistant turns get middle-out truncation for long agent loops
+            assistant_text = assistant_response or ""
+            assistant_ctx = _middle_out_truncate(
+                assistant_text,
+                _ASSISTANT_KEEP_HEAD,
+                _ASSISTANT_KEEP_TAIL,
+            )
+            self._turn_seq += 1
+            entry = {"user": user_utterance, "assistant": assistant_ctx, "_seq": self._turn_seq}
+            self._context_buffer.append(entry)
+            if len(self._context_buffer) > _MAX_CONTEXT_BUFFER:
+                self._context_buffer = self._context_buffer[-_MAX_CONTEXT_BUFFER:]
+
             # Always embed (even short turns have semantic content)
             self._embed_pending.append(user_utterance)
+
             # Only carve substantive turns (>= 10 words)
             if len(user_utterance.split()) >= 10:
-                self._pending.append(user_utterance)
+                self._substantive_turn_count += 1
+                should_carve = False
 
-        # Fire background worker if not already running
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._background_loop, daemon=True)
-            self._thread.start()
+                if self._substantive_turn_count % _CARVE_CADENCE == 0:
+                    should_carve = True
+                elif self._last_carve_seqs:
+                    # Debounce override: if continued skipping would mean the
+                    # next carve sees zero overlap with the last carve's
+                    # context, carve now instead of losing coverage.
+                    current_seqs = {e["_seq"] for e in self._context_buffer}
+                    if not (current_seqs & self._last_carve_seqs):
+                        should_carve = True
+
+                if should_carve:
+                    context_snapshot = list(self._context_buffer)
+                    self._last_carve_seqs = {e["_seq"] for e in self._context_buffer}
+                    self._pending.append((user_utterance, context_snapshot, self._turn_seq))
+
+            # Fire background worker if not already running (under lock to
+            # prevent concurrent callers from both starting a thread)
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._background_loop, daemon=True)
+                self._thread.start()
+
+    def _drain_sync(self) -> None:
+        """Drain all pending work synchronously. For testing only."""
+        self._background_loop()
 
     def _background_loop(self) -> None:
         """Background thread: dispatch carve and embed work concurrently.
@@ -380,22 +438,34 @@ class TurnCarver:
         the server side.
         """
         while True:
-            work: list[tuple[str, str]] = []  # (kind, utterance)
+            carve_work: list[tuple[str, list[dict[str, str]], int]] = []
+            embed_work: list[str] = []
 
             with self._lock:
                 while self._pending:
-                    work.append(("carve", self._pending.pop(0)))
+                    carve_work.append(self._pending.pop(0))
                 while self._embed_pending:
-                    work.append(("embed", self._embed_pending.pop(0)))
+                    embed_work.append(self._embed_pending.pop(0))
 
-            if not work:
+            if not carve_work and not embed_work:
                 return
 
             # Fire all work items concurrently
             threads: list[threading.Thread] = []
-            for kind, utterance in work:
-                fn = self._carve_single if kind == "carve" else self._embed_single
-                t = threading.Thread(target=self._safe_call, args=(fn, utterance), daemon=True)
+            for utterance, context, seq in carve_work:
+                t = threading.Thread(
+                    target=self._safe_call,
+                    args=(self._carve_single, utterance, context, seq),
+                    daemon=True,
+                )
+                t.start()
+                threads.append(t)
+            for utterance in embed_work:
+                t = threading.Thread(
+                    target=self._safe_call,
+                    args=(self._embed_single, utterance),
+                    daemon=True,
+                )
                 t.start()
                 threads.append(t)
 
@@ -404,9 +474,9 @@ class TurnCarver:
                 t.join(timeout=120)
 
     @staticmethod
-    def _safe_call(fn, utterance: str) -> None:
+    def _safe_call(fn, *args) -> None:
         try:
-            fn(utterance)
+            fn(*args)
         except Exception:
             logger.debug("Converge %s failed", fn.__name__, exc_info=True)
 
@@ -436,13 +506,43 @@ class TurnCarver:
             return ""
         return "Existing personal attractors:\n" + "\n".join(lines)
 
-    def _carve_single(self, utterance: str) -> None:
+    def _carve_single(
+        self,
+        utterance: str,
+        context: list[dict[str, str]] | None = None,
+        current_seq: int | None = None,
+    ) -> None:
         """Send one utterance to the model for attractor carving."""
         t0 = time.time()
 
         existing_context = self._load_existing_attractors_context()
-        user_prompt = (
-            f"User utterance from a voice interaction:\n\n"
+
+        # Build the recent conversational context block
+        context_block = ""
+        if context:
+            # Exclude the current turn from context (it's shown separately).
+            # Use the monotonic _seq to identify it reliably.
+            prior = [
+                c for c in context
+                if c.get("_seq") != current_seq
+            ] if current_seq is not None else context
+            if prior:
+                lines = []
+                for c in prior:
+                    lines.append(f"User: {c['user']}")
+                    if c.get("assistant"):
+                        lines.append(f"Assistant: {c['assistant']}")
+                context_block = (
+                    "Recent conversation context (preceding turns):\n"
+                    + "\n".join(lines)
+                    + "\n\n"
+                )
+
+        user_prompt = ""
+        if context_block:
+            user_prompt += context_block
+        user_prompt += (
+            f"Current user utterance:\n\n"
             f"\"{utterance}\"\n\n"
         )
         if existing_context:
