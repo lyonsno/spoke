@@ -271,7 +271,9 @@ class CommandClient:
         # Ring buffer: list of message chains (each a list[dict]).
         # Each entry is the full sequence of messages for one turn:
         # [user, assistant, tool_result, assistant, ...] preserving
-        # tool calls and results for multi-turn context.
+        # tool calls and results for multi-turn context. Some messages may
+        # also carry private underscore-prefixed metadata for user-view recall;
+        # those keys are stripped before prompt assembly.
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
         self._history: list[list[dict]] = self._load_history()
         self._pending_tool_approval: PendingToolApproval | None = None
@@ -317,6 +319,10 @@ class CommandClient:
         )
         tmp.replace(self._history_path)
 
+    def _message_for_api(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Strip private persisted metadata before sending history back to the model."""
+        return {k: v for k, v in message.items() if not k.startswith("_")}
+
     @property
     def history(self) -> list[tuple[str, str]]:
         """Backward-compatible pair view of the stored turn history."""
@@ -334,6 +340,25 @@ class CommandClient:
             pairs.append((user_text, "".join(assistant_parts)))
         return pairs
 
+    def last_overlay_snapshot(self) -> tuple[str, str] | None:
+        """Return the latest durable user-visible command transcript, if present."""
+        for chain in reversed(self._history):
+            user_text = ""
+            overlay_response = None
+            for message in chain:
+                if not user_text and message.get("role") == "user":
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        user_text = content
+            for message in reversed(chain):
+                content = message.get("_overlay_response")
+                if isinstance(content, str) and content:
+                    overlay_response = content
+                    break
+            if user_text and overlay_response:
+                return user_text, overlay_response
+        return None
+
     def _normalized_history_turn(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize a turn before storing it in durable history."""
         turn_messages: list[dict[str, Any]] = []
@@ -346,9 +371,29 @@ class CommandClient:
             turn_messages.append(msg)
         return turn_messages
 
-    def append_history_turn(self, messages: list[dict[str, Any]]) -> None:
+    def append_history_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        overlay_response: str | None = None,
+    ) -> None:
         """Append one normalized turn to the bounded history ring."""
-        self._history.append(self._normalized_history_turn(messages))
+        normalized = self._normalized_history_turn(messages)
+        assistant_text = "".join(
+            msg["content"]
+            for msg in normalized
+            if msg.get("role") == "assistant" and isinstance(msg.get("content"), str)
+        )
+        if overlay_response and overlay_response != assistant_text:
+            for idx in range(len(normalized) - 1, -1, -1):
+                msg = normalized[idx]
+                if msg.get("role") == "assistant":
+                    normalized[idx] = {**msg, "_overlay_response": overlay_response}
+                    break
+            else:
+                if normalized:
+                    normalized[0] = {**normalized[0], "_overlay_response": overlay_response}
+        self._history.append(normalized)
         if len(self._history) > self._max_history:
             self._history.pop(0)
         self._save_history()
@@ -388,7 +433,7 @@ class CommandClient:
         """
         messages: list[dict] = [{"role": "system", "content": self._system_prompt}]
         for chain in self._history:
-            messages.extend(chain)
+            messages.extend(self._message_for_api(msg) for msg in chain)
         messages.append({"role": "user", "content": utterance})
         return messages
 
@@ -971,7 +1016,10 @@ class CommandClient:
 
         # Add to ring buffer — only this turn's messages (from the user
         # utterance onward), preserving tool calls and results.
-        self.append_history_turn(messages[turn_start_idx:])
+        self.append_history_turn(
+            messages[turn_start_idx:],
+            overlay_response=visible_response or full_response,
+        )
 
         return full_response
 
@@ -1181,7 +1229,10 @@ class CommandClient:
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        self.append_history_turn(messages[pending.turn_start_idx:])
+        self.append_history_turn(
+            messages[pending.turn_start_idx:],
+            overlay_response=visible_response or full_response,
+        )
         return full_response
 
     def cancel_pending_tool_call(self) -> None:

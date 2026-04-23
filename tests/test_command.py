@@ -1478,6 +1478,44 @@ class TestToolCallRendering:
         assert "[calling capture_context" not in joined
         assert "~" not in joined
 
+    def test_tool_ui_transcript_persists_for_overlay_recall_across_restart(self, tmp_path):
+        """Restart-safe user-view recall should preserve the visible tool transcript."""
+        from spoke.command import CommandClient
+
+        history_path = tmp_path / "history.json"
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            history_path=history_path,
+        )
+        chunks = [
+            self._content_chunk("Let me check. "),
+            self._tool_call_chunk("capture_context"),
+            {"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]},
+            self._content_chunk("Done."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            list(
+                client.stream_command(
+                    "read the screen",
+                    tool_executor=lambda **kwargs: "screen summary",
+                )
+            )
+
+        reloaded = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            history_path=history_path,
+        )
+
+        assert reloaded.last_overlay_snapshot() == (
+            "read the screen",
+            "Let me check. \n[calling capture_context…]\nDone.  [screen capture · ~2 tokens]\n",
+        )
+
     def test_tool_call_without_name_is_silent(self):
         """Tool-call deltas that carry only arguments (no name) should not yield text."""
         from spoke.command import CommandClient
