@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import uuid
 from typing import Any, Callable, Generator, Literal
 
@@ -105,6 +106,63 @@ _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
+
+
+def _terminal_preview_body_line_limit(body_line_count: int) -> int:
+    """Return the maximum terminal preview body lines to show.
+
+    The command line itself is displayed separately. We keep up to:
+    - all lines when body <= 8
+    - 7 body lines total when body is 9-20 (8 visible lines incl. command)
+    - 3 body lines total when body > 20 (4 visible lines incl. command)
+    """
+    if body_line_count > 20:
+        return 3
+    if body_line_count > 8:
+        return 7
+    return body_line_count
+
+
+def _terminal_output_preview(
+    result_mapping: dict[str, Any] | None,
+    fn_args: dict[str, Any],
+) -> str | None:
+    """Build a bounded preview block for terminal command results."""
+    if not isinstance(result_mapping, dict):
+        return None
+    if not result_mapping.get("executed"):
+        return None
+
+    argv = result_mapping.get("argv") or fn_args.get("argv")
+    if not isinstance(argv, list) or not argv:
+        return None
+
+    body_lines: list[str] = []
+    stdout = result_mapping.get("stdout")
+    stderr = result_mapping.get("stderr")
+    if isinstance(stdout, str) and stdout:
+        body_lines.extend(stdout.rstrip("\n").splitlines())
+    if isinstance(stderr, str) and stderr:
+        body_lines.extend(stderr.rstrip("\n").splitlines())
+
+    if not body_lines:
+        exit_code = result_mapping.get("exit_code")
+        if isinstance(exit_code, int):
+            body_lines = [f"[exit {exit_code} · no output]"]
+        else:
+            body_lines = ["[no output]"]
+
+    body_limit = _terminal_preview_body_line_limit(len(body_lines))
+    if len(body_lines) > body_limit:
+        hidden = len(body_lines) - body_limit
+        marker = f"[... {hidden} more lines]"
+        if body_limit <= 1:
+            body_lines = [marker]
+        else:
+            body_lines = body_lines[: body_limit - 1] + [marker]
+
+    command_line = "$ " + shlex.join(str(token) for token in argv)
+    return "\n".join([command_line, *body_lines])
 
 _SYSTEM_PROMPT = (
     "Environment: your working directory is ~/dev, the user's development root. "
@@ -544,6 +602,13 @@ class CommandClient:
                 tool_preview[:200],
             )
 
+            terminal_preview = None
+            if fn_name == "run_terminal_command":
+                terminal_preview = _terminal_output_preview(
+                    self._tool_result_mapping(tool_result),
+                    fn_args,
+                )
+
             info_parts = []
             if fn_name == "read_file" and fn_args.get("file_path"):
                 info_parts.append(fn_args["file_path"])
@@ -560,7 +625,14 @@ class CommandClient:
                 info_parts.append("screen capture")
             if result_tokens > 0:
                 info_parts.append(f"~{result_tokens} tokens")
-            if info_parts:
+            if terminal_preview:
+                preview_text = terminal_preview + "\n"
+                visible_response += preview_text
+                yield CommandStreamEvent(
+                    kind="assistant_delta",
+                    text=preview_text,
+                )
+            elif info_parts:
                 info_line = f"  [{' · '.join(info_parts)}]\n"
                 visible_response += info_line
                 yield CommandStreamEvent(

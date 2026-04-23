@@ -1527,6 +1527,69 @@ class TestToolCallRendering:
         assert "All done." in tokens
 
 
+class TestTerminalOutputPreview:
+    def test_terminal_output_preview_keeps_short_output(self):
+        from spoke.command import _terminal_output_preview
+
+        preview = _terminal_output_preview(
+            {
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "one\ntwo\nthree\n",
+                "stderr": "",
+            },
+            {"argv": ["printf", "hello"]},
+        )
+
+        assert preview == "$ printf hello\none\ntwo\nthree"
+
+    def test_terminal_output_preview_truncates_to_eight_visible_lines(self):
+        from spoke.command import _terminal_output_preview
+
+        preview = _terminal_output_preview(
+            {
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "\n".join(f"line {i}" for i in range(1, 11)) + "\n",
+                "stderr": "",
+            },
+            {"argv": ["cat", "file.txt"]},
+        )
+
+        assert preview is not None
+        assert preview.splitlines() == [
+            "$ cat file.txt",
+            "line 1",
+            "line 2",
+            "line 3",
+            "line 4",
+            "line 5",
+            "line 6",
+            "[... 3 more lines]",
+        ]
+
+    def test_terminal_output_preview_truncates_to_four_visible_lines_for_long_output(self):
+        from spoke.command import _terminal_output_preview
+
+        preview = _terminal_output_preview(
+            {
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "\n".join(f"line {i}" for i in range(1, 26)) + "\n",
+                "stderr": "",
+            },
+            {"argv": ["cat", "huge.txt"]},
+        )
+
+        assert preview is not None
+        assert preview.splitlines() == [
+            "$ cat huge.txt",
+            "line 1",
+            "line 2",
+            "[... 22 more lines]",
+        ]
+
+
 class TestShiftReleaseRouting:
     """Test that shift-release is detected and routes to command path."""
 
