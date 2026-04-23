@@ -49,7 +49,7 @@ _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
 # it up.  Constants that appear in more than one expression share a
 # single Python name so they stay in sync.
 
-# How far past the capsule boundary (as a fraction of capsuleRadius) the
+# How far past the shell boundary (as a fraction of the corner radius) the
 # warp bleeds before fading to identity via smoothstep.
 # Larger → more squoot visible outside the pill.
 _WARP_BLEED_ZONE_FRAC = 0.8
@@ -82,9 +82,9 @@ _WARP_CURVEBOOST_MAG_SCALE = 0.35       # (coreMag - 1) * this
 _WARP_CURVEBOOST_RING_DIVISOR = 240.0   # ringAmplitude / this
 _WARP_CURVEBOOST_RING_CAP = 0.55        # ring term capped here
 
-# Spine proximity boost: pixels near the horizontal center of the capsule
+# Spine proximity boost: pixels near the horizontal center of the rounded shell
 # body need more aggressive scaling to reach the rim and squoot, because
-# they have more capsule to cross.  This multiplier scales the warp
+# they have more shell width to cross.  This multiplier scales the warp
 # strength based on how far the pixel is from the nearest endcap.
 # 0.0 = no boost (uniform warp everywhere).
 # Higher = more violence at x-center relative to tips.
@@ -101,10 +101,10 @@ _WARP_X_SQUEEZE = 2.5
 # of the pill more aggressively.  Keep milder than x-squeeze.
 _WARP_Y_SQUEEZE = 1.5
 
-# Exterior magnification: a gentle inward pull outside the capsule that
+# Exterior magnification: a gentle inward pull outside the rounded shell that
 # creates a lens/magnification effect around the boundary.  The pull
 # decays exponentially with distance from the capsule surface.
-# Strength is fraction of capsuleRadius; higher = stronger lens.
+# Strength is a fraction of the corner radius; higher = stronger lens.
 _WARP_EXTERIOR_MAG_STRENGTH = 0.6   # visible lens effect around boundary
 _WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
 
@@ -207,9 +207,11 @@ _quartz_timer = _FrameTimer("quartz-shell")
 _sck_timer = _FrameTimer("sck-shell")
 
 def _build_shell_warp_kernel_source() -> str:
-    # CIWarpKernel: returns vec2 coordinate.  Blur is handled as a
-    # separate pre-warp Gaussian pass — avoids CISampler buffer
-    # retention that causes SCK stream stalls.
+    # CIWarpKernel: returns vec2 coordinate. Geometry is parameterized by
+    # ``cornerRadius`` so the optical shell can stay a rounded rectangle; a
+    # true capsule is only the half-height special case. Blur is handled as a
+    # separate pre-warp Gaussian pass — avoids CISampler buffer retention that
+    # causes SCK stream stalls.
     return """
 float sdCapsule(vec2 p, float spineHalf, float radius) {
     p.x = abs(p.x);

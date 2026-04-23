@@ -476,10 +476,13 @@ class TestShowFinishHide:
 
         config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
         assert config["enabled"] is True
-        # Warp capsule inflated by half-radius (_OVERLAY_HEIGHT / 4)
-        capsule_r = mod._OVERLAY_HEIGHT / 4.0
-        assert config["content_width_points"] == pytest.approx(mod._OVERLAY_WIDTH + capsule_r)
-        assert config["content_height_points"] == pytest.approx(mod._OVERLAY_HEIGHT + capsule_r)
+        # The warp shell inflates around the visible rounded-rect body.
+        shell_r = mod._OVERLAY_HEIGHT / 4.0
+        assert config["content_width_points"] == pytest.approx(mod._OVERLAY_WIDTH + shell_r)
+        assert config["content_height_points"] == pytest.approx(mod._OVERLAY_HEIGHT + shell_r)
+        assert config["corner_radius_points"] == pytest.approx(
+            mod._optical_shell_body_corner_radius(mod._OVERLAY_HEIGHT)
+        )
         assert config["ring_amplitude_points"] == pytest.approx(
             mod._COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS
         )
@@ -513,11 +516,11 @@ class TestShowFinishHide:
         assert mod._OVERLAY_WIDTH == pytest.approx(1200.0)
         assert mod._OVERLAY_HEIGHT == pytest.approx(160.0)
         assert mod._OVERLAY_CORNER_RADIUS == pytest.approx(32.0)
-        # Warp capsule is inflated by half-radius (_OVERLAY_HEIGHT / 4 = 40)
+        # The warp shell inflates around the visible rounded-rect body.
         assert config["content_width_points"] == pytest.approx(1200.0 + 40.0)
         assert config["content_height_points"] == pytest.approx(160.0 + 40.0)
         assert config["corner_radius_points"] == pytest.approx(
-            config["content_height_points"] * 0.5
+            mod._optical_shell_body_corner_radius(160.0)
         )
 
     def test_apply_backdrop_pulse_style_uses_current_content_height_for_optical_shell(
@@ -538,10 +541,10 @@ class TestShowFinishHide:
         overlay._apply_backdrop_pulse_style(1.0)
 
         config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
-        # Warp capsule inflated by half-radius (_OVERLAY_HEIGHT / 4 = 20)
+        # The warp shell inflates around the visible rounded-rect body.
         assert config["content_height_points"] == pytest.approx(196.0 + 20.0)
         assert config["corner_radius_points"] == pytest.approx(
-            config["content_height_points"] * 0.5
+            mod._optical_shell_body_corner_radius(196.0)
         )
 
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
@@ -1565,15 +1568,18 @@ class TestSDFCaching:
         overlay._fill_layer.setContents_.assert_called_once_with("fill-image")
 
 
-def test_command_optical_shell_config_inflates_warp_capsule_past_overlay_body(mock_pyobjc, monkeypatch):
+def test_command_optical_shell_config_inflates_warp_shell_past_overlay_body(mock_pyobjc, monkeypatch):
     monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
     try:
         cfg = mod._command_optical_shell_config(600.0, 80.0)
-        capsule_r = mod._OVERLAY_HEIGHT / 4.0
-        assert cfg["content_width_points"] == pytest.approx(600.0 + capsule_r)
-        assert cfg["content_height_points"] == pytest.approx(80.0 + capsule_r)
+        shell_r = mod._OVERLAY_HEIGHT / 4.0
+        assert cfg["content_width_points"] == pytest.approx(600.0 + shell_r)
+        assert cfg["content_height_points"] == pytest.approx(80.0 + shell_r)
+        assert cfg["corner_radius_points"] == pytest.approx(
+            mod._optical_shell_body_corner_radius(80.0)
+        )
     finally:
         sys.modules.pop("spoke.command_overlay", None)
 
@@ -1586,9 +1592,12 @@ def test_command_optical_shell_config_supports_independent_x_y_inflation(mock_py
     mod = importlib.import_module("spoke.command_overlay")
     try:
         cfg = mod._command_optical_shell_config(600.0, 80.0)
-        capsule_r = mod._OVERLAY_HEIGHT / 4.0
-        assert cfg["content_width_points"] == pytest.approx(600.0 + 0.5 * capsule_r)
-        assert cfg["content_height_points"] == pytest.approx(80.0 + 1.75 * capsule_r)
+        shell_r = mod._OVERLAY_HEIGHT / 4.0
+        assert cfg["content_width_points"] == pytest.approx(600.0 + 0.5 * shell_r)
+        assert cfg["content_height_points"] == pytest.approx(80.0 + 1.75 * shell_r)
+        assert cfg["corner_radius_points"] == pytest.approx(
+            mod._optical_shell_body_corner_radius(80.0)
+        )
     finally:
         sys.modules.pop("spoke.command_overlay", None)
 

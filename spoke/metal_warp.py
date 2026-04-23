@@ -1,6 +1,6 @@
 """Metal compute shader pipeline for optical shell warp.
 
-Renders the capsule warp entirely on GPU — no CPU-side pixel copy.
+Renders the rounded-shell warp entirely on GPU — no CPU-side pixel copy.
 SCK delivers frames as IOSurface-backed CVPixelBuffers.  We create
 Metal texture views of those IOSurfaces, run the warp as a compute
 shader, and present the result via CAMetalLayer.
@@ -11,8 +11,10 @@ link callback acquires nextDrawable(), dispatches the compute
 shader, and presents.  This prevents buffer pool starvation — the
 SCK handler queue never blocks on drawable availability.
 
-The warp kernel is translated from the CIWarpKernel GLSL source
-in backdrop_stream.py.
+The warp kernel is translated from the CIWarpKernel GLSL source in
+backdrop_stream.py. Geometry is parameterized by ``corner_radius_points``:
+the shell is a rounded rectangle by default, and only becomes a true capsule
+when the radius reaches half the shell height.
 """
 
 from __future__ import annotations
@@ -112,13 +114,13 @@ struct WarpParams {{
     float tailWidth;
     float ringAmplitudePoints;
     float tailAmplitudePoints;
-    float centerX;      // capsule center X in pixels (0 = use width/2)
-    float centerY;      // capsule center Y in pixels (0 = use height/2)
+    float centerX;      // shell center X in pixels (0 = use width/2)
+    float centerY;      // shell center Y in pixels (0 = use height/2)
     float gridOffsetX;  // dispatch grid origin X (for bounding-box dispatch)
     float gridOffsetY;  // dispatch grid origin Y
     float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
     float minBrightness; // floor for interior pixel luminance (0 = no floor)
-    float bleedZoneFrac; // exterior warp cutoff relative to capsule radius
+    float bleedZoneFrac; // exterior warp cutoff relative to shell corner radius
     float exteriorMixWidth; // width of the exterior onset band in pixels
 }};
 
@@ -221,9 +223,9 @@ kernel void opticalShellWarp(
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
     // Depth-dependent blur via mipmap LOD.
-    // The warp capsule is inflated by capsuleRadius beyond the fill
-    // boundary, so blur should only start ramping once we're past
-    // that inflation zone (i.e., inside the fill pill).
+    // The warp shell is inflated by capsuleRadius beyond the fill boundary,
+    // so blur should only start ramping once we're past that inflation zone
+    // (i.e., inside the visible rounded shell).
     float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f, 0.0f);
     float baseMipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
     float warpAliasOctaves = max(

@@ -341,6 +341,17 @@ def _command_backdrop_blur_target_for_presence(presence: float) -> float:
     return 1.0 - _clamp01(presence)
 
 
+def _optical_shell_body_corner_radius(body_height_points: float) -> float:
+    """Corner radius for the visible rounded-rect shell body.
+
+    The optical shell is authored as a rounded rectangle, not a true capsule.
+    A true capsule is just the special case where the radius reaches half the
+    body height; that is not the intended look for this overlay.
+    """
+    body_height = max(float(body_height_points), 1.0)
+    return min(_OVERLAY_HEIGHT * 0.25, body_height * 0.5)
+
+
 def _command_optical_shell_config(
     content_width_points: float | None = None,
     content_height_points: float | None = None,
@@ -355,17 +366,17 @@ def _command_optical_shell_config(
         if content_height_points is None
         else max(float(content_height_points), 1.0)
     )
-    # Assistant shell inflation is independently tunable in X/Y rather
-    # than being hard-wired to one radius-derived proportion.
-    capsule_r = _OVERLAY_HEIGHT / 4.0
-    width_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII * capsule_r
-    height_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII * capsule_r
-    corner_radius_points = height_points * 0.5
+    # The rendered shell body is a rounded rectangle. Inflate the warp envelope
+    # around that body, but keep the same body corner radius so fill/mask/warp
+    # continue to agree on the visible shape.
+    shell_body_corner_r = _optical_shell_body_corner_radius(height_points)
+    width_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII * shell_body_corner_r
+    height_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII * shell_body_corner_r
     return {
         "enabled": True,
         "content_width_points": width_points,
         "content_height_points": height_points,
-        "corner_radius_points": corner_radius_points,
+        "corner_radius_points": shell_body_corner_r,
         "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
         "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
         "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
@@ -459,7 +470,12 @@ def _stadium_signed_distance_field(
     corner_radius_points: float,
     scale: float,
 ):
-    """Return a centered stadium SDF sampled at backing-scale resolution."""
+    """Return the centered optical-shell SDF at backing-scale resolution.
+
+    Despite the legacy helper name, this supports the rounded-rect shell body
+    we actually render. It becomes a true capsule only when the supplied
+    corner radius reaches half the body height.
+    """
     import numpy as np
 
     sample_scale = max(float(scale), 1e-6)
@@ -478,7 +494,7 @@ def _stadium_signed_distance_field(
 
 
 def _boundary_outline_ci_image(extent, shell_config):
-    """Faint pill-shaped outline at the sdf=0 boundary of the optical shell."""
+    """Faint outline at the sdf=0 boundary of the optical shell."""
     import numpy as np
     from Foundation import NSData
     from Quartz import (
@@ -494,17 +510,19 @@ def _boundary_outline_ci_image(extent, shell_config):
     height = max(1, int(round(extent.size.height)))
     content_w = float(shell_config.get("content_width_points", width))
     content_h = float(shell_config.get("content_height_points", height))
-    capsule_radius = max(content_h * 0.5, 1.0)
-    spine_half = max(content_w * 0.5 - capsule_radius, 0.0)
+    corner_radius = max(float(shell_config.get("corner_radius_points", 16.0)), 1.0)
+    spine_half_x = max(content_w * 0.5 - corner_radius, 0.0)
+    spine_half_y = max(content_h * 0.5 - corner_radius, 0.0)
 
     cx = width * 0.5
     cy = height * 0.5
     xs = np.arange(width, dtype=np.float32)[None, :] + 0.5 - cx
     ys = np.arange(height, dtype=np.float32)[:, None] + 0.5 - cy
 
-    # Capsule SDF matching the kernel.
-    spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
-    capsule_sdf = np.hypot(spine_dist, ys) - capsule_radius
+    # Rounded-shell SDF matching the warp kernel.
+    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+    capsule_sdf = np.hypot(spine_dist_x, spine_dist_y) - corner_radius
 
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
     # Only draw boundary on the right half for comparison.
@@ -1202,7 +1220,8 @@ class CommandOverlay(NSObject):
         # Start or resume the thinking timer.
         self._start_thinking_timer(reset=not preserve_thinking_timer)
 
-        # Full-screen compositor: captures entire display, warps capsule region,
+        # Full-screen compositor: captures entire display, warps the rounded
+        # shell region,
         # presents full frame via Metal.  No seam between warped and unwarped.
         # Must start BEFORE the backdrop refresh timer — if compositor succeeds,
         # the old backdrop path is disabled entirely.
@@ -1581,7 +1600,7 @@ class CommandOverlay(NSObject):
             return
         dt = 1.0 / _PULSE_HZ
 
-        # When compositor is active, sample capsule-region brightness
+        # When compositor is active, sample shell-region brightness
         # directly — much more accurate than the glow's 4-patch screen
         # average.  Refresh every ~500ms (15 pulse ticks).
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -1893,7 +1912,7 @@ class CommandOverlay(NSObject):
                 self._last_fill_opacity = new_opacity
         # Brightness floor + boost for punch-through legibility.
         # On light backgrounds (dark fill), guarantee the warped content
-        # inside the capsule has luminance >= 0.5 so text holes read bright.
+        # inside the rounded shell has luminance >= 0.5 so text holes read bright.
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None and getattr(self, "_text_punchthrough", False):
             _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
@@ -2133,7 +2152,7 @@ class CommandOverlay(NSObject):
                         total_h,
                         width,
                         height,
-                        _OVERLAY_HEIGHT / 4.0,
+                        _optical_shell_body_corner_radius(height),
                         scale,
                     )
 
@@ -2298,14 +2317,15 @@ class CommandOverlay(NSObject):
         inner_height = max(height - 2 * overscan, 1.0)
         try:
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                # Use capsule SDF for the mask to match the warp shape.
+                # Use the same rounded-shell SDF as the visible fill and warp
+                # config. A true capsule is only a special case of this shape.
                 import numpy as np
                 pw, ph = max(int(width), 1), max(int(height), 1)
                 xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
                 ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
                 inner_half_w = inner_width * 0.5
                 inner_half_h = inner_height * 0.5
-                corner_r = _OVERLAY_HEIGHT / 4.0
+                corner_r = _optical_shell_body_corner_radius(inner_height)
                 capsule_radius = max(min(corner_r, inner_half_h), 1.0)
                 spine_half_x = max(inner_half_w - capsule_radius, 0.0)
                 spine_half_y = max(inner_half_h - capsule_radius, 0.0)
