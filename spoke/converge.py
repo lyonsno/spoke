@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+import hashlib
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
@@ -577,15 +578,17 @@ class TurnCarver:
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
             cleaned = re.sub(r"\s*```$", "", cleaned)
 
+        prompt_hash = hashlib.sha256(_CARVE_SYSTEM_PROMPT.encode()).hexdigest()[:16]
+
         try:
             ops = json.loads(cleaned)
         except json.JSONDecodeError:
             logger.debug("Converge: failed to parse response: %s", cleaned[:100])
-            self._trace("carve_parse_error", elapsed=elapsed, raw=cleaned[:200])
+            self._trace("carve_parse_error", elapsed=elapsed, raw=cleaned[:200], prompt_hash=prompt_hash)
             return
 
         if not ops:
-            self._trace("carve_empty", elapsed=elapsed, utterance=utterance[:100])
+            self._trace("carve_empty", elapsed=elapsed, utterance=utterance[:100], prompt_hash=prompt_hash)
             return
 
         # Process operations — serialize attractor file mutations so
@@ -679,6 +682,7 @@ class TurnCarver:
             utterance=utterance[:100],
             ops_received=len(ops),
             actions=actions,
+            prompt_hash=prompt_hash,
         )
 
     def _embed_single(self, utterance: str) -> None:
