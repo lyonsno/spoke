@@ -548,6 +548,60 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_expands_tilde_for_ls_path_operands(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == ["/bin/ls", "-la", str(Path.home())]
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"",
+                stderr=b"",
+            )
+
+        with (
+            patch("shutil.which", return_value="/bin/ls"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = TerminalOperator().execute_command(
+                ["ls", "-la", "~/"],
+                cwd=str(tmp_path),
+                approval_granted=True,
+            )
+
+        assert result["decision"] == "allow"
+        assert result["policy_decision"] == "approval_required"
+        assert result["executed"] is True
+        assert result["exit_code"] == 0
+
+    def test_execute_does_not_expand_tilde_for_non_path_operands(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == ["/bin/echo", "~/"]
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"~/\n",
+                stderr=b"",
+            )
+
+        with (
+            patch("shutil.which", return_value="/bin/echo"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = TerminalOperator().execute_command(
+                ["echo", "~/"],
+                cwd=str(tmp_path),
+                approval_granted=True,
+            )
+
+        assert result["decision"] == "allow"
+        assert result["policy_decision"] == "approval_required"
+        assert result["executed"] is True
+        assert result["stdout"] == "~/\n"
+
     def test_execute_requires_approval_for_bare_name_symlink_operand(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 

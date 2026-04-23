@@ -210,7 +210,7 @@ class TerminalOperator:
         normalized_argv = self._normalized_argv(argv)
         executable_name = normalized_argv[0]
         resolved_executable = self._resolve_executable(executable_name)
-        execution_argv = list(argv)
+        execution_argv = self._normalized_execution_argv(argv)
         execution_argv[0] = resolved_executable
         result["decision"] = "allow"
         result["executed"] = True
@@ -320,6 +320,13 @@ class TerminalOperator:
         env = dict(_BASE_EXECUTION_ENV)
         env.update(_EXECUTION_ENV_OVERRIDES.get(executable_name, {}))
         return env
+
+    @classmethod
+    def _normalized_execution_argv(cls, argv: list[str]) -> list[str]:
+        execution_argv = list(argv)
+        for index in cls._path_operand_indices(argv):
+            execution_argv[index] = str(Path(execution_argv[index]).expanduser())
+        return execution_argv
 
     def _classify(self, argv: Any, *, cwd: str) -> tuple[str, str | None]:
         if not isinstance(argv, list) or not argv:
@@ -446,16 +453,23 @@ class TerminalOperator:
 
     @staticmethod
     def _iter_path_operands(argv: list[str]) -> list[str]:
+        return [argv[index] for index in TerminalOperator._path_operand_indices(argv)]
+
+    @staticmethod
+    def _path_operand_indices(argv: list[str]) -> list[int]:
         command = argv[0]
         if command in {"cat", "head", "tail", "ls"}:
-            return TerminalOperator._path_operands_after_options(argv[1:])
+            return [
+                index + 1
+                for index in TerminalOperator._path_operand_indices_after_options(argv[1:])
+            ]
         if command == "rg":
-            path_tokens: list[str] = []
+            path_indices: list[int] = []
             expects_positional_pattern = True
             pattern_supplied_by_flag = False
             skip_next = False
             options_terminated = False
-            for token in argv[1:]:
+            for index, token in enumerate(argv[1:], start=1):
                 if skip_next:
                     skip_next = False
                     continue
@@ -463,7 +477,7 @@ class TerminalOperator:
                     if expects_positional_pattern and not pattern_supplied_by_flag:
                         pattern_supplied_by_flag = True
                         continue
-                    path_tokens.append(token)
+                    path_indices.append(index)
                     continue
                 if token == "--":
                     options_terminated = True
@@ -494,8 +508,8 @@ class TerminalOperator:
                 if expects_positional_pattern and not pattern_supplied_by_flag:
                     pattern_supplied_by_flag = True
                     continue
-                path_tokens.append(token)
-            return path_tokens
+                path_indices.append(index)
+            return path_indices
         return []
 
     @staticmethod
@@ -518,20 +532,20 @@ class TerminalOperator:
         return not token.startswith("-")
 
     @staticmethod
-    def _path_operands_after_options(tokens: list[str]) -> list[str]:
-        operands: list[str] = []
+    def _path_operand_indices_after_options(tokens: list[str]) -> list[int]:
+        operand_indices: list[int] = []
         options_terminated = False
-        for token in tokens:
+        for index, token in enumerate(tokens):
             if options_terminated:
                 if token != "-":
-                    operands.append(token)
+                    operand_indices.append(index)
                 continue
             if token == "--":
                 options_terminated = True
                 continue
             if TerminalOperator._is_path_operand(token):
-                operands.append(token)
-        return operands
+                operand_indices.append(index)
+        return operand_indices
 
     @staticmethod
     def _starts_with(argv: list[str], prefix: tuple[str, ...]) -> bool:
