@@ -2,6 +2,7 @@
 
 import json
 import io
+import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -1294,6 +1295,93 @@ class TestStreamCommand:
             {"role": "user", "content": "q2"},
             {"role": "assistant", "content": "answer2"},
         ]
+
+    def test_overlapping_streams_serialize_until_first_turn_commits_history(self):
+        """A second stream must not snapshot history before the first stream commits."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            max_history=5,
+            history_path=None,
+        )
+
+        first_started = threading.Event()
+        allow_first_finish = threading.Event()
+        second_entered_urlopen = threading.Event()
+        exceptions: list[BaseException] = []
+        captured_bodies: list[dict] = []
+
+        first_chunk = {
+            "choices": [{"index": 0, "delta": {"content": "first answer"}}]
+        }
+        second_chunk = {
+            "choices": [{"index": 0, "delta": {"content": "second answer"}}]
+        }
+
+        class _BlockingSseResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def close(self):
+                return None
+
+            def __iter__(self):
+                yield f"data: {json.dumps(first_chunk)}\n\n".encode()
+                first_started.set()
+                assert allow_first_finish.wait(timeout=2), "first stream never released"
+                yield b"data: [DONE]\n\n"
+
+        def fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            captured_bodies.append(body)
+            utterance = body["messages"][-1]["content"]
+            if utterance == "first":
+                return _BlockingSseResponse()
+            if utterance == "second":
+                second_entered_urlopen.set()
+                return _make_sse_response([second_chunk])
+            raise AssertionError(f"unexpected utterance: {utterance}")
+
+        def run_stream(utterance: str):
+            try:
+                list(client.stream_command_events(utterance))
+            except BaseException as exc:  # pragma: no cover - surfaced by assertions below
+                exceptions.append(exc)
+
+        first_thread = threading.Thread(target=run_stream, args=("first",))
+        second_thread = threading.Thread(target=run_stream, args=("second",))
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            first_thread.start()
+            assert first_started.wait(timeout=2), "first stream never started"
+
+            second_thread.start()
+            assert not second_entered_urlopen.wait(timeout=0.1)
+
+            allow_first_finish.set()
+            first_thread.join(timeout=2)
+            second_thread.join(timeout=2)
+
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert exceptions == []
+        assert len(captured_bodies) == 2
+
+        second_messages = captured_bodies[1]["messages"]
+        assert second_messages[-1] == {"role": "user", "content": "second"}
+        assert any(
+            msg == {"role": "user", "content": "first"} for msg in second_messages[:-1]
+        )
+        assert any(
+            msg == {"role": "assistant", "content": "first answer"}
+            for msg in second_messages[:-1]
+        )
 
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
