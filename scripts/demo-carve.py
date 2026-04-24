@@ -185,10 +185,12 @@ def main():
 
             print(f"Processing {len(turns)} turns through full pipeline...\n")
 
+            run_start = time.time()
             for i, turn in enumerate(turns):
                 words = len(turn["user"].split())
                 print(f"[{i+1}/{len(turns)}] Entry {turn['index']} ({words}w): {turn['user'][:80]}...")
 
+                t0 = time.time()
                 carver.on_turn_complete(turn["user"], turn["assistant"])
 
                 # Wait for background work to complete — _drain_sync runs
@@ -201,11 +203,13 @@ def main():
                 if carver._thread is not None and carver._thread.is_alive():
                     carver._thread.join(timeout=300)
 
-                # Show carve count
-                print(f"  carve_count: {carver._carve_count}")
+                elapsed = time.time() - t0
+                # Show carve count and timing
+                print(f"  carve_count: {carver._carve_count}  ({elapsed:.1f}s)")
 
+            total_elapsed = time.time() - run_start
             print(f"\n{'='*60}")
-            print("RESULTS")
+            print(f"RESULTS  (total: {total_elapsed:.0f}s / {total_elapsed/60:.1f}min)")
             print(f"{'='*60}\n")
 
             total = 0

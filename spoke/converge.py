@@ -75,10 +75,12 @@ The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent. "Tractor" is almost certainly "attractor." "Epístaxis"
 is correct Greek, not a typo.
 
-You will be given EXISTING personal attractors. Before creating a new one,
-check if the utterance is evidence for an existing attractor. Prefer
-reinforce/expand over create. Be skeptical — most turns are task execution
-and reveal nothing durable.
+You will be given EXISTING personal attractors. These are shown so you can
+avoid duplicates and reinforce existing entries when appropriate. Do NOT
+reference the content of existing entries in new candidates — carve ONLY
+from what appears in the current utterance and recent conversation context.
+Prefer reinforce/expand over create. Be skeptical — most turns are task
+execution and reveal nothing durable.
 
 Your response is a JSON array of operations:
 
@@ -136,8 +138,11 @@ Anamnesis IS:
 - Relational knowledge: what connects to what, what depends on what
 - Operational knowledge: things learned from incidents or debugging
 
-You will be given EXISTING anamnesis entries. If an observation is already
-captured, return []. If it updates an existing entry, return an update op.
+You will be given EXISTING anamnesis entries. These are shown so you can
+avoid duplicates — do NOT reference the content of existing entries in new
+candidates. Carve ONLY from what appears in the current utterance and recent
+conversation context. If an observation is already captured, return []. If
+it updates an existing entry, return an update op.
 
 The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent.
@@ -169,9 +174,12 @@ Tópoi ARE:
 - "Gradient probe complete, three-surface architecture identified"
 - "Waiting for the model server to come back up"
 
-You will be given EXISTING tópoi. If the state of an existing tópos changed,
-return an update op to replace it with current state. If a new unit of work
-appeared, create it. If nothing about the state of work changed, return [].
+You will be given EXISTING tópoi. These are shown so you can avoid duplicates
+and update existing entries — do NOT reference the content of existing entries
+in new candidates. Carve ONLY from what appears in the current utterance and
+recent conversation context. If the state of an existing tópos changed,
+return an update op. If a new unit of work appeared, create it. If nothing
+about the state of work changed, return [].
 
 The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent.
@@ -208,9 +216,11 @@ Policy IS:
 - "Four parallel passes are better than one multi-routing pass"
 - "The satisfaction condition test should distinguish action-shaped from state-shaped"
 
-You will be given EXISTING policy observations. If a principle is already
-captured, return []. If a new observation refines or supersedes an existing
-one, return an update op.
+You will be given EXISTING policy observations. These are shown so you can
+avoid duplicates — do NOT reference the content of existing entries in new
+candidates. Carve ONLY from what appears in the current utterance and recent
+conversation context. If a principle is already captured, return []. If a
+new observation refines or supersedes an existing one, return an update op.
 
 The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent.
