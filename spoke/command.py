@@ -172,130 +172,33 @@ def _personality_paths() -> tuple[Path, Path, Path, Path]:
     )
 
 
-def _personality_authoring_guide() -> str:
-    pointer_path, personalities_dir, _, readme_path = _personality_paths()
-    repo_root = Path.cwd()
-    return f"""\
-## Personality Stub Authoring
-
-When the user asks to create, modify, save, switch, or load an operator
-personality stub, use this contract:
-- Personality files live in `{personalities_dir}/`.
-- The active personality is selected by `{pointer_path}`.
-- Read the README at `{readme_path}` with read_file before creating or editing personality stubs.
-- Use these absolute paths in tool calls; do not rely on shell `~` expansion.
-- Create or edit only the requested stub file with write_file. When the user asks to load it, write that stub filename into `{pointer_path}` with write_file; this is a filesystem edit, not a chat-side signal.
-- The personality home above is the only intended write target. Do not create
-  personality files in the process launch directory (`{repo_root}`) or any
-  repo-local `personality-stubs/` directory.
-"""
-
-
-def _contains_word_or_phrase(text: str, terms: tuple[str, ...]) -> bool:
-    for term in terms:
-        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text):
-            return True
-    return False
-
-
-def _utterance_requests_personality_authoring(
-    utterance: str,
-    *,
-    recent_personality_context: bool = False,
-) -> bool:
-    text = utterance.lower()
-    explicit_personality_terms = (
-        "personality stub",
-        "personality stubs",
-        "personality file",
-        "personality files",
-        "personality system",
-        "persona stub",
-        "operator personality",
-        "active personality",
-        "personality.conf",
+def _personality_skill_pointer() -> str:
+    _, _, _, readme_path = _personality_paths()
+    return (
+        "## Personality Skill\n\n"
+        "Personality stubs are an on-demand operator skill. If you decide the "
+        "user is asking to create, edit, switch, load, reset, or migrate an "
+        "operator personality/register, first read "
+        f"`{readme_path}` with read_file and follow it before writing any "
+        "personality file or personality.conf.\n"
     )
-    if _contains_word_or_phrase(text, explicit_personality_terms):
-        return True
 
-    action_terms = (
-        "be",
-        "make",
-        "create",
-        "write",
-        "draft",
-        "edit",
-        "modify",
-        "update",
-        "change",
-        "switch",
-        "load",
-        "select",
-        "activate",
-        "use",
-        "save",
-        "move",
-        "migrate",
-        "stay",
-        "keep",
-        "reset",
-        "restore",
-        "default",
-        "go back",
-    )
-    register_terms = (
-        "conversational",
-        "conversation",
-        "register",
-        "tone",
-        "voice",
-        "style",
-        "vibe",
-        "casual",
-        "relaxed",
-        "playful",
-        "reflective",
-        "agentic",
-        "tactical",
-        "dfw",
-        "david foster wallace",
-        "wallace",
-        "default",
-    )
-    has_action = _contains_word_or_phrase(text, action_terms)
-    if not has_action:
+
+def _path_matches_personality_readme(path: str) -> bool:
+    try:
+        candidate = Path(path).expanduser().resolve()
+        readme_path = _personality_paths()[3].expanduser().resolve()
+        return candidate == readme_path
+    except OSError:
         return False
-    if _contains_word_or_phrase(text, ("personality", "persona")):
-        return True
-    if _contains_word_or_phrase(text, register_terms):
-        return True
-    return recent_personality_context and _contains_word_or_phrase(
-        text,
-        (
-            "it",
-            "that",
-            "this",
-            "one",
-            "stub",
-            "file",
-            "dfw",
-        ),
+
+
+def _tool_call_reads_personality_readme(fn_name: str, fn_args: dict[str, Any]) -> bool:
+    return (
+        fn_name == "read_file"
+        and isinstance(fn_args.get("file_path"), str)
+        and _path_matches_personality_readme(fn_args["file_path"])
     )
-
-
-def _history_has_recent_personality_authoring_context(
-    history: list[list[dict]],
-    *,
-    max_turns: int = 3,
-) -> bool:
-    for chain in reversed(history[-max_turns:]):
-        for message in chain:
-            if message.get("role") != "user":
-                continue
-            content = message.get("content")
-            if isinstance(content, str) and _utterance_requests_personality_authoring(content):
-                return True
-    return False
 
 
 def _write_if_missing(path: Path, text: str) -> None:
@@ -337,24 +240,11 @@ def _active_personality_stub() -> str:
         return _DEFAULT_PERSONALITY_STUB.strip()
 
 
-def _inject_active_personality_stub(
-    system_prompt: str,
-    utterance: str,
-    *,
-    recent_personality_context: bool = False,
-) -> str:
+def _inject_active_personality_stub(system_prompt: str) -> str:
     stub = _active_personality_stub()
     if not stub:
         stub = _DEFAULT_PERSONALITY_STUB.strip()
-    authoring_guide = (
-        f"{_personality_authoring_guide()}\n"
-        if _utterance_requests_personality_authoring(
-            utterance,
-            recent_personality_context=recent_personality_context,
-        )
-        else ""
-    )
-    return f"{system_prompt}\n\n{authoring_guide}## Active Personality Stub\n\n{stub}"
+    return f"{system_prompt}\n\n{_personality_skill_pointer()}\n## Active Personality Stub\n\n{stub}"
 
 
 def _terminal_preview_body_line_limit(body_line_count: int) -> int:
@@ -884,13 +774,7 @@ class CommandClient:
         and results from that turn.
         """
         system_prompt = (
-            _inject_active_personality_stub(
-                self._system_prompt,
-                utterance,
-                recent_personality_context=_history_has_recent_personality_authoring_context(
-                    self._history
-                ),
-            )
+            _inject_active_personality_stub(self._system_prompt)
             if self._uses_default_system_prompt
             else self._system_prompt
         )
@@ -956,6 +840,7 @@ class CommandClient:
         *,
         tool_executor: Callable[..., Any],
         approval_granted: bool = False,
+        personality_readme_loaded: bool = False,
     ) -> Any:
         fn_name = call["function"]["name"]
         try:
@@ -978,6 +863,10 @@ class CommandClient:
             tool_executor, "approval_granted"
         ):
             tool_kwargs["approval_granted"] = True
+        if self._tool_executor_supports_kwarg(
+            tool_executor, "personality_readme_loaded"
+        ):
+            tool_kwargs["personality_readme_loaded"] = personality_readme_loaded
         return tool_executor(**tool_kwargs)
 
     def _is_pending_approval_result(self, tool_result: Any) -> bool:
@@ -999,6 +888,22 @@ class CommandClient:
             return None
         return parsed if isinstance(parsed, dict) else None
 
+    def _messages_include_personality_readme(
+        self, messages: list[dict[str, Any]]
+    ) -> bool:
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            parsed = self._tool_result_mapping(message.get("content"))
+            if not isinstance(parsed, dict) or parsed.get("error"):
+                continue
+            file_path = parsed.get("file_path")
+            if isinstance(file_path, str) and _path_matches_personality_readme(
+                file_path
+            ):
+                return True
+        return False
+
     def _execute_tool_calls(
         self,
         *,
@@ -1012,6 +917,7 @@ class CommandClient:
         turn_start_idx: int,
         approval_granted_call_id: str | None = None,
     ) -> Generator[CommandStreamEvent, None, tuple[list[dict[str, Any]], str, bool]]:
+        personality_readme_loaded = self._messages_include_personality_readme(messages)
         for idx, call in enumerate(completed_calls):
             fn_name = call["function"]["name"]
             try:
@@ -1022,6 +928,7 @@ class CommandClient:
                 call,
                 tool_executor=tool_executor,
                 approval_granted=(approval_granted_call_id == call["id"]),
+                personality_readme_loaded=personality_readme_loaded,
             )
             if self._is_pending_approval_result(tool_result):
                 approval_result = self._tool_result_mapping(tool_result) or {}
@@ -1046,6 +953,13 @@ class CommandClient:
                 return messages, visible_response, True
 
             tool_content, tool_preview = self._normalize_tool_result(tool_result)
+            result_mapping = self._tool_result_mapping(tool_result)
+            if (
+                _tool_call_reads_personality_readme(fn_name, fn_args)
+                and isinstance(result_mapping, dict)
+                and not result_mapping.get("error")
+            ):
+                personality_readme_loaded = True
             result_tokens = _rough_tool_result_tokens(tool_preview)
             logger.info(
                 "Tool %s result: %d chars (~%d tokens) (preview: %s)",

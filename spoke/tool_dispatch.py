@@ -871,6 +871,66 @@ def _validate_write_target(file_path: str) -> str | None:
     return None
 
 
+def _personality_contract_paths() -> tuple[str, str, str]:
+    config_dir = os.path.abspath(
+        os.path.join(os.path.expanduser("~"), ".config", "spoke")
+    )
+    personalities_dir = os.path.join(config_dir, "personalities")
+    return (
+        os.path.join(personalities_dir, "README.md"),
+        os.path.join(config_dir, "personality.conf"),
+        personalities_dir,
+    )
+
+
+def _path_is_equal_or_child(path: str, root: str) -> bool:
+    path = os.path.abspath(path)
+    root = os.path.abspath(root)
+    return path == root or path.startswith(root + os.sep)
+
+
+def _path_contains_component(path: str, component: str) -> bool:
+    return component in os.path.abspath(path).split(os.sep)
+
+
+def _repo_local_personality_stub_dir() -> str:
+    return os.path.abspath(
+        os.path.join(os.path.expanduser("~"), "dev", "spoke", "personality-stubs")
+    )
+
+
+def _personality_write_guard(
+    file_path: str,
+    *,
+    personality_readme_loaded: bool,
+) -> dict[str, Any] | None:
+    abs_path = os.path.abspath(file_path)
+    readme_path, pointer_path, personalities_dir = _personality_contract_paths()
+    if _path_is_equal_or_child(
+        abs_path, _repo_local_personality_stub_dir()
+    ) or _path_contains_component(abs_path, "personality-stubs"):
+        return {
+            "error": (
+                "Personality stubs do not live in repo-local "
+                "`personality-stubs/` directories. Read the personality "
+                f"README first: {readme_path}"
+            ),
+            "personality_readme_required": True,
+            "readme_path": readme_path,
+        }
+    if abs_path == pointer_path or _path_is_equal_or_child(abs_path, personalities_dir):
+        if not personality_readme_loaded:
+            return {
+                "error": (
+                    "Read the personality README first before writing personality stubs "
+                    f"or personality.conf: {readme_path}"
+                ),
+                "personality_readme_required": True,
+                "readme_path": readme_path,
+            }
+    return None
+
+
 def _contains_lazy_edit_placeholder(text: str) -> bool:
     lowered = text.lower()
     patterns = (
@@ -883,7 +943,11 @@ def _contains_lazy_edit_placeholder(text: str) -> bool:
     return any(pattern in lowered for pattern in patterns)
 
 
-def _execute_write_file(arguments: dict) -> dict[str, Any]:
+def _execute_write_file(
+    arguments: dict,
+    *,
+    personality_readme_loaded: bool = False,
+) -> dict[str, Any]:
     raw_path = arguments.get("file_path")
     if not raw_path:
         return {"error": "file_path is required"}
@@ -897,6 +961,12 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
         access_error = _validate_write_target(file_path)
         if access_error:
             return {"error": access_error}
+        personality_error = _personality_write_guard(
+            file_path,
+            personality_readme_loaded=personality_readme_loaded,
+        )
+        if personality_error:
+            return personality_error
 
         abs_path = os.path.abspath(file_path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
@@ -1449,7 +1519,11 @@ def _find_indentation_aware_matches(
     return matches
 
 
-def _execute_edit_file(arguments: dict) -> dict[str, Any]:
+def _execute_edit_file(
+    arguments: dict,
+    *,
+    personality_readme_loaded: bool = False,
+) -> dict[str, Any]:
     def finish(result: dict[str, Any]) -> dict[str, Any]:
         _append_edit_file_telemetry(result)
         return result
@@ -1521,6 +1595,29 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             edited_range=None,
             error=access_error,
         ))
+    personality_error = _personality_write_guard(
+        file_path,
+        personality_readme_loaded=personality_readme_loaded,
+    )
+    if personality_error:
+        result = _edit_result(
+            status="error",
+            file_path=file_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error=personality_error["error"],
+        )
+        result.update(
+            {
+                "personality_readme_required": personality_error[
+                    "personality_readme_required"
+                ],
+                "readme_path": personality_error["readme_path"],
+            }
+        )
+        return finish(result)
 
     if os.path.exists(file_path) and not os.path.isfile(file_path):
         return finish(_edit_result(
@@ -1944,6 +2041,7 @@ def execute_tool(
     approval_granted: bool = False,
     subagent_manager: Any | None = None,
     history_compactor: Callable[[dict], str] | None = None,
+    personality_readme_loaded: bool = False,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.
 
@@ -2009,9 +2107,19 @@ def execute_tool(
     elif name == "read_file":
         return json.dumps(_execute_read_file(arguments))
     elif name == "write_file":
-        return json.dumps(_execute_write_file(arguments))
+        return json.dumps(
+            _execute_write_file(
+                arguments,
+                personality_readme_loaded=personality_readme_loaded,
+            )
+        )
     elif name == "edit_file":
-        return json.dumps(_execute_edit_file(arguments))
+        return json.dumps(
+            _execute_edit_file(
+                arguments,
+                personality_readme_loaded=personality_readme_loaded,
+            )
+        )
     elif name == "search_file":
         return json.dumps(_execute_search_file(arguments))
     elif name == "find_file":

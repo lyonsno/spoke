@@ -1745,6 +1745,22 @@ class TestExecuteToolIntegration:
         assert str(tmp_path / ".config" / "spoke" / "personalities" / "README.md") in result["error"]
         assert not wrong_path.exists()
 
+    def test_write_file_blocks_relative_repo_local_personality_stub_paths(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        repo_root = tmp_path / "spoke-worktree"
+        repo_root.mkdir()
+        monkeypatch.chdir(repo_root)
+
+        result = json.loads(mod.execute_tool(
+            "write_file",
+            {"file_path": "personality-stubs/dfw.md", "content": "bad\n"},
+            personality_readme_loaded=True,
+        ))
+
+        assert "error" in result
+        assert "repo-local `personality-stubs/`" in result["error"]
+        assert not (repo_root / "personality-stubs" / "dfw.md").exists()
+
     def test_edit_file_requires_personality_readme_before_personality_stub_edits(self, tmp_path, monkeypatch):
         mod = _import_tools()
         import os
