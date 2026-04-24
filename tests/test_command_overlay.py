@@ -858,6 +858,18 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_punchthrough_hides_live_scroll_text_layer(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay._enable_text_punchthrough(True)
+
+        assert overlay._text_punchthrough is True
+        overlay._scroll_view.setHidden_.assert_called_once_with(True)
+
+        overlay._enable_text_punchthrough(False)
+
+        overlay._scroll_view.setHidden_.assert_called_with(False)
+
 class TestGeometryCaps:
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)

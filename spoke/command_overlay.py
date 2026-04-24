@@ -2673,11 +2673,10 @@ class CommandOverlay(NSObject):
         if fill is None:
             return
         if enabled:
-            # Keep the transcript surface visible. The punch-through mask can
-            # still open the fill behind the glyphs, but the live text view is
-            # the reliable readable layer the operator actually needs.
+            # Punch-through mode renders text via the fill mask / boost layer.
+            # Keeping the live NSTextView visible creates a second inset copy.
             if scroll is not None:
-                scroll.setHidden_(False)
+                scroll.setHidden_(True)
         else:
             fill.setMask_(None)
             self._punchthrough_mask_layer = None
