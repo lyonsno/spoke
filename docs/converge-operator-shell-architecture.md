@@ -172,31 +172,64 @@ roadmap idea. The live app imports and initializes `TurnCarver` in
 
 What the landed Converge layer does today:
 
-- observes completed command turns
-- embeds every user utterance
-- carves more substantive turns across four internal surfaces:
-  - personal attractors
-  - anamnesis
-  - tópoi
-  - observed policy
-- fires this work asynchronously in the background
-- relies on OMLX batch parallel scheduling so background carve/embed requests do
-  not require a second architecture
-- writes personal attractors to `~/.config/spoke/attractors/`
-- writes anamnesis to `~/.config/spoke/anamnesis/`
-- writes tópoi to `~/.config/spoke/topoi/`
-- writes observed policy to `~/.config/spoke/policy/`
-- writes a rolling turn-embedding cache to
-  `~/.config/spoke/turn-embeddings.npz`
-- writes trace events to `~/.config/spoke/converge-trace.jsonl`
+- observes completed command turns through a rolling context window (last 4
+  turns; user utterances never truncated, assistant turns middle-out truncated
+  to preserve intent and conclusion while dropping agent-loop middles)
+- carves every 2nd substantive turn, with a staleness override that forces a
+  carve when the context buffer has fully rotated past anything the last carve
+  saw (no turns pass through unseen)
+- embeds every user utterance via OMLX /v1/embeddings
+- runs four independent carve passes per event, staggered by 0.5s to avoid
+  concurrent prefill contention on Apple Silicon:
+  - **attractors** — forces pulling work into existence, with extinguishable
+    satisfaction conditions (the extinguishment test: if the thing were true
+    right now, would you stop caring about it?)
+  - **anamnesis** — factual/relational observations worth remembering
+  - **tópoi** — current state of ongoing work, naturally decaying
+  - **observed policy** — standing rules and principles with compliance, not
+    satisfaction (you can comply or violate but never finish)
+- after all four passes produce candidates, a **beast species-classification
+  pass** reviews every candidate and decides: pass (correctly routed), kill
+  (wrong species / ephemeral command misidentified as signal), or reroute to
+  a different surface. The beast fails open — if it can't run, all candidates
+  pass through unchanged
+- reinforce/expand ops on all surfaces trigger **recompile-on-write** via a
+  generic recompile prompt, producing current-state summaries instead of
+  appending chronological evidence lines. The file always reads as "what this
+  entry says now," not a changelog
+- inference parameters tuned for the local model (Qwen3.6-35B-A3B-oQ8):
+  temp 0.6, top_p 0.95, top_k 20 — found via gradient probe across 5 prompt
+  variants and 3 temperature settings
+- all carve events traced with prompt_hash (SHA-256 prefix of the system
+  prompt that produced each result) for eval reproducibility
+- writes to:
+  - `~/.config/spoke/attractors/`
+  - `~/.config/spoke/anamnesis/`
+  - `~/.config/spoke/topoi/`
+  - `~/.config/spoke/policy/`
+  - `~/.config/spoke/turn-embeddings.npz`
+  - `~/.config/spoke/converge-trace.jsonl`
 
-This is already the inward-facing substrate port in embryo. It is smaller than
-full Epistaxis, but it is the same pattern:
+The key architectural distinctions between the four surfaces:
 
-- durable state outside the immediate thread
-- extraction instead of raw transcript hoarding
-- explicit attractor objects
-- later-turn reuse through a context mechanism
+- **Attractors** are prescriptive — they describe how the world should be.
+  Satisfying an attractor extinguishes it; the pressure goes away.
+- **Policy** is prescriptive but non-extinguishable — you comply or violate
+  but never finish. "Development always happens in worktrees" is policy.
+- **Anamnesis** is descriptive — facts, observations, relational knowledge.
+  No satisfaction condition. "The server runs on port 8001."
+- **Tópoi** are descriptive and temporal — current work state that decays
+  naturally. "Working on the context window branch."
+
+The beast species filter exists because these boundaries are subtle and a 35B
+local model making the routing decision alone gets it wrong on edge cases,
+especially when existing entries act as reinforcement magnets. The beast sees
+all four surfaces' candidates together and catches cross-surface duplication
+and misrouting that no individual pass can see.
+
+This is the inward-facing substrate port in substantial form. It is still
+lighter than full Epistaxis, but it is now multi-surface, species-filtered,
+recompile-on-write, and semantically aware:
 
 ### 7. Compaction has crossed into semantic territory
 
@@ -269,12 +302,28 @@ This is the current operational center of the shell.
 This is where Converge lives:
 
 - four-pass carving across attractors, anamnesis, tópoi, and policy
-- turn embeddings
-- semantic compaction support
-- trace logs for observation and tuning
+- beast species-classification filter with pass/kill/reroute verdicts
+- recompile-on-write for all surfaces (current-state files, not changelogs)
+- rolling context window (4 turns) with staleness-aware carving cadence
+- staggered prefill launches for Apple Silicon Metal contention
+- turn embeddings via OMLX /v1/embeddings
+- semantic compaction support (guided mode with attractor-aware retention)
+- prompt-versioned trace logs for observation and eval reproducibility
+- tuned inference parameters (temp 0.6 / top_p 0.95 / top_k 20)
 
-This is not full runtime Epistaxis yet, but it is already the start of a
-continuity substrate inside `spoke`.
+Planned next surfaces:
+
+- **coherence gardening pass** — offline full-state review with license to
+  merge, split, migrate, archive, or rewrite entries across all surfaces.
+  Runs manually or nightly, not on the hot path.
+- **Paint Dry reader adaptation** — live terminal observability for the carve
+  pipeline, consuming the extracted Paint Dry narrator/sink/reader architecture
+- **rough** — a catch-all surface for light-mode operation (2 calls instead
+  of 5) where the carver routes to attractor or rough, and periodic beast
+  reconciliation promotes rough entries to their correct surfaces
+
+This is not full runtime Epistaxis yet, but it is already a multi-surface
+continuity substrate with species-filtered routing inside `spoke`.
 
 ### Layer D: private substrate adjacency
 
@@ -418,15 +467,17 @@ described:
 - conflict / incoherence surfacing instead of silent smear
 - background substrate maintenance
 
-Today the local inward-facing substrate is still much thinner than full
-Epistaxis. It has personal attractors, embeddings, traces, and semantic
-compaction support. It does not yet have the full runtime equivalents of topoi,
-metadosis, or lifecycle governance.
+The local inward-facing substrate is now multi-surface: personal attractors,
+anamnesis, tópoi, observed policy, embeddings, traces, semantic compaction, and
+species-filtered routing. It does not yet have the full runtime equivalents of
+metadosis or lifecycle governance, but tópoi and policy are now landed surfaces
+rather than future-adjacent ideas.
 
-But the direction is now legible: private Epistaxis remains the full
-cross-session coordination substrate, while Converge builds a runtime-local
-substrate inside `spoke` that can eventually support the same style of
-continuity for voice interaction.
+The direction is now legible and partially realized: private Epistaxis remains
+the full cross-session coordination substrate, while Converge builds a
+runtime-local substrate inside `spoke` that already supports four-surface
+continuity for voice interaction, with the coherence gardener and Paint Dry
+observability layer as the next expansions.
 
 ## The Most Important Architectural Difference From A Chat App
 
@@ -458,13 +509,16 @@ If you need the short version:
 - Epistaxis access is real; the legacy helper still exists, but the shell is
   now biased toward direct files plus runbook-gated terminal git.
 - search subagents are real in a narrow local-search form.
-- Converge is real in first substantial form: four-pass background carving,
-  embeddings, and guided/reset compaction support are integrated into the app.
+- Converge is real in substantial form: four-pass background carving with beast
+  species filter, recompile-on-write, staggered prefills, tuned inference
+  params, prompt-versioned tracing, and guided/reset compaction support are
+  integrated into the app.
 - Brave search is live as a bounded read surface.
 - the bounded terminal tool is live, including approval and recovery plumbing.
 - the full runtime continuity substrate is still ahead of the current code, but
-  the port has started.
+  the port is now multi-surface and species-filtered.
 
-That is enough to say the operator shell exists now in early form. What remains
-is expansion, hardening, and making the substrate layer as coherent in runtime
-as it already is in private design custody.
+That is enough to say the operator shell exists now in working form. What
+remains is the coherence gardener, Paint Dry observability adaptation, eval
+harness formalization (Lane G), and making the substrate layer as deep in
+runtime as it already is in private design custody.
