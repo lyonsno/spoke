@@ -556,7 +556,7 @@ class TurnCarver:
         )
         self._model = (
             model
-            or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-bf16")
+            or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-oQ8")
         )
         self._pending: list[tuple[str, list[dict[str, str]], int]] = []  # (utterance, context_snapshot, current_seq)
         self._embed_pending: list[str] = []  # user utterances not yet embedded

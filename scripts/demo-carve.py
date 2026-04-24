@@ -60,11 +60,25 @@ def _load_grapheus_turns(log_date: str | None = None, start: int = 0, limit: int
             if any("bearing" in (m.get("content") or "").lower() and "navigational" in (m.get("content") or "").lower() for m in sys_msgs):
                 continue
 
+            # Also skip by system prompt keywords that may appear in older carve tools
+            if any("substrate carver" in (m.get("content") or "").lower() for m in sys_msgs):
+                continue
+
             user_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "user"]
             if not user_msgs:
                 continue
             last_user = user_msgs[-1].get("content", "")
             if not last_user.strip():
+                continue
+
+            # Skip old carve-script transcripts that appear as user messages
+            if last_user.strip().startswith("Here is a transcript of"):
+                continue
+
+            # Skip carve prompts that appear as user messages
+            if "Identify attractor operations for this utterance" in last_user:
+                continue
+            if "User utterance from a voice interaction" in last_user:
                 continue
 
             # Dedup retries (same user message)
