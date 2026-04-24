@@ -251,13 +251,17 @@ class TestCommandClient:
         assert str(personality_conf) in system_prompt
         assert str(readme_path) in system_prompt
         assert "Read the README" in system_prompt
+        assert "with read_file" in system_prompt
         assert "before creating or editing personality stubs" in system_prompt
         assert "Use these absolute paths in tool calls" in system_prompt
         assert "do not rely on shell `~` expansion" in system_prompt
         assert "Create or edit only the requested stub file" in system_prompt
+        assert "with write_file" in system_prompt
         assert f"write that stub filename into `{personality_conf}`" in system_prompt
         assert "filesystem edit, not a chat-side signal" in system_prompt
-        assert f"Do not create personality files under this repo checkout (`{repo_root}`)" in system_prompt
+        assert "read_file: reads a local file by file_path" in system_prompt
+        assert "write_file: creates or overwrites a local file by file_path and content" in system_prompt
+        assert f"process launch directory (`{repo_root}`)" in system_prompt
 
     def test_build_messages_reads_personality_at_prompt_assembly_time(self, tmp_path, monkeypatch):
         """Switching personality.conf should affect the next assembled operator prompt."""

@@ -152,7 +152,6 @@ person with a fixed backstory and make decisions without user direction.
 ```
 """
 
-
 def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
@@ -171,6 +170,25 @@ def _personality_paths() -> tuple[Path, Path, Path, Path]:
         personalities_dir / _DEFAULT_PERSONALITY_FILE,
         personalities_dir / "README.md",
     )
+
+
+def _personality_authoring_guide() -> str:
+    pointer_path, personalities_dir, _, readme_path = _personality_paths()
+    repo_root = Path.cwd()
+    return f"""\
+## Personality Stub Authoring
+
+When the user asks to create, modify, save, switch, or load an operator
+personality stub, use this contract:
+- Personality files live in `{personalities_dir}/`.
+- The active personality is selected by `{pointer_path}`.
+- Read the README at `{readme_path}` with read_file before creating or editing personality stubs.
+- Use these absolute paths in tool calls; do not rely on shell `~` expansion.
+- Create or edit only the requested stub file with write_file. When the user asks to load it, write that stub filename into `{pointer_path}` with write_file; this is a filesystem edit, not a chat-side signal.
+- The personality home above is the only intended write target. Do not create
+  personality files in the process launch directory (`{repo_root}`) or any
+  repo-local `personality-stubs/` directory.
+"""
 
 
 def _write_if_missing(path: Path, text: str) -> None:
@@ -216,7 +234,7 @@ def _inject_active_personality_stub(system_prompt: str) -> str:
     stub = _active_personality_stub()
     if not stub:
         stub = _DEFAULT_PERSONALITY_STUB.strip()
-    return f"{system_prompt}\n\n## Active Personality Stub\n\n{stub}"
+    return f"{system_prompt}\n\n{_personality_authoring_guide()}\n## Active Personality Stub\n\n{stub}"
 
 
 def _terminal_preview_body_line_limit(body_line_count: int) -> int:
@@ -325,7 +343,12 @@ _SYSTEM_PROMPT = (
     "user asks you to say an arbitrary phrase, sentence, or other text that is "
     "not being read from the screen, selection, clipboard, or prior response.\n"
     "- add_to_tray: places exact text into the tray for later insertion or "
-    "sending. Use this to save content the user may want to paste or send later.\n\n"
+    "sending. Use this to save content the user may want to paste or send later.\n"
+    "- read_file: reads a local file by file_path. Use absolute paths when "
+    "the prompt provides them.\n"
+    "- write_file: creates or overwrites a local file by file_path and content. "
+    "Use this for small explicit file edits when the user asks you to write "
+    "or update a known file.\n\n"
     "You also have search_web: a bounded read-only public web search via "
     "Brave Search for lightweight fact lookup (up to 10 results).\n\n"
     "You also have launch_subagent, list_subagents, get_subagent_result, and "
