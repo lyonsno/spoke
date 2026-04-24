@@ -749,6 +749,7 @@ class CommandOverlay(NSObject):
         self._streaming = False
         self._response_text = ""
         self._utterance_text = ""
+        self._collapsed_text = ""
         self._utterance_label = None  # pinned header for user text
 
         # Fade state
@@ -1198,6 +1199,7 @@ class CommandOverlay(NSObject):
         self._streaming = True
         self._response_text = ""
         self._utterance_text = ""
+        self._collapsed_text = ""
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0

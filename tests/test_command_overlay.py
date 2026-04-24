@@ -259,6 +259,14 @@ class TestDismissAnimation:
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""
 
+    def test_init_initializes_collapsed_thinking_state(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+
+        overlay = mod.CommandOverlay.alloc().initWithScreen_(None)
+
+        assert overlay._collapsed_text == ""
+
     def test_show_sets_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay.show()
@@ -362,10 +370,12 @@ class TestWindowLayering:
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._response_text = "old response"
         overlay._utterance_text = "old utterance"
+        overlay._collapsed_text = "Thought for 2s"
 
         overlay.show()
         assert overlay._response_text == ""
         assert overlay._utterance_text == ""
+        assert overlay._collapsed_text == ""
 
     def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
