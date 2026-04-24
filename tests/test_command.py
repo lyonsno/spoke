@@ -232,8 +232,21 @@ class TestCommandClient:
         assert "do not itch for tasks" in system_prompt
         assert "run_terminal_command" in system_prompt
 
-    def test_build_messages_exposes_personality_authoring_packet(self, tmp_path, monkeypatch):
-        """The operator prompt should tell the assistant where personality files live."""
+    def test_build_messages_omits_personality_authoring_packet_for_ordinary_turns(self, tmp_path, monkeypatch):
+        """Ordinary conversation should not carry the personality authoring guide."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        client = self._make_client()
+        system_prompt = client._build_messages("hello world")[0]["content"]
+
+        assert "## Active Personality Stub" in system_prompt
+        assert "## Personality Stub Authoring" not in system_prompt
+        assert "Read the README" not in system_prompt
+        assert "with write_file" not in system_prompt
+
+    def test_build_messages_exposes_personality_authoring_packet_for_personality_requests(self, tmp_path, monkeypatch):
+        """Personality-management requests should tell the assistant where files live."""
         from spoke import command as command_mod
 
         monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
@@ -242,7 +255,9 @@ class TestCommandClient:
         readme_path = personalities_dir / "README.md"
         repo_root = command_mod.Path.cwd()
         client = self._make_client()
-        system_prompt = client._build_messages("hello world")[0]["content"]
+        system_prompt = client._build_messages(
+            "Make me a David Foster Wallace-ish operator personality stub and load it."
+        )[0]["content"]
 
         assert "## Personality Stub Authoring" in system_prompt
         assert "When the user asks to create, modify, save, switch, or load" in system_prompt
@@ -262,6 +277,17 @@ class TestCommandClient:
         assert "read_file: reads a local file by file_path" in system_prompt
         assert "write_file: creates or overwrites a local file by file_path and content" in system_prompt
         assert f"process launch directory (`{repo_root}`)" in system_prompt
+
+    def test_build_messages_exposes_personality_authoring_packet_for_register_requests(self, tmp_path, monkeypatch):
+        """Natural register-change phrasing should still surface the authoring guide."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        client = self._make_client()
+        system_prompt = client._build_messages("make me something more conversational")[0]["content"]
+
+        assert "## Personality Stub Authoring" in system_prompt
+        assert "## Active Personality Stub" in system_prompt
 
     def test_build_messages_reads_personality_at_prompt_assembly_time(self, tmp_path, monkeypatch):
         """Switching personality.conf should affect the next assembled operator prompt."""
