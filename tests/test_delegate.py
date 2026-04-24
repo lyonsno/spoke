@@ -4323,6 +4323,37 @@ class TestCommandOverlayToggle:
         d._command_overlay.append_token.assert_not_called()
         d._command_overlay.finish.assert_called_once()
 
+    def test_toggle_command_overlay_restores_durable_pending_approval_after_restart(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.pending_approval_snapshot.return_value = {
+            "utterance": "push it",
+            "base_response": "Checking. \n[calling run_terminal_command…]\n",
+            "approval_request": {
+                "message": "Approval needed\n\ngit push -u origin feat/x"
+            },
+        }
+        d._command_client.history = [("old question", "old answer")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._toggle_command_overlay()
+
+        assert d._pending_command_approval_active is True
+        assert d._pending_command_approval_request == {
+            "message": "Approval needed\n\ngit push -u origin feat/x"
+        }
+        assert d._last_command_utterance == "push it"
+        assert d._command_streaming_text == "Checking. \n[calling run_terminal_command…]\n"
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("push it")
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "Checking. \n[calling run_terminal_command…]\n\nApproval needed\n\ngit push -u origin feat/x"
+        )
+        d._command_overlay.finish.assert_called_once()
+        d._command_overlay.append_token.assert_not_called()
+
 
 class TestHoldStartDuringTranscription:
     """Test interrupt-and-restart when hold starts during active transcription."""
@@ -4368,6 +4399,26 @@ class TestHoldStartDuringTranscription:
 
         d._command_overlay.hide.assert_not_called()
         assert d._detector.command_overlay_active is True
+
+    def test_plain_dictation_during_pending_approval_does_not_cancel_approval(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"fake-wav"
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {"message": "Approval needed"}
+        d._detector.approval_active = True
+        d._cancel_pending_command_approval = MagicMock()
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+            d._on_hold_end()
+
+        d._cancel_pending_command_approval.assert_not_called()
+        assert d._pending_command_approval_active is True
+        assert d._detector.approval_active is True
+        mock_thread.start.assert_called_once()
 
     def test_plain_space_release_during_active_turn_uses_parallel_insert_lane(
         self, main_module, monkeypatch

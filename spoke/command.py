@@ -332,6 +332,9 @@ class CommandClient:
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
         self._history: list[list[dict]] = self._load_history()
         self._pending_tool_approval: PendingToolApproval | None = None
+        self._pending_tool_approval_request: dict[str, Any] | None = None
+        self._pending_tool_overlay_response: str = ""
+        self._load_pending_tool_approval()
 
     def _load_history(self) -> list[list[dict]]:
         """Load persisted history from disk, or return empty list.
@@ -374,6 +377,81 @@ class CommandClient:
         )
         tmp.replace(self._history_path)
 
+    def _pending_approval_path(self) -> Path | None:
+        """Return the durable sidecar path for a paused approval turn."""
+        if self._history_path is None:
+            return None
+        return self._history_path.with_name(self._history_path.name + ".pending")
+
+    def _load_pending_tool_approval(self) -> None:
+        """Load any paused approval turn persisted across restart."""
+        path = self._pending_approval_path()
+        if path is None:
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        pending = data.get("pending")
+        approval_request = data.get("approval_request")
+        overlay_response = data.get("overlay_response")
+        if not isinstance(pending, dict) or not isinstance(approval_request, dict):
+            return
+        try:
+            self._pending_tool_approval = PendingToolApproval(
+                utterance=str(pending["utterance"]),
+                messages=list(pending["messages"]),
+                call=dict(pending["call"]),
+                remaining_calls=list(pending["remaining_calls"]),
+                round_index=int(pending["round_index"]),
+                tools=list(pending["tools"]) if isinstance(pending.get("tools"), list) else None,
+                turn_start_idx=int(pending["turn_start_idx"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            self._pending_tool_approval = None
+            return
+        self._pending_tool_approval_request = dict(approval_request)
+        self._pending_tool_overlay_response = (
+            overlay_response if isinstance(overlay_response, str) else ""
+        )
+
+    def _save_pending_tool_approval(self) -> None:
+        """Persist the paused approval turn so it survives restart."""
+        path = self._pending_approval_path()
+        pending = self._pending_tool_approval
+        approval_request = self._pending_tool_approval_request
+        if path is None or pending is None or approval_request is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pending": {
+                "utterance": pending.utterance,
+                "messages": pending.messages,
+                "call": pending.call,
+                "remaining_calls": pending.remaining_calls,
+                "round_index": pending.round_index,
+                "tools": pending.tools,
+                "turn_start_idx": pending.turn_start_idx,
+            },
+            "approval_request": approval_request,
+            "overlay_response": self._pending_tool_overlay_response,
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+    def _clear_pending_tool_approval_persistence(self) -> None:
+        """Remove any persisted paused approval turn."""
+        path = self._pending_approval_path()
+        if path is None:
+            return
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
     def _message_for_api(self, message: dict[str, Any]) -> dict[str, Any]:
         """Strip private persisted metadata before sending history back to the model."""
         return {k: v for k, v in message.items() if not k.startswith("_")}
@@ -397,6 +475,14 @@ class CommandClient:
 
     def last_overlay_snapshot(self) -> tuple[str, str] | None:
         """Return the latest durable user-visible command transcript, if present."""
+        pending_snapshot = self.pending_approval_snapshot()
+        if pending_snapshot is not None:
+            base = pending_snapshot["base_response"]
+            message = pending_snapshot["approval_request"].get("message", "Approval needed")
+            overlay_response = (
+                f"{base.rstrip('\n')}\n\n{message}" if base and message else (message or base)
+            )
+            return pending_snapshot["utterance"], overlay_response
         for chain in reversed(self._history):
             user_text = ""
             overlay_response = None
@@ -413,6 +499,17 @@ class CommandClient:
             if user_text and overlay_response:
                 return user_text, overlay_response
         return None
+
+    def pending_approval_snapshot(self) -> dict[str, Any] | None:
+        """Return the currently paused approval turn for UI recovery."""
+        pending = self._pending_tool_approval
+        if pending is None or self._pending_tool_approval_request is None:
+            return None
+        return {
+            "utterance": pending.utterance,
+            "base_response": self._pending_tool_overlay_response,
+            "approval_request": dict(self._pending_tool_approval_request),
+        }
 
     def _normalized_history_turn(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize a turn before storing it in durable history."""
@@ -627,6 +724,9 @@ class CommandClient:
                     tools=tools,
                     turn_start_idx=turn_start_idx,
                 )
+                self._pending_tool_approval_request = dict(approval_request)
+                self._pending_tool_overlay_response = visible_response
+                self._save_pending_tool_approval()
                 yield CommandStreamEvent(
                     kind="approval_request",
                     text=approval_request.get("message", "Approval needed"),
@@ -1104,6 +1204,9 @@ class CommandClient:
             raise RuntimeError("No pending tool approval to resume")
 
         self._pending_tool_approval = None
+        self._pending_tool_approval_request = None
+        self._pending_tool_overlay_response = ""
+        self._clear_pending_tool_approval_persistence()
         messages = list(pending.messages)
         completed_calls = [pending.call, *pending.remaining_calls]
         messages, visible_response, paused_for_approval = yield from self._execute_tool_calls(
@@ -1307,8 +1410,12 @@ class CommandClient:
     def cancel_pending_tool_call(self) -> None:
         """Discard a paused tool-call turn without mutating history."""
         self._pending_tool_approval = None
+        self._pending_tool_approval_request = None
+        self._pending_tool_overlay_response = ""
+        self._clear_pending_tool_approval_persistence()
 
     def clear_history(self) -> None:
         """Clear the conversation ring buffer."""
         self._history.clear()
         self._save_history()
+        self.cancel_pending_tool_call()

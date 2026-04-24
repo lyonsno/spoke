@@ -785,6 +785,120 @@ class TestStreamCommand:
         assert tool_calls[1][2]["approval_granted"] is True
         assert client.history == [("status?", "Done.")]
 
+    def test_pending_tool_approval_persists_across_restart_for_overlay_and_resume(self, tmp_path):
+        from spoke.command import CommandClient
+
+        history_path = tmp_path / "history.json"
+        first_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Checking. "}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "run_terminal_command", "arguments": ""},
+                }
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {
+                    "index": 0,
+                    "function": {"arguments": '{"argv":["git","push","-u","origin","feat/x"]}'},
+                }
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        second_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Done."}}]},
+        ]
+
+        tool_calls = []
+
+        def tool_executor(name, arguments, **kwargs):
+            tool_calls.append((name, arguments, kwargs))
+            if len(tool_calls) == 1:
+                return {
+                    "decision": "approval_required",
+                    "executed": False,
+                    "pending_approval": True,
+                    "approval_request": {
+                        "kind": "terminal_command",
+                        "argv": ["git", "push", "-u", "origin", "feat/x"],
+                        "cwd": "/tmp/repo",
+                        "reason": "command requires approval: git push -u origin",
+                        "message": "Approval needed\n\ngit push -u origin feat/x",
+                    },
+                }
+            return {
+                "decision": "allow",
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "approved_by_user": kwargs.get("approval_granted"),
+            }
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(first_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(second_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=history_path,
+        )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            paused_events = list(
+                client.stream_command_events(
+                    "push it",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+            assert paused_events[-1].kind == "approval_request"
+            assert client.history == []
+            assert client._pending_tool_approval is not None
+
+            restarted = CommandClient(
+                base_url="http://localhost:9999",
+                model="test-model",
+                api_key="key",
+                history_path=history_path,
+            )
+
+            assert restarted.pending_approval_snapshot() == {
+                "utterance": "push it",
+                "base_response": "Checking. \n[calling run_terminal_command…]\n",
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "push", "-u", "origin", "feat/x"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git push -u origin",
+                    "message": "Approval needed\n\ngit push -u origin feat/x",
+                },
+            }
+            assert restarted.last_overlay_snapshot() == (
+                "push it",
+                "Checking. \n[calling run_terminal_command…]\n\nApproval needed\n\ngit push -u origin feat/x",
+            )
+
+            resumed_events = list(restarted.approve_pending_tool_call(tool_executor=tool_executor))
+
+        assert request_count["n"] == 2
+        assert resumed_events[-1].kind == "assistant_final"
+        assert resumed_events[-1].text == "Done."
+        assert tool_calls[1][2]["approval_granted"] is True
+        assert restarted.history == [("push it", "Checking.Done.")]
+        assert restarted.pending_approval_snapshot() is None
+
     def test_stream_command_surfaces_approval_pause_text_for_compatibility_callers(self):
         from spoke.command import CommandClient
 

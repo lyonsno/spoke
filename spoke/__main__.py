@@ -2278,8 +2278,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes = self._capture.stop()
 
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
-            logger.info("New utterance supersedes pending approval")
-            self._cancel_pending_command_approval(dismiss_overlay=False)
+            logger.info("New utterance captured while approval remains pending")
 
         # Short shift-hold (under 800ms of recording) = recall into tray
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
@@ -2746,6 +2745,30 @@ class SpokeAppDelegate(NSObject):
         utterance = getattr(self, "_last_command_utterance", "")
         response = getattr(self, "_last_command_response", "")
         if self._command_client is not None:
+            pending_snapshot_getter = getattr(
+                self._command_client, "pending_approval_snapshot", None
+            )
+            pending_snapshot = (
+                pending_snapshot_getter()
+                if callable(pending_snapshot_getter)
+                else None
+            )
+            if isinstance(pending_snapshot, dict):
+                pending_utterance = pending_snapshot.get("utterance")
+                pending_base = pending_snapshot.get("base_response")
+                approval_request = pending_snapshot.get("approval_request") or {}
+                if (
+                    isinstance(pending_utterance, str)
+                    and isinstance(pending_base, str)
+                    and isinstance(approval_request, dict)
+                ):
+                    message = approval_request.get("message", "Approval needed")
+                    overlay_response = (
+                        f"{pending_base}\n\n{message}"
+                        if pending_base and message
+                        else (message or pending_base)
+                    )
+                    return pending_utterance, overlay_response
             client_snapshot_getter = getattr(self._command_client, "last_overlay_snapshot", None)
             client_snapshot = (
                 client_snapshot_getter()
@@ -2797,7 +2820,7 @@ class SpokeAppDelegate(NSObject):
             request = getattr(self, "_pending_command_approval_request", None) or {}
             marker = request.get("message", "Approval needed")
         if base and marker:
-            return f"{base}\n\n{marker}"
+            return f"{base.rstrip('\n')}\n\n{marker}"
         return marker or base
 
     def _recallLastResponse_(self, payload) -> None:
@@ -3110,11 +3133,44 @@ class SpokeAppDelegate(NSObject):
                 self._command_overlay.set_utterance(utterance)
                 if streaming:
                     self._command_overlay.set_response_text(streaming)
-                    self._command_overlay.invert_thinking_timer()
+                self._command_overlay.invert_thinking_timer()
                 self._detector.command_overlay_active = True
             except Exception:
                 logger.exception("Resume overlay failed")
-        else:
+        elif (
+            self._command_client is not None
+            and self._command_overlay is not None
+        ):
+            pending_snapshot_getter = getattr(
+                self._command_client, "pending_approval_snapshot", None
+            )
+            snapshot = (
+                pending_snapshot_getter()
+                if callable(pending_snapshot_getter)
+                else None
+            )
+            if isinstance(snapshot, dict):
+                utterance = snapshot.get("utterance", "")
+                base_response = snapshot.get("base_response", "")
+                approval_request = snapshot.get("approval_request") or {}
+                self._pending_command_approval_active = True
+                self._pending_command_approval_request = approval_request
+                self._last_command_utterance = utterance
+                self._command_streaming_text = base_response
+                logger.info("Double-tap Enter — restoring durable pending approval overlay")
+                try:
+                    self._sync_command_overlay_brightness(immediate=True)
+                    self._command_overlay.show()
+                    self._command_overlay.set_utterance(utterance)
+                    self._command_overlay.set_response_text(
+                        self._compose_pending_approval_overlay_body()
+                    )
+                    self._command_overlay.finish()
+                    self._detector.approval_active = True
+                    self._detector.command_overlay_active = True
+                except Exception:
+                    logger.exception("Restore durable pending approval overlay failed")
+                return
             snapshot = self._last_command_overlay_snapshot()
             if snapshot is not None:
                 last_utterance, last_response = snapshot
@@ -3129,8 +3185,8 @@ class SpokeAppDelegate(NSObject):
                         self._detector.command_overlay_active = True
                     except Exception:
                         logger.exception("Recall overlay failed")
-            else:
-                logger.info("Double-tap Enter — no assistant overlay snapshot to recall")
+        else:
+            logger.info("Double-tap Enter — no assistant overlay snapshot to recall")
 
     def _toggle_terraform_hud(self) -> None:
         """Toggle Terror Form HUD visibility — called from double-tap Shift."""
