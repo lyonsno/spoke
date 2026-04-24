@@ -794,6 +794,62 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_pulse_preserves_crisp_response_foreground_contrast(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        try:
+            mod = importlib.import_module("spoke.command_overlay")
+
+            class _FakeTextStorage:
+                def __init__(self, text):
+                    self.text = text
+                    self.attrs = []
+
+                def length(self):
+                    return len(self.text)
+
+                def addAttribute_value_range_(self, name, value, rng):
+                    self.attrs.append((name, value, rng))
+
+            monkeypatch.setattr(
+                sys.modules["AppKit"].NSColor,
+                "colorWithSRGBRed_green_blue_alpha_",
+                staticmethod(lambda r, g, b, a: (r, g, b, a)),
+                raising=False,
+            )
+
+            overlay, _ = _make_overlay(mock_pyobjc)
+            overlay._text_view = MagicMock()
+            storage = _FakeTextStorage("Prompt\n\nAnswer")
+            overlay._text_view.textStorage.return_value = storage
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._utterance_text = "Prompt"
+            overlay._response_text = "Answer"
+            overlay._cancel_spring = 0.0
+            overlay._cancel_spring_target = 0.0
+            overlay._cancel_spring_fired = False
+            overlay._on_cancel_spring_threshold = None
+            overlay._text_punchthrough = False
+            overlay._fullscreen_compositor = None
+            overlay._apply_surface_theme = MagicMock()
+            overlay._apply_backdrop_pulse_style = MagicMock()
+
+            overlay._pulseStepInner()
+
+            response_start = len("Prompt\n\n")
+            response_colors = [
+                value
+                for name, value, rng in storage.attrs
+                if name == "NSForegroundColor" and rng[0] >= response_start
+            ]
+
+            assert response_colors
+            assert min(response_colors[-1][:3]) >= min(mod._ASSISTANT_TEXT_COLOR_DARK)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
 class TestGeometryCaps:
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)

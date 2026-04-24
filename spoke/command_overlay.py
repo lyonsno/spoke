@@ -1908,8 +1908,6 @@ class CommandOverlay(NSObject):
             alt_r, alt_g, alt_b = alt_x + alt_m, alt_m, alt_c + alt_m
         else:
             alt_r, alt_g, alt_b = alt_c + alt_m, alt_m, alt_x + alt_m
-        alt_r, alt_g, alt_b = _assistant_foreground_color_for_brightness(t)
-
         # Update text colors per-range
         if self._text_view is not None:
             from AppKit import NSForegroundColorAttributeName as _FG_pulse
@@ -1933,16 +1931,9 @@ class CommandOverlay(NSObject):
                     )
                 except Exception:
                     pass
-                # Response text: two visual layers per character.
-                #
-                # Foreground (anchor): dark version of the dual-hue color
-                # rotation — value crushed to ~0.15-0.20, full opacity, no
-                # blur, light font weight. Always legible.
-                #
-                # Shadow (atmosphere): bright dual-hue color, luminance-driven
-                # blur. Lighter chars glow soft, darker chars stay crisp.
-                # Renders behind the dark anchor, giving depth without
-                # sacrificing readability.
+                # Response text has two visual layers per character:
+                # a crisp adaptive foreground for legibility, plus a colored
+                # blurred shadow that carries the chromatic identity.
                 resp_start = utt_len + 2
                 resp_len = total_len - resp_start
                 _punchthrough = getattr(self, "_text_punchthrough", False)
@@ -1973,19 +1964,18 @@ class CommandOverlay(NSObject):
                                 # 0.0 at edges, 1.0 at center
                                 frac = ci / max(resp_len - 1, 1)
                                 center_weight = 1.0 - abs(frac * 2.0 - 1.0)
-                                # Bright color (for shadow/glow layer)
-                                cr = _lerp(response_r, alt_r, center_weight)
-                                cg = _lerp(response_g, alt_g, center_weight)
-                                cb = _lerp(response_b, alt_b, center_weight)
-                                # Dark anchor: same hue, value crushed
-                                dr = cr * 0.22
-                                dg = cg * 0.22
-                                db = cb * 0.22
-                                # Foreground = dark anchor
+                                # Shadow = animated chromatic blur.
+                                cr = _lerp(r, alt_r, center_weight)
+                                cg = _lerp(g, alt_g, center_weight)
+                                cb = _lerp(b, alt_b, center_weight)
+                                # Foreground = stable high-contrast text.
                                 ts.addAttribute_value_range_(
                                     _FG_pulse,
                                     NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                        dr, dg, db, 1.0
+                                        response_r,
+                                        response_g,
+                                        response_b,
+                                        _ASSISTANT_TEXT_ALPHA_MAX,
                                     ),
                                     (resp_start + ci, 1),
                                 )
