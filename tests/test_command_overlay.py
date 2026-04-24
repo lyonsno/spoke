@@ -25,11 +25,14 @@ def _make_overlay(mock_pyobjc):
     overlay = mod.CommandOverlay.__new__(mod.CommandOverlay)
     overlay._window = MagicMock()
     overlay._window.alphaValue.return_value = 1.0
+    overlay._window.frame.return_value = _make_rect(620.0, 260.0, 680.0, 160.0)
     overlay._wrapper_view = MagicMock()
     overlay._wrapper_view.layer.return_value = MagicMock()
     overlay._content_view = MagicMock()
     overlay._content_view.layer.return_value = MagicMock()
+    overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 104.0)
     overlay._scroll_view = MagicMock()
+    overlay._scroll_view.frame.return_value = _make_rect(48.0, 16.0, 528.0, 72.0)
     overlay._text_view = MagicMock()
     overlay._text_view.textStorage.return_value = MagicMock()
     overlay._text_view.textStorage.return_value.length.return_value = 0
@@ -40,6 +43,7 @@ def _make_overlay(mock_pyobjc):
     overlay._screen.frame.return_value = MagicMock(
         size=MagicMock(width=1920, height=1080)
     )
+    overlay._screen.backingScaleFactor.return_value = 2.0
     overlay._visible = False
     overlay._streaming = False
     overlay._response_text = ""
@@ -64,7 +68,20 @@ def _make_overlay(mock_pyobjc):
     overlay._tool_mode = False
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
+    overlay._brightness_timer = None
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
+    overlay._backdrop_base_blur_radius_points = 5.4
+    overlay._backdrop_blur_radius_points = 5.4
+    overlay._backdrop_base_mask_width_multiplier = 9.0
+    overlay._backdrop_mask_width_multiplier = 9.0
+    overlay._backdrop_timer = None
+    overlay._backdrop_layer = MagicMock()
     overlay._fill_layer = MagicMock()
+    overlay._boost_layer = MagicMock()
+    overlay._spring_tint_layer = MagicMock()
+    overlay._fullscreen_compositor = None
+    overlay._pop_timer = None
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     overlay._narrator_label = None
@@ -322,6 +339,7 @@ class TestWindowLayering:
         overlay = mod.CommandOverlay.alloc().initWithScreen_(None)
         overlay._screen = MagicMock()
         overlay._screen.frame.return_value = _make_rect(0.0, 0.0, 1920.0, 1080.0)
+        overlay._screen.backingScaleFactor.return_value = 2.0
 
         overlay.setup()
 
@@ -584,6 +602,48 @@ class TestAdaptiveCompositing:
         overlay._fill_image_brightness = -1.0
         overlay._apply_surface_theme()
         overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
+
+    def test_apply_backdrop_pulse_style_pushes_optical_shell_config_when_enabled(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._update_backdrop_mask = MagicMock()
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
+        assert config["enabled"] is True
+        assert config["content_width_points"] > mod._OVERLAY_WIDTH
+        assert config["content_height_points"] > mod._OVERLAY_HEIGHT
+        assert config["ring_amplitude_points"] > 0.0
+        assert config["tail_amplitude_points"] > 0.0
+
+    def test_optical_shell_peak_assistant_breath_keeps_fill_light_enough_to_show_backdrop(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+        assert fill_opacity <= 0.45, (
+            "Optical-shell mode should keep the fill translucent enough for the warped backdrop to read."
+        )
 
     def test_assistant_text_alpha_floor_and_ceiling_breathe_within_legible_band(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
