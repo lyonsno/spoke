@@ -1804,7 +1804,7 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
-_EPISTAXIS_RUNBOOK_PATH = Path.home() / "dev" / "spoke" / "docs" / "epistaxis-git-runbook.md"
+_EPISTAXIS_RUNBOOK_PATH = Path(__file__).resolve().parent.parent / "docs" / "epistaxis-git-runbook.md"
 # Session-level flag: set to True once the runbook has been returned
 # as a gate response, so we only block the first attempt per session.
 _epistaxis_runbook_injected = False
