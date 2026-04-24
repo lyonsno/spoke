@@ -3830,7 +3830,9 @@ class TestCommandCallbacks:
         assert d._detector.command_overlay_active is True
         d._command_overlay.set_tool_active.assert_called_once_with(False)
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Approval needed\n\ngit commit -m x"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x"
         )
         d._command_overlay.finish.assert_called_once_with()
         d._menubar.set_status_text.assert_called_once_with("Approval needed")
@@ -3858,7 +3860,10 @@ class TestCommandCallbacks:
         )
 
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
+            "Let me check.\n[calling read_file…]\n\n"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x"
         )
 
     def test_approve_pending_command_collapses_pending_card_to_approved_marker_before_resume(
@@ -4318,7 +4323,10 @@ class TestCommandOverlayToggle:
         d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
         d._command_overlay.set_utterance.assert_called_once_with("new question")
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
+            "Let me check.\n[calling read_file…]\n\n"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x"
         )
         d._command_overlay.append_token.assert_not_called()
         d._command_overlay.finish.assert_called_once()
@@ -4349,7 +4357,10 @@ class TestCommandOverlayToggle:
         d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
         d._command_overlay.set_utterance.assert_called_once_with("push it")
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Checking. \n[calling run_terminal_command…]\n\nApproval needed\n\ngit push -u origin feat/x"
+            "Checking. \n[calling run_terminal_command…]\n\n"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git push -u origin feat/x"
         )
         d._command_overlay.finish.assert_called_once()
         d._command_overlay.append_token.assert_not_called()

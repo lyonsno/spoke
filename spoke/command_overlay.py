@@ -1442,13 +1442,17 @@ class CommandOverlay(NSObject):
     def _leading_response_separator(self) -> str:
         """Return the visible break before the first streamed response token.
 
-        We want a larger pause between the user utterance and collapsed
-        thinking, but a tighter handoff between collapsed thinking and the
-        first assistant/tool token.
+        Keep the first assistant/tool token visually separated from the user
+        prompt and any collapsed narrator/thinking line. A cramped single-line
+        handoff is especially hard to read while the optical shell is growing.
         """
-        if self._collapsed_text:
-            return "\n"
         return "\n\n"
+
+    def _refresh_punchthrough_mask_if_needed(self) -> None:
+        """Keep the optical text cutout in sync after immediate text/layout edits."""
+        if not getattr(self, "_text_punchthrough", False):
+            return
+        self._update_punchthrough_mask()
 
     def append_token(self, token: str) -> None:
         """Append a streamed response token."""
@@ -1492,6 +1496,7 @@ class CommandOverlay(NSObject):
         self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
+        self._refresh_punchthrough_mask_if_needed()
 
     def set_response_text(self, text: str) -> None:
         """Replace the visible assistant response with final canonical text.
@@ -1575,6 +1580,7 @@ class CommandOverlay(NSObject):
             self.append_token(text)
         else:
             self._update_layout()
+            self._refresh_punchthrough_mask_if_needed()
 
     def _current_hue_rgb(self):
         """Get the current hue rotation color as (r, g, b)."""
@@ -2241,10 +2247,19 @@ class CommandOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
         is_topic_append = text.startswith(" · ")
-        # Track with newline separators for set_response_text rebuild
-        if not is_topic_append and self._collapsed_text:
+        # Track with newline separators for set_response_text rebuild.
+        # Display needs its own prefix because live append is incremental.
+        if is_topic_append:
+            display_text = text
+        elif self._collapsed_text:
+            display_text = "\n" + text
             self._collapsed_text += "\n" + text
         else:
+            display_text = (
+                "\n\n" + text
+                if self._utterance_text or self._response_text
+                else text
+            )
             self._collapsed_text += text
         # If the final response has already been set, re-rebuild so the
         # topic lands in the right position (after "Thought for Xs",
@@ -2253,9 +2268,10 @@ class CommandOverlay(NSObject):
             self.set_response_text(self._response_text)
             return
         # Append to live text view
-        collapsed_str = self._make_collapsed_attributed(text)
+        collapsed_str = self._make_collapsed_attributed(display_text)
         self._text_view.textStorage().appendAttributedString_(collapsed_str)
         self._update_layout()
+        self._refresh_punchthrough_mask_if_needed()
 
     def _apply_narrator_theme(self) -> None:
         """Match narrator label color to user utterance style."""

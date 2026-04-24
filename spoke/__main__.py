@@ -2762,7 +2762,7 @@ class SpokeAppDelegate(NSObject):
                     and isinstance(pending_base, str)
                     and isinstance(approval_request, dict)
                 ):
-                    message = approval_request.get("message", "Approval needed")
+                    message = self._approval_overlay_message(approval_request)
                     overlay_response = (
                         f"{pending_base}\n\n{message}"
                         if pending_base and message
@@ -2811,6 +2811,21 @@ class SpokeAppDelegate(NSObject):
             return streaming
         return getattr(self, "_last_command_response", "")
 
+    def _approval_overlay_message(self, request: dict) -> str:
+        """Return a user-facing approval card with the current key contract."""
+        hint = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
+        raw_message = request.get("message", "Approval needed")
+        message = raw_message if isinstance(raw_message, str) else str(raw_message)
+        if "Enter to run" in message and "Delete to cancel" in message:
+            return message
+        if not message:
+            return f"Approval needed\n{hint}"
+
+        lines = message.splitlines()
+        if lines and lines[0].strip() == "Approval needed":
+            return "\n".join([lines[0], hint, *lines[1:]])
+        return f"{message.rstrip()}\n{hint}"
+
     def _compose_pending_approval_overlay_body(self, *, approved: bool = False) -> str:
         """Layer approval state over the live command transcript without replacing it."""
         base = self._current_command_overlay_body()
@@ -2818,7 +2833,7 @@ class SpokeAppDelegate(NSObject):
             marker = "[approved]"
         else:
             request = getattr(self, "_pending_command_approval_request", None) or {}
-            marker = request.get("message", "Approval needed")
+            marker = self._approval_overlay_message(request)
         if base and marker:
             body = f"{base.rstrip('\n')}\n\n{marker}"
             if approved:

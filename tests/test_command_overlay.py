@@ -467,7 +467,7 @@ class TestWindowLayering:
         assert "User prompt\n\nThought for 2s" in combined
         assert "User prompt\nThought for 2s" not in combined
 
-    def test_append_token_uses_tighter_gap_after_collapsed_thinking(
+    def test_append_token_keeps_breathing_room_after_collapsed_thinking(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -491,7 +491,45 @@ class TestWindowLayering:
             .appendAttributedString_.call_args_list[0][0][0]
             .text
         )
-        assert first_append == "\n"
+        assert first_append == "\n\n"
+
+    def test_set_thinking_collapsed_starts_below_utterance(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "A wrapped user prompt that needs breathing room."
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_thinking_collapsed("Thought for 4s")
+
+        appended = (
+            overlay._text_view.textStorage()
+            .appendAttributedString_.call_args[0][0]
+            .text
+        )
+        assert appended == "\n\nThought for 4s"
+
+    def test_append_token_refreshes_punchthrough_mask_after_layout(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "User prompt"
+        overlay._response_text = ""
+        overlay._text_punchthrough = True
+        overlay._update_layout = MagicMock()
+        overlay._update_punchthrough_mask = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+        overlay._make_response_fragment = MagicMock(
+            side_effect=lambda token: _FakeAttributedString(token)
+        )
+
+        overlay.append_token("Done.")
+
+        overlay._update_layout.assert_called_once()
+        overlay._update_punchthrough_mask.assert_called_once()
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
