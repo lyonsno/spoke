@@ -1467,6 +1467,45 @@ class TestStreamCommand:
             for msg in second_messages[:-1]
         )
 
+    def test_assistant_final_is_committed_before_consumer_can_stop(self):
+        """Seeing assistant_final means the finished turn is already durable."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            max_history=5,
+            history_path=None,
+        )
+        captured_bodies: list[dict] = []
+        responses = [
+            _make_sse_response([self._content_chunk("first answer")]),
+            _make_sse_response([self._content_chunk("second answer")]),
+        ]
+
+        def fake_urlopen(req, timeout=None):
+            captured_bodies.append(json.loads(req.data.decode("utf-8")))
+            return responses.pop(0)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            for event in client.stream_command_events("first"):
+                if event.kind == "assistant_final":
+                    break
+            list(client.stream_command_events("second"))
+
+        assert len(captured_bodies) == 2
+        second_messages = captured_bodies[1]["messages"]
+        assert second_messages[-1] == {"role": "user", "content": "second"}
+        assert any(
+            msg == {"role": "user", "content": "first"}
+            for msg in second_messages[:-1]
+        )
+        assert any(
+            msg == {"role": "assistant", "content": "first answer"}
+            for msg in second_messages[:-1]
+        )
+
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
         from spoke.command import CommandClient

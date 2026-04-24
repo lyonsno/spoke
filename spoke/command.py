@@ -1279,15 +1279,13 @@ class CommandClient:
             # No tool calls — this round's content is the final response
             full_response = round_content
             messages.append({"role": "assistant", "content": full_response or None})
-            if round_cancelled:
-                # The UI delegate exits as soon as it sees a stale token. Commit
-                # before yielding so the next utterance cannot snapshot the old
-                # history prefix and lose completed tool work from this turn.
-                self.append_history_turn(
-                    messages[turn_start_idx:],
-                    overlay_response=visible_response or full_response,
-                )
-                history_committed = True
+            # The caller may stop consuming after assistant_final. Commit before
+            # yielding it so final text and completed tool work are durable.
+            self.append_history_turn(
+                messages[turn_start_idx:],
+                overlay_response=visible_response or full_response,
+            )
+            history_committed = True
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
@@ -1537,12 +1535,11 @@ class CommandClient:
 
             full_response = round_content
             messages.append({"role": "assistant", "content": full_response or None})
-            if round_cancelled:
-                self.append_history_turn(
-                    messages[pending.turn_start_idx:],
-                    overlay_response=visible_response or full_response,
-                )
-                history_committed = True
+            self.append_history_turn(
+                messages[pending.turn_start_idx:],
+                overlay_response=visible_response or full_response,
+            )
+            history_committed = True
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
