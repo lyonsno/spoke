@@ -2820,7 +2820,10 @@ class SpokeAppDelegate(NSObject):
             request = getattr(self, "_pending_command_approval_request", None) or {}
             marker = request.get("message", "Approval needed")
         if base and marker:
-            return f"{base.rstrip('\n')}\n\n{marker}"
+            body = f"{base.rstrip('\n')}\n\n{marker}"
+            if approved:
+                return body + "\n\n"
+            return body
         return marker or base
 
     def _recallLastResponse_(self, payload) -> None:

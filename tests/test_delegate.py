@@ -3885,7 +3885,7 @@ class TestCommandCallbacks:
         d._approve_pending_command()
 
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Let me check.\n[calling read_file…]\n\n[approved]"
+            "Let me check.\n[calling read_file…]\n\n[approved]\n\n"
         )
 
     def test_command_complete_finish_failure_hides_glow(
