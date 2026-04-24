@@ -346,6 +346,7 @@ class CommandClient:
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
         self._system_prompt = system_prompt or _SYSTEM_PROMPT
+        self._extra_headers: dict[str, str] = {}
         # Ring buffer: list of message chains (each a list[dict]).
         # Each entry is the full sequence of messages for one turn:
         # [user, assistant, tool_result, assistant, ...] preserving
@@ -362,6 +363,18 @@ class CommandClient:
         self._pending_tool_approval_request: dict[str, Any] | None = None
         self._pending_tool_overlay_response: str = ""
         self._load_pending_tool_approval()
+
+    def set_spoke_headers(
+        self,
+        *,
+        pathway: str,
+        utterance_id: str | int,
+    ) -> None:
+        """Set X-Spoke-* headers that will be sent with every request."""
+        self._extra_headers = {
+            "X-Spoke-Pathway": pathway,
+            "X-Spoke-Utterance-ID": str(utterance_id),
+        }
 
     def _load_history(self) -> list[list[dict]]:
         """Load persisted history from disk, or return empty list.
@@ -949,6 +962,10 @@ class CommandClient:
                 "model": self._model,
                 "messages": messages,
                 "stream": True,
+                "temperature": 0.8,
+                "top_p": 0.95,
+                "top_k": 20,
+                "repetition_penalty": 1.0,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
@@ -973,6 +990,8 @@ class CommandClient:
             headers = {"Content-Type": "application/json"}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
+            headers.update(self._extra_headers)
+            headers["X-Spoke-Turn"] = str(_round)
 
             url = f"{self._base_url}/chat/completions" if self._url_has_version_prefix else f"{self._base_url}/v1/chat/completions"
             req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
@@ -1318,6 +1337,10 @@ class CommandClient:
                 "model": self._model,
                 "messages": messages,
                 "stream": True,
+                "temperature": 0.8,
+                "top_p": 0.95,
+                "top_k": 20,
+                "repetition_penalty": 1.0,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
@@ -1330,6 +1353,8 @@ class CommandClient:
             headers = {"Content-Type": "application/json"}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
+            headers.update(self._extra_headers)
+            headers["X-Spoke-Turn"] = str(_round)
             url = (
                 f"{self._base_url}/chat/completions"
                 if self._url_has_version_prefix

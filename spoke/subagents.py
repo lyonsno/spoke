@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -53,6 +54,9 @@ def run_search_subagent_query(
         api_key=api_key,
         history_path=None,
         system_prompt=_SEARCH_SUBAGENT_SYSTEM_PROMPT,
+    )
+    client.set_spoke_headers(
+        pathway="subagent", utterance_id=uuid.uuid4().hex[:8],
     )
 
     visible_response = ""

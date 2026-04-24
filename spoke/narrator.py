@@ -529,6 +529,7 @@ class ThinkingNarrator:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        headers["X-Spoke-Pathway"] = "narrator"
 
         url = (
             f"{self._base_url}/chat/completions"
