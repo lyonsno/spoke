@@ -434,6 +434,48 @@ class TestWindowLayering:
         assert overlay._response_text == "Assistant response"
         assert events[:2] == ["layout", "front"]
 
+    def test_show_with_initial_transcript_builds_response_before_chroma_pulse(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        chroma_states = []
+
+        def _fragment(_token):
+            chroma_states.append(getattr(overlay, "_response_chroma_active", None))
+            return _FakeAttributedString("")
+
+        overlay._make_response_fragment = MagicMock(side_effect=_fragment)
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert chroma_states == [False]
+
+    def test_optical_show_with_initial_transcript_hides_plain_text_before_front(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: events.append(("scroll_hidden", hidden))
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append(
+            ("front", None)
+        )
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert ("scroll_hidden", True) in events
+        assert events.index(("scroll_hidden", True)) < events.index(("front", None))
+
     def test_show_with_initial_transcript_skips_default_shell_fill_build(
         self, mock_pyobjc, monkeypatch
     ):

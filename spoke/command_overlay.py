@@ -1249,6 +1249,13 @@ class CommandOverlay(NSObject):
                 pass
         self._window.setAlphaValue_(0.0)
         self._set_overlay_scale(1.0)
+        self._pulse_phase_asst = 0.0
+        self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
+        self._color_phase = 0.33  # start away from the old purple flash
+        self._color_velocity_phase = 0.0
+        self._response_chroma_active = False
+        self._tool_mode = False
+        self._pulse_timer = None
 
         # Reset geometry
         screen_frame = self._screen.frame()
@@ -1274,6 +1281,16 @@ class CommandOverlay(NSObject):
         self._update_backdrop_capture_geometry()
         self._apply_backdrop_pulse_style(1.0)
         self._reset_backdrop_layer()
+        if (
+            has_initial_transcript
+            and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            and self._scroll_view is not None
+        ):
+            # Recalled/history content should not expose the ordinary
+            # attributed-text layer before the compositor switches to
+            # punch-through text.  The fallback path unhides it again if
+            # the compositor is unavailable.
+            self._scroll_view.setHidden_(True)
 
         if initial_response:
             self._utterance_text = initial_utterance
@@ -1307,14 +1324,6 @@ class CommandOverlay(NSObject):
         # Seed pulse animation state, but do not start the timer until the
         # entrance fade has completed.  Pulse work touches backdrop and text
         # styling, so it should not compete with first paint.
-        self._pulse_phase_asst = 0.0
-
-        self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
-        self._color_phase = 0.33  # start away from the old purple flash
-        self._color_velocity_phase = 0.0
-        self._response_chroma_active = False
-        self._tool_mode = False
-        self._pulse_timer = None
 
         # Only live generation owns the thinking timer; history/approval recall does not.
         if start_thinking_timer:
@@ -2303,6 +2312,7 @@ class CommandOverlay(NSObject):
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
             self._start_fullscreen_compositor()
         if getattr(self, "_fullscreen_compositor", None) is None:
+            self._enable_text_punchthrough(False)
             self._start_backdrop_refresh_timer()
 
     def _set_overlay_scale(self, scale: float) -> None:
