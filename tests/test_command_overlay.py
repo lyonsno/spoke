@@ -795,6 +795,36 @@ class TestAdaptiveCompositing:
 
         assert overlay._brightness_target == pytest.approx(0.83)
 
+    def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._advance_command_brightness(0.0, 1.0) > 0.56
+            assert mod._advance_command_brightness(1.0, 0.0) < 0.44
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_compositor_brightness_resamples_without_half_second_lag(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = False
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+        compositor = MagicMock()
+        compositor.sampled_brightness = 1.0
+        overlay._fullscreen_compositor = compositor
+
+        for _ in range(7):
+            overlay._pulseStepInner()
+
+        assert compositor.refresh_brightness.call_count >= 2
+
     def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
         self, mock_pyobjc, monkeypatch
     ):

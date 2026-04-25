@@ -107,7 +107,12 @@ _OPTICAL_SHELL_FEATHER = 140.0  # ~2 inches — the glow tail is faint but the e
                                 # any hard clip, so the window needs room for the full decay
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
-_BRIGHTNESS_CHASE = 0.08
+_BRIGHTNESS_CHASE = _env("SPOKE_COMMAND_BRIGHTNESS_CHASE", 0.18)
+_BRIGHTNESS_CROSSING_CHASE = _env("SPOKE_COMMAND_BRIGHTNESS_CROSSING_CHASE", 0.68)
+_BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS = max(
+    1,
+    int(round(_env("SPOKE_COMMAND_BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS", 6.0))),
+)
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0
 _POINTS_PER_CM = 72.0 / 2.54
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
@@ -312,6 +317,21 @@ def _contrast_mix_for_brightness(brightness: float) -> float:
         return 1.0
     t = (clamped - lo) / (hi - lo)
     return t * t * (3.0 - 2.0 * t)
+
+
+def _advance_command_brightness(current: float, target: float) -> float:
+    """Chase brightness, but cross the contrast switch band decisively."""
+    current = _clamp01(current)
+    target = _clamp01(target)
+    delta = target - current
+    if abs(delta) <= 0.001:
+        return target
+    crosses_contrast_band = (
+        (current <= 0.44 and target >= 0.56)
+        or (current >= 0.56 and target <= 0.44)
+    )
+    chase = _BRIGHTNESS_CROSSING_CHASE if crosses_contrast_band else _BRIGHTNESS_CHASE
+    return _clamp01(current + delta * chase)
 
 
 def _sample_screen_brightness_for_overlay(screen) -> float:
@@ -1789,18 +1809,19 @@ class CommandOverlay(NSObject):
 
         # When compositor is active, sample shell-region brightness
         # directly — much more accurate than the glow's 4-patch screen
-        # average.  Refresh every ~500ms (15 pulse ticks).
+        # average. Keep this tight enough that background crossings feel
+        # attached to the window underneath rather than arriving late.
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             _b_tick = getattr(self, '_brightness_sample_tick', 0)
-            if _b_tick % 15 == 0:
+            if _b_tick % _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS == 0:
                 compositor.refresh_brightness()
             self._brightness_sample_tick = _b_tick + 1
             self._brightness_target = compositor.sampled_brightness
         target = getattr(self, "_brightness_target", 0.0)
         current = getattr(self, "_brightness", 0.0)
         if abs(target - current) > 0.001:
-            self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
+            self._brightness = _advance_command_brightness(current, target)
         t = getattr(self, "_brightness", 0.0)
         self._apply_surface_theme()
 
