@@ -196,6 +196,8 @@ def main():
                         help="Resume from last saved progress")
     parser.add_argument("--no-idle-check", action="store_true",
                         help="Skip server idle checks (for OpenRouter or testing)")
+    parser.add_argument("--batch", type=int, default=None,
+                        help="Batch size: number of exchanges per carve event (overrides cadence + buffer)")
     args = parser.parse_args()
 
     # Determine output directories
@@ -256,6 +258,12 @@ def main():
     mod._POLICY_DIR = policy_dir
     mod._TRACE_PATH = trace_path
     mod._BEARING_PATH = bearing_path
+
+    # Batch size override
+    if args.batch:
+        mod._CARVE_CADENCE = args.batch
+        mod._MAX_CONTEXT_BUFFER = args.batch
+        print(f"Batch size: {args.batch} (cadence={args.batch}, buffer={args.batch})\n")
 
     # Graceful shutdown
     shutdown = [False]
@@ -333,8 +341,9 @@ def main():
         total_elapsed = time.time() - run_start
 
         # Print results
+        batch_label = f"batch={args.batch}" if args.batch else "batch=default(2/4)"
         print(f"\n{'='*60}")
-        print(f"RESULTS  ({total_turns} turns, {total_carves} carves, "
+        print(f"RESULTS  ({batch_label}, {total_turns} turns, {total_carves} carves, "
               f"{total_elapsed:.0f}s / {total_elapsed/60:.1f}min)")
         print(f"{'='*60}\n")
 
