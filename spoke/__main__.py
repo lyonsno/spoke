@@ -2894,10 +2894,10 @@ class SpokeAppDelegate(NSObject):
             logger.info("Recalling last response: %r", last_utterance[:50])
             if self._command_overlay is not None:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(start_thinking_timer=False)
-                self._command_overlay.set_utterance(last_utterance)
-                self._command_overlay.set_response_text(
-                    _command_overlay_recall_preview(last_response)
+                self._command_overlay.show(
+                    start_thinking_timer=False,
+                    initial_utterance=last_utterance,
+                    initial_response=_command_overlay_recall_preview(last_response),
                 )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
@@ -3168,9 +3168,11 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — re-showing pending approval overlay")
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(start_thinking_timer=False)
-                self._command_overlay.set_utterance(utterance)
-                self._command_overlay.set_response_text(pending_body)
+                self._command_overlay.show(
+                    start_thinking_timer=False,
+                    initial_utterance=utterance,
+                    initial_response=pending_body,
+                )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
             except Exception:
@@ -3185,10 +3187,11 @@ class SpokeAppDelegate(NSObject):
             )
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(preserve_thinking_timer=True)
-                self._command_overlay.set_utterance(utterance)
-                if streaming:
-                    self._command_overlay.set_response_text(streaming)
+                self._command_overlay.show(
+                    preserve_thinking_timer=True,
+                    initial_utterance=utterance,
+                    initial_response=streaming,
+                )
                 self._command_overlay.invert_thinking_timer()
                 self._detector.command_overlay_active = True
             except Exception:
@@ -3216,10 +3219,10 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Double-tap Enter — restoring durable pending approval overlay")
                 try:
                     self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show(start_thinking_timer=False)
-                    self._command_overlay.set_utterance(utterance)
-                    self._command_overlay.set_response_text(
-                        self._compose_pending_approval_overlay_body()
+                    self._command_overlay.show(
+                        start_thinking_timer=False,
+                        initial_utterance=utterance,
+                        initial_response=self._compose_pending_approval_overlay_body(),
                     )
                     self._command_overlay.finish()
                     self._detector.approval_active = True
@@ -3234,10 +3237,10 @@ class SpokeAppDelegate(NSObject):
                 if self._command_overlay is not None:
                     try:
                         self._sync_command_overlay_brightness(immediate=True)
-                        self._command_overlay.show(start_thinking_timer=False)
-                        self._command_overlay.set_utterance(last_utterance)
-                        self._command_overlay.set_response_text(
-                            _command_overlay_recall_preview(last_response)
+                        self._command_overlay.show(
+                            start_thinking_timer=False,
+                            initial_utterance=last_utterance,
+                            initial_response=_command_overlay_recall_preview(last_response),
                         )
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True

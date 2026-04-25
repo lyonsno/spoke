@@ -416,6 +416,24 @@ class TestWindowLayering:
 
         overlay._start_thinking_timer.assert_not_called()
 
+    def test_show_with_initial_transcript_lays_out_before_ordering_front(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._update_layout = MagicMock(side_effect=lambda: events.append("layout"))
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append("front")
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert overlay._utterance_text == "User prompt"
+        assert overlay._response_text == "Assistant response"
+        assert events[:2] == ["layout", "front"]
+
     def test_show_rebuilds_default_fill_geometry_before_reuse(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)

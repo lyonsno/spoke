@@ -1220,6 +1220,8 @@ class CommandOverlay(NSObject):
         *,
         preserve_thinking_timer: bool = False,
         start_thinking_timer: bool = True,
+        initial_utterance: str = "",
+        initial_response: str = "",
     ) -> None:
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
@@ -1270,6 +1272,12 @@ class CommandOverlay(NSObject):
         self._update_backdrop_capture_geometry()
         self._apply_backdrop_pulse_style(1.0)
         self._reset_backdrop_layer()
+
+        if initial_response:
+            self._utterance_text = initial_utterance
+            self.set_response_text(initial_response)
+        elif initial_utterance:
+            self.set_utterance(initial_utterance)
 
         self._window.orderFrontRegardless()
         if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:

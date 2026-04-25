@@ -4236,8 +4236,12 @@ class TestCommandCallbacks:
         d._recallLastResponse_({"token": 1})
 
         assert d._transcribing is False
-        d._command_overlay.show.assert_called()
-        d._command_overlay.set_utterance.assert_called_with("what time is it")
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="what time is it",
+            initial_response="It's 3pm",
+        )
+        d._command_overlay.set_utterance.assert_not_called()
         d._command_overlay.finish.assert_called()
 
     def test_recall_last_response_sets_history_in_one_bounded_render(
@@ -4253,8 +4257,8 @@ class TestCommandCallbacks:
         d._recallLastResponse_({"token": 1})
 
         d._command_overlay.append_token.assert_not_called()
-        d._command_overlay.set_response_text.assert_called_once()
-        rendered = d._command_overlay.set_response_text.call_args[0][0]
+        d._command_overlay.set_response_text.assert_not_called()
+        rendered = d._command_overlay.show.call_args.kwargs["initial_response"]
         assert rendered != long_response
         assert "showing recent assistant overlay history" in rendered
         assert "line 239" in rendered
@@ -4286,8 +4290,12 @@ class TestCommandCallbacks:
 
         d._recallLastResponse_({"token": 1})
 
-        d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
-        d._command_overlay.set_utterance.assert_called_once_with("what time is it")
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="what time is it",
+            initial_response="couldn't reach the model — try again in a moment",
+        )
+        d._command_overlay.set_utterance.assert_not_called()
         d._command_overlay.finish.assert_called_once()
 
 
@@ -4319,9 +4327,13 @@ class TestCommandOverlayToggle:
 
         d._toggle_command_overlay()
 
-        d._command_overlay.show.assert_called_once_with(preserve_thinking_timer=True)
-        d._command_overlay.set_utterance.assert_called_once_with("open file")
-        d._command_overlay.set_response_text.assert_called_once_with("still working")
+        d._command_overlay.show.assert_called_once_with(
+            preserve_thinking_timer=True,
+            initial_utterance="open file",
+            initial_response="still working",
+        )
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
         d._command_overlay.invert_thinking_timer.assert_called_once()
 
     def test_toggle_command_overlay_bounds_recalled_history_render(
@@ -4336,8 +4348,8 @@ class TestCommandOverlayToggle:
         d._toggle_command_overlay()
 
         d._command_overlay.append_token.assert_not_called()
-        d._command_overlay.set_response_text.assert_called_once()
-        rendered = d._command_overlay.set_response_text.call_args[0][0]
+        d._command_overlay.set_response_text.assert_not_called()
+        rendered = d._command_overlay.show.call_args.kwargs["initial_response"]
         assert rendered != long_response
         assert "showing recent assistant overlay history" in rendered
         assert "tool line 239" in rendered
@@ -4359,14 +4371,18 @@ class TestCommandOverlayToggle:
 
         d._toggle_command_overlay()
 
-        d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
-        d._command_overlay.set_utterance.assert_called_once_with("new question")
-        d._command_overlay.set_response_text.assert_called_once_with(
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="new question",
+            initial_response=(
             "Let me check.\n[calling read_file…]\n\n"
             "Approval needed\n"
             "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
             "git commit -m x"
+            ),
         )
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
         d._command_overlay.append_token.assert_not_called()
         d._command_overlay.finish.assert_called_once()
 
@@ -4393,14 +4409,18 @@ class TestCommandOverlayToggle:
         }
         assert d._last_command_utterance == "push it"
         assert d._command_streaming_text == "Checking. \n[calling run_terminal_command…]\n"
-        d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
-        d._command_overlay.set_utterance.assert_called_once_with("push it")
-        d._command_overlay.set_response_text.assert_called_once_with(
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="push it",
+            initial_response=(
             "Checking. \n[calling run_terminal_command…]\n\n"
             "Approval needed\n"
             "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
             "git push -u origin feat/x"
+            ),
         )
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
         d._command_overlay.finish.assert_called_once()
         d._command_overlay.append_token.assert_not_called()
 
