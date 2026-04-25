@@ -405,6 +405,23 @@ class TestWindowLayering:
             mod._OVERLAY_HEIGHT,
         )
 
+    def test_optical_show_defers_heavy_backdrop_startup_until_after_first_paint(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._refresh_backdrop_snapshot = MagicMock()
+        overlay._start_fullscreen_compositor = MagicMock()
+        overlay._start_backdrop_refresh_timer = MagicMock()
+
+        overlay.show()
+
+        overlay._window.orderFrontRegardless.assert_called_once()
+        overlay._refresh_backdrop_snapshot.assert_not_called()
+        overlay._start_fullscreen_compositor.assert_not_called()
+        overlay._start_backdrop_refresh_timer.assert_not_called()
+        assert overlay._visual_start_timer is not None
+
     def test_show_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None

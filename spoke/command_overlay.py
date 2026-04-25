@@ -210,6 +210,7 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS", 18.0
 )
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_COMMAND_VISUAL_START_DELAY_S = _env("SPOKE_COMMAND_VISUAL_START_DELAY_S", 0.08)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
@@ -834,6 +835,7 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_rect = None
         self._backdrop_capture_pixel_size = None
         self._backdrop_timer: NSTimer | None = None
+        self._visual_start_timer: NSTimer | None = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
 
@@ -1266,7 +1268,8 @@ class CommandOverlay(NSObject):
         self._reset_backdrop_layer()
 
         self._window.orderFrontRegardless()
-        self._refresh_backdrop_snapshot()
+        if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+            self._refresh_backdrop_snapshot()
         self._start_brightness_sampling()
 
         # Entrance pop — start slightly oversized, ease back to 1.0.
@@ -1302,15 +1305,9 @@ class CommandOverlay(NSObject):
         if start_thinking_timer:
             self._start_thinking_timer(reset=not preserve_thinking_timer)
 
-        # Full-screen compositor: captures entire display, warps the rounded
-        # shell region,
-        # presents full frame via Metal.  No seam between warped and unwarped.
-        # Must start BEFORE the backdrop refresh timer — if compositor succeeds,
-        # the old backdrop path is disabled entirely.
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-            self._start_fullscreen_compositor()
-        # Only start old backdrop path if compositor isn't running
-        if getattr(self, "_fullscreen_compositor", None) is None:
+            self._schedule_visual_start()
+        elif getattr(self, "_fullscreen_compositor", None) is None:
             self._start_backdrop_refresh_timer()
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
@@ -1391,6 +1388,7 @@ class CommandOverlay(NSObject):
         self._visible = False
         self._streaming = False
         self._cancel_linger()
+        self._cancel_visual_start()
         # Don't cancel pulse here — let it continue during fade-out.
         # It will be cancelled when the fade completes (window ordered out).
         self._start_fade_out()
@@ -2231,6 +2229,12 @@ class CommandOverlay(NSObject):
             self._backdrop_timer.invalidate()
             self._backdrop_timer = None
 
+    def _cancel_visual_start(self) -> None:
+        timer = getattr(self, "_visual_start_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._visual_start_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -2249,7 +2253,30 @@ class CommandOverlay(NSObject):
         self._cancel_linger()
         self._cancel_brightness_sampling()
         self._cancel_backdrop_refresh()
+        self._cancel_visual_start()
         self._stop_thinking_timer()
+
+    def _schedule_visual_start(self) -> None:
+        """Defer compositor startup so first paint and text do not block."""
+        self._cancel_visual_start()
+        self._visual_start_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _COMMAND_VISUAL_START_DELAY_S,
+            self,
+            "visualStart:",
+            None,
+            False,
+        )
+        _pin_timer_to_active_run_loop_modes(self._visual_start_timer)
+
+    def visualStart_(self, timer) -> None:
+        if getattr(self, "_visual_start_timer", None) is timer:
+            self._visual_start_timer = None
+        if not getattr(self, "_visible", False):
+            return
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+            self._start_fullscreen_compositor()
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            self._start_backdrop_refresh_timer()
 
     def _set_overlay_scale(self, scale: float) -> None:
         if self._wrapper_view is None:
