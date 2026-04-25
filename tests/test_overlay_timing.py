@@ -42,6 +42,15 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_preview_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
+        """Preview overlay entrance should not read as a slow materialization."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._FADE_IN_S == pytest.approx(0.4)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_typewriter_starts_with_faster_interval_for_quick_preview_updates(
         self, mock_pyobjc
     ):

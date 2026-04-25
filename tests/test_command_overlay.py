@@ -290,6 +290,11 @@ class TestShowFinishHide:
 
         assert overlay._brightness_timer is not None
 
+    def test_show_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
+        _, mod = _make_overlay(mock_pyobjc)
+
+        assert mod._FADE_IN_S == pytest.approx(0.4)
+
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
     ):
