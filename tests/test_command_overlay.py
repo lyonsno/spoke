@@ -964,6 +964,20 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_punchthrough_luminance_window_is_bidirectional(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark_bg_min, dark_bg_max = mod._punchthrough_luminance_window_for_brightness(0.0)
+            light_bg_min, light_bg_max = mod._punchthrough_luminance_window_for_brightness(1.0)
+
+            assert dark_bg_min == pytest.approx(0.0)
+            assert dark_bg_max < 0.4
+            assert light_bg_min == pytest.approx(0.5)
+            assert light_bg_max == pytest.approx(1.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
     def test_brightness_resample_updates_target_while_visible(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
@@ -1057,6 +1071,34 @@ class TestAdaptiveCompositing:
         overlay._start_fullscreen_compositor()
 
         assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
+
+    def test_dark_punchthrough_pushes_compositor_luminance_ceiling(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = True
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+        overlay._update_punchthrough_mask = MagicMock()
+        compositor = MagicMock()
+        compositor.sampled_brightness = 0.0
+        overlay._fullscreen_compositor = compositor
+
+        overlay._pulseStepInner()
+
+        calls = compositor.update_shell_config_key.call_args_list
+        max_calls = [
+            call.args[1]
+            for call in calls
+            if call.args and call.args[0] == "max_brightness"
+        ]
+        assert max_calls
+        assert max_calls[-1] < 0.4
 
     def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
         self, mock_pyobjc, monkeypatch

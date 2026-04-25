@@ -279,6 +279,8 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 # Dark on dark, light on light — the overlay is a surface, not a glow.
 _COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
+_PUNCHTHROUGH_MIN_BRIGHTNESS_LIGHT = 0.50
+_PUNCHTHROUGH_MAX_BRIGHTNESS_DARK = 0.32
 
 
 def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -291,6 +293,20 @@ def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, flo
     t = _clamp01((t - 0.45) * 6.0 + 0.5)
     t = t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
     return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
+
+
+def _punchthrough_contrast_mix_for_brightness(brightness: float) -> float:
+    t = _clamp01(brightness)
+    t = _clamp01((t - 0.45) * 6.0 + 0.5)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _punchthrough_luminance_window_for_brightness(brightness: float) -> tuple[float, float]:
+    t = _punchthrough_contrast_mix_for_brightness(brightness)
+    return (
+        _lerp(0.0, _PUNCHTHROUGH_MIN_BRIGHTNESS_LIGHT, t),
+        _lerp(_PUNCHTHROUGH_MAX_BRIGHTNESS_DARK, 1.0, t),
+    )
 
 
 def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -2179,22 +2195,26 @@ class CommandOverlay(NSObject):
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
         # Brightness floor + boost for punch-through legibility.
-        # On light backgrounds (dark fill), guarantee the warped content
-        # inside the rounded shell has luminance >= 0.5 so text holes read bright.
+        # Keep punched-through warped content on the opposite side of the
+        # fill: brighten it on light backgrounds and darken it on dark ones.
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None and getattr(self, "_text_punchthrough", False):
-            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
-            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
-            # Light bg → 0.5 brightness floor; dark bg → no floor
-            min_b = _lerp(0.0, 0.5, _bt)
+            min_b, max_b = _punchthrough_luminance_window_for_brightness(t)
             last_min_b = getattr(self, '_last_min_brightness', -1.0)
             if abs(min_b - last_min_b) > 0.01:
                 compositor.update_shell_config_key("min_brightness", min_b)
                 self._last_min_brightness = min_b
+            last_max_b = getattr(self, '_last_max_brightness', -1.0)
+            if abs(max_b - last_max_b) > 0.01:
+                compositor.update_shell_config_key("max_brightness", max_b)
+                self._last_max_brightness = max_b
         elif compositor is not None:
             if getattr(self, '_last_min_brightness', 0.0) > 0.01:
                 compositor.update_shell_config_key("min_brightness", 0.0)
                 self._last_min_brightness = 0.0
+            if getattr(self, '_last_max_brightness', 1.0) < 0.99:
+                compositor.update_shell_config_key("max_brightness", 1.0)
+                self._last_max_brightness = 1.0
         # Boost layer: white layer masked to text glyphs for extra lift.
         boost_layer = getattr(self, "_boost_layer", None)
         if boost_layer is not None and getattr(self, "_text_punchthrough", False):

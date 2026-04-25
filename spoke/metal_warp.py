@@ -139,6 +139,7 @@ struct WarpParams {{
     float gridOffsetY;  // dispatch grid origin Y
     float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
     float minBrightness; // floor for interior pixel luminance (0 = no floor)
+    float maxBrightness; // ceiling for interior pixel luminance (1 = no ceiling)
     float bleedZoneFrac; // exterior warp cutoff relative to shell corner radius
     float exteriorMixWidth; // width of the exterior onset band in pixels
     float xSqueeze;
@@ -171,6 +172,26 @@ constexpr sampler mipSampler(
     filter::linear,
     mip_filter::linear
 );
+
+float4 applyLuminanceWindow(float4 color, float minBrightness, float maxBrightness) {{
+    float3 rgb = clamp(color.rgb, 0.0f, 1.0f);
+    float luma = dot(rgb, float3(0.2126f, 0.7152f, 0.0722f));
+    float floorB = clamp(minBrightness, 0.0f, 1.0f);
+    float ceilingB = clamp(maxBrightness, floorB, 1.0f);
+    float target = clamp(luma, floorB, ceilingB);
+    if (abs(target - luma) < 1e-4f) {{
+        color.rgb = rgb;
+        return color;
+    }}
+    if (target > luma) {{
+        float lift = clamp((target - luma) / max(1.0f - luma, 1e-4f), 0.0f, 1.0f);
+        rgb = mix(rgb, float3(1.0f), lift);
+    }} else {{
+        rgb *= target / max(luma, 1e-4f);
+    }}
+    color.rgb = clamp(rgb, 0.0f, 1.0f);
+    return color;
+}}
 
 kernel void opticalShellWarp(
     texture2d<float, access::sample> inTexture [[texture(0)]],
@@ -274,6 +295,11 @@ kernel void opticalShellWarp(
     // Low/zero mip LOD (near boundary) = almost no temporal.
     // Exterior = no temporal at all (pass through).
     if (capsuleSdf <= 0.0f) {{
+        warpedColor = applyLuminanceWindow(
+            warpedColor,
+            params.minBrightness,
+            params.maxBrightness
+        );
         // Interior: temporal weight scales with mip LOD (blur depth).
         // mipLod 0 (rim, no blur) → weight 1.0 (no temporal).
         // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
@@ -281,6 +307,11 @@ kernel void opticalShellWarp(
         float temporalWeight = mix(1.0f, params.temporalBlend, mipFrac);
         float4 prev = accumIn.read(gid);
         float4 blended = mix(prev, warpedColor, temporalWeight);
+        blended = applyLuminanceWindow(
+            blended,
+            params.minBrightness,
+            params.maxBrightness
+        );
         accumOut.write(blended, gid);
         outTexture.write(blended, pixel);
     }} else {{
@@ -314,13 +345,13 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("20f")
+_WARP_PARAMS_SIZE = struct.calcsize("21f")
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "20f",
+        "21f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -337,6 +368,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(grid_offset_y),
         float(shell_config.get("temporal_blend", _TEMPORAL_BLEND_FACTOR)),
         float(shell_config.get("min_brightness", 0.0)),
+        float(shell_config.get("max_brightness", 1.0)),
         _shell_bleed_zone_frac(shell_config),
         float(shell_config.get("exterior_mix_width_points", _WARP_EXTERIOR_MIX_WIDTH_POINTS)),
         _shell_x_squeeze(shell_config),
