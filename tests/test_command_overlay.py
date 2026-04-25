@@ -290,10 +290,28 @@ class TestShowFinishHide:
 
         assert overlay._brightness_timer is not None
 
+    def test_show_defers_pulse_until_entrance_fade_finishes(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        overlay.show()
+
+        assert overlay._fade_timer is not None
+        assert overlay._pulse_timer is None
+
+        for _ in range(mod._FADE_STEPS):
+            overlay.fadeStep_(overlay._fade_timer)
+
+        assert overlay._pulse_timer is not None
+
     def test_show_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
 
         assert mod._FADE_IN_S == pytest.approx(0.4)
+
+    def test_visual_start_waits_until_after_entrance_fade(self, mock_pyobjc):
+        _, mod = _make_overlay(mock_pyobjc)
+
+        assert mod._COMMAND_VISUAL_START_DELAY_S >= mod._FADE_IN_S + 0.1
 
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
@@ -586,7 +604,7 @@ class TestTimerCancellation:
         # Start all timers
         overlay.show()
         assert overlay._fade_timer is not None
-        assert overlay._pulse_timer is not None
+        assert overlay._pulse_timer is None
         assert overlay._thinking_timer is not None
         assert overlay._brightness_timer is not None
 

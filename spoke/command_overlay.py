@@ -214,7 +214,7 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS", 18.0
 )
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
-_COMMAND_VISUAL_START_DELAY_S = _env("SPOKE_COMMAND_VISUAL_START_DELAY_S", 0.08)
+_COMMAND_VISUAL_START_DELAY_S = _env("SPOKE_COMMAND_VISUAL_START_DELAY_S", _FADE_IN_S + 0.15)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
@@ -1294,16 +1294,16 @@ class CommandOverlay(NSObject):
             interval, self, "fadeStep:", None, True
         )
 
-        # Start pulse animation
+        # Seed pulse animation state, but do not start the timer until the
+        # entrance fade has completed.  Pulse work touches backdrop and text
+        # styling, so it should not compete with first paint.
         self._pulse_phase_asst = 0.0
 
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
         self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
         self._tool_mode = False
-        self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / _PULSE_HZ, self, "pulseStep:", None, True
-        )
+        self._pulse_timer = None
 
         # Only live generation owns the thinking timer; history/approval recall does not.
         if start_thinking_timer:
@@ -1780,7 +1780,9 @@ class CommandOverlay(NSObject):
 
         if self._fade_step >= _FADE_STEPS:
             self._cancel_fade()
-            if self._fade_direction == -1:
+            if self._fade_direction == 1:
+                self._start_pulse_timer()
+            elif self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
                 self._reset_backdrop_layer()
                 if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
@@ -2217,6 +2219,12 @@ class CommandOverlay(NSObject):
         if self._pulse_timer is not None:
             self._pulse_timer.invalidate()
             self._pulse_timer = None
+
+    def _start_pulse_timer(self) -> None:
+        self._cancel_pulse()
+        self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _PULSE_HZ, self, "pulseStep:", None, True
+        )
 
     def _cancel_linger(self) -> None:
         if self._linger_timer is not None:
