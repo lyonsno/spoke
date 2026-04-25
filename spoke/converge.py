@@ -52,6 +52,8 @@ _ASSISTANT_TRUNCATE_THRESHOLD = 500  # chars; assistant turns longer than this g
 _ASSISTANT_KEEP_HEAD = 250  # chars to keep from the start of long assistant turns
 _ASSISTANT_KEEP_TAIL = 250  # chars to keep from the end of long assistant turns
 _PREFILL_STAGGER_S = 0.5  # seconds between pass launches to avoid concurrent prefills
+_BEARING_PATH = Path.home() / ".config" / "spoke" / "converge-bearing.md"
+_BEARING_MAX_TOKENS = 400  # rough target for bearing length
 
 _CARVE_SYSTEM_PROMPT = """\
 You are a personal attractor carver. An attractor is a force pulling work
@@ -75,10 +77,12 @@ The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent. "Tractor" is almost certainly "attractor." "Epístaxis"
 is correct Greek, not a typo.
 
-You will be given EXISTING personal attractors. Before creating a new one,
-check if the utterance is evidence for an existing attractor. Prefer
-reinforce/expand over create. Be skeptical — most turns are task execution
-and reveal nothing durable.
+You will be given EXISTING personal attractors. These are shown so you can
+avoid duplicates and reinforce existing entries when appropriate. Do NOT
+reference the content of existing entries in new candidates — carve ONLY
+from what appears in the current utterance and recent conversation context.
+Prefer reinforce/expand over create. Be skeptical — most turns are task
+execution and reveal nothing durable.
 
 Your response is a JSON array of operations:
 
@@ -136,8 +140,11 @@ Anamnesis IS:
 - Relational knowledge: what connects to what, what depends on what
 - Operational knowledge: things learned from incidents or debugging
 
-You will be given EXISTING anamnesis entries. If an observation is already
-captured, return []. If it updates an existing entry, return an update op.
+You will be given EXISTING anamnesis entries. These are shown so you can
+avoid duplicates — do NOT reference the content of existing entries in new
+candidates. Carve ONLY from what appears in the current utterance and recent
+conversation context. If an observation is already captured, return []. If
+it updates an existing entry, return an update op.
 
 The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent.
@@ -150,28 +157,37 @@ Output ONLY a JSON array:
 
 _TOPOS_SYSTEM_PROMPT = """\
 You are a tópos carver. You observe voice interactions and extract changes
-to the state of ongoing work. What started, what finished, what changed
-direction, what got blocked, what got unblocked, what got handed off.
+to the state of work that the OPERATOR ASSISTANT is actively doing.
 
-A tópos captures the current state of a unit of work — not the history of
-how it got there, just where it is now. Tópoi decay naturally as work
-completes or goes stale.
+Only carve tópoi for work the operator is the AGENT of — searches it
+launched, tasks it is mid-way through, things it is actively waiting on.
+If the user mentions work that is happening elsewhere (other sessions,
+other tools, other lanes), that is something the operator WITNESSED, not
+something it is doing. Witnessed work is anamnesis (a fact learned), not
+a tópos.
+
+A tópos captures the current state of a unit of work the operator owns —
+not the history of how it got there, just where it is now. Tópoi decay
+naturally as work completes or goes stale.
 
 Tópoi are NOT:
-- Durable preferences or forces pulling work into existence (those are attractors)
+- Work the user mentions doing in other tools or sessions (those are anamnesis)
+- Durable preferences or forces (those are attractors)
 - Facts about the environment (those are anamnesis)
 - Reasoning about why (that is policy)
 - Ephemeral commands (those are nothing)
 
 Tópoi ARE:
-- "Working on the Converge carver context window, branch cc/converge-context-window-0423"
-- "The beast found a race condition — fixing before landing"
-- "Gradient probe complete, three-surface architecture identified"
-- "Waiting for the model server to come back up"
+- "Dispatched subagent to search for the cancel-generation attractor"
+- "Waiting for subagent result on attractor search"
+- "Creating a spoke worktree off remote main"
 
-You will be given EXISTING tópoi. If the state of an existing tópos changed,
-return an update op to replace it with current state. If a new unit of work
-appeared, create it. If nothing about the state of work changed, return [].
+You will be given EXISTING tópoi. These are shown so you can avoid duplicates
+and update existing entries — do NOT reference the content of existing entries
+in new candidates. Carve ONLY from what appears in the current utterance and
+recent conversation context. If the state of an existing tópos changed,
+return an update op. If a new unit of work appeared, create it. If nothing
+about the state of work changed, return [].
 
 The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent.
@@ -208,9 +224,11 @@ Policy IS:
 - "Four parallel passes are better than one multi-routing pass"
 - "The satisfaction condition test should distinguish action-shaped from state-shaped"
 
-You will be given EXISTING policy observations. If a principle is already
-captured, return []. If a new observation refines or supersedes an existing
-one, return an update op.
+You will be given EXISTING policy observations. These are shown so you can
+avoid duplicates — do NOT reference the content of existing entries in new
+candidates. Carve ONLY from what appears in the current utterance and recent
+conversation context. If a principle is already captured, return []. If a
+new observation refines or supersedes an existing one, return an update op.
 
 The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent.
@@ -253,6 +271,23 @@ Output ONLY a JSON array with one entry per candidate, in the same order:
   {"index": 1, "verdict": "kill", "reason": "This is an ephemeral command, not an attractor"},
   {"index": 2, "verdict": "reroute:anamnesis", "reason": "This is a fact, not policy"}
 ]
+"""
+
+_BEARING_SYSTEM_PROMPT = """\
+You maintain a conversational bearing — 2-3 sentences capturing the
+direction of an ongoing voice conversation. Not a summary. Not details.
+Just the heading: where is this conversation pointed?
+
+Rules:
+- Output ONLY the bearing. No preamble.
+- Maximum 3 sentences. Be abstract. No proper nouns, no specifics, no
+  tool names, no project names, no technical details. Just the direction.
+- Example good bearing: "Exploring how to make background processes
+  smarter about what they capture. Shifting from mechanism to quality."
+- Example bad bearing: "Working on the Converge carver with Panopticon
+  review on the cc/converge-anamnesis branch using Qwen 3.6."
+- If the direction changed, replace. Do not average old and new.
+- If nothing changed, return the bearing unchanged.
 """
 
 
@@ -556,7 +591,7 @@ class TurnCarver:
         )
         self._model = (
             model
-            or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-bf16")
+            or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-oQ8")
         )
         self._pending: list[tuple[str, list[dict[str, str]], int]] = []  # (utterance, context_snapshot, current_seq)
         self._embed_pending: list[str] = []  # user utterances not yet embedded
@@ -673,7 +708,7 @@ class TurnCarver:
 
             # Wait for all to complete before checking for more work
             for t in threads:
-                t.join(timeout=120)
+                t.join(timeout=600)
 
     @staticmethod
     def _safe_call(fn, *args) -> None:
@@ -767,25 +802,46 @@ class TurnCarver:
     def _build_context_block(
         self, context: list[dict[str, str]] | None, current_seq: int | None
     ) -> str:
-        """Build the recent conversation context block for any carve prompt."""
+        """Build the recent conversation context block for any carve prompt.
+
+        Includes the conversational bearing (if one exists) followed by the
+        recent turns. The bearing anchors the origin of the conversational
+        vector so the turns read as a continuation of a trajectory.
+        """
+        parts = []
+
+        # Load bearing if available
+        if _BEARING_PATH.exists():
+            try:
+                bearing = _BEARING_PATH.read_text(encoding="utf-8").strip()
+                if bearing:
+                    parts.append(
+                        f"Conversational bearing (for trajectory context only — do NOT "
+                        f"reference bearing content in your output, carve only from the "
+                        f"utterance and recent turns below):\n{bearing}\n"
+                    )
+            except OSError:
+                pass
+
         if not context:
-            return ""
+            return "\n".join(parts) + "\n" if parts else ""
+
         prior = [
             c for c in context
             if c.get("_seq") != current_seq
         ] if current_seq is not None else context
-        if not prior:
-            return ""
-        lines = []
-        for c in prior:
-            lines.append(f"User: {c['user']}")
-            if c.get("assistant"):
-                lines.append(f"Assistant: {c['assistant']}")
-        return (
-            "Recent conversation context (preceding turns):\n"
-            + "\n".join(lines)
-            + "\n\n"
-        )
+        if prior:
+            lines = []
+            for c in prior:
+                lines.append(f"User: {c['user']}")
+                if c.get("assistant"):
+                    lines.append(f"Assistant: {c['assistant']}")
+            parts.append(
+                "Recent conversation context (preceding turns):\n"
+                + "\n".join(lines)
+            )
+
+        return "\n\n".join(parts) + "\n\n" if parts else ""
 
     def _recompile_entry(self, existing_path: Path, new_evidence: str) -> str | None:
         """Recompile an existing entry file with new evidence via the model.
@@ -813,6 +869,52 @@ class TurnCarver:
         except Exception:
             logger.debug("Converge: recompile failed for %s", existing_path.name, exc_info=True)
             return None
+
+    def _update_bearing(self, context: list[dict[str, str]] | None) -> None:
+        """Recompile the conversational bearing with the turns the carver just saw."""
+        if not context:
+            return
+
+        # Load current bearing
+        current_bearing = ""
+        if _BEARING_PATH.exists():
+            try:
+                current_bearing = _BEARING_PATH.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+
+        # Build the recent turns block
+        turn_lines = []
+        for c in context:
+            turn_lines.append(f"User: {c['user']}")
+            if c.get("assistant"):
+                turn_lines.append(f"Assistant: {c['assistant']}")
+
+        user_prompt = ""
+        if current_bearing:
+            user_prompt += f"Current bearing:\n\n{current_bearing}\n\n"
+        else:
+            user_prompt += "Current bearing: (none — this is the start of the conversation)\n\n"
+        user_prompt += (
+            "New exchange(s):\n\n"
+            + "\n".join(turn_lines)
+            + "\n\nUpdate the bearing."
+        )
+
+        try:
+            result, elapsed = self._call_model_for_carve(_BEARING_SYSTEM_PROMPT, user_prompt)
+            content = result.strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:markdown|md)?\s*", "", content)
+                content = re.sub(r"\s*```$", "", content)
+            # Atomic write
+            tmp = _BEARING_PATH.with_suffix(".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(_BEARING_PATH)
+            self._trace("bearing_update", elapsed=round(elapsed, 2), length=len(content))
+            logger.debug("Converge: bearing updated (%.1fs, %d chars)", elapsed, len(content))
+        except Exception:
+            logger.debug("Converge: bearing update failed", exc_info=True)
 
     def _carve_single(
         self,
@@ -853,6 +955,9 @@ class TurnCarver:
             t.join(timeout=120)
 
         if not candidates:
+            # Even with no candidates, update the bearing — the conversation
+            # moved forward even if nothing was worth carving.
+            self._update_bearing(context)
             return
 
         # Beast pass: species-classify all candidates
@@ -860,6 +965,9 @@ class TurnCarver:
 
         # Write survivors to their respective surfaces
         self._write_survivors(survivors)
+
+        # Update the bearing with the turns we just processed
+        self._update_bearing(context)
 
     def _collect_pass(
         self,
