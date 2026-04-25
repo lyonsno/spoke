@@ -197,6 +197,43 @@ _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 _DEFAULT_WHISPER_SIDECAR_URL = ""
 _DEFAULT_WHISPER_CLOUD_URL = "https://api.openai.com"
 _DEFAULT_WHISPER_CLOUD_MODEL = "whisper-1"
+_COMMAND_OVERLAY_RECALL_MAX_CHARS = int(
+    os.environ.get("SPOKE_COMMAND_OVERLAY_RECALL_MAX_CHARS", "4000")
+)
+_COMMAND_OVERLAY_RECALL_MAX_LINES = int(
+    os.environ.get("SPOKE_COMMAND_OVERLAY_RECALL_MAX_LINES", "80")
+)
+
+
+def _command_overlay_recall_preview(text: str) -> str:
+    """Return a bounded user-visible recall body without altering model history."""
+    text = text if isinstance(text, str) else str(text)
+    max_chars = max(200, _COMMAND_OVERLAY_RECALL_MAX_CHARS)
+    max_lines = max(8, _COMMAND_OVERLAY_RECALL_MAX_LINES)
+    lines = text.splitlines(keepends=True)
+    visible = text
+    truncated = False
+
+    if len(lines) > max_lines:
+        visible = "".join(lines[-max_lines:])
+        truncated = True
+
+    if len(visible) > max_chars:
+        visible = visible[-max_chars:]
+        if "\n" in visible:
+            visible = visible.split("\n", 1)[1]
+        truncated = True
+
+    if not truncated:
+        return text
+
+    visible = visible.lstrip("\n")
+    omitted = max(0, len(text) - len(visible))
+    return (
+        "[showing recent assistant overlay history; "
+        f"full transcript remains in command history; omitted ~{omitted} chars]\n\n"
+        f"{visible}"
+    )
 
 
 def _url_host(url: str) -> str:
@@ -2859,8 +2896,9 @@ class SpokeAppDelegate(NSObject):
                 self._sync_command_overlay_brightness(immediate=True)
                 self._command_overlay.show(start_thinking_timer=False)
                 self._command_overlay.set_utterance(last_utterance)
-                for ch in last_response:
-                    self._command_overlay.append_token(ch)
+                self._command_overlay.set_response_text(
+                    _command_overlay_recall_preview(last_response)
+                )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
                 logger.info("command_overlay_active -> True (shift recall)")
@@ -3198,7 +3236,9 @@ class SpokeAppDelegate(NSObject):
                         self._sync_command_overlay_brightness(immediate=True)
                         self._command_overlay.show(start_thinking_timer=False)
                         self._command_overlay.set_utterance(last_utterance)
-                        self._command_overlay.append_token(last_response)
+                        self._command_overlay.set_response_text(
+                            _command_overlay_recall_preview(last_response)
+                        )
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
                     except Exception:

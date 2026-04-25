@@ -4240,6 +4240,26 @@ class TestCommandCallbacks:
         d._command_overlay.set_utterance.assert_called_with("what time is it")
         d._command_overlay.finish.assert_called()
 
+    def test_recall_last_response_sets_history_in_one_bounded_render(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        long_response = "\n".join(f"line {idx}" for idx in range(240))
+        d._command_client.history = [("summarize", long_response)]
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+
+        d._recallLastResponse_({"token": 1})
+
+        d._command_overlay.append_token.assert_not_called()
+        d._command_overlay.set_response_text.assert_called_once()
+        rendered = d._command_overlay.set_response_text.call_args[0][0]
+        assert rendered != long_response
+        assert "showing recent assistant overlay history" in rendered
+        assert "line 239" in rendered
+        assert "line 0" not in rendered
+
     def test_recall_no_history(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
@@ -4303,6 +4323,25 @@ class TestCommandOverlayToggle:
         d._command_overlay.set_utterance.assert_called_once_with("open file")
         d._command_overlay.set_response_text.assert_called_once_with("still working")
         d._command_overlay.invert_thinking_timer.assert_called_once()
+
+    def test_toggle_command_overlay_bounds_recalled_history_render(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        long_response = "\n".join(f"tool line {idx}" for idx in range(240))
+        d._command_client.history = [("inspect logs", long_response)]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.append_token.assert_not_called()
+        d._command_overlay.set_response_text.assert_called_once()
+        rendered = d._command_overlay.set_response_text.call_args[0][0]
+        assert rendered != long_response
+        assert "showing recent assistant overlay history" in rendered
+        assert "tool line 239" in rendered
+        assert "tool line 0" not in rendered
 
     def test_toggle_command_overlay_re_shows_live_pending_approval_instead_of_stale_history(
         self, main_module, monkeypatch

@@ -214,6 +214,10 @@ _USER_TEXT_COLOR_LIGHT = (0.95, 0.97, 1.0)
 _ASSISTANT_TEXT_COLOR_DARK = (0.12, 0.13, 0.16)
 _ASSISTANT_TEXT_COLOR_LIGHT = (0.95, 0.97, 1.0)
 _ASSISTANT_BLUR_RADIUS = _env("SPOKE_COMMAND_ASSISTANT_BLUR_RADIUS", 8.0)
+_COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT = max(
+    1,
+    int(round(_env("SPOKE_COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT", 700.0))),
+)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
 
@@ -1996,15 +2000,16 @@ class CommandOverlay(NSObject):
                                 (resp_start, resp_len),
                             )
                         else:
-                            for ci in range(resp_len):
-                                # 0.0 at edges, 1.0 at center
-                                frac = ci / max(resp_len - 1, 1)
-                                center_weight = 1.0 - abs(frac * 2.0 - 1.0)
-                                # Shadow = animated chromatic blur.
-                                cr = _lerp(r, alt_r, center_weight)
-                                cg = _lerp(g, alt_g, center_weight)
-                                cb = _lerp(b, alt_b, center_weight)
-                                # Foreground = stable high-contrast text.
+                            if resp_len > _COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT:
+                                lum = 0.299 * r + 0.587 * g + 0.114 * b
+                                shadow = NSShadow.alloc().init()
+                                shadow.setShadowColor_(
+                                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                        r, g, b, 0.7 + 0.3 * lum
+                                    )
+                                )
+                                shadow.setShadowOffset_((0, 0))
+                                shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
                                 ts.addAttribute_value_range_(
                                     _FG_pulse,
                                     NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -2013,27 +2018,53 @@ class CommandOverlay(NSObject):
                                         response_b,
                                         _ASSISTANT_TEXT_ALPHA_MAX,
                                     ),
-                                    (resp_start + ci, 1),
+                                    (resp_start, resp_len),
                                 )
-                                # Light font weight for the anchor
                                 ts.addAttribute_value_range_(
-                                    _FN_pulse, light_font,
-                                    (resp_start + ci, 1),
+                                    _FN_pulse, light_font, (resp_start, resp_len)
                                 )
-                                # Shadow = bright glow, blur driven by luminance
-                                lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-                                blur_radius = 5.0 + lum * 14.0
-                                shadow = NSShadow.alloc().init()
-                                shadow.setShadowColor_(
-                                    NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                        cr, cg, cb, 0.7 + 0.3 * lum
+                                ts.addAttribute_value_range_(
+                                    _SH_pulse, shadow, (resp_start, resp_len)
+                                )
+                            else:
+                                for ci in range(resp_len):
+                                    # 0.0 at edges, 1.0 at center
+                                    frac = ci / max(resp_len - 1, 1)
+                                    center_weight = 1.0 - abs(frac * 2.0 - 1.0)
+                                    # Shadow = animated chromatic blur.
+                                    cr = _lerp(r, alt_r, center_weight)
+                                    cg = _lerp(g, alt_g, center_weight)
+                                    cb = _lerp(b, alt_b, center_weight)
+                                    # Foreground = stable high-contrast text.
+                                    ts.addAttribute_value_range_(
+                                        _FG_pulse,
+                                        NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                            response_r,
+                                            response_g,
+                                            response_b,
+                                            _ASSISTANT_TEXT_ALPHA_MAX,
+                                        ),
+                                        (resp_start + ci, 1),
                                     )
-                                )
-                                shadow.setShadowOffset_((0, 0))
-                                shadow.setShadowBlurRadius_(blur_radius)
-                                ts.addAttribute_value_range_(
-                                    _SH_pulse, shadow, (resp_start + ci, 1),
-                                )
+                                    # Light font weight for the anchor
+                                    ts.addAttribute_value_range_(
+                                        _FN_pulse, light_font,
+                                        (resp_start + ci, 1),
+                                    )
+                                    # Shadow = bright glow, blur driven by luminance
+                                    lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
+                                    blur_radius = 5.0 + lum * 14.0
+                                    shadow = NSShadow.alloc().init()
+                                    shadow.setShadowColor_(
+                                        NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                            cr, cg, cb, 0.7 + 0.3 * lum
+                                        )
+                                    )
+                                    shadow.setShadowOffset_((0, 0))
+                                    shadow.setShadowBlurRadius_(blur_radius)
+                                    ts.addAttribute_value_range_(
+                                        _SH_pulse, shadow, (resp_start + ci, 1),
+                                    )
                     except Exception:
                         pass
             elif total_len > 0:
