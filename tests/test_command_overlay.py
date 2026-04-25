@@ -306,7 +306,7 @@ class TestShowFinishHide:
     def test_show_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
 
-        assert mod._FADE_IN_S == pytest.approx(0.4)
+        assert mod._FADE_IN_S <= 0.17
 
     def test_visual_start_waits_until_after_entrance_fade(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
@@ -981,6 +981,34 @@ class TestAdaptiveCompositing:
         try:
             assert mod._advance_command_brightness(0.0, 1.0) > 0.56
             assert mod._advance_command_brightness(1.0, 0.0) < 0.44
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_brightness_crossing_nearly_settles_in_two_pulses(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            up = mod._advance_command_brightness(
+                mod._advance_command_brightness(0.0, 1.0),
+                1.0,
+            )
+            down = mod._advance_command_brightness(
+                mod._advance_command_brightness(1.0, 0.0),
+                0.0,
+            )
+
+            assert up > 0.92
+            assert down < 0.08
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_compositor_brightness_samples_at_least_every_other_pulse(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS <= 2
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
