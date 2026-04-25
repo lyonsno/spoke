@@ -2487,8 +2487,25 @@ class CommandOverlay(NSObject):
             # Cheap scalar ops on cached geometry arrays.  Only rebuilds
             # when brightness bucket changes (0.02 steps).
             _b = getattr(self, '_brightness', 0.0)
+            _b_rounded = round(_b * 50) / 50  # 0.02 steps
+            appearance_key = (
+                round(float(total_w), 3),
+                round(float(total_h), 3),
+                round(float(scale), 3),
+                _b_rounded,
+                bool(_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED),
+                bool(_has_compositor),
+            )
+            if (
+                getattr(self, "_fill_image_signature", None) == appearance_key
+                and getattr(self, "_fill_payload", None) is not None
+                and (
+                    getattr(self, "_spring_tint_layer", None) is None
+                    or getattr(self, "_spring_tint_mask_signature", None) == appearance_key
+                )
+            ):
+                return
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
-                _b_rounded = round(_b * 50) / 50  # 0.02 steps
                 if getattr(self, '_sdf_appearance_b', -1.0) != _b_rounded:
                     # Interior floor: on light backgrounds the dark fill
                     # needs to be fully opaque so punch-through text has
@@ -2522,6 +2539,7 @@ class CommandOverlay(NSObject):
                 fill_alpha,
                 int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
             )
+            self._fill_image_signature = appearance_key
         except (ImportError, Exception):
             return
 
@@ -2547,6 +2565,7 @@ class CommandOverlay(NSObject):
             mask.setContents_(fill_image)
             mask.setContentsGravity_("resize")
             self._spring_tint_layer.setMask_(mask)
+            self._spring_tint_mask_signature = appearance_key
 
     def _update_backdrop_capture_geometry(self):
         if self._window is None or self._content_view is None or self._screen is None:

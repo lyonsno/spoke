@@ -941,18 +941,31 @@ class TranscriptionOverlay(NSObject):
             return
         try:
             scale = getattr(self, '_fill_scale', 2.0)
+            brightness = getattr(self, '_brightness', 0.0)
+            fill_override_rgb = getattr(self, "_fill_override_rgb", None)
+            appearance_key = (
+                round(float(total_w), 3),
+                round(float(total_h), 3),
+                round(float(scale), 3),
+                round(float(brightness) * 50.0) / 50.0,
+                fill_override_rgb,
+            )
+            if (
+                getattr(self, "_fill_image_signature", None) == appearance_key
+                and getattr(self, "_fill_payload", None) is not None
+            ):
+                return
             # Stretched-exponential fill: knife-edge cusp, heavy tails.
             # Width 2.5 = very aggressive initial drop from peak.
             # Interior floor varies with brightness: low on dark backgrounds
             # (more contrast between peak and interior), high on light
             # backgrounds (more uniform/material).
-            t = getattr(self, '_brightness', 0.0)
+            t = brightness
             floor = _lerp(0.55, 0.775, t)
             fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
 
-            fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
-                t = getattr(self, '_brightness', 0.0)
+                t = brightness
                 bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
             else:
                 bg_r, bg_g, bg_b = fill_override_rgb
@@ -963,6 +976,7 @@ class TranscriptionOverlay(NSObject):
             )
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            self._fill_image_signature = appearance_key
             if hasattr(self._fill_layer, "setCompositingFilter_"):
                 filter_name = (
                     None

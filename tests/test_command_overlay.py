@@ -1160,6 +1160,25 @@ class TestSDFCaching:
         overlay._apply_ridge_masks(600.0, 80.0)
         assert call_count == 1, "SDF was recomputed despite identical geometry"
 
+    def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
+        """Repeated show-time geometry checks should not rebuild the fill bitmap."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        import spoke.overlay as ov_mod
+        call_count = 0
+
+        def counting_fill_image(*_args):
+            nonlocal call_count
+            call_count += 1
+            return "fill-image", b"payload"
+
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", counting_fill_image)
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert call_count == 1
+
     def test_changed_height_recomputes_sdf(self, mock_pyobjc, monkeypatch):
         """A height change must recompute the SDF."""
         overlay, mod = _make_overlay(mock_pyobjc)

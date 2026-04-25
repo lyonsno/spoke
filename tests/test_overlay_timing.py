@@ -327,6 +327,28 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._fill_layer = MagicMock()
+            call_count = 0
+
+            def counting_fill_image(*_args):
+                nonlocal call_count
+                call_count += 1
+                return "fill-image", b"payload"
+
+            monkeypatch.setattr(mod, "_fill_field_to_image", counting_fill_image)
+
+            overlay._apply_ridge_masks(600.0, 80.0)
+            overlay._apply_ridge_masks(600.0, 80.0)
+
+            assert call_count == 1
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_text_color_contrasts_with_fill(self, mock_pyobjc):
         """Text should be dark on light fill (dark bg) and white on dark fill (light bg)."""
         sys.modules.pop("spoke.overlay", None)
