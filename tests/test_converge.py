@@ -597,6 +597,91 @@ class TestContextWindowCarver:
         assert "bearing" not in block.lower()
 
 
+    def test_bearing_updates_serialize_under_concurrency(self, monkeypatch, tmp_path):
+        """Concurrent _update_bearing calls must serialize so no update is lost.
+
+        Without a lock, two concurrent calls both read the same stale bearing,
+        produce independent updates, and the last writer wins — silently
+        discarding the first update. This test verifies serialization by
+        checking that each LLM call receives the bearing written by the
+        previous call (not the original).
+        """
+        import threading
+
+        mod = _import_converge()
+        bearing_path = tmp_path / "converge-bearing.md"
+        bearing_path.write_text("original bearing")
+        monkeypatch.setattr(mod, "_BEARING_PATH", bearing_path)
+
+        carver = self._make_carver(
+            monkeypatch, tmp_path, mod, self._noop_urlopen()
+        )
+
+        # Track what each LLM call sees as "Current bearing" in its prompt
+        seen_bearings = []
+        seen_lock = threading.Lock()
+        call_count = 0
+        call_count_lock = threading.Lock()
+
+        original_urlopen = mod.urllib.request.urlopen
+
+        def tracking_urlopen(req, **kwargs):
+            nonlocal call_count
+            body = json.loads(req.data)
+            # Find the user message that contains the bearing
+            for msg in body.get("messages", []):
+                if msg.get("role") == "user" and "Current bearing" in msg.get("content", ""):
+                    with seen_lock:
+                        seen_bearings.append(msg["content"])
+                    break
+
+            with call_count_lock:
+                call_count += 1
+                n = call_count
+
+            # Return a bearing that encodes the call number
+            class _Resp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self):
+                    return json.dumps(
+                        {"choices": [{"message": {"content": f"bearing after call {n}"}}]}
+                    ).encode("utf-8")
+
+            return _Resp()
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", tracking_urlopen)
+
+        context1 = [{"user": "first turn", "assistant": "ok"}]
+        context2 = [{"user": "second turn", "assistant": "sure"}]
+
+        t1 = threading.Thread(target=carver._update_bearing, args=(context1,))
+        t2 = threading.Thread(target=carver._update_bearing, args=(context2,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Both calls must have happened
+        assert len(seen_bearings) == 2, f"Expected 2 bearing update calls, got {len(seen_bearings)}"
+
+        # The second call must NOT see "original bearing" — it must see
+        # the bearing written by the first call. If both see "original",
+        # the race condition is present (both read before either wrote).
+        first_saw_original = "original bearing" in seen_bearings[0]
+        second_saw_original = "original bearing" in seen_bearings[1]
+
+        assert not (first_saw_original and second_saw_original), (
+            "Race condition: both concurrent _update_bearing calls read the "
+            "same stale bearing. The second call should have seen the bearing "
+            "written by the first call, proving serialization."
+        )
+
+
 class TestConvergeEmbedLib:
     def test_embed_model_path_can_come_from_env(self, monkeypatch):
         monkeypatch.setenv("SPOKE_CONVERGE_EMBED_MODEL_PATH", "/tmp/octen-model")

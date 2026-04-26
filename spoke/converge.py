@@ -630,6 +630,7 @@ class TurnCarver:
         self._anamnesis_io_lock = threading.Lock()  # serialize anamnesis file mutations
         self._topoi_io_lock = threading.Lock()  # serialize topoi file mutations
         self._policy_io_lock = threading.Lock()  # serialize policy file mutations
+        self._bearing_io_lock = threading.Lock()  # serialize bearing read-update-write
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
         _ANAMNESIS_DIR.mkdir(parents=True, exist_ok=True)
         _TOPOI_DIR.mkdir(parents=True, exist_ok=True)
@@ -898,46 +899,47 @@ class TurnCarver:
         if not context:
             return
 
-        # Load current bearing
-        current_bearing = ""
-        if _BEARING_PATH.exists():
+        with self._bearing_io_lock:
+            # Load current bearing
+            current_bearing = ""
+            if _BEARING_PATH.exists():
+                try:
+                    current_bearing = _BEARING_PATH.read_text(encoding="utf-8").strip()
+                except OSError:
+                    pass
+
+            # Build the recent turns block
+            turn_lines = []
+            for c in context:
+                turn_lines.append(f"User: {c['user']}")
+                if c.get("assistant"):
+                    turn_lines.append(f"Assistant: {c['assistant']}")
+
+            user_prompt = ""
+            if current_bearing:
+                user_prompt += f"Current bearing:\n\n{current_bearing}\n\n"
+            else:
+                user_prompt += "Current bearing: (none — this is the start of the conversation)\n\n"
+            user_prompt += (
+                "New exchange(s):\n\n"
+                + "\n".join(turn_lines)
+                + "\n\nUpdate the bearing."
+            )
+
             try:
-                current_bearing = _BEARING_PATH.read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
-
-        # Build the recent turns block
-        turn_lines = []
-        for c in context:
-            turn_lines.append(f"User: {c['user']}")
-            if c.get("assistant"):
-                turn_lines.append(f"Assistant: {c['assistant']}")
-
-        user_prompt = ""
-        if current_bearing:
-            user_prompt += f"Current bearing:\n\n{current_bearing}\n\n"
-        else:
-            user_prompt += "Current bearing: (none — this is the start of the conversation)\n\n"
-        user_prompt += (
-            "New exchange(s):\n\n"
-            + "\n".join(turn_lines)
-            + "\n\nUpdate the bearing."
-        )
-
-        try:
-            result, elapsed = self._call_model_for_carve(_BEARING_SYSTEM_PROMPT, user_prompt)
-            content = result.strip()
-            if content.startswith("```"):
-                content = re.sub(r"^```(?:markdown|md)?\s*", "", content)
-                content = re.sub(r"\s*```$", "", content)
-            # Atomic write
-            tmp = _BEARING_PATH.with_suffix(".tmp")
-            tmp.write_text(content, encoding="utf-8")
-            tmp.replace(_BEARING_PATH)
-            self._trace("bearing_update", elapsed=round(elapsed, 2), length=len(content))
-            logger.debug("Converge: bearing updated (%.1fs, %d chars)", elapsed, len(content))
-        except Exception:
-            logger.debug("Converge: bearing update failed", exc_info=True)
+                result, elapsed = self._call_model_for_carve(_BEARING_SYSTEM_PROMPT, user_prompt)
+                content = result.strip()
+                if content.startswith("```"):
+                    content = re.sub(r"^```(?:markdown|md)?\s*", "", content)
+                    content = re.sub(r"\s*```$", "", content)
+                # Atomic write
+                tmp = _BEARING_PATH.with_suffix(".tmp")
+                tmp.write_text(content, encoding="utf-8")
+                tmp.replace(_BEARING_PATH)
+                self._trace("bearing_update", elapsed=round(elapsed, 2), length=len(content))
+                logger.debug("Converge: bearing updated (%.1fs, %d chars)", elapsed, len(content))
+            except Exception:
+                logger.debug("Converge: bearing update failed", exc_info=True)
 
     def _carve_single(
         self,
