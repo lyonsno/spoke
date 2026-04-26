@@ -18,12 +18,55 @@ import logging
 import struct
 import threading
 import time
+from dataclasses import dataclass
+from typing import Literal
 
 import objc
 
 logger = logging.getLogger(__name__)
 
 _shared_overlay_hosts: dict[tuple[str, int], "_SharedOverlayHost"] = {}
+
+
+@dataclass(frozen=True)
+class OverlayClientIdentity:
+    client_id: str
+    display_id: int | str
+    role: Literal["assistant", "preview", "tray", "recovery"]
+
+
+@dataclass(frozen=True)
+class OpticalShellGeometrySnapshot:
+    center_x: float
+    center_y: float
+    content_width_points: float
+    content_height_points: float
+    corner_radius_points: float
+    band_width_points: float
+    tail_width_points: float
+
+
+@dataclass(frozen=True)
+class OpticalShellMaterialSnapshot:
+    initial_brightness: float
+    min_brightness: float = 0.0
+    core_magnification: float = 1.0
+    ring_amplitude_points: float = 0.0
+    tail_amplitude_points: float = 0.0
+    cleanup_blur_radius_points: float = 0.0
+    debug_visualize: bool = False
+    debug_grid_spacing_points: float = 18.0
+
+
+@dataclass(frozen=True)
+class OverlayRenderSnapshot:
+    identity: OverlayClientIdentity
+    generation: int
+    visible: bool
+    geometry: OpticalShellGeometrySnapshot
+    material: OpticalShellMaterialSnapshot
+    excluded_window_ids: tuple[int, ...] = ()
+    z_index: int = 0
 
 
 def _load_screencapturekit_bridge():
@@ -789,40 +832,174 @@ class _CompositorRendererProxy:
             self._compositor.submit_iosurface(ios_obj, width=w, height=h, pixel_buffer=pb)
 
 
-class _SharedOverlayHost:
+def _display_id_from_registry_key(registry_key: tuple[str, int]) -> int | str:
+    kind, value = registry_key
+    if kind == "display":
+        return int(value)
+    return f"{kind}:{value}"
+
+
+def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
+    config = {
+        "client_id": snapshot.identity.client_id,
+        "role": snapshot.identity.role,
+        "generation": snapshot.generation,
+        "visible": snapshot.visible,
+        "z_index": snapshot.z_index,
+        "center_x": snapshot.geometry.center_x,
+        "center_y": snapshot.geometry.center_y,
+        "content_width_points": snapshot.geometry.content_width_points,
+        "content_height_points": snapshot.geometry.content_height_points,
+        "corner_radius_points": snapshot.geometry.corner_radius_points,
+        "band_width_points": snapshot.geometry.band_width_points,
+        "tail_width_points": snapshot.geometry.tail_width_points,
+        "initial_brightness": snapshot.material.initial_brightness,
+        "min_brightness": snapshot.material.min_brightness,
+        "core_magnification": snapshot.material.core_magnification,
+        "ring_amplitude_points": snapshot.material.ring_amplitude_points,
+        "tail_amplitude_points": snapshot.material.tail_amplitude_points,
+        "cleanup_blur_radius_points": snapshot.material.cleanup_blur_radius_points,
+        "debug_visualize": snapshot.material.debug_visualize,
+        "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
+    }
+    if snapshot.excluded_window_ids:
+        config["excluded_window_ids"] = tuple(snapshot.excluded_window_ids)
+    return config
+
+
+def _snapshot_from_shell_config(
+    identity: OverlayClientIdentity,
+    shell_config: dict,
+    *,
+    generation: int,
+    excluded_window_ids: tuple[int, ...] = (),
+) -> OverlayRenderSnapshot:
+    config = dict(shell_config)
+    geometry = OpticalShellGeometrySnapshot(
+        center_x=float(config.get("center_x", 0.0)),
+        center_y=float(config.get("center_y", 0.0)),
+        content_width_points=float(config.get("content_width_points", 0.0)),
+        content_height_points=float(config.get("content_height_points", 0.0)),
+        corner_radius_points=float(config.get("corner_radius_points", 0.0)),
+        band_width_points=float(config.get("band_width_points", 0.0)),
+        tail_width_points=float(config.get("tail_width_points", 0.0)),
+    )
+    material = OpticalShellMaterialSnapshot(
+        initial_brightness=float(config.get("initial_brightness", 0.5)),
+        min_brightness=float(config.get("min_brightness", 0.0)),
+        core_magnification=float(config.get("core_magnification", 1.0)),
+        ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
+        tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),
+        cleanup_blur_radius_points=float(config.get("cleanup_blur_radius_points", 0.0)),
+        debug_visualize=bool(config.get("debug_visualize", False)),
+        debug_grid_spacing_points=float(config.get("debug_grid_spacing_points", 18.0)),
+    )
+    return OverlayRenderSnapshot(
+        identity=identity,
+        generation=generation,
+        visible=bool(config.get("visible", True)),
+        geometry=geometry,
+        material=material,
+        excluded_window_ids=tuple(int(v) for v in config.get("excluded_window_ids", excluded_window_ids)),
+        z_index=int(config.get("z_index", 0)),
+    )
+
+
+class OverlayCompositorRegistry:
+    def host_for_screen(self, screen) -> "OverlayCompositorHost":
+        registry_key = _screen_registry_key(screen)
+        host = _shared_overlay_hosts.get(registry_key)
+        if host is None:
+            host = OverlayCompositorHost(registry_key, screen)
+            _shared_overlay_hosts[registry_key] = host
+        return host
+
+    def release_empty_hosts(self) -> None:
+        for registry_key, host in list(_shared_overlay_hosts.items()):
+            if not host.client_count:
+                _shared_overlay_hosts.pop(registry_key, None)
+
+
+class OverlayCompositorHost:
     def __init__(self, registry_key, screen):
         self._registry_key = registry_key
         self._screen = screen
+        self._display_id = _display_id_from_registry_key(registry_key)
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
         self._started = False
 
-    def add_client(self, client_id: str, window, content_view, shell_config: dict) -> bool:
-        self._clients[client_id] = {
-            "window": window,
-            "content_view": content_view,
-            "shell_config": dict(shell_config),
-        }
+    @property
+    def display_id(self) -> int | str:
+        return self._display_id
+
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
+    def register_client(self, identity: OverlayClientIdentity, *, window, content_view) -> "OverlayCompositorClient":
+        entry = self._clients.get(identity.client_id)
+        if entry is None:
+            entry = {
+                "identity": identity,
+                "window": window,
+                "content_view": content_view,
+                "snapshot": None,
+                "generation": 0,
+            }
+            self._clients[identity.client_id] = entry
+        else:
+            entry["identity"] = identity
+            entry["window"] = window
+            entry["content_view"] = content_view
+        return OverlayCompositorClient(self, identity)
+
+    def unregister_client(self, client_id: str) -> None:
+        self.release_client(client_id)
+
+    def publish(self, snapshot: OverlayRenderSnapshot) -> bool:
+        entry = self._clients.get(snapshot.identity.client_id)
+        if entry is None:
+            return False
+        entry["identity"] = snapshot.identity
+        entry["snapshot"] = snapshot
+        entry["generation"] = max(int(entry.get("generation", 0)), snapshot.generation)
         if not self._sync_host(start_if_needed=True):
-            self._clients.pop(client_id, None)
-            if not self._clients:
+            entry["snapshot"] = None
+            if not any(client.get("snapshot") is not None for client in self._clients.values()):
                 _shared_overlay_hosts.pop(self._registry_key, None)
             return False
         return True
 
-    def update_client_config(self, client_id: str, shell_config: dict) -> None:
-        entry = self._clients.get(client_id)
-        if entry is None:
-            return
-        entry["shell_config"] = dict(shell_config)
-        self._sync_host()
+    def add_client(self, client_id: str, window, content_view, shell_config: dict) -> bool:
+        identity = OverlayClientIdentity(client_id=client_id, display_id=self.display_id, role="assistant")
+        client = self.register_client(identity, window=window, content_view=content_view)
+        return client.update_shell_config(shell_config)
 
-    def update_client_config_key(self, client_id: str, key: str, value) -> None:
+    def update_client_config(self, client_id: str, shell_config: dict) -> bool:
         entry = self._clients.get(client_id)
         if entry is None:
-            return
-        entry["shell_config"][key] = value
-        self._sync_host()
+            return False
+        generation = int(entry.get("generation", 0)) + 1
+        window_ids = self._window_ids_for_entry(entry)
+        snapshot = _snapshot_from_shell_config(
+            entry["identity"],
+            shell_config,
+            generation=generation,
+            excluded_window_ids=tuple(window_ids),
+        )
+        return self.publish(snapshot)
+
+    def update_client_config_key(self, client_id: str, key: str, value) -> bool:
+        entry = self._clients.get(client_id)
+        if entry is None:
+            return False
+        snapshot = entry.get("snapshot")
+        if snapshot is None:
+            return False
+        config = _snapshot_to_shell_config(snapshot)
+        config[key] = value
+        return self.update_client_config(client_id, config)
 
     def release_client(self, client_id: str) -> None:
         self._clients.pop(client_id, None)
@@ -837,45 +1014,59 @@ class _SharedOverlayHost:
         self._started = False
         _shared_overlay_hosts.pop(self._registry_key, None)
 
-    def sampled_brightness_for_client(self, client_id: str) -> float:
+    def render_snapshots(self) -> tuple[OverlayRenderSnapshot, ...]:
+        snapshots = [entry["snapshot"] for entry in self._clients.values() if entry.get("snapshot") is not None]
+        return tuple(sorted(snapshots, key=lambda snapshot: (snapshot.z_index, snapshot.identity.client_id)))
+
+    def sample_brightness(self, client_id: str) -> float:
         entry = self._clients.get(client_id)
-        if entry is None:
+        if entry is None or entry.get("snapshot") is None:
             return 0.5
-        config = dict(entry["shell_config"])
+        config = _snapshot_to_shell_config(entry["snapshot"])
         sampler = getattr(self._compositor, "sample_brightness_for_config", None)
         if callable(sampler):
             return float(sampler(config))
         return float(getattr(self._compositor, "sampled_brightness", 0.5))
 
-    def refresh_brightness_for_client(self, client_id: str) -> None:
+    def refresh_brightness(self, client_id: str) -> None:
         if client_id not in self._clients:
             return
         refresher = getattr(self._compositor, "refresh_brightness", None)
         if callable(refresher):
             refresher()
 
+    def sampled_brightness_for_client(self, client_id: str) -> float:
+        return self.sample_brightness(client_id)
+
+    def refresh_brightness_for_client(self, client_id: str) -> None:
+        self.refresh_brightness(client_id)
+
     def debug_snapshot(self) -> dict:
         clients = []
-        for client_id, entry in self._clients.items():
-            snapshot = {"client_id": client_id}
-            snapshot.update(dict(entry["shell_config"]))
-            clients.append(snapshot)
+        for snapshot in self.render_snapshots():
+            client_snapshot = {"client_id": snapshot.identity.client_id}
+            client_snapshot.update(_snapshot_to_shell_config(snapshot))
+            clients.append(client_snapshot)
         return {
             "client_count": len(clients),
             "clients": clients,
         }
 
+    def _window_ids_for_entry(self, entry: dict) -> list[int]:
+        window_ids = []
+        window = entry.get("window")
+        try:
+            window_ids.append(int(window.windowNumber()))
+        except Exception:
+            pass
+        return window_ids
+
     def _sync_host(self, start_if_needed: bool = False) -> bool:
         overlay_window_ids = []
-        shell_configs = []
         for entry in self._clients.values():
-            window = entry["window"]
-            try:
-                overlay_window_ids.append(int(window.windowNumber()))
-            except Exception:
-                continue
-        for entry in self._clients.values():
-            shell_configs.append(dict(entry["shell_config"]))
+            overlay_window_ids.extend(self._window_ids_for_entry(entry))
+        snapshots = self.render_snapshots()
+        shell_configs = [_snapshot_to_shell_config(snapshot) for snapshot in snapshots if snapshot.visible]
         set_excluded = getattr(self._compositor, "set_excluded_window_ids", None)
         if callable(set_excluded):
             set_excluded(overlay_window_ids)
@@ -894,28 +1085,66 @@ class _SharedOverlayHost:
         return True
 
 
-class _OverlayCompositorSession:
-    def __init__(self, host: _SharedOverlayHost, client_id: str):
+_SharedOverlayHost = OverlayCompositorHost
+
+
+class OverlayCompositorClient:
+    def __init__(self, host: OverlayCompositorHost, identity: OverlayClientIdentity | str):
         self._host = host
-        self._client_id = client_id
+        if isinstance(identity, OverlayClientIdentity):
+            self.identity = identity
+        else:
+            display_id = getattr(host, "display_id", "unknown")
+            self.identity = OverlayClientIdentity(
+                client_id=str(identity),
+                display_id=display_id,
+                role="assistant",
+            )
+        self._client_id = self.identity.client_id
 
-    def update_shell_config(self, shell_config: dict) -> None:
-        if self._host is not None:
-            self._host.update_client_config(self._client_id, shell_config)
+    def publish(self, snapshot: OverlayRenderSnapshot) -> bool:
+        if self._host is None:
+            return False
+        return self._host.publish(snapshot)
 
-    def update_shell_config_key(self, key: str, value) -> None:
-        if self._host is not None:
-            self._host.update_client_config_key(self._client_id, key, value)
+    def update_shell_config(self, shell_config: dict) -> bool:
+        if self._host is None:
+            return False
+        return self._host.update_client_config(self._client_id, shell_config)
+
+    def update_shell_config_key(self, key: str, value) -> bool:
+        if self._host is None:
+            return False
+        return self._host.update_client_config_key(self._client_id, key, value)
 
     @property
     def sampled_brightness(self) -> float:
+        return self.sample_brightness()
+
+    def sample_brightness(self) -> float:
         if self._host is None:
             return 0.5
-        return self._host.sampled_brightness_for_client(self._client_id)
+        sampler = getattr(self._host, "sample_brightness", None)
+        if callable(sampler):
+            return sampler(self._client_id)
+        legacy_sampler = getattr(self._host, "sampled_brightness_for_client", None)
+        if callable(legacy_sampler):
+            return legacy_sampler(self._client_id)
+        return 0.5
 
     def refresh_brightness(self) -> None:
-        if self._host is not None:
-            self._host.refresh_brightness_for_client(self._client_id)
+        if self._host is None:
+            return
+        refresher = getattr(self._host, "refresh_brightness", None)
+        if callable(refresher):
+            refresher(self._client_id)
+            return
+        legacy_refresher = getattr(self._host, "refresh_brightness_for_client", None)
+        if callable(legacy_refresher):
+            legacy_refresher(self._client_id)
+
+    def release(self) -> None:
+        self.stop()
 
     def stop(self) -> None:
         if self._host is None:
@@ -925,14 +1154,26 @@ class _OverlayCompositorSession:
         host.release_client(self._client_id)
 
 
-def start_overlay_compositor(*, screen, window, content_view, shell_config):
-    client_id = f"overlay:{int(window.windowNumber())}" if window is not None else f"overlay:{id(content_view)}"
-    registry_key = _screen_registry_key(screen)
-    host = _shared_overlay_hosts.get(registry_key)
-    if host is None:
-        host = _SharedOverlayHost(registry_key, screen)
-        _shared_overlay_hosts[registry_key] = host
-    session = _OverlayCompositorSession(host, client_id)
-    if not host.add_client(client_id, window, content_view, shell_config):
+_OverlayCompositorSession = OverlayCompositorClient
+
+
+def start_overlay_compositor(
+    *,
+    screen,
+    window,
+    content_view,
+    shell_config,
+    client_id: str = "assistant.command",
+    role: str = "assistant",
+):
+    registry = OverlayCompositorRegistry()
+    host = registry.host_for_screen(screen)
+    identity = OverlayClientIdentity(
+        client_id=client_id,
+        display_id=host.display_id,
+        role=role,
+    )
+    session = host.register_client(identity, window=window, content_view=content_view)
+    if not session.update_shell_config(shell_config):
         return None
     return session

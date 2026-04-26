@@ -3061,6 +3061,8 @@ class CommandOverlay(NSObject):
                 window=self._window,
                 content_view=self._content_view,
                 shell_config=shell_config,
+                client_id="assistant.command",
+                role="assistant",
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor

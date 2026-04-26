@@ -1210,6 +1210,34 @@ class TestAdaptiveCompositing:
 
         assert compositor.refresh_brightness.call_count >= 2
 
+    def test_fullscreen_compositor_start_uses_stable_assistant_client_identity(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        captured = {}
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        def fake_start_overlay_compositor(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            fake_start_overlay_compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert captured["client_id"] == "assistant.command"
+        assert captured["role"] == "assistant"
+        assert captured["screen"] is overlay._screen
+        assert captured["window"] is overlay._window
+        assert captured["content_view"] is overlay._content_view
+        assert "shell_config" in captured
+
     def test_fullscreen_compositor_receives_current_brightness_seed(
         self, mock_pyobjc, monkeypatch
     ):
@@ -1676,6 +1704,35 @@ class TestGeometryCaps:
         shell_config = compositor.update_shell_config.call_args[0][0]
         assert shell_config["center_x"] == pytest.approx(640.0)
         assert shell_config["center_y"] == pytest.approx(1160.0)
+
+    def test_command_overlay_layout_update_publishes_fresh_shell_config_via_session(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 104.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        session = MagicMock()
+        overlay._fullscreen_compositor = session
+
+        overlay._update_layout()
+        first_config = session.update_shell_config.call_args[0][0]
+        first_config["center_x"] = -1.0
+
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(320.0)
+        overlay._update_layout()
+        second_config = session.update_shell_config.call_args[0][0]
+
+        assert session.update_shell_config.call_count == 2
+        assert second_config is not first_config
+        assert second_config["center_x"] != -1.0
 
     def test_update_layout_resets_text_geometry_to_match_visible_area(
         self, mock_pyobjc, monkeypatch
