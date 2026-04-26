@@ -301,9 +301,12 @@ def main():
             print(f"--- {log_path.name}: {len(turns)} turns ---")
 
             if args.stride:
-                # Sliding window mode: feed pre-windowed batches directly.
-                # We bypass the carver's internal cadence and manually control
-                # what each carve event sees.
+                # Sliding window mode: bypass the carver's accumulation
+                # machinery entirely. We construct each window's context
+                # directly and call _carve_single with it, avoiding the
+                # double-counting and state corruption that happens when
+                # overlap turns are fed through on_turn_complete twice.
+                import spoke.converge as _mod
                 window_size = args.batch or 8
                 stride = args.stride
                 total_turns += len(turns)
@@ -323,25 +326,36 @@ def main():
                     if shutdown[0]:
                         break
 
-                    # Feed all turns in the window to build context
-                    for turn in window:
-                        carver.on_turn_complete(turn["user"], turn["assistant"])
+                    # Build the context buffer directly from the window turns,
+                    # without going through on_turn_complete's accumulation.
+                    context = []
+                    for j, turn in enumerate(window):
+                        assistant_ctx = _mod._middle_out_truncate(
+                            turn["assistant"] or "",
+                            _mod._ASSISTANT_KEEP_HEAD,
+                            _mod._ASSISTANT_KEEP_TAIL,
+                        )
+                        context.append({
+                            "user": turn["user"],
+                            "assistant": assistant_ctx,
+                            "_seq": start_pos + j,  # stable seq based on position in log
+                        })
 
-                    # Force a carve regardless of cadence
-                    with carver._lock:
-                        if carver._context_buffer:
-                            context_snapshot = list(carver._context_buffer)
-                            carver._last_carve_seqs = {e["_seq"] for e in carver._context_buffer}
-                            carver._pending.append((
-                                window[-1]["user"],
-                                context_snapshot,
-                                carver._turn_seq,
-                            ))
+                    # Also feed turns through on_turn_complete for embedding
+                    # only — but skip any turns we've already embedded in a
+                    # previous window.
+                    for turn in window[max(0, stride * wi - (window_size - stride)):] if wi > 0 else window:
+                        carver._embed_pending.append(turn["user"])
 
+                    # Call _carve_single directly with our constructed context
                     t0 = time.time()
+                    carver._carve_single(
+                        window[-1]["user"],
+                        context=context,
+                        current_seq=start_pos + len(window) - 1,
+                    )
+                    # Drain any embed work
                     carver._drain_sync()
-                    if carver._thread is not None and carver._thread.is_alive():
-                        carver._thread.join(timeout=600)
                     elapsed = time.time() - t0
 
                     total_carves = carver._carve_count
