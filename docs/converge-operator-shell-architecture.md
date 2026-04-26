@@ -248,7 +248,73 @@ That means context compaction is already starting to use a semantic substrate,
 not just recency and truncation. It is still modest and bounded, but it is a
 real substrate-aware memory operation.
 
-### 8. Epistaxis access is real, but the old helper is demoted
+### 8. The assistant operator wants modal intent frames
+
+The command overlay is currently presented as one assistant with a broad tool
+surface. That works, but it is not the final interaction shape. The operator
+assistant wants to become modal.
+
+The default mode should not be "chat with tools." The default mode should be
+"resolve fuzzy intent." The user often begins with an underspecified desire:
+"read the agent response," "check what happened," "look that up," "help me land
+this," "what were we doing?" The shell should treat those as fuzzy intents to
+resolve against the current screen, recent context, Converge state, and
+available bounded affordances.
+
+From that default fuzzy-intent mode, an utterance can fall into several shapes:
+
+- **execute and return** — resolve the intent, perform the bounded action, and
+  fall back to default mode.
+- **ghost continuation** — keep an implicit continuation frame without making
+  the user explicitly restate context on every turn. This is a silent/warm mode:
+  "keep helping with this kind of thing until the interaction naturally ends."
+- **explicit mode entry** — enter a named operational mode such as read-aloud,
+  web research, Epistaxis coordination, or code review. In this shape, the
+  prompt, tool priors, context capture strategy, and Converge carving hints
+  change together.
+- **packet-backed work** — open or join a coordination packet, skill packet, or
+  other durable work frame when the job needs explicit shared custody. Packets
+  are orthogonal to modes: some modes use packets, some do not; some packets
+  are modal, some simply execute and dissolve.
+
+Read-aloud is the clearest example. In read-aloud mode, "read the agent's
+response" should implicitly mean: capture the visible context, identify the
+agent response in the current app or terminal, avoid reading the user's own
+text, and speak the target text. If the model gets the boundary wrong and the
+user corrects it ("no, that part is mine"), the correction should be cached
+against read-aloud mode, not merely left in the transient chat buffer. The next
+time read-aloud mode is entered, that mode-specific memory should warm the
+prompt so the assistant improves at the task without requiring the user to
+re-teach the boundary.
+
+That implies a new kind of continuity object: **mode memory**. Mode memory is
+not general chat history and not necessarily a full topos. It is a small,
+mode-scoped cache of operational lessons, examples, corrections, and priors.
+It should be loaded only when the relevant mode is active, so the default
+assistant remains lean while specialized behaviors become progressively more
+competent.
+
+Converge should participate in mode framing. When a mode is active, the carver
+can receive hints about what kind of topos, anamnesis, policy, or attractor is
+likely being expressed. That does not mean the mode dictates the species; the
+beast/species filter still gets authority to kill or reroute. It means the
+system stops asking a generic carver to rediscover the frame from scratch on
+every turn.
+
+The architectural target is therefore:
+
+- a default fuzzy-intent resolver
+- explicit named modes with prompt/tool/context priors
+- silent ghost continuations for short-lived task frames
+- per-mode memory loaded only when relevant
+- Converge carving hints derived from active mode
+- packet custody as an orthogonal layer, not the definition of mode
+
+This is the bridge between "assistant with many tools" and "operator shell."
+The tools remain bounded, but the user's experience becomes one of entering
+intent-shaped work frames rather than choosing tools directly.
+
+### 9. Epistaxis access is real, but the old helper is demoted
 
 The command shell can read Epistaxis directly through file tools and bounded
 terminal reads, and current trunk also carries a runbook-gated terminal path
