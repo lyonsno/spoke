@@ -109,6 +109,8 @@ class FullScreenCompositor:
         self._stream_output = None
         self._stream_renderer_proxy = None
         self._stream_handler_queue = None
+        self._capture_thread = None
+        self._capture_start_cancelled = False
         self._extra_excluded_ids = set()
         self._capture_content = None
         self._capture_display = None
@@ -142,9 +144,9 @@ class FullScreenCompositor:
             if self._pipeline is not None:
                 self._pipeline.reset_temporal_state()
             self._create_fullscreen_window()
-            self._start_capture()
             self._start_display_link()
             self._running = True
+            self._start_capture_async()
             logger.info("FullScreenCompositor: started")
             return True
         except Exception:
@@ -152,8 +154,36 @@ class FullScreenCompositor:
             self.stop()
             return False
 
+    def _start_capture_async(self) -> None:
+        self._capture_start_cancelled = False
+        self._capture_thread = threading.Thread(
+            target=self._run_capture_start,
+            name="SpokeFullScreenCompositorCapture",
+            daemon=True,
+        )
+        self._capture_thread.start()
+
+    def _run_capture_start(self) -> None:
+        try:
+            self._start_capture()
+            if getattr(self, "_capture_start_cancelled", False):
+                self._stop_capture()
+        except Exception:
+            if not getattr(self, "_capture_start_cancelled", False):
+                logger.info("FullScreenCompositor: capture failed to start", exc_info=True)
+                self._schedule_stop_after_capture_failure()
+
+    def _schedule_stop_after_capture_failure(self) -> None:
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(self.stop)
+        except Exception:
+            self.stop()
+
     def stop(self) -> None:
         """Tear down everything."""
+        self._capture_start_cancelled = True
         self._running = False
         self._stop_display_link()
         self._stop_capture()
