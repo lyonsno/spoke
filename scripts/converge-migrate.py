@@ -201,6 +201,9 @@ def main():
     parser.add_argument("--stride", type=int, default=None,
                         help="Sliding window stride (requires --batch). Window of --batch, advance by --stride. "
                              "E.g. --batch 8 --stride 6 means 8-turn windows overlapping by 2.")
+    parser.add_argument("--stagger", type=float, default=None,
+                        help="Seconds between pass launches (default 0.5). Higher = fewer concurrent "
+                             "inference calls. E.g. --stagger 30 limits to ~2 concurrent.")
     args = parser.parse_args()
 
     if args.stride and not args.batch:
@@ -269,6 +272,11 @@ def main():
     if args.batch:
         mod._CARVE_CADENCE = args.batch
         mod._MAX_CONTEXT_BUFFER = args.batch
+
+    # Stagger override — higher values = fewer concurrent inference calls
+    if args.stagger is not None:
+        mod._PREFILL_STAGGER_S = args.stagger
+        print(f"Stagger: {args.stagger}s between pass launches\n")
         print(f"Batch size: {args.batch} (cadence={args.batch}, buffer={args.batch})\n")
 
     # Graceful shutdown
