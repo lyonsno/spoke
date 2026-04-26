@@ -793,6 +793,7 @@ class TurnCarver:
             "top_p": 0.95,
             "top_k": 20,
             "repetition_penalty": 1.0,
+            "max_tokens": 4096,
         }).encode("utf-8")
 
         headers = {"Content-Type": "application/json"}
@@ -1248,6 +1249,10 @@ class TurnCarver:
                         elif op_type == "create":
                             title = op.get("title", slug)
                             evidence = op.get("evidence", "")
+                            if not evidence and not path.exists():
+                                logger.debug("Converge: skipping empty attractor create for %s", slug)
+                                actions.append(f"skip_empty:{slug}")
+                                continue
                             if path.exists():
                                 recompiled = self._recompile_entry(path, evidence)
                                 if recompiled:
@@ -1266,6 +1271,10 @@ class TurnCarver:
                     else:
                         # Generic surfaces: create/update
                         content = op.get("content", "")
+                        if not content and op_type == "create":
+                            logger.debug("Converge: skipping empty create for %s/%s", surface_name, slug)
+                            actions.append(f"skip_empty:{slug}")
+                            continue
                         if op_type == "update" and path.exists():
                             recompiled = self._recompile_entry(path, content)
                             if recompiled:
