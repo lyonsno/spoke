@@ -77,6 +77,12 @@ The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent. "Tractor" is almost certainly "attractor." "Epístaxis"
 is correct Greek, not a typo.
 
+Look across ALL recent turns together, not just the current utterance in
+isolation. If the user's concern evolved across multiple turns — started
+with one framing and refined it — carve the mature form, not each step.
+If the arc across turns reveals something that no single turn states
+explicitly, that emergent signal is the most valuable thing to carve.
+
 You will be given EXISTING personal attractors. These are shown so you can
 avoid duplicates and reinforce existing entries when appropriate. Do NOT
 reference the content of existing entries in new candidates — carve ONLY
@@ -140,6 +146,11 @@ Anamnesis IS:
 - Relational knowledge: what connects to what, what depends on what
 - Operational knowledge: things learned from incidents or debugging
 
+Look across ALL recent turns together. A fact may only become clear from
+the combination of multiple turns — the user says one thing, the assistant
+responds, and the user's correction or elaboration reveals the real fact.
+Carve the synthesized observation, not each fragment.
+
 You will be given EXISTING anamnesis entries. These are shown so you can
 avoid duplicates — do NOT reference the content of existing entries in new
 candidates. Carve ONLY from what appears in the current utterance and recent
@@ -182,6 +193,10 @@ Tópoi ARE:
 - "Waiting for subagent result on attractor search"
 - "Creating a spoke worktree off remote main"
 
+Look across ALL recent turns together. Work state often evolves across
+turns — the user starts something, hits a problem, pivots. Carve the
+current state after the arc, not each intermediate step.
+
 You will be given EXISTING tópoi. These are shown so you can avoid duplicates
 and update existing entries — do NOT reference the content of existing entries
 in new candidates. Carve ONLY from what appears in the current utterance and
@@ -223,6 +238,13 @@ Policy IS:
 - "Development should always happen in worktrees" (never done, always enforced)
 - "Four parallel passes are better than one multi-routing pass"
 - "The satisfaction condition test should distinguish action-shaped from state-shaped"
+
+Policy often emerges across multiple turns of reasoning — the user
+proposes something, tests it, refines it, and the mature principle is only
+visible from the full arc. Look across ALL recent turns for reasoning that
+converged on a principle, not just single-turn declarations. The most
+valuable policy carves are ones where the user arrived at a standing rule
+through a multi-turn discussion that no single turn captures alone.
 
 You will be given EXISTING policy observations. These are shown so you can
 avoid duplicates — do NOT reference the content of existing entries in new
@@ -771,6 +793,7 @@ class TurnCarver:
             "top_p": 0.95,
             "top_k": 20,
             "repetition_penalty": 1.0,
+            "max_tokens": 4096,
         }).encode("utf-8")
 
         headers = {"Content-Type": "application/json"}
@@ -1226,6 +1249,10 @@ class TurnCarver:
                         elif op_type == "create":
                             title = op.get("title", slug)
                             evidence = op.get("evidence", "")
+                            if not evidence and not path.exists():
+                                logger.debug("Converge: skipping empty attractor create for %s", slug)
+                                actions.append(f"skip_empty:{slug}")
+                                continue
                             if path.exists():
                                 recompiled = self._recompile_entry(path, evidence)
                                 if recompiled:
@@ -1244,6 +1271,10 @@ class TurnCarver:
                     else:
                         # Generic surfaces: create/update
                         content = op.get("content", "")
+                        if not content and op_type == "create":
+                            logger.debug("Converge: skipping empty create for %s/%s", surface_name, slug)
+                            actions.append(f"skip_empty:{slug}")
+                            continue
                         if op_type == "update" and path.exists():
                             recompiled = self._recompile_entry(path, content)
                             if recompiled:
