@@ -28,6 +28,8 @@ from Quartz import (
     CAMediaTimingFunction,
 )
 
+from .optical_shell_metrics import OpticalShellMetrics
+
 logger = logging.getLogger(__name__)
 
 
@@ -973,12 +975,17 @@ def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> 
 class GlowOverlay(NSObject):
     """Manages a screen-border glow window driven by audio amplitude."""
 
-    def initWithScreen_(self, screen: NSScreen | None = None):
+    def initWithScreen_(
+        self,
+        screen: NSScreen | None = None,
+        metrics: OpticalShellMetrics | None = None,
+    ):
         self = objc.super(GlowOverlay, self).init()
         if self is None:
             return None
 
         self._screen = screen or NSScreen.mainScreen()
+        self._metrics = metrics
         self._window: NSWindow | None = None
         self._glow_layer: CALayer | None = None
         self._smoothed_amplitude = 0.0
@@ -1123,7 +1130,15 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
+        sample_start = time.perf_counter()
         brightness = _sample_screen_brightness(self._screen)
+        metrics = getattr(self, "_metrics", None)
+        if metrics is not None:
+            sample_end = time.perf_counter()
+            metrics.record_brightness_sample(
+                elapsed_ms=(sample_end - sample_start) * 1000.0,
+                now=sample_end,
+            )
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         self._apply_glow_color(self._glow_color)
         self._brightness = brightness
@@ -1181,8 +1196,17 @@ class GlowOverlay(NSObject):
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
         if not self._visible:
             return
+        sample_start = time.perf_counter()
         new_brightness = _sample_screen_brightness(self._screen)
-        if abs(new_brightness - self._brightness) < 0.02:
+        metrics = getattr(self, "_metrics", None)
+        if metrics is not None:
+            sample_end = time.perf_counter()
+            metrics.record_brightness_sample(
+                elapsed_ms=(sample_end - sample_start) * 1000.0,
+                now=sample_end,
+            )
+        current_brightness = getattr(self, "_brightness", 0.0)
+        if abs(new_brightness - current_brightness) < 0.02:
             return  # no meaningful change
         self._brightness = new_brightness
         new_color, new_base, new_peak = _glow_style_for_brightness(new_brightness)

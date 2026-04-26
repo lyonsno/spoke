@@ -148,6 +148,7 @@ from .handsfree import (
     match_voice_command,
 )
 from .scene_capture import SceneCaptureCache
+from .optical_shell_metrics import OpticalShellMetrics
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -939,7 +940,8 @@ class SpokeAppDelegate(NSObject):
         if self._preview_backend == "cloud":
             self._preview_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
-        self._capture = AudioCapture()
+        self._optical_shell_metrics = OpticalShellMetrics()
+        self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
@@ -1225,7 +1227,12 @@ class SpokeAppDelegate(NSObject):
         )
         self._menubar.setup()
 
-        self._glow = GlowOverlay.alloc().initWithScreen_(None)
+        if not hasattr(self, "_optical_shell_metrics"):
+            self._optical_shell_metrics = OpticalShellMetrics()
+
+        self._glow = GlowOverlay.alloc().initWithScreen_(
+            None, metrics=self._optical_shell_metrics
+        )
         self._glow.setup()
 
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
@@ -1234,7 +1241,9 @@ class SpokeAppDelegate(NSObject):
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
             from .command_overlay import CommandOverlay
-            self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
+            self._command_overlay = CommandOverlay.alloc().initWithScreen_(
+                None, metrics=self._optical_shell_metrics
+            )
             self._command_overlay.setup()
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()

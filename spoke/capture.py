@@ -14,6 +14,7 @@ import logging
 import queue
 import struct
 import threading
+import time
 import wave
 from collections import deque
 from typing import Callable
@@ -90,11 +91,12 @@ class AudioCapture:
         Sample rate in Hz. Default 16000 (optimal for Whisper).
     """
 
-    def __init__(self, sample_rate: int = SAMPLE_RATE) -> None:
+    def __init__(self, sample_rate: int = SAMPLE_RATE, metrics=None) -> None:
         self._sample_rate = sample_rate
         self._stream: sd.InputStream | None = None
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
+        self._metrics = metrics
         self._amplitude_cb: Callable[[float], None] | None = None
         self._segment_cb: Callable[[bytes], None] | None = None
         self._vad_cb: Callable[[bool], None] | None = None
@@ -407,12 +409,29 @@ class AudioCapture:
         if no new frames are available. Advances an internal cursor so each
         chunk is returned exactly once.
         """
+        poll_start = time.perf_counter()
         with self._lock:
-            if self._read_cursor >= len(self._frames):
+            available = len(self._frames) - self._read_cursor
+            if available <= 0:
+                poll_end = time.perf_counter()
+                if self._metrics is not None:
+                    self._metrics.record_capture_poll(
+                        0,
+                        elapsed_ms=(poll_end - poll_start) * 1000.0,
+                        now=poll_end,
+                    )
                 return np.array([], dtype=np.float32)
             new = self._frames[self._read_cursor:]
             self._read_cursor = len(self._frames)
-        return np.concatenate(new)
+        result = np.concatenate(new)
+        if self._metrics is not None:
+            poll_end = time.perf_counter()
+            self._metrics.record_capture_poll(
+                len(new),
+                elapsed_ms=(poll_end - poll_start) * 1000.0,
+                now=poll_end,
+            )
+        return result
 
     def get_tail_buffer(self) -> bytes:
         """Return WAV bytes for audio since the last segment boundary.
@@ -471,49 +490,57 @@ class AudioCapture:
         """Called by PortAudio on its own thread. Must be fast."""
         if self._stream is None or self._stream_closing:
             return
+        tick_start = time.perf_counter()
         if status:
             logger.warning("sounddevice status: %s", status)
+        try:
+            chunk = indata[:, 0].copy()  # mono, float32
 
-        chunk = indata[:, 0].copy()  # mono, float32
+            with self._lock:
+                self._frames.append(chunk)
 
-        with self._lock:
-            self._frames.append(chunk)
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
 
-        rms = float(np.sqrt(np.mean(chunk ** 2)))
+            if self._amplitude_cb is not None:
+                self._queue_callback_event("amplitude", rms)
 
-        if self._amplitude_cb is not None:
-            self._queue_callback_event("amplitude", rms)
+            if self._stream_closing:
+                return
 
-        if self._stream_closing:
-            return
+            if self._segment_cb is not None or self._vad_cb is not None:
+                # Grace period: suppress silence transitions but do NOT force speech.
+                # Silero still decides — grace only prevents premature silence-idle
+                # transitions during the first few seconds of recording.
+                if self._grace_chunks_remaining > 0:
+                    self._grace_chunks_remaining -= 1
 
-        if self._segment_cb is not None or self._vad_cb is not None:
-            # Grace period: suppress silence transitions but do NOT force speech.
-            # Silero still decides — grace only prevents premature silence-idle
-            # transitions during the first few seconds of recording.
-            if self._grace_chunks_remaining > 0:
-                self._grace_chunks_remaining -= 1
-
-            # Run Silero VAD on each 512-sample sub-chunk, take max probability
-            if self._silero_model is not None:
-                torch = self._torch
-                max_prob = 0.0
-                for offset in range(0, len(chunk), SILERO_CHUNK):
-                    if self._stream_closing:
-                        return
-                    sub = chunk[offset:offset + SILERO_CHUNK]
-                    if len(sub) < SILERO_CHUNK:
-                        break
-                    tensor = torch.from_numpy(sub).unsqueeze(0)
-                    prob = self._silero_model(tensor, self._silero_sr).item()
-                    max_prob = max(max_prob, prob)
-                self._process_vad_decision(max_prob >= SPEECH_PROB_THRESHOLD, chunk, max_prob)
-            else:
-                # Fallback: RMS-based detection when Silero is unavailable
-                self._process_vad_decision(rms > 0.01, chunk, rms)
-                if not self._silero_warned:
-                    logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
-                    self._silero_warned = True
+                # Run Silero VAD on each 512-sample sub-chunk, take max probability
+                if self._silero_model is not None:
+                    torch = self._torch
+                    max_prob = 0.0
+                    for offset in range(0, len(chunk), SILERO_CHUNK):
+                        if self._stream_closing:
+                            return
+                        sub = chunk[offset:offset + SILERO_CHUNK]
+                        if len(sub) < SILERO_CHUNK:
+                            break
+                        tensor = torch.from_numpy(sub).unsqueeze(0)
+                        prob = self._silero_model(tensor, self._silero_sr).item()
+                        max_prob = max(max_prob, prob)
+                    self._process_vad_decision(max_prob >= SPEECH_PROB_THRESHOLD, chunk, max_prob)
+                else:
+                    # Fallback: RMS-based detection when Silero is unavailable
+                    self._process_vad_decision(rms > 0.01, chunk, rms)
+                    if not self._silero_warned:
+                        logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
+                        self._silero_warned = True
+        finally:
+            if self._metrics is not None:
+                tick_end = time.perf_counter()
+                self._metrics.record_capture_tick(
+                    elapsed_ms=(tick_end - tick_start) * 1000.0,
+                    now=tick_end,
+                )
 
     def _process_vad_decision(self, is_speech_now: bool, chunk: np.ndarray, prob: float) -> None:
         """Process a single Silero VAD decision and manage state transitions."""

@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from spoke.optical_shell_metrics import OpticalShellMetrics
+
 def _make_rect(x, y, width, height):
     return SimpleNamespace(
         origin=SimpleNamespace(x=x, y=y),
@@ -69,6 +71,7 @@ def _make_overlay(mock_pyobjc):
     overlay._tool_mode = False
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
+    overlay._metrics = OpticalShellMetrics()
     overlay._brightness_timer = None
     overlay._backdrop_renderer = MagicMock()
     overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
@@ -83,8 +86,10 @@ def _make_overlay(mock_pyobjc):
     overlay._spring_tint_layer = MagicMock()
     overlay._fullscreen_compositor = None
     overlay._pop_timer = None
-    overlay._cancel_step = 0
-    overlay._cancel_phase = ""
+    overlay._cancel_spring = 0.0
+    overlay._cancel_spring_target = 0.0
+    overlay._cancel_spring_fired = False
+    overlay._on_cancel_spring_threshold = None
     overlay._narrator_label = None
     overlay._narrator_typewriter_timer = None
     overlay._narrator_full_text = ""
@@ -289,6 +294,15 @@ class TestShowFinishHide:
         overlay.show()
 
         assert overlay._brightness_timer is not None
+
+    def test_pulse_step_records_display_and_presented_ticks(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay.pulseStep_(None)
+
+        snapshot = overlay._metrics.snapshot()
+        assert snapshot["display_link_ticks"] == 1
+        assert snapshot["presented_frames"] == 1
 
     def test_show_samples_current_brightness_before_first_theme(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1026,6 +1040,17 @@ class TestAdaptiveCompositing:
         overlay.brightnessResample_(None)
 
         assert overlay._brightness_target == pytest.approx(0.83)
+
+    def test_brightness_resample_records_sample_count(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._screen = MagicMock()
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.83)
+
+        overlay.brightnessResample_(None)
+
+        snapshot = overlay._metrics.snapshot()
+        assert snapshot["brightness_samples"] == 1
 
     def test_brightness_resample_is_ignored_while_compositor_owns_brightness(
         self, mock_pyobjc, monkeypatch

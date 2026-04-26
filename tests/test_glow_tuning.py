@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from spoke.optical_shell_metrics import OpticalShellMetrics
+
 
 class TestGlowTuning:
     """Keep the screen-edge glow restrained at peaks without flattening quiet response."""
@@ -31,6 +33,7 @@ class TestGlowTuning:
         glow._glow_peak_target = mod._GLOW_PEAK_TARGET
         glow._dim_layer = MagicMock()
         glow._dim_layer.opacity.return_value = 0.0
+        glow._metrics = None
         return glow
 
     def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
@@ -181,6 +184,23 @@ class TestGlowTuning:
             assert glow._glow_color == pytest.approx(expected_color)
             assert glow._glow_base_opacity == pytest.approx(expected_base)
             assert glow._glow_peak_target == pytest.approx(expected_peak)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_brightness_resample_records_sample_count(self, mock_pyobjc, monkeypatch):
+        """Brightness sampling should increment the shared metrics surface."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._metrics = OpticalShellMetrics()
+            glow._visible = True
+            monkeypatch.setattr(mod, "_sample_screen_brightness", lambda screen: 0.0)
+
+            glow.brightnessResample_(None)
+
+            snapshot = glow._metrics.snapshot()
+            assert snapshot["brightness_samples"] == 1
         finally:
             sys.modules.pop("spoke.glow", None)
 

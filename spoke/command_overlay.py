@@ -47,6 +47,7 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
+from .optical_shell_metrics import OpticalShellMetrics
 
 logger = logging.getLogger(__name__)
 _BACKDROP_DISPLAY_LAYER_CLASS = None
@@ -784,12 +785,17 @@ def _dismiss_animation_state(elapsed_s: float) -> tuple[str, float, float, bool]
 class CommandOverlay(NSObject):
     """Overlay for displaying streamed command responses."""
 
-    def initWithScreen_(self, screen: NSScreen | None = None):
+    def initWithScreen_(
+        self,
+        screen: NSScreen | None = None,
+        metrics: OpticalShellMetrics | None = None,
+    ):
         self = objc.super(CommandOverlay, self).init()
         if self is None:
             return None
 
         self._screen = screen or NSScreen.mainScreen()
+        self._metrics = metrics
         self._window: NSWindow | None = None
         self._wrapper_view: NSView | None = None
         self._text_view: NSTextView | None = None
@@ -1403,7 +1409,15 @@ class CommandOverlay(NSObject):
         if getattr(self, "_fullscreen_compositor", None) is not None:
             return
         try:
+            sample_start = time.perf_counter()
             self.set_brightness(_sample_screen_brightness_for_overlay(self._screen))
+            metrics = getattr(self, "_metrics", None)
+            if metrics is not None:
+                sample_end = time.perf_counter()
+                metrics.record_brightness_sample(
+                    elapsed_ms=(sample_end - sample_start) * 1000.0,
+                    now=sample_end,
+                )
         except Exception:
             logger.debug("Command overlay brightness sampling failed", exc_info=True)
 
@@ -1878,10 +1892,15 @@ class CommandOverlay(NSObject):
             self._pulseStepInner()
         except Exception:
             logger.exception("pulseStep_ crashed")
+        finally:
+            metrics = getattr(self, "_metrics", None)
+            if metrics is not None:
+                metrics.record_display_tick(now=time.perf_counter())
 
     def _pulseStepInner(self):
         if self._text_view is None:
             return
+        present_start = time.perf_counter()
         dt = 1.0 / _PULSE_HZ
 
         # When compositor is active, sample shell-region brightness
@@ -2275,6 +2294,13 @@ class CommandOverlay(NSObject):
                 self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
+        metrics = getattr(self, "_metrics", None)
+        if metrics is not None:
+            present_end = time.perf_counter()
+            metrics.record_presented_frame(
+                elapsed_ms=(present_end - present_start) * 1000.0,
+                now=present_end,
+            )
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""

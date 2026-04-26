@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from spoke.capture import AudioCapture, SAMPLE_RATE, CHANNELS, SILERO_CHUNK
+from spoke.optical_shell_metrics import OpticalShellMetrics
 
 
 class _FakeSileroVAD:
@@ -190,6 +191,41 @@ class TestAudioCallback:
         cap = AudioCapture()
         result = cap._get_all_frames()
         assert result.size == 0
+
+    def test_get_new_frames_updates_capture_poll_metrics(self):
+        """Polling the incremental buffer should count duplicates and skipped chunks."""
+        metrics = OpticalShellMetrics()
+        cap = AudioCapture(metrics=metrics)
+        cap._frames = [
+            np.ones(8, dtype=np.float32),
+            np.zeros(8, dtype=np.float32),
+            np.full(8, 0.5, dtype=np.float32),
+        ]
+
+        frames = cap.get_new_frames()
+        assert frames.size == 24
+        assert metrics.capture_polls == 1
+        assert metrics.skipped_frames == 2
+        assert metrics.duplicate_frames == 0
+
+        frames = cap.get_new_frames()
+        assert frames.size == 0
+        assert metrics.capture_polls == 2
+        assert metrics.duplicate_frames == 1
+
+    @patch("spoke.capture.sd")
+    def test_audio_callback_updates_capture_tick_metrics(self, mock_sd):
+        """Each audio callback should increment the capture cadence counter."""
+        metrics = OpticalShellMetrics()
+        cap = AudioCapture(metrics=metrics)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        cap._audio_callback(chunk, 1024, None, 0)
+
+        assert metrics.capture_ticks == 1
+        assert metrics.total_capture_tick_ms >= 0.0
 
     @patch("spoke.capture.sd")
     def test_callback_dispatches_amplitude_off_audio_thread(self, mock_sd):
