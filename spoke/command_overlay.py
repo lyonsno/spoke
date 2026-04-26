@@ -514,6 +514,32 @@ def _backdrop_capture_rect(screen_frame, window_frame, content_frame, overscan_p
     )
 
 
+def _display_local_capsule_center_pixels(screen_frame, window_frame, content_frame, scale: float):
+    screen_origin_x = getattr(getattr(screen_frame, "origin", None), "x", 0.0)
+    screen_origin_y = getattr(getattr(screen_frame, "origin", None), "y", 0.0)
+    screen_height = getattr(getattr(screen_frame, "size", None), "height", 0.0)
+    if not isinstance(screen_origin_x, numbers.Real):
+        screen_origin_x = 0.0
+    if not isinstance(screen_origin_y, numbers.Real):
+        screen_origin_y = 0.0
+    if not isinstance(screen_height, numbers.Real):
+        screen_height = 0.0
+
+    capsule_cx = (
+        window_frame.origin.x
+        + content_frame.origin.x
+        + content_frame.size.width / 2
+        - screen_origin_x
+    )
+    capsule_cy_cocoa = (
+        window_frame.origin.y
+        + content_frame.origin.y
+        + content_frame.size.height / 2
+    )
+    capsule_cy_metal = screen_origin_y + screen_height - capsule_cy_cocoa
+    return capsule_cx * scale, capsule_cy_metal * scale
+
+
 def _backdrop_capture_pixel_size(capture_rect, backing_scale: float) -> tuple[float, float]:
     scale = max(backing_scale, 0.0)
     return (
@@ -3016,13 +3042,11 @@ class CommandOverlay(NSObject):
             screen_frame = self._screen.frame()
             win_frame = self._window.frame()
             content_frame = self._content_view.frame()
-            # Capsule center in screen points
-            capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
-            # Cocoa Y is bottom-up; Metal texture Y is top-down
-            capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
-            capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
-            shell_config["center_x"] = capsule_cx * scale
-            shell_config["center_y"] = capsule_cy_metal * scale
+            center_x, center_y = _display_local_capsule_center_pixels(
+                screen_frame, win_frame, content_frame, scale
+            )
+            shell_config["center_x"] = center_x
+            shell_config["center_y"] = center_y
             shell_config["initial_brightness"] = _clamp01(
                 float(getattr(self, "_brightness", 0.0))
             )
@@ -3410,10 +3434,11 @@ class CommandOverlay(NSObject):
                     screen_frame = self._screen.frame()
                     win_frame = self._window.frame()
                     content_frame = self._content_view.frame()
-                    capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
-                    capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
-                    shell_config["center_x"] = capsule_cx * scale
-                    shell_config["center_y"] = (screen_frame.size.height - capsule_cy_cocoa) * scale
+                    center_x, center_y = _display_local_capsule_center_pixels(
+                        screen_frame, win_frame, content_frame, scale
+                    )
+                    shell_config["center_x"] = center_x
+                    shell_config["center_y"] = center_y
                     for k in ("content_width_points", "content_height_points",
                               "corner_radius_points", "band_width_points",
                               "tail_width_points"):
