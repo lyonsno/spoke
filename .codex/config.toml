@@ -1,0 +1,3 @@
+[sandbox_workspace_write]
+writable_roots = ["/Users/noahlyons/.config/spoke"]
+network_access = true
