@@ -4324,8 +4324,8 @@ class SpokeAppDelegate(NSObject):
                         []
                         if server_unreachable
                         else [
-                            (model_id, label, True)
-                            for model_id, label, _selected in self._command_model_options
+                            (model_id, label, selected)
+                            for model_id, label, selected in self._command_model_options
                         ]
                     ),
                 }

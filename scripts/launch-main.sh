@@ -155,7 +155,9 @@ def _apply_env_file(path: Path) -> None:
                 line = line[7:]
             key, _, val = line.partition("=")
             key = key.strip()
-            val = val.strip().strip('"').strip("'")
+            val = val.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+                val = val[1:-1]
             if key:
                 child_env[key] = val
     except Exception:

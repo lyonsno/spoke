@@ -552,6 +552,51 @@ class TestContextWindowCarver:
         )
 
 
+    def test_bearing_is_included_in_context_block(self, monkeypatch, tmp_path):
+        """When a bearing file exists, it should be prepended to the context block."""
+        mod = _import_converge()
+        bearing_path = tmp_path / "converge-bearing.md"
+        bearing_path.write_text("The user has been designing a four-surface carving architecture.")
+        monkeypatch.setattr(mod, "_BEARING_PATH", bearing_path)
+
+        carver = self._make_carver(
+            monkeypatch, tmp_path, mod, self._noop_urlopen()
+        )
+
+        context = [
+            {"user": "let's test the bearing", "assistant": "ok", "_seq": 1},
+            {"user": "another turn here for context", "assistant": "sure", "_seq": 2},
+        ]
+        block = carver._build_context_block(context, current_seq=2)
+
+        assert "four-surface carving architecture" in block, (
+            "Bearing content should appear in the context block"
+        )
+        assert "Conversational bearing" in block, (
+            "Bearing should be labeled in the context block"
+        )
+        assert "let's test the bearing" in block, (
+            "Recent turns should still appear after the bearing"
+        )
+
+    def test_context_block_works_without_bearing(self, monkeypatch, tmp_path):
+        """Context block should work fine when no bearing file exists."""
+        mod = _import_converge()
+        monkeypatch.setattr(mod, "_BEARING_PATH", tmp_path / "nonexistent-bearing.md")
+
+        carver = self._make_carver(
+            monkeypatch, tmp_path, mod, self._noop_urlopen()
+        )
+
+        context = [
+            {"user": "hello world test", "assistant": "hi", "_seq": 1},
+        ]
+        block = carver._build_context_block(context, current_seq=None)
+
+        assert "hello world test" in block
+        assert "bearing" not in block.lower()
+
+
 class TestConvergeEmbedLib:
     def test_embed_model_path_can_come_from_env(self, monkeypatch):
         monkeypatch.setenv("SPOKE_CONVERGE_EMBED_MODEL_PATH", "/tmp/octen-model")

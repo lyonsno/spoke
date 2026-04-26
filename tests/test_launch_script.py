@@ -4,6 +4,7 @@ Tests the launcher registry contract (spoke/launch_targets.py) and
 verifies the old file-based launcher architecture is retired.
 """
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,28 @@ from spoke.launch_targets import (
 def _main_script_text() -> str:
     script = Path(__file__).resolve().parent.parent / "scripts" / "launch-main.sh"
     return script.read_text()
+
+
+def _launcher_python_text() -> str:
+    text = _main_script_text()
+    start_marker = "/usr/bin/python3 - <<'PY'\n"
+    start = text.index(start_marker) + len(start_marker)
+    end = text.index("\nPY", start)
+    return text[start:end]
+
+
+def _launcher_apply_env_file():
+    source = _launcher_python_text()
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_apply_env_file":
+            function_source = ast.get_source_segment(source, node)
+            assert function_source is not None
+            child_env: dict[str, str] = {}
+            namespace = {"Path": Path, "child_env": child_env}
+            exec(function_source, namespace)
+            return namespace["_apply_env_file"], child_env
+    raise AssertionError("launch-main.sh must define _apply_env_file")
 
 
 # ── Registry reading ────────────────────────────────────────────
@@ -252,9 +275,9 @@ class TestSecretsEnvLoading:
         )
 
     def test_parse_env_overrides_handles_secrets_shape(self, tmp_path):
-        """The same parser used for .spoke-smoke-env must handle the shape
-        we specify for ~/.config/spoke/secrets.env: bare exports, quoted
-        values, comments, blank lines."""
+        """The launcher's own parser must handle the shape specified for
+        ~/.config/spoke/secrets.env: bare exports, quoted values, comments,
+        blank lines, and literal quote characters inside quoted values."""
         secrets_file = tmp_path / "secrets.env"
         secrets_file.write_text(
             '# Spoke secrets — never committed\n'
@@ -263,11 +286,15 @@ class TestSecretsEnvLoading:
             'SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY=bare-value-123\n'
             "# trailing comment\n"
             "OPENROUTER_API_KEY='single-quoted'\n"
+            'SPOKE_EDGE_SECRET="keeps-trailing-apostrophe\'"\n'
         )
         overrides = parse_env_overrides(secrets_file)
+        apply_env_file, child_env = _launcher_apply_env_file()
+        apply_env_file(secrets_file)
         assert overrides["GEMINI_API_KEY_INACTIVE"] == "AIzaTESTVALUE"
         assert overrides["SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"] == "bare-value-123"
         assert overrides["OPENROUTER_API_KEY"] == "single-quoted"
+        assert child_env == overrides
 
 
 class TestSecretsEnvExampleTemplate:

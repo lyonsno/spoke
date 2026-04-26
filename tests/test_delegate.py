@@ -1108,7 +1108,7 @@ class TestDualModelConfiguration:
             "selected": "qwen3p5-35B-A3B",
             "models": [
                 ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-                ("qwen3-14b", "qwen3-14b", True),
+                ("qwen3-14b", "qwen3-14b", False),
             ],
         }
 
