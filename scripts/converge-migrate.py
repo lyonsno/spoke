@@ -198,7 +198,13 @@ def main():
                         help="Skip server idle checks (for OpenRouter or testing)")
     parser.add_argument("--batch", type=int, default=None,
                         help="Batch size: number of exchanges per carve event (overrides cadence + buffer)")
+    parser.add_argument("--stride", type=int, default=None,
+                        help="Sliding window stride (requires --batch). Window of --batch, advance by --stride. "
+                             "E.g. --batch 8 --stride 6 means 8-turn windows overlapping by 2.")
     args = parser.parse_args()
+
+    if args.stride and not args.batch:
+        parser.error("--stride requires --batch")
 
     # Determine output directories
     if args.live:
@@ -294,46 +300,100 @@ def main():
             turns = _load_turns_from_log(log_path)
             print(f"--- {log_path.name}: {len(turns)} turns ---")
 
-            for i, turn in enumerate(turns):
-                if shutdown[0]:
-                    break
+            if args.stride:
+                # Sliding window mode: feed pre-windowed batches directly.
+                # We bypass the carver's internal cadence and manually control
+                # what each carve event sees.
+                window_size = args.batch or 8
+                stride = args.stride
+                total_turns += len(turns)
 
-                # Handle resume
-                if skipping:
-                    if (log_path.name == resume_from["log"]
-                            and i >= resume_from["turn_index"]):
-                        skipping = False
-                        print(f"  (resumed at turn {i})")
-                    else:
-                        continue
+                # Build windows
+                windows = []
+                pos = 0
+                while pos < len(turns):
+                    window = turns[pos:pos + window_size]
+                    windows.append((pos, window))
+                    pos += stride
 
-                # Server idle check (skip for OpenRouter / --no-idle-check)
-                if not args.no_idle_check and total_turns > 0 and total_turns % 20 == 0:
-                    if not _check_server_idle(base_url, api_key):
-                        print(f"  Server busy — waiting {_HEARTBEAT_INTERVAL_S}s...")
-                        time.sleep(_HEARTBEAT_INTERVAL_S)
+                print(f"  Sliding window: size={window_size}, stride={stride}, "
+                      f"windows={len(windows)}, overlap={window_size - stride}")
 
-                words = len(turn["user"].split())
-                total_turns += 1
-                prev_carves = carver._carve_count
+                for wi, (start_pos, window) in enumerate(windows):
+                    if shutdown[0]:
+                        break
 
-                t0 = time.time()
-                carver.on_turn_complete(turn["user"], turn["assistant"])
-                carver._drain_sync()
-                if carver._thread is not None and carver._thread.is_alive():
-                    carver._thread.join(timeout=600)
-                elapsed = time.time() - t0
+                    # Feed all turns in the window to build context
+                    for turn in window:
+                        carver.on_turn_complete(turn["user"], turn["assistant"])
 
-                carved = carver._carve_count > prev_carves
-                total_carves = carver._carve_count
-                marker = f"CARVE {total_carves}" if carved else ""
+                    # Force a carve regardless of cadence
+                    with carver._lock:
+                        if carver._context_buffer:
+                            context_snapshot = list(carver._context_buffer)
+                            carver._last_carve_seqs = {e["_seq"] for e in carver._context_buffer}
+                            carver._pending.append((
+                                window[-1]["user"],
+                                context_snapshot,
+                                carver._turn_seq,
+                            ))
 
-                if carved or words >= 20:
-                    print(f"  [{i}] ({words}w) {elapsed:.0f}s {marker}  {turn['user'][:60]}...")
+                    t0 = time.time()
+                    carver._drain_sync()
+                    if carver._thread is not None and carver._thread.is_alive():
+                        carver._thread.join(timeout=600)
+                    elapsed = time.time() - t0
 
-                # Save progress periodically
-                if total_turns % 10 == 0:
-                    _save_progress(progress_path, log_path.name, i)
+                    total_carves = carver._carve_count
+                    end_pos = min(start_pos + window_size, len(turns))
+                    print(f"  window [{start_pos}:{end_pos}] ({len(window)} turns) "
+                          f"{elapsed:.0f}s CARVE {total_carves}  "
+                          f"{window[-1]['user'][:50]}...")
+
+                    _save_progress(progress_path, log_path.name, end_pos)
+
+            else:
+                # Standard mode: feed turns one at a time, let cadence decide
+                for i, turn in enumerate(turns):
+                    if shutdown[0]:
+                        break
+
+                    # Handle resume
+                    if skipping:
+                        if (log_path.name == resume_from["log"]
+                                and i >= resume_from["turn_index"]):
+                            skipping = False
+                            print(f"  (resumed at turn {i})")
+                        else:
+                            continue
+
+                    # Server idle check (skip for OpenRouter / --no-idle-check)
+                    if not args.no_idle_check and total_turns > 0 and total_turns % 20 == 0:
+                        if not _check_server_idle(base_url, api_key):
+                            print(f"  Server busy — waiting {_HEARTBEAT_INTERVAL_S}s...")
+                            time.sleep(_HEARTBEAT_INTERVAL_S)
+
+                    words = len(turn["user"].split())
+                    total_turns += 1
+                    prev_carves = carver._carve_count
+
+                    t0 = time.time()
+                    carver.on_turn_complete(turn["user"], turn["assistant"])
+                    carver._drain_sync()
+                    if carver._thread is not None and carver._thread.is_alive():
+                        carver._thread.join(timeout=600)
+                    elapsed = time.time() - t0
+
+                    carved = carver._carve_count > prev_carves
+                    total_carves = carver._carve_count
+                    marker = f"CARVE {total_carves}" if carved else ""
+
+                    if carved or words >= 20:
+                        print(f"  [{i}] ({words}w) {elapsed:.0f}s {marker}  {turn['user'][:60]}...")
+
+                    # Save progress periodically
+                    if total_turns % 10 == 0:
+                        _save_progress(progress_path, log_path.name, i)
 
             # Save progress at end of each log
             _save_progress(progress_path, log_path.name, len(turns))
