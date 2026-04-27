@@ -1239,6 +1239,18 @@ class CommandClient:
                         visible_response = (
                             visible_response[: -len(original_round_content)] + cleaned_text
                         )
+                    elif (
+                        suppress_xml_content
+                        and cleaned_text
+                        and cleaned_text.startswith(visible_response.rstrip())
+                    ):
+                        missing_visible_text = cleaned_text[len(visible_response.rstrip()):]
+                        if missing_visible_text:
+                            visible_response += missing_visible_text
+                            yield CommandStreamEvent(
+                                kind="assistant_delta",
+                                text=missing_visible_text,
+                            )
                     for i, xc in enumerate(xml_calls):
                         tool_call_acc._calls[i] = xc
                         indicator = f"\n[calling {xc['function']['name']}…]\n"

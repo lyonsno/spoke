@@ -2521,3 +2521,52 @@ class TestXMLToolCallFallback:
         assert "tion=list_directory" not in assistant_text
         assert "</function>" not in assistant_text
         assert tool_calls == [("list_directory", {"dir_path": "/tmp"})]
+
+    def test_xml_tool_call_preserves_same_round_trailing_text(self):
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+        xml_round = [
+            {"choices": [{"index": 0, "delta": {"content": "Checking.\n"}}]},
+            {"choices": [{"index": 0, "delta": {"content": (
+                "<function=list_directory>"
+                "<parameter=dir_path>/tmp</parameter>"
+                "</function>"
+                " I can summarize that after the listing."
+            )}}]},
+        ]
+        final_round = [
+            {"choices": [{"index": 0, "delta": {"content": "Found it."}}]},
+        ]
+        responses = [_make_sse_response(xml_round), _make_sse_response(final_round)]
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            return responses.pop(0)
+
+        def tool_executor(name, arguments, **kwargs):
+            tool_calls.append((name, arguments))
+            return '{"entries":[{"name":"alpha.txt"}]}'
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            events = list(
+                client.stream_command_events(
+                    "list tmp",
+                    tools=[{"type": "function", "function": {"name": "list_directory"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assistant_text = "".join(
+            event.text for event in events if event.kind == "assistant_delta"
+        )
+        assert "<function=" not in assistant_text
+        assert "</function>" not in assistant_text
+        assert "Checking." in assistant_text
+        assert "I can summarize that after the listing." in assistant_text
+        assert tool_calls == [("list_directory", {"dir_path": "/tmp"})]
