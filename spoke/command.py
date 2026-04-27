@@ -103,6 +103,7 @@ _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 20
 _ASSISTANT_PRESENCE_PENALTY = 1.0
 _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
+_XML_CONTENT_MARKERS = ("<function=", "<tool_call>")
 
 
 def _rough_tool_result_tokens(text: str) -> int:
@@ -123,6 +124,32 @@ def _terminal_preview_body_line_limit(body_line_count: int) -> int:
     if body_line_count > 8:
         return 7
     return body_line_count
+
+
+def _split_visible_xml_prefix(
+    pending: str,
+    token: str,
+) -> tuple[str, str, bool]:
+    """Return visible text, withheld partial marker, and suppression state."""
+    combined = pending + token
+    marker_positions = [
+        pos for marker in _XML_CONTENT_MARKERS
+        if (pos := combined.find(marker)) >= 0
+    ]
+    if marker_positions:
+        marker_pos = min(marker_positions)
+        return combined[:marker_pos], "", True
+
+    keep = 0
+    for marker in _XML_CONTENT_MARKERS:
+        max_len = min(len(marker) - 1, len(combined))
+        for length in range(max_len, 0, -1):
+            if combined.endswith(marker[:length]):
+                keep = max(keep, length)
+                break
+    if keep:
+        return combined[:-keep], combined[-keep:], False
+    return combined, "", False
 
 
 def _terminal_output_preview(
@@ -1011,6 +1038,7 @@ class CommandClient:
             # intermediate text during a tool-call turn)
             round_content = ""
             suppress_xml_content = False
+            xml_marker_pending = ""
             round_cancelled = False
             # Thinking token state machine for <think>...</think> tags.
             # States: "detect" (haven't seen anything yet),
@@ -1138,17 +1166,14 @@ class CommandClient:
                                 if suppress_xml_content:
                                     visible_text = ""
                                 else:
-                                    marker_positions = [
-                                        pos for pos in (
-                                            text_to_process.find("<function="),
-                                            text_to_process.find("<tool_call>"),
-                                        )
-                                        if pos >= 0
-                                    ]
-                                    if marker_positions:
-                                        marker_pos = min(marker_positions)
-                                        visible_text = text_to_process[:marker_pos]
-                                        suppress_xml_content = True
+                                    (
+                                        visible_text,
+                                        xml_marker_pending,
+                                        suppress_xml_content,
+                                    ) = _split_visible_xml_prefix(
+                                        xml_marker_pending,
+                                        text_to_process,
+                                    )
                             if visible_text:
                                 visible_response += visible_text
                                 yield CommandStreamEvent(
@@ -1178,6 +1203,14 @@ class CommandClient:
                                     tool_name=tool_name,
                                     tool_arguments=function_delta.get("arguments"),
                                 )
+
+                    if xml_marker_pending and not suppress_xml_content:
+                        visible_response += xml_marker_pending
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=xml_marker_pending,
+                        )
+                        xml_marker_pending = ""
 
             except urllib.error.URLError as exc:
                 logger.error("Command request failed: %s", exc)

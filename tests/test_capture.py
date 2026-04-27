@@ -705,6 +705,31 @@ class TestVADSlicing:
         assert np.any(samples[:1024] != 0)
         assert np.any(samples[-1024:] != 0)
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_vad_final_wav_keeps_soft_onset_without_leading_silence(self, mock_sd):
+        """Final WAV trimming should keep non-silent onset padding before thresholded speech."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        soft_onset_chunk = np.full((1024, 1), 0.005, dtype=np.float32)
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+        for _ in range(2):
+            cap._audio_callback(soft_onset_chunk, 1024, None, 0)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+
+        samples = _decode_wav_samples(cap.stop())
+
+        assert samples.size == 7 * 1024
+        assert np.all(samples[:1024] == int(0.005 * 32767))
+        assert np.any(samples[-1024:] != 0)
+
     @patch("spoke.capture.sd")
     def test_vad_grace_period_does_not_misclassify_silence_as_speech(self, mock_sd):
         """Silence-only recording during grace period should produce empty WAV."""

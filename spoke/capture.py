@@ -37,6 +37,7 @@ MIN_SILENCE_FRAMES = 12       # ~768ms (12 × 64ms callbacks) to confirm silence
 PRE_SPEECH_MARGIN = 6         # ~384ms padding before speech (in BLOCKSIZE chunks)
 MAX_SEGMENT_CHUNKS = 468      # ~30s maximum segment duration (in BLOCKSIZE chunks)
 VAD_GRACE_PERIOD_SECS = 5.0
+NON_SILENT_SAMPLE_THRESHOLD = 1e-4
 
 # Path to cached Silero VAD JIT model
 _SILERO_VAD_JIT_PATHS = [
@@ -80,6 +81,10 @@ def _load_silero_vad():
     except Exception:
         logger.warning("Failed to load Silero VAD — VAD disabled", exc_info=True)
         return None, None
+
+
+def _has_non_silent_samples(chunk: np.ndarray) -> bool:
+    return bool(np.any(np.abs(chunk) > NON_SILENT_SAMPLE_THRESHOLD))
 
 
 class AudioCapture:
@@ -375,8 +380,6 @@ class AudioCapture:
             speech_chunks = getattr(self, "_speech_chunks", None)
             if speech_chunks is not None and len(speech_chunks) > 0:
                 final_chunks = list(speech_chunks)
-                if self._is_speech:
-                    final_chunks.extend(self._current_segment_chunks)
                 wav_bytes = self._encode_wav(np.concatenate(final_chunks))
             elif had_vad:
                 wav_bytes = b""
@@ -570,7 +573,7 @@ class AudioCapture:
                     self._speech_chunks.extend(
                         ring_chunk
                         for ring_chunk, was_speech in self._speech_ring_buffer
-                        if was_speech
+                        if was_speech or _has_non_silent_samples(ring_chunk)
                     )
                     self._ring_buffer.clear()
                     self._speech_ring_buffer.clear()
