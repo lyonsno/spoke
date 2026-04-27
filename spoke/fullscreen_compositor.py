@@ -18,10 +18,14 @@ import logging
 import struct
 import threading
 import time
+import warnings
 
 import objc
 
 logger = logging.getLogger(__name__)
+
+if hasattr(objc, "ObjCPointerWarning"):
+    warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
 
 _shared_overlay_hosts: dict[tuple[str, int], "_SharedOverlayHost"] = {}
 
@@ -101,7 +105,11 @@ class FullScreenCompositor:
         self._latest_pixel_buffer = None
         self._latest_width = 0
         self._latest_height = 0
+        self._latest_frame_generation = 0
         self._shell_configs: list[dict] = []
+        self._config_generation = 0
+        self._rendered_frame_generation = 0
+        self._rendered_config_generation = 0
         self._window = None
         self._metal_layer = None
         self._display_link = None
@@ -204,12 +212,14 @@ class FullScreenCompositor:
         """Replace the active shell-config set."""
         with self._lock:
             self._shell_configs = _normalize_shell_configs(shell_configs)
+            self._config_generation += 1
 
     def update_shell_config_key(self, key: str, value) -> None:
         """Update a single key in the shell config without replacing."""
         with self._lock:
             if self._shell_configs:
                 self._shell_configs[0][key] = value
+                self._config_generation += 1
 
     @property
     def sampled_brightness(self) -> float:
@@ -613,6 +623,7 @@ class FullScreenCompositor:
             self._latest_pixel_buffer = pixel_buffer  # prevent recycling
             self._latest_width = width
             self._latest_height = height
+            self._latest_frame_generation += 1
 
     # ------------------------------------------------------------------
     # CVDisplayLink render loop
@@ -646,8 +657,15 @@ class FullScreenCompositor:
             w = self._latest_width
             h = self._latest_height
             configs = list(self._shell_configs)
+            frame_generation = self._latest_frame_generation
+            config_generation = self._config_generation
 
         if iosurface is None or w <= 0 or h <= 0 or not configs:
+            return
+        if (
+            frame_generation == self._rendered_frame_generation
+            and config_generation == self._rendered_config_generation
+        ):
             return
 
         self._frame_count += 1
@@ -696,6 +714,8 @@ class FullScreenCompositor:
             ):
                 self._presented_count += 1
                 self._interval_presented += 1
+                self._rendered_frame_generation = frame_generation
+                self._rendered_config_generation = config_generation
 
             elif self._frame_count <= 5:
                 logger.info("Compositor tick[%d]: warp_to_drawable returned False", self._frame_count)

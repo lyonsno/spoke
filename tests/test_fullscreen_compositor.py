@@ -65,3 +65,90 @@ def test_fullscreen_compositor_start_returns_before_capture_completion():
         assert elapsed < 0.1
     finally:
         release_capture.set()
+
+
+def test_fullscreen_compositor_skips_display_link_when_frame_and_config_unchanged():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Layer:
+        def __init__(self):
+            self.drawable_calls = 0
+
+        def nextDrawable(self):
+            self.drawable_calls += 1
+            return object()
+
+    pipeline_calls = []
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._running = True
+    compositor._lock = threading.Lock()
+    compositor._latest_iosurface = object()
+    compositor._latest_width = 100
+    compositor._latest_height = 50
+    compositor._latest_frame_generation = 1
+    compositor._shell_configs = [{"content_width_points": 40, "center_x": 20}]
+    compositor._config_generation = 1
+    compositor._rendered_frame_generation = 1
+    compositor._rendered_config_generation = 1
+    compositor._frame_count = 0
+    compositor._interval_frame_count = 0
+    compositor._interval_presented = 0
+    compositor._last_report_time = time.monotonic()
+    compositor._last_drawable_size = (100, 50)
+    compositor._presented_count = 0
+    compositor._metal_layer = Layer()
+    compositor._pipeline = SimpleNamespace(
+        warp_to_drawable=lambda *args, **kwargs: pipeline_calls.append((args, kwargs)) or True
+    )
+
+    compositor._on_display_link()
+
+    assert compositor._metal_layer.drawable_calls == 0
+    assert pipeline_calls == []
+    assert compositor._frame_count == 0
+
+
+def test_fullscreen_compositor_renders_when_config_changes_without_new_frame():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Layer:
+        def __init__(self):
+            self.drawable_calls = 0
+            self.drawable_size = None
+
+        def setDrawableSize_(self, size):
+            self.drawable_size = size
+
+        def nextDrawable(self):
+            self.drawable_calls += 1
+            return object()
+
+    pipeline_calls = []
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._running = True
+    compositor._lock = threading.Lock()
+    compositor._latest_iosurface = object()
+    compositor._latest_width = 100
+    compositor._latest_height = 50
+    compositor._latest_frame_generation = 1
+    compositor._shell_configs = [{"content_width_points": 40, "center_x": 20}]
+    compositor._config_generation = 2
+    compositor._rendered_frame_generation = 1
+    compositor._rendered_config_generation = 1
+    compositor._frame_count = 0
+    compositor._interval_frame_count = 0
+    compositor._interval_presented = 0
+    compositor._last_report_time = time.monotonic()
+    compositor._last_drawable_size = (0, 0)
+    compositor._presented_count = 0
+    compositor._metal_layer = Layer()
+    compositor._pipeline = SimpleNamespace(
+        warp_to_drawable=lambda *args, **kwargs: pipeline_calls.append((args, kwargs)) or True
+    )
+
+    compositor._on_display_link()
+
+    assert compositor._metal_layer.drawable_calls == 1
+    assert len(pipeline_calls) == 1
+    assert compositor._rendered_frame_generation == 1
+    assert compositor._rendered_config_generation == 2
