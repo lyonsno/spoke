@@ -2542,22 +2542,18 @@ class SpokeAppDelegate(NSObject):
                 continue
             attempted_settings.add(settings_key)
 
-            use_existing_client = (
-                client._decode_timeout == decode_timeout
-                and client._eager_eval == eager_eval
-            )
-            attempt_client = client
-            if not use_existing_client:
-                attempt_client = LocalTranscriptionClient(
-                    model=client._model,
-                    decode_timeout=decode_timeout,
-                    eager_eval=eager_eval,
-                )
-
             attempt_failed = False
+            original_timeout = getattr(
+                client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+            )
+            original_eager_eval = getattr(
+                client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
+            )
             try:
-                with self._local_inference_context(attempt_client):
-                    return attempt_client.transcribe(wav_bytes)
+                client._decode_timeout = decode_timeout
+                client._eager_eval = eager_eval
+                with self._local_inference_context(client):
+                    return client.transcribe(wav_bytes)
             except Exception as exc:
                 attempt_failed = True
                 errors.append(
@@ -2571,12 +2567,10 @@ class SpokeAppDelegate(NSObject):
                     exc_info=True,
                 )
             finally:
-                if attempt_client is not client:
-                    close = getattr(attempt_client, "close", None)
-                    if callable(close):
-                        close()
-                elif attempt_failed:
-                    unload = getattr(attempt_client, "unload", None)
+                client._decode_timeout = original_timeout
+                client._eager_eval = original_eager_eval
+                if attempt_failed:
+                    unload = getattr(client, "unload", None)
                     if callable(unload):
                         unload()
 

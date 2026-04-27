@@ -5699,6 +5699,30 @@ class TestSegmentAcceleratedTranscription:
         assert payload["text"] == "recovered text"
         assert attempts == [(8.0, False), (8.0, True)]
 
+    def test_local_whisper_recovery_reuses_warmed_client_for_bounded_attempt(
+        self, main_module, monkeypatch
+    ):
+        """Bounded finalization should not load a throwaway Whisper client on release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-large-v3-turbo",
+            decode_timeout=30.0,
+            eager_eval=False,
+        )
+        d._client.transcribe = MagicMock(return_value="warm final text")
+        d._client.close = MagicMock()
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockClient:
+            text = d._transcribe_local_whisper_with_recovery(b"full_wav", d._client)
+
+        assert text == "warm final text"
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+        MockClient.assert_not_called()
+        d._client.close.assert_not_called()
+        assert d._client._decode_timeout == 30.0
+        assert d._client._eager_eval is False
+
     def test_hold_start_wires_segment_callback_for_sidecar(self, main_module, monkeypatch):
         """_on_hold_start should wire segment_callback when backend is sidecar."""
         d = _make_delegate(main_module, monkeypatch)
