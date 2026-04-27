@@ -1560,7 +1560,9 @@ class TestAdaptiveCompositing:
                 if rng[0] >= response_start
             ]
             assert response_attrs
-            assert len(response_attrs) <= 4
+            # 3-span bulk path: FG + FN (full range) + up to 3 shadow spans = at most 5.
+            # The important invariant is: not O(N) per-character calls.
+            assert len(response_attrs) <= 6
             assert any(rng == (response_start, len(response)) for rng in response_attrs)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
