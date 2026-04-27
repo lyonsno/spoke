@@ -400,6 +400,15 @@ class TranscriptionOverlay(NSObject):
         self._on_dismiss_callback = None
         self._on_insert_callback = None
         self._on_clipboard_toggle_callback = None
+
+        # Performance caches — populated in setup() once we have screen state
+        self._body_font = None           # NSFont — allocated once, reused forever
+        self._max_overlay_height_cached = None  # screen height doesn't change
+        self._ontology_spans_cache = ("", [])  # (text, spans)
+        # Quantized color cache for amplitude ticks
+        self._color_cache = {}
+        self._last_color_key = None  # last key applied to text storage
+        self._typewriter_layout_step = 0  # coalescing counter for _update_layout
         return self
 
     def setup(self) -> None:
@@ -495,6 +504,15 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setEditable_(False)
         self._text_view.setSelectable_(False)
         self._text_view.setDrawsBackground_(False)
+
+        # Cache the body font once — no need to reallocate per tick
+        self._body_font = NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0)
+
+        # Cache max overlay height — screen height doesn't change during a session
+        self._max_overlay_height_cached = _max_overlay_height(
+            self._screen.frame().size.height
+        )
+
         self._current_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             1.0, 1.0, 1.0, _TEXT_ALPHA_MIN
         )
@@ -503,7 +521,7 @@ class TranscriptionOverlay(NSObject):
             ontology_r, ontology_g, ontology_b, _TEXT_ALPHA_MIN
         )
         self._text_view.setTextColor_(self._current_text_color)
-        self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
+        self._text_view.setFont_(self._body_font)
         self._text_view.setString_("")
         self._text_view.textContainer().setWidthTracksTextView_(True)
         self._text_view.setHorizontallyResizable_(False)
@@ -656,7 +674,12 @@ class TranscriptionOverlay(NSObject):
         base_color: NSColor | None = None,
         ontology_color: NSColor | None = None,
     ) -> None:
-        """Render text with ontology terms tinted in the glow-blue family."""
+        """Render text with ontology terms tinted in the glow-blue family.
+
+        Full attributed string rebuild — only called when text actually changes
+        (typewriter steps, snaps, show_tray).  Amplitude ticks use
+        _update_text_color_inplace instead.
+        """
         if self._text_view is None:
             return
 
@@ -676,6 +699,8 @@ class TranscriptionOverlay(NSObject):
 
         if not text:
             self._text_view.setString_("")
+            # Invalidate color cache so next amplitude tick re-applies colors
+            self._last_color_key = None
             return
 
         text_storage = self._text_view.textStorage() if hasattr(self._text_view, "textStorage") else None
@@ -683,6 +708,15 @@ class TranscriptionOverlay(NSObject):
             self._text_view.setString_(text)
             self._text_view.setTextColor_(self._current_text_color)
             return
+
+        # Use cached ontology spans — recompute only when text changed
+        cached_text, cached_spans = getattr(self, "_ontology_spans_cache", ("", []))
+        if cached_text != text:
+            cached_spans = list(ontology_term_spans(text))
+            self._ontology_spans_cache = (text, cached_spans)
+
+        # Use cached font
+        font = self._body_font or NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0)
 
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
@@ -692,16 +726,56 @@ class TranscriptionOverlay(NSObject):
         )
         attr_str.addAttribute_value_range_(
             NSFontAttributeName,
-            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+            font,
             (0, len(text)),
         )
-        for start, end in ontology_term_spans(text):
+        for start, end in cached_spans:
             attr_str.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
                 self._current_ontology_text_color,
                 (start, end - start),
             )
         text_storage.setAttributedString_(attr_str)
+        # Invalidate color cache — text storage just replaced, key no longer valid
+        self._last_color_key = None
+
+    def _update_text_color_inplace(
+        self,
+        text: str,
+        base_color,
+        ontology_color,
+        color_key: tuple,
+    ) -> None:
+        """Update text colors in-place on existing text storage.
+
+        Called from update_text_amplitude when only the color changed and the
+        text string is the same.  Does NOT rebuild the attributed string or
+        re-run ontology_term_spans — just patches color attributes on the
+        existing storage.
+        """
+        if self._text_view is None or not text:
+            return
+        if self._last_color_key == color_key:
+            return  # quantized values unchanged — skip entirely
+
+        text_storage = self._text_view.textStorage() if hasattr(self._text_view, "textStorage") else None
+        if text_storage is None:
+            return
+
+        n = len(text)
+        text_storage.addAttribute_value_range_(
+            NSForegroundColorAttributeName, base_color, (0, n)
+        )
+        # Re-apply ontology span overrides
+        _, cached_spans = getattr(self, "_ontology_spans_cache", ("", []))
+        for start, end in cached_spans:
+            text_storage.addAttribute_value_range_(
+                NSForegroundColorAttributeName, ontology_color, (start, end - start)
+            )
+
+        self._current_text_color = base_color
+        self._current_ontology_text_color = ontology_color
+        self._last_color_key = color_key
 
     # ── typewriter effect ────────────────────────────────────
 
@@ -752,7 +826,25 @@ class TranscriptionOverlay(NSObject):
             self._typewriter_displayed = self._typewriter_target[:len(self._typewriter_displayed) + 1]
             self._typewriter_hwm = max(self._typewriter_hwm, len(self._typewriter_displayed))
             self._set_text_view_content(self._typewriter_displayed)
-            self._update_layout()
+            # Coalesce layout passes — at most once every 5 typewriter steps
+            # (~100ms at 50 Hz).  scrollRangeToVisible_ happens every step for
+            # smooth caret tracking without the full typesetter query.
+            self._typewriter_layout_step = getattr(self, "_typewriter_layout_step", 0) + 1
+            if self._typewriter_layout_step >= 5:
+                self._typewriter_layout_step = 0
+                self._update_layout()
+            else:
+                # Lightweight scroll-only update — no layout query
+                try:
+                    if self._text_view is not None:
+                        end = (
+                            self._text_view.string().length()
+                            if hasattr(self._text_view.string(), "length")
+                            else len(self._typewriter_displayed)
+                        )
+                        self._text_view.scrollRangeToVisible_((end, 0))
+                except Exception:
+                    pass
         else:
             self._cancel_typewriter()
 
@@ -818,19 +910,42 @@ class TranscriptionOverlay(NSObject):
         current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
         self._text_lum = current_text_lum
         tr = tg = tb = current_text_lum
-        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
-        ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            ontology_r,
-            ontology_g,
-            ontology_b,
-            _TEXT_ANCHOR_ALPHA,
+
+        # Quantize color components to ~2 decimal places so minor floating-point
+        # drift from smoothing does not trigger unnecessary NSColor allocations.
+        _Q = 100.0
+        color_key = (
+            round(tr * _Q),
+            round(tg * _Q),
+            round(tb * _Q),
+            round(_TEXT_ANCHOR_ALPHA * _Q),
+            round(ontology_r * _Q),
+            round(ontology_g * _Q),
+            round(ontology_b * _Q),
+            round(_TEXT_ANCHOR_ALPHA * _Q),
         )
-        self._set_text_view_content(
-            getattr(self, "_typewriter_displayed", ""),
-            base_color=base_color,
-            ontology_color=ontology_color,
-        )
+
+        color_cache = getattr(self, "_color_cache", {})
+        if color_key not in color_cache:
+            base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                tr, tg, tb, _TEXT_ANCHOR_ALPHA
+            )
+            ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                ontology_r, ontology_g, ontology_b, _TEXT_ANCHOR_ALPHA
+            )
+            color_cache[color_key] = (base_color, ontology_color)
+            # Bound cache size — very few distinct quantized values in practice
+            if len(color_cache) > 32:
+                del color_cache[next(iter(color_cache))]
+            self._color_cache = color_cache
+        else:
+            base_color, ontology_color = color_cache[color_key]
+
+        displayed = getattr(self, "_typewriter_displayed", "")
+        # Update color in-place — do NOT rebuild the full attributed string on
+        # amplitude ticks where only the color changes and the text is stable.
+        self._update_text_color_inplace(displayed, base_color, ontology_color, color_key)
 
         # SDF fill breathes with amplitude.  On light backgrounds the fill
         # is relatively MORE assertive (because the glow is dimming the same
@@ -1087,12 +1202,21 @@ class TranscriptionOverlay(NSObject):
             else:
                 text_height = _OVERLAY_HEIGHT - 16
 
-            max_height = _max_overlay_height(self._screen.frame().size.height)
+            # Use cached max height — screen height does not change mid-session.
+            # Fall back to a live query if setup() was not called (e.g. tests that
+            # directly call _update_layout on a bare instance).
+            max_height = (
+                self._max_overlay_height_cached
+                if getattr(self, "_max_overlay_height_cached", None) is not None
+                else _max_overlay_height(self._screen.frame().size.height)
+            )
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
             f = _OUTER_FEATHER
-            win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
+            # Check the resize guard BEFORE querying the live window frame, so we
+            # skip the window-frame round-trip on the common no-resize case.
+            win_frame = self._window.frame()
             if abs(win_frame.size.height - new_win_h) > 4:
                 win_frame.origin.y = _window_origin_y(new_height)
                 win_frame.size.height = new_win_h

@@ -394,12 +394,25 @@ class TestAdaptiveOverlayCompositing:
             text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
             assert text_r < 0.1  # dark text
 
-            # Light background → dark fill → white text (ease-out snap converges)
+            # Light background → dark fill → white text (ease-out snap converges).
+            # Reset mock once before the loop so we capture all distinct allocations
+            # during convergence without per-iteration resets stomping the record.
+            # The color cache means not every tick allocates a new NSColor — we
+            # assert on the set of colors that were actually created.
             overlay.set_brightness(1.0, immediate=True)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             for _ in range(20):
-                mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
                 overlay.update_text_amplitude(10.0)
-            text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
-            assert text_r > 0.9  # white text
+            calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
+            assert calls, "expected at least one NSColor allocation during convergence"
+            # Grayscale base-color calls have r ≈ g ≈ b; collect the R values.
+            lum_calls = [
+                c[0][0]
+                for c in calls
+                if abs(c[0][0] - c[0][1]) < 0.01 and abs(c[0][1] - c[0][2]) < 0.01
+            ]
+            assert lum_calls, "expected at least one grayscale base-color allocation"
+            # The last distinct allocation must be near-white (converged at brightness=1.0)
+            assert lum_calls[-1] > 0.9  # white text
         finally:
             sys.modules.pop("spoke.overlay", None)

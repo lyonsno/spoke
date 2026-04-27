@@ -363,12 +363,15 @@ class TestShowFinishHide:
         assert overlay._thinking_timer is not None
         assert overlay._thinking_seconds == 0.0
 
-    def test_show_starts_recurring_brightness_sampling(self, mock_pyobjc):
+    def test_show_does_not_start_independent_brightness_timer(self, mock_pyobjc):
+        # Rat 6 fix: CommandOverlay no longer runs its own Quartz screen-capture
+        # timer.  GlowOverlay owns the single 1 Hz brightness sample; brightness
+        # is pushed here via set_brightness() on amplitude ticks.
         overlay, _ = _make_overlay(mock_pyobjc)
 
         overlay.show()
 
-        assert overlay._brightness_timer is not None
+        assert overlay._brightness_timer is None
 
     def test_pulse_step_records_display_and_presented_ticks(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -379,21 +382,49 @@ class TestShowFinishHide:
         assert snapshot["display_link_ticks"] == 1
         assert snapshot["presented_frames"] == 1
 
-    def test_show_samples_current_brightness_before_first_theme(self, mock_pyobjc, monkeypatch):
+    def test_show_uses_externally_seeded_brightness_before_first_theme(self, mock_pyobjc, monkeypatch):
+        # Rat 7 fix: show() must not do a synchronous Quartz screen capture.
+        # When set_brightness() has been called before show() (the normal path
+        # via __main__._sync_command_overlay_brightness), that cached value is
+        # committed directly.  The _sample_screen_brightness_for_overlay
+        # fallback must not fire.
         overlay, mod = _make_overlay(mock_pyobjc)
-        overlay._brightness = 0.05
-        overlay._brightness_target = 0.05
+        # Simulate __main__ calling set_brightness(immediate=True) before show()
+        overlay.set_brightness(0.86, immediate=True)
         observed = []
-        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.86)
+        # Patch the capture function to detect if it fires (it must not)
+        capture_calls = []
+        monkeypatch.setattr(
+            mod, "_sample_screen_brightness_for_overlay",
+            lambda _screen: capture_calls.append(True) or 0.0
+        )
         overlay._apply_surface_theme = MagicMock(
             side_effect=lambda: observed.append(overlay._brightness)
         )
 
         overlay.show(start_thinking_timer=False)
 
+        assert capture_calls == [], "synchronous screen capture must not fire when brightness is cached"
         assert observed[0] == pytest.approx(0.86)
         assert overlay._brightness == pytest.approx(0.86)
         assert overlay._brightness_target == pytest.approx(0.86)
+
+    def test_show_uses_neutral_brightness_when_no_external_seed(self, mock_pyobjc, monkeypatch):
+        # Rat 7 fix: on first-ever show (no set_brightness() call yet), fall
+        # back to 0.5 neutral and skip the sync screen capture.
+        overlay, mod = _make_overlay(mock_pyobjc)
+        # Do NOT call set_brightness() — _brightness_seeded_externally stays False
+        capture_calls = []
+        monkeypatch.setattr(
+            mod, "_sample_screen_brightness_for_overlay",
+            lambda _screen: capture_calls.append(True) or 0.0
+        )
+
+        overlay.show(start_thinking_timer=False)
+
+        assert capture_calls == [], "sync screen capture must not fire even on first show"
+        assert overlay._brightness == pytest.approx(0.5)
+        assert overlay._brightness_target == pytest.approx(0.5)
 
     def test_show_defers_pulse_until_entrance_fade_finishes(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -862,7 +893,9 @@ class TestTimerCancellation:
         assert overlay._fade_timer is not None
         assert overlay._pulse_timer is None
         assert overlay._thinking_timer is not None
-        assert overlay._brightness_timer is not None
+        # _brightness_timer is intentionally None after Rat 6 fix —
+        # CommandOverlay no longer owns a brightness sampling timer.
+        assert overlay._brightness_timer is None
 
         overlay._cancel_all_timers()
         assert overlay._fade_timer is None
@@ -1560,7 +1593,9 @@ class TestAdaptiveCompositing:
                 if rng[0] >= response_start
             ]
             assert response_attrs
-            assert len(response_attrs) <= 4
+            # 3-span bulk path: FG + FN (full range) + up to 3 shadow spans = at most 5.
+            # The important invariant is: not O(N) per-character calls.
+            assert len(response_attrs) <= 6
             assert any(rng == (response_start, len(response)) for rng in response_attrs)
         finally:
             sys.modules.pop("spoke.command_overlay", None)

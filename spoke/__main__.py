@@ -2014,9 +2014,16 @@ class SpokeAppDelegate(NSObject):
     def amplitudeUpdate_(self, rms_number) -> None:
         """Main thread: forward amplitude to glow and overlay text."""
         rms = float(rms_number)
-        
+
+        # Visibility guard: skip all overlay state updates when nothing is
+        # shown. At 20-50 Hz this saves 5-6 CA/attribute ops per tick.
+        glow_visible = self._glow is not None and getattr(self._glow, "_visible", False)
+        overlay_visible = self._overlay is not None and getattr(self._overlay, "_visible", False)
+        if not glow_visible and not overlay_visible:
+            return
+
         # VAD gating: if we are in silence, clamp the raw RMS to 0.0.
-        # This prevents background noise (keyboard clacks, rustling) from 
+        # This prevents background noise (keyboard clacks, rustling) from
         # driving the visual glow and text breathing when speech isn't detected.
         # The glow system's own `_DECAY_FACTOR` will provide a smooth "ease out"
         # as it falls from its last speech value to zero.
@@ -2047,6 +2054,7 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
+            # Single brightness read — reuse for both overlay and command_overlay
             glow_brightness = getattr(self._glow, "_brightness", 0.0)
             if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
                 self._overlay.set_brightness(glow_brightness)

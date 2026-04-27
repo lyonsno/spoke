@@ -106,7 +106,7 @@ _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
 _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
 _PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
-_PULSE_HZ = 30.0  # timer frequency for pulse animation
+_PULSE_HZ = 15.0  # timer frequency for pulse animation (15 Hz sufficient for 2-5s breathing period)
 
 _OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp tails
 _OPTICAL_SHELL_FEATHER = 140.0  # ~2 inches — the glow tail is faint but the eye catches
@@ -897,6 +897,7 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._brightness_seeded_externally = False  # True once set_brightness() is called
         self._backdrop_base_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_base_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
@@ -1425,27 +1426,41 @@ class CommandOverlay(NSObject):
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
         self._brightness_target = _clamp01(brightness)
+        self._brightness_seeded_externally = True
         if immediate:
             self._brightness = self._brightness_target
             self._apply_surface_theme()
 
     def _seed_brightness_from_screen(self) -> None:
-        """Synchronously seed entrance brightness from the current backing app."""
-        try:
-            brightness = _sample_screen_brightness_for_overlay(self._screen)
-        except Exception:
-            logger.debug("Command overlay brightness seed failed", exc_info=True)
+        """Seed entrance brightness, preferring GlowOverlay's cached value.
+
+        GlowOverlay samples screen brightness at 1 Hz and pushes it here via
+        set_brightness() before every show() call in __main__.py.  When that
+        has happened, _brightness_seeded_externally is True and we commit the
+        already-held _brightness_target directly — no Quartz capture needed.
+
+        On first-ever show (before any glow sample), fall back to neutral 0.5.
+        The next amplitude tick will push the real value via set_brightness().
+        """
+        if getattr(self, "_brightness_seeded_externally", False):
+            # Brightness already set by set_brightness(); commit it in-place.
+            self._brightness = self._brightness_target
             return
-        self._brightness_target = _clamp01(brightness)
-        self._brightness = self._brightness_target
+        # First-ever show: no cached glow brightness yet.  Use neutral default;
+        # the next amplitude tick will push the real value via set_brightness().
+        self._brightness_target = 0.5
+        self._brightness = 0.5
 
     def _start_brightness_sampling(self) -> None:
+        # Brightness is sampled by GlowOverlay (1 Hz) and pushed here via
+        # set_brightness() on every amplitude tick from __main__.py
+        # (_sync_command_overlay_brightness).  Running a second independent
+        # Quartz screen-capture timer here doubles the capture cost with no
+        # benefit.  No-op; cancel any leftover timer from prior sessions.
         old_timer = getattr(self, "_brightness_timer", None)
         if old_timer is not None:
             old_timer.invalidate()
-        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
-        )
+            self._brightness_timer = None
 
     def brightnessResample_(self, timer) -> None:
         if not self._visible:
@@ -1628,6 +1643,8 @@ class CommandOverlay(NSObject):
         """Keep the optical text cutout in sync after immediate text/layout edits."""
         if not getattr(self, "_text_punchthrough", False):
             return
+        # Mark dirty so the next pulse tick (or this call) re-rasterizes.
+        self._punchthrough_mask_dirty = True
         self._update_punchthrough_mask()
 
     def append_token(self, token: str) -> None:
@@ -1984,8 +2001,8 @@ class CommandOverlay(NSObject):
 
         # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
         # _tts_blend ramps toward 1.0 when TTS is active, toward 0.0 when not.
-        # At 30Hz pulse rate, 0.06 per tick ≈ 0.55s full ramp.
-        _BLEND_RATE = 0.06
+        # At 15Hz pulse rate, 0.12 per tick ≈ 0.55s full ramp.
+        _BLEND_RATE = 0.12
         if self._tts_active:
             self._tts_blend = min(self._tts_blend + _BLEND_RATE, 1.0)
         else:
@@ -2146,6 +2163,7 @@ class CommandOverlay(NSObject):
                         NSFontAttributeName as _FN_pulse,
                         NSFont,
                     )
+                    # Cache font allocation once per tick, not per character.
                     light_font = NSFont.systemFontOfSize_weight_(
                         _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
                     )
@@ -2162,7 +2180,26 @@ class CommandOverlay(NSObject):
                                 (resp_start, resp_len),
                             )
                         else:
-                            if resp_len > _COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT:
+                            # Bulk span path: 3 coarse spans (edges, mid, center)
+                            # instead of per-character iteration. The gradient
+                            # approximation is sufficient for the 2-5s breathing
+                            # animation on this fallback rendering path.
+                            # Foreground and font are uniform across the full range.
+                            ts.addAttribute_value_range_(
+                                _FG_pulse,
+                                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                    response_r,
+                                    response_g,
+                                    response_b,
+                                    _ASSISTANT_TEXT_ALPHA_MAX,
+                                ),
+                                (resp_start, resp_len),
+                            )
+                            ts.addAttribute_value_range_(
+                                _FN_pulse, light_font, (resp_start, resp_len)
+                            )
+                            if resp_len <= 3:
+                                # Too short for span splits; single shadow pass.
                                 lum = 0.299 * r + 0.587 * g + 0.114 * b
                                 shadow = NSShadow.alloc().init()
                                 shadow.setShadowColor_(
@@ -2173,49 +2210,24 @@ class CommandOverlay(NSObject):
                                 shadow.setShadowOffset_((0, 0))
                                 shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
                                 ts.addAttribute_value_range_(
-                                    _FG_pulse,
-                                    NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                        response_r,
-                                        response_g,
-                                        response_b,
-                                        _ASSISTANT_TEXT_ALPHA_MAX,
-                                    ),
-                                    (resp_start, resp_len),
-                                )
-                                ts.addAttribute_value_range_(
-                                    _FN_pulse, light_font, (resp_start, resp_len)
-                                )
-                                ts.addAttribute_value_range_(
                                     _SH_pulse, shadow, (resp_start, resp_len)
                                 )
                             else:
-                                for ci in range(resp_len):
-                                    # 0.0 at edges, 1.0 at center
-                                    frac = ci / max(resp_len - 1, 1)
-                                    center_weight = 1.0 - abs(frac * 2.0 - 1.0)
-                                    # Shadow = animated chromatic blur.
-                                    cr = _lerp(r, alt_r, center_weight)
-                                    cg = _lerp(g, alt_g, center_weight)
-                                    cb = _lerp(b, alt_b, center_weight)
-                                    # Foreground = stable high-contrast text.
-                                    ts.addAttribute_value_range_(
-                                        _FG_pulse,
-                                        NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                            response_r,
-                                            response_g,
-                                            response_b,
-                                            _ASSISTANT_TEXT_ALPHA_MAX,
-                                        ),
-                                        (resp_start + ci, 1),
-                                    )
-                                    # Light font weight for the anchor
-                                    ts.addAttribute_value_range_(
-                                        _FN_pulse, light_font,
-                                        (resp_start + ci, 1),
-                                    )
-                                    # Shadow = bright glow, blur driven by luminance
+                                # Three spans: edge (0..e), mid (e..m), center (m..end)
+                                edge = max(1, resp_len // 4)
+                                mid = max(edge + 1, resp_len * 3 // 4)
+                                spans = [
+                                    (resp_start,        edge,           0.0),   # edges: main color
+                                    (resp_start + edge, mid - edge,     0.5),   # mid: blend
+                                    (resp_start + mid,  resp_len - mid, 1.0),   # center: alt color
+                                ]
+                                for span_start, span_len, weight in spans:
+                                    if span_len <= 0:
+                                        continue
+                                    cr = _lerp(r, alt_r, weight)
+                                    cg = _lerp(g, alt_g, weight)
+                                    cb = _lerp(b, alt_b, weight)
                                     lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-                                    blur_radius = 5.0 + lum * 14.0
                                     shadow = NSShadow.alloc().init()
                                     shadow.setShadowColor_(
                                         NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -2223,9 +2235,9 @@ class CommandOverlay(NSObject):
                                         )
                                     )
                                     shadow.setShadowOffset_((0, 0))
-                                    shadow.setShadowBlurRadius_(blur_radius)
+                                    shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
                                     ts.addAttribute_value_range_(
-                                        _SH_pulse, shadow, (resp_start + ci, 1),
+                                        _SH_pulse, shadow, (span_start, span_len)
                                     )
                     except Exception:
                         pass
@@ -3144,7 +3156,15 @@ class CommandOverlay(NSObject):
 
         Uses NSAttributedString.drawInRect_ via NSGraphicsContext
         (no CoreText dependency).
+
+        Dirty-tracked: skips the CGBitmapContext allocation and rasterization
+        entirely when text has not changed since the last render.  The dirty
+        flag is set by _refresh_punchthrough_mask_if_needed (called from all
+        text-change paths) and cleared here after a successful render.
         """
+        # Skip the expensive rasterization pass when text hasn't changed.
+        if not getattr(self, "_punchthrough_mask_dirty", True):
+            return
         fill = getattr(self, "_fill_layer", None)
         content = getattr(self, "_content_view", None)
         if fill is None or content is None:
@@ -3276,6 +3296,9 @@ class CommandOverlay(NSObject):
                         boost_mask.setContents_(boost_mask_image)
                         if boost_layer.mask() is not boost_mask:
                             boost_layer.setMask_(boost_mask)
+
+            # Render complete — mark clean so pulse ticks skip until next text change.
+            self._punchthrough_mask_dirty = False
 
         except Exception:
             logger.debug("Failed to update punch-through mask", exc_info=True)
