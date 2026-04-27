@@ -25,6 +25,11 @@ def _main_script_text() -> str:
     return script.read_text()
 
 
+def _target_script_text() -> str:
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-target.sh"
+    return script.read_text()
+
+
 def _launcher_python_text() -> str:
     text = _main_script_text()
     start_marker = "/usr/bin/python3 - <<'PY'\n"
@@ -295,6 +300,39 @@ class TestSecretsEnvLoading:
         assert overrides["SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"] == "bare-value-123"
         assert overrides["OPENROUTER_API_KEY"] == "single-quoted"
         assert child_env == overrides
+
+
+class TestLaunchTargetSecretsEnvLoading:
+    """The menubar launch-target helper must carry the same machine-wide
+    secrets contract as the primary launcher. Menu-driven switches are
+    Automator-adjacent child launches too; they cannot depend on an
+    interactive shell profile for API keys.
+    """
+
+    def test_launch_target_sh_reads_secrets_env(self):
+        text = _target_script_text()
+        assert ".config/spoke/secrets.env" in text, (
+            "launch-target.sh must load ~/.config/spoke/secrets.env before "
+            "starting the selected target"
+        )
+
+    def test_launch_target_sh_loads_secrets_before_smoke_env(self):
+        text = _target_script_text()
+        secrets_idx = text.find(".config/spoke/secrets.env")
+        smoke_idx = text.find(".spoke-smoke-env")
+        assert secrets_idx != -1, "secrets.env reference not found"
+        assert smoke_idx != -1, ".spoke-smoke-env reference not found"
+        assert secrets_idx < smoke_idx, (
+            "launch-target.sh must load secrets.env before .spoke-smoke-env "
+            "so per-worktree overrides still win"
+        )
+
+    def test_launch_target_sh_applies_secrets_with_shared_parser(self):
+        text = _target_script_text()
+        assert "parse_env_overrides(secrets_env)" in text, (
+            "launch-target.sh must route secrets.env through parse_env_overrides "
+            "rather than open-coding a second parser"
+        )
 
 
 class TestSecretsEnvExampleTemplate:
