@@ -760,10 +760,10 @@ class TestModelPreferencePersistence:
 class TestConcurrencyContract:
     """Test thread handoff and local-inference serialization."""
 
-    def test_preview_loop_batch_uses_faster_local_preview_cadence(
+    def test_preview_loop_batch_uses_balanced_local_preview_cadence(
         self, main_module, monkeypatch
     ):
-        """Local batch preview should use the tighter startup and steady-state cadence."""
+        """Local batch preview should leave breathing room between inference passes."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._preview_active = True
@@ -790,12 +790,12 @@ class TestConcurrencyContract:
             ):
                 d._preview_loop_batch()
 
-        assert sleeps[:2] == [0.15, 0.2]
+        assert sleeps[:2] == [0.15, 0.3]
 
-    def test_preview_loop_batch_defers_local_inference_while_command_overlay_visible(
+    def test_preview_loop_batch_uses_slow_cadence_while_command_overlay_visible(
         self, main_module, monkeypatch
     ):
-        """Dual-overlay recording should not hammer local preview inference."""
+        """Dual-overlay recording should heavily space local preview inference."""
         d = _make_delegate(main_module, monkeypatch)
         d._preview_backend = "local"
         d._preview_active = True
@@ -803,20 +803,31 @@ class TestConcurrencyContract:
         d._capture.get_buffer.return_value = b"wav"
         d._preview_done = MagicMock()
         sleeps = []
+        call_count = 0
+
+        def _transcribe(_wav_bytes):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                d._preview_active = False
+            return "preview"
+
+        d._preview_client.transcribe.side_effect = _transcribe
 
         def _sleep(seconds):
             sleeps.append(seconds)
-            if len(sleeps) > 1:
-                d._preview_active = False
 
         with patch.object(main_module.time, "sleep", side_effect=_sleep):
-            d._preview_loop_batch()
+            with patch.object(
+                main_module.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 0.0]
+            ):
+                d._preview_loop_batch()
 
-        d._preview_client.transcribe.assert_not_called()
-        d._capture.get_buffer.assert_not_called()
+        assert d._preview_client.transcribe.call_count == 2
+        assert d._capture.get_buffer.call_count == 2
         d._preview_done.set.assert_called_once_with()
         assert sleeps[0] == 0.15
-        assert sleeps[1] == main_module._COMMAND_OVERLAY_LOCAL_PREVIEW_BACKOFF_S
+        assert sleeps[1] == main_module._COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S
 
     def test_preview_loop_batch_uses_local_inference_lock_and_signals_done(
         self, main_module, monkeypatch

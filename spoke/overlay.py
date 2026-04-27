@@ -78,7 +78,7 @@ _FONT_SIZE = 16.0
 _FADE_IN_S = 0.4  # fast ease-in so the overlay feels ready as soon as it appears
 _FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
 _FADE_STEPS = 12  # number of steps for manual fade animation
-_TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
+_TYPEWRITER_INTERVAL = 0.02 / 0.75  # seconds between characters (~37.5 chars/sec)
 
 
 def _scale_color_saturation(

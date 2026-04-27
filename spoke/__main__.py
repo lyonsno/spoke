@@ -186,7 +186,8 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT = 8.0
-_COMMAND_OVERLAY_LOCAL_PREVIEW_BACKOFF_S = 0.75
+_LOCAL_PREVIEW_INTERVAL_S = 0.3
+_COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S = 1.5
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
@@ -2164,15 +2165,15 @@ class SpokeAppDelegate(NSObject):
             return (3.0, 1.0)
         if backend == "sidecar":
             return (0.75, 0.3)
-        return (0.2, 0.15)
+        return (_LOCAL_PREVIEW_INTERVAL_S, 0.15)
 
-    def _should_defer_local_batch_preview_for_command_overlay(self) -> bool:
+    def _local_batch_preview_interval(self, default_interval: float) -> float:
         if getattr(self, "_preview_backend", "local") != "local":
-            return False
+            return default_interval
         command_overlay = getattr(self, "_command_overlay", None)
-        return command_overlay is not None and bool(
-            getattr(command_overlay, "_visible", False)
-        )
+        if command_overlay is not None and bool(getattr(command_overlay, "_visible", False)):
+            return _COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S
+        return default_interval
 
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick.
@@ -2189,10 +2190,7 @@ class SpokeAppDelegate(NSObject):
 
             while self._preview_active:
                 loop_start = time.monotonic()
-
-                if self._should_defer_local_batch_preview_for_command_overlay():
-                    time.sleep(_COMMAND_OVERLAY_LOCAL_PREVIEW_BACKOFF_S)
-                    continue
+                min_interval = self._local_batch_preview_interval(_MIN_INTERVAL)
 
                 acc = getattr(self, "_segment_accumulator", None)
                 use_segments = acc is not None and acc.count > 0
@@ -2205,14 +2203,14 @@ class SpokeAppDelegate(NSObject):
                     cached_prefix = ""
 
                 if not wav_bytes and not cached_prefix:
-                    time.sleep(min(_MIN_INTERVAL, 0.2))
+                    time.sleep(min(min_interval, 0.2))
                     continue
 
                 is_speech = getattr(self, "_is_speech", True)
                 force_update = getattr(self, "_force_preview_update", False)
                 if not is_speech and not force_update:
                     elapsed = time.monotonic() - loop_start
-                    remaining = _MIN_INTERVAL - elapsed
+                    remaining = min_interval - elapsed
                     if remaining > 0 and self._preview_active:
                         time.sleep(remaining)
                     continue
@@ -2243,7 +2241,7 @@ class SpokeAppDelegate(NSObject):
                     )
 
                 elapsed = time.monotonic() - loop_start
-                remaining = _MIN_INTERVAL - elapsed
+                remaining = min_interval - elapsed
                 if remaining > 0 and self._preview_active:
                     time.sleep(remaining)
         finally:

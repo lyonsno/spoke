@@ -51,10 +51,10 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_typewriter_starts_with_faster_interval_for_quick_preview_updates(
+    def test_typewriter_uses_readable_interval_for_preview_updates(
         self, mock_pyobjc
     ):
-        """Typewriter pacing should keep up with the faster preview cadence."""
+        """Typewriter pacing should be readable enough to hide preview joins."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -74,7 +74,7 @@ class TestOverlayTiming:
             overlay.set_text("abc")
 
             mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once_with(
-                0.02, overlay, "typewriterStep:", None, True
+                pytest.approx(0.02 / 0.75), overlay, "typewriterStep:", None, True
             )
             assert overlay._typewriter_timer is timer
         finally:
