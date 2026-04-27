@@ -10,7 +10,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LAUNCH_TARGETS_PATH = Path.home() / ".config" / "spoke" / "launch_targets.json"
-_DEFAULT_MAIN_TARGET_PATH = Path.home() / ".config" / "spoke" / "main-target"
 
 
 def launch_targets_path() -> Path:
@@ -18,12 +17,6 @@ def launch_targets_path() -> Path:
     if override:
         return Path(override).expanduser()
     return _DEFAULT_LAUNCH_TARGETS_PATH
-
-def main_target_path() -> Path:
-    override = os.environ.get("SPOKE_MAIN_TARGET_PATH")
-    if override:
-        return Path(override).expanduser()
-    return _DEFAULT_MAIN_TARGET_PATH
 
 def load_launch_target_registry(path: Path | None = None) -> dict:
     registry_path = path or launch_targets_path()
@@ -119,18 +112,7 @@ def save_selected_launch_target(target_id: str, path: Path | None = None) -> boo
             "Failed to save launch target registry to %s", registry_path, exc_info=True
         )
         return False
-    try:
-        target_file = main_target_path()
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp_target_file = target_file.with_suffix(".tmp")
-        tmp_target_file.write_text(f"{target['path']}\n")
-        tmp_target_file.rename(target_file)
-        return True
-    except Exception:
-        logger.warning(
-            "Failed to save main launcher target to %s", main_target_path(), exc_info=True
-        )
-        return False
+    return True
 
 
 def parse_env_overrides(env_file: Path) -> dict[str, str]:

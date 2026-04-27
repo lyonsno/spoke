@@ -3,9 +3,7 @@ import json
 from spoke.launch_targets import current_launch_target, current_launch_target_id, save_selected_launch_target
 
 
-def test_save_selected_launch_target_updates_registry_and_main_target(
-    tmp_path, monkeypatch
-):
+def test_save_selected_launch_target_updates_registry_only(tmp_path, monkeypatch):
     registry_path = tmp_path / "launch_targets.json"
     main_target_file = tmp_path / "main-target"
     airstrike = tmp_path / "airstrike"
@@ -29,7 +27,7 @@ def test_save_selected_launch_target_updates_registry_and_main_target(
 
     payload = json.loads(registry_path.read_text())
     assert payload["selected"] == "airstrike"
-    assert main_target_file.read_text() == f"{airstrike}\n"
+    assert not main_target_file.exists()
 
 
 def test_current_launch_target_id_falls_back_to_selected_when_checkout_unregistered(

@@ -341,3 +341,90 @@ class TestMenuBarIcon:
         # Launch targets are now flat items at the bottom, no submenu header
         assert any(call.args == ("Main", "selectModel:", "") for call in calls)
         assert any(call.args == ("Smoke", "selectModel:", "") for call in calls)
+
+    def test_launch_target_items_have_dispatch_state_and_enabled_wiring(
+        self, menubar_module, monkeypatch
+    ):
+        """Launch-target menu rows must carry enough state for a click to
+        dispatch the selected target, visually mark the active target, and
+        disable missing worktrees.
+        """
+        AppKit = __import__("AppKit")
+
+        created_items = []
+
+        class FakeMenuItem:
+            def __init__(self, title, action, key):
+                self.title = title
+                self.action = action
+                self.key = key
+                self.target = None
+                self.represented_object = None
+                self.enabled = None
+                self.state = 0
+                self.submenu = None
+
+            def setEnabled_(self, enabled):
+                self.enabled = enabled
+
+            def setTarget_(self, target):
+                self.target = target
+
+            def setRepresentedObject_(self, represented_object):
+                self.represented_object = represented_object
+
+            def setState_(self, state):
+                self.state = state
+
+            def setSubmenu_(self, submenu):
+                self.submenu = submenu
+
+        class FakeMenuItemAllocator:
+            def initWithTitle_action_keyEquivalent_(self, title, action, key):
+                item = FakeMenuItem(title, action, key)
+                created_items.append(item)
+                return item
+
+        monkeypatch.setattr(AppKit.NSMenuItem, "alloc", MagicMock(return_value=FakeMenuItemAllocator()))
+        monkeypatch.setattr(AppKit.NSMenuItem, "separatorItem", MagicMock(return_value=FakeMenuItem("—", None, "")))
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = MagicMock()
+
+        selected = []
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(
+            side_effect=lambda selection=None: selected.append(selection)
+            if selection is not None
+            else {
+                "launch_target": {
+                    "title": "Launch Target",
+                    "selected": "main",
+                    "items": [
+                        ("main", "Main", True),
+                        ("smoke", "Smoke", False),
+                    ],
+                }
+            }
+        )
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        main_item = next(item for item in created_items if item.title == "Main")
+        smoke_item = next(item for item in created_items if item.title == "Smoke")
+        assert main_item.action == "selectModel:"
+        assert main_item.target is icon
+        assert main_item.represented_object == ("launch_target", "main")
+        assert main_item.enabled is True
+        assert main_item.state == 1
+        assert smoke_item.represented_object == ("launch_target", "smoke")
+        assert smoke_item.enabled is False
+        assert smoke_item.state == 0
+
+        sender = MagicMock()
+        sender.representedObject.return_value = smoke_item.represented_object
+        icon.selectModel_(sender)
+
+        assert selected == [("launch_target", "smoke")]
