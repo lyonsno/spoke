@@ -141,7 +141,7 @@ from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .converge import TurnCarver, compact_history as compact_converge_history
 from .narrator import ThinkingNarrator
-from .focus_check import has_focused_text_input, focused_text_contains
+from .focus_check import has_focused_text_input
 from .handsfree import (
     HandsFreeController,
     HandsFreeState,
@@ -1183,11 +1183,6 @@ class SpokeAppDelegate(NSObject):
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
         # "captured but clipboard was empty (None)".
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
-        self._verify_paste_text: str | None = None
-        self._verify_paste_preexisting_match: bool | None = None
-        self._verify_paste_preexisting_snapshot = None
-        self._verify_paste_snapshot_capture = None
-        self._verify_paste_attempt: int = 0
         self._result_pending_inject = None
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
         self._recovery_text: str | None = None
@@ -1195,7 +1190,6 @@ class SpokeAppDelegate(NSObject):
         self._recovery_pending_insert = None
         self._recovery_pending_retry_insert = None
         self._recovery_hold_active: bool = False
-        self._recovery_retry_pending: bool = False
         self._pending_command_approval_active: bool = False
         self._pending_command_approval_request: dict | None = None
 
@@ -1921,10 +1915,6 @@ class SpokeAppDelegate(NSObject):
         # or replaced if they send a new command.
 
         # Tray intercept: shift+space from tray = navigation, plain space = record.
-        self._verify_paste_text = None
-        self._verify_paste_preexisting_match = None
-        self._verify_paste_preexisting_snapshot = None
-        self._verify_paste_snapshot_capture = None
         self._recovery_pending_retry_insert = None
         if getattr(self, "_tray_active", False):
             shift_at_press = getattr(self._detector, '_shift_at_press', False)
@@ -1948,12 +1938,11 @@ class SpokeAppDelegate(NSObject):
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
         logger.info(
-            "Hold started — recording (shift_at_press=%s tray_active=%s recovery_active=%s recovery_hold_active=%s verify_pending=%s overlay_visible=%s)",
+            "Hold started — recording (shift_at_press=%s tray_active=%s recovery_active=%s recovery_hold_active=%s overlay_visible=%s)",
             shift_at_press,
             getattr(self, "_tray_active", False),
             getattr(self, "_recovery_text", None) is not None,
             getattr(self, "_recovery_hold_active", False),
-            getattr(self, "_verify_paste_text", None) is not None,
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
         # Manual holds take precedence over any live hands-free audio path.
@@ -3215,26 +3204,6 @@ class SpokeAppDelegate(NSObject):
 
         return entry
 
-    def _stash_failed_paste_to_tray(self, text: str, *, status: str) -> None:
-        """Preserve an unverified paste without surfacing the tray UI."""
-        entry = self._add_tray_entry(
-            text,
-            owner="user",
-            activate=False,
-            position="bottom",
-        )
-        if self._overlay is not None:
-            flash = getattr(self._overlay, "flash_tray_capture", None)
-            if callable(flash):
-                flash(text, owner=entry.display_owner)
-        if self._menubar is not None:
-            self._menubar.set_status_text("Saved to tray")
-        logger.info(
-            "Stashed unverified paste at bottom of tray (status=%s entries=%d)",
-            status,
-            len(self._tray_stack),
-        )
-
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
         if not self._tray_stack:
@@ -4258,106 +4227,6 @@ class SpokeAppDelegate(NSObject):
                 logger.exception("Command overlay finish failed during error presentation")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
-
-    def verifyPaste_(self, timer) -> None:
-        """Background OCR verification — confirm the pasted text appeared on screen."""
-        text = getattr(self, "_verify_paste_text", None)
-        if text is None:
-            return
-
-        attempt = getattr(self, "_verify_paste_attempt", 0)
-
-        # Run OCR in background thread to avoid blocking the main thread
-        import threading
-        def _verify():
-            from .paste_verify import (
-                capture_screen_text,
-                classify_paste_result,
-                snapshot_contains_text,
-            )
-            screen_text = capture_screen_text()
-            preexisting_match = getattr(self, "_verify_paste_preexisting_match", None)
-            if preexisting_match is not True:
-                snapshot_match = snapshot_contains_text(
-                    getattr(self, "_verify_paste_preexisting_snapshot", None),
-                    text,
-                )
-                if snapshot_match is True:
-                    preexisting_match = True
-            status = classify_paste_result(
-                text,
-                screen_text,
-                preexisting_match=preexisting_match,
-            )
-            found = status == "confirmed"
-            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "verifyPasteResult:",
-                {
-                    "found": found,
-                    "status": status,
-                    "text": text,
-                    "attempt": attempt,
-                },
-                False,
-            )
-        threading.Thread(target=_verify, daemon=True).start()
-
-    def verifyPasteResult_(self, payload) -> None:
-        """Main thread: handle OCR verification result."""
-        found = payload["found"]
-        status = payload.get("status", "confirmed" if found else "missing")
-        text = payload["text"]
-        attempt = payload["attempt"]
-
-        # If we've moved on (new recording started, or recovery already active),
-        # discard this result.
-        if getattr(self, "_verify_paste_text", None) != text:
-            return
-
-        is_retry = getattr(self, "_recovery_retry_pending", False)
-
-        if found:
-            logger.info("Paste verified by OCR (attempt %d)", attempt + 1)
-            self._verify_paste_text = None
-            self._verify_paste_preexisting_match = None
-            self._verify_paste_preexisting_snapshot = None
-            self._verify_paste_snapshot_capture = None
-            if is_retry:
-                # Retry succeeded — clear recovery state
-                self._recovery_retry_pending = False
-                self._clear_recovery_state()
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Pasted!")
-            return
-
-        if attempt == 0:
-            # First check failed — retry once at 300ms to give slow apps time
-            logger.debug("Paste not verified on first check, retrying in 200ms")
-            self._verify_paste_attempt = 1
-            from Foundation import NSTimer
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.2, self, "verifyPaste:", None, False
-            )
-            return
-
-        # Second check also failed
-        self._verify_paste_text = None
-        self._verify_paste_preexisting_match = None
-        self._verify_paste_preexisting_snapshot = None
-        self._verify_paste_snapshot_capture = None
-        if is_retry:
-            # Retry from recovery failed — bounce the overlay back
-            logger.warning("Recovery retry not verified by OCR — bouncing back")
-            self._recovery_retry_pending = False
-            self._enter_recovery_mode(text)
-        else:
-            # Normal paste failed verification — preserve it without surfacing tray UI.
-            logger.warning(
-                "Paste not verified by OCR after %d attempts (%s) — stashing silently to tray",
-                attempt + 1,
-                status,
-            )
-            self._stash_failed_paste_to_tray(text, status=status)
 
     # ── helpers ─────────────────────────────────────────────
 
@@ -6511,38 +6380,6 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
-    def _start_verify_snapshot_capture(self) -> None:
-        """Capture pre-paste snapshot evidence off the main thread."""
-        self._verify_paste_preexisting_snapshot = None
-        pending = {"inject_started": False, "snapshot": None}
-        self._verify_paste_snapshot_capture = pending
-
-        def _capture():
-            try:
-                from .paste_verify import capture_verification_snapshot
-
-                snapshot = capture_verification_snapshot()
-            except Exception:
-                logger.debug("Pre-paste snapshot capture failed", exc_info=True)
-                snapshot = None
-            if getattr(self, "_verify_paste_snapshot_capture", None) is not pending:
-                return
-            if pending["inject_started"]:
-                return
-            pending["snapshot"] = snapshot
-
-        threading.Thread(target=_capture, daemon=True).start()
-
-    def _consume_verify_snapshot_capture(self) -> None:
-        """Freeze any completed pre-paste snapshot at inject time."""
-        pending = getattr(self, "_verify_paste_snapshot_capture", None)
-        self._verify_paste_snapshot_capture = None
-        if pending is None:
-            self._verify_paste_preexisting_snapshot = None
-            return
-        pending["inject_started"] = True
-        self._verify_paste_preexisting_snapshot = pending.get("snapshot")
-
     def resultInjectDelayed_(self, timer) -> None:
         """Paste normal-path text after a short post-overlay refocus delay."""
         pending = getattr(self, "_result_pending_inject", None)
@@ -6551,34 +6388,21 @@ class SpokeAppDelegate(NSObject):
             return
         text, status_text = pending
 
-        # Ensure the overlay is fully gone before focus checks, screenshots,
-        # and synthetic paste. The visible path has already faded it.
+        # Ensure the overlay is fully gone before synthetic paste. The visible
+        # path has already faded it.
         if self._overlay is not None:
             self._overlay.order_out()
-        # Save clipboard state before inject_text overwrites it, in case we
-        # need to enter recovery mode after OCR verification.
-        self._pre_paste_clipboard = save_pasteboard()
-        self._verify_paste_preexisting_match = focused_text_contains(text)
-        self._start_verify_snapshot_capture()
+
+        self._add_tray_entry(text, owner="user", activate=False)
 
         def _on_clipboard_restored():
             if self._menubar is not None:
                 if not self._resume_handsfree_after_hold():
                     self._menubar.set_status_text("Ready — hold spacebar")
 
-        self._consume_verify_snapshot_capture()
         inject_text(text, on_restored=_on_clipboard_restored)
         if self._menubar is not None:
             self._menubar.set_status_text(status_text)
-
-        # Schedule background OCR verification to confirm the paste landed.
-        # If it didn't, we'll enter recovery mode.
-        self._verify_paste_text = text
-        self._verify_paste_attempt = 0
-        from Foundation import NSTimer
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.15, self, "verifyPaste:", None, False
-        )
 
     def _enter_recovery_mode(self, text: str) -> None:
         """Paste verification failed — enter the tray automatically.
@@ -6623,8 +6447,6 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.order_out()
 
-        self._verify_paste_preexisting_match = focused_text_contains(text)
-        self._start_verify_snapshot_capture()
         self._recovery_pending_retry_insert = text
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -6638,19 +6460,11 @@ class SpokeAppDelegate(NSObject):
         if text is None:
             return
 
-        self._consume_verify_snapshot_capture()
         inject_text(text)
 
-        # OCR verify — reuse the same verification pipeline
-        self._verify_paste_text = text
-        self._verify_paste_attempt = 0
-        # Override the verify result handler to bounce-back on failure
-        # instead of entering recovery (we're already in recovery)
-        self._recovery_retry_pending = True
-        from Foundation import NSTimer
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.15, self, "verifyPaste:", None, False
-        )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Pasted!")
+        self._clear_recovery_state()
 
     def _on_recovery_dismiss(self) -> None:
         """Dismiss button: restore clipboard and hide overlay."""
@@ -6734,7 +6548,6 @@ class SpokeAppDelegate(NSObject):
         self._recovery_clipboard_state = "idle"
         self._recovery_pending_insert = None
         self._recovery_pending_retry_insert = None
-        self._verify_paste_snapshot_capture = None
 
     @staticmethod
     def _get_clipboard_preview_text(saved: list[tuple[str, bytes]] | None) -> str:
