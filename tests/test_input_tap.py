@@ -295,6 +295,32 @@ class TestEventTapCallback:
         result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
         assert result is event  # passed through
 
+    def test_callback_does_not_pass_stale_forwarding_during_recording(
+        self, input_tap_module
+    ):
+        """A stale forwarded-space flag must not leak repeats during recording."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _on_start, _on_end = TestSpacebarStateMachine()._make_detector(mod)
+        det._state = mod._State.RECORDING
+        det._forwarding = True
+        det._cancel_forwarding_timer = MagicMock()
+        det._start_repeat_watchdog = MagicMock()
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+
+        event = MagicMock()
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result is None
+        assert det._forwarding is False
+        det._cancel_forwarding_timer.assert_called_once_with()
+        det._start_repeat_watchdog.assert_called_once_with()
+        assert det._state == mod._State.RECORDING
+
     def test_forwarding_cleared_on_space_keyup(self, input_tap_module):
         """_forwarding flag should be cleared after forwarded space keyUp."""
         mod = input_tap_module

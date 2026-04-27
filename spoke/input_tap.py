@@ -727,8 +727,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         logger.warning("CGEventTap disabled by user input")
         return event
 
-    # Let our own forwarded events pass through
-    if det._forwarding:
+    # Let our own forwarded quick-tap events pass through only while idle.
+    # A stale forwarding flag during an active hold must not leak physical
+    # space repeats into the focused app while recording continues.
+    forwarding_state = getattr(det, "_state", _State.IDLE)
+    if not isinstance(forwarding_state, _State):
+        forwarding_state = _State.IDLE
+    if det._forwarding and forwarding_state == _State.IDLE:
         # Clear after keyUp so both down+up pass
         if event_type == kCGEventKeyUp:
             keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
@@ -736,6 +741,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._forwarding = False
                 det._cancel_forwarding_timer()
         return event
+    if det._forwarding:
+        det._forwarding = False
+        det._cancel_forwarding_timer()
 
     keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
 
