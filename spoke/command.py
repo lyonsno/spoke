@@ -1231,7 +1231,20 @@ class CommandClient:
             # stream (e.g. Qwen3-Coder), extract them as structured calls.
             if not tool_call_acc.has_calls and tool_executor is not None:
                 xml_result = _extract_xml_tool_calls(round_content)
-                if xml_result is not None:
+                if (
+                    xml_result is None
+                    and suppress_xml_content
+                    and xml_visible_prefix is not None
+                    and round_content.startswith(xml_visible_prefix)
+                ):
+                    missing_visible_text = round_content[len(xml_visible_prefix):]
+                    if missing_visible_text:
+                        visible_response += missing_visible_text
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=missing_visible_text,
+                        )
+                elif xml_result is not None:
                     original_round_content = round_content
                     cleaned_text, xml_calls = xml_result
                     logger.info(

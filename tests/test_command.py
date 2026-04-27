@@ -2615,3 +2615,35 @@ class TestXMLToolCallFallback:
         assert "  Checking.\n\n\n  Same round tail." in assistant_text
         assert "  Checking.\n\n\n\n  Same round tail." not in assistant_text
         assert "<function=" not in assistant_text
+
+    def test_malformed_xml_marker_does_not_suppress_rest_of_stream(self):
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+        xml_round = [
+            {"choices": [{"index": 0, "delta": {"content": "Checking "}}]},
+            {"choices": [{"index": 0, "delta": {"content": "<function=not_closed "}}]},
+            {"choices": [{"index": 0, "delta": {"content": "but this is still visible."}}]},
+        ]
+
+        def fake_urlopen(req, timeout=None):
+            return _make_sse_response(xml_round)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            events = list(
+                client.stream_command_events(
+                    "list tmp",
+                    tools=[{"type": "function", "function": {"name": "list_directory"}}],
+                    tool_executor=lambda name, arguments, **kwargs: "{}",
+                )
+            )
+
+        assistant_text = "".join(
+            event.text for event in events if event.kind == "assistant_delta"
+        )
+        assert assistant_text == "Checking <function=not_closed but this is still visible."
