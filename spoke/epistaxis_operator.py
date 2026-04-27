@@ -88,7 +88,9 @@ class EpistaxisOperator:
         self._target_repo = target_repo.strip()
         if not self._target_repo:
             raise EpistaxisOperatorError("target_repo must not be empty")
-        self._repo_note = self._root / f"{self._target_repo}_epistaxis.md"
+        self._repo_note = (
+            self._root / "projects" / self._target_repo / "epistaxis.md"
+        )
         self._reviews_dir = self._root / "reviews"
 
     def execute_plan(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -149,7 +151,10 @@ class EpistaxisOperator:
 
     def _read_repo_note(self) -> str:
         if not self._repo_note.exists():
-            raise EpistaxisOperatorError(f"repo note does not exist: {self._repo_note.name}")
+            raise EpistaxisOperatorError(
+                "repo note does not exist: "
+                f"{self._repo_note.relative_to(self._root)}"
+            )
         return self._repo_note.read_text(encoding="utf-8")
 
     def _write_repo_note(self, text: str) -> None:
@@ -221,7 +226,7 @@ class EpistaxisOperator:
         ticket_names = op.get("ticket_names", [])
         if not isinstance(ticket_names, list) or not all(isinstance(item, str) for item in ticket_names):
             raise EpistaxisOperatorError("stage_review_artifacts requires ticket_names as a list of strings")
-        rel_paths = [self._repo_note.name]
+        rel_paths = [str(self._repo_note.relative_to(self._root))]
         for ticket_name in ticket_names:
             rel_paths.append(str(self._ticket_path(ticket_name).relative_to(self._root)))
         self._git_run("add", *rel_paths)

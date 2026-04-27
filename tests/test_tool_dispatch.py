@@ -799,6 +799,28 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert parsed["error"] == "bad worktree"
 
+    def test_epistaxis_runbook_gate_ignores_path_substring_false_positive(self):
+        mod = _import_tools()
+        assert not mod._is_epistaxis_git_command(
+            ["git", "status"],
+            "/tmp/not-epistaxis-but-only-a-name-collision",
+        )
+        assert not mod._is_epistaxis_git_command(
+            ["git", "-C", "/tmp/my-epistaxis-notebook", "status"],
+            None,
+        )
+
+    def test_epistaxis_runbook_gate_matches_epistaxis_path_components(self):
+        mod = _import_tools()
+        assert mod._is_epistaxis_git_command(
+            ["git", "status"],
+            "/Users/noahlyons/dev/epistaxis",
+        )
+        assert mod._is_epistaxis_git_command(
+            ["git", "-C", "/private/tmp/epistaxis-spoke-operator", "status"],
+            None,
+        )
+
     def test_execute_query_gmail(self):
         mod = _import_tools()
         fake_result = {
@@ -1845,6 +1867,19 @@ class TestOutputCapping:
         ))
         assert len(result["matches"]) == 30
         assert "truncated" in result
+
+    def test_find_file_exact_cap_is_not_truncated(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "exact_cap"
+        d.mkdir()
+        for i in range(30):
+            (d / f"item_{i:03d}.txt").write_text("x")
+
+        result = json.loads(mod.execute_tool(
+            "find_file", {"pattern": "*.txt", "dir_path": str(d)}
+        ))
+        assert len(result["matches"]) == 30
+        assert "truncated" not in result
 
     def test_find_file_no_truncation_under_cap(self, tmp_path):
         mod = _import_tools()

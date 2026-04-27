@@ -167,8 +167,8 @@ def parse_topoi(text: str) -> list[Topos]:
             attr_m = re.search(r"Attractors?:\s*(.+)", content)
             if attr_m and not topos.attractors:
                 raw = attr_m.group(1)
-                # Split on commas, strip backticks and strikethrough
-                parts = re.split(r",\s*", raw)
+                # Split on common inline list separators, strip markdown wrappers.
+                parts = re.split(r"[,;]\s*", raw)
                 for part in parts:
                     clean = re.sub(r"[`~]", "", part).strip()
                     # Remove parenthetical suffixes

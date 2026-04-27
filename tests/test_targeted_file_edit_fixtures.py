@@ -145,6 +145,10 @@ class TestTargetedFileEditFixtures:
             _assert_result_subset(result, expected["result"], target_path=target_path)
 
         if expected["outcome"] == "success":
+            assert result.get("status") == "success"
+            assert result.get("applied") is True
+            assert result.get("match_count") == 1
+            assert isinstance(result.get("edited_range"), dict)
             if "failure_reason" in result:
                 assert result["failure_reason"] is None
             if "error" in result and result["error"] is not None:

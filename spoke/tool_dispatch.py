@@ -1735,6 +1735,7 @@ def _execute_find_file(arguments: dict) -> dict[str, Any]:
         else:
             glob_pattern = pattern
         matches = []
+        max_matches = 30
         for p in root.glob(glob_pattern):
             try:
                 st = p.stat()
@@ -1747,11 +1748,16 @@ def _execute_find_file(arguments: dict) -> dict[str, Any]:
                 })
             except OSError:
                 matches.append({"path": str(p), "type": "unknown"})
-            if len(matches) >= 30:
+            if len(matches) > max_matches:
                 break
-        result: dict[str, Any] = {"pattern": pattern, "dir_path": dir_path, "matches": matches}
-        if len(matches) >= 30:
-            result["truncated"] = "Showing first 30 matches"
+        truncated = len(matches) > max_matches
+        result: dict[str, Any] = {
+            "pattern": pattern,
+            "dir_path": dir_path,
+            "matches": matches[:max_matches],
+        }
+        if truncated:
+            result["truncated"] = f"Showing first {max_matches} matches"
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -1816,15 +1822,24 @@ def _is_epistaxis_git_command(argv: list | None, cwd: str | None) -> bool:
         return False
     if str(argv[0]) != "git":
         return False
-    resolved_cwd = str(cwd or "")
-    # Check cwd or -C argument for epistaxis paths
-    epistaxis_markers = ("epistaxis", "epistaxis-wt")
-    if any(marker in resolved_cwd for marker in epistaxis_markers):
+
+    def targets_epistaxis(path_text: str) -> bool:
+        if not path_text:
+            return False
+        parts = Path(path_text).expanduser().parts
+        return any(
+            part == "epistaxis"
+            or part == "epistaxis-wt"
+            or part.startswith("epistaxis-")
+            or part.startswith("epistaxis_wt")
+            for part in parts
+        )
+
+    if targets_epistaxis(str(cwd or "")):
         return True
     for i, arg in enumerate(argv):
         if str(arg) == "-C" and i + 1 < len(argv):
-            target = str(argv[i + 1])
-            if any(marker in target for marker in epistaxis_markers):
+            if targets_epistaxis(str(argv[i + 1])):
                 return True
     return False
 

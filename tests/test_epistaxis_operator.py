@@ -14,7 +14,8 @@ def _make_epistaxis_root(tmp_path: Path) -> Path:
     (root / "policy" / "codex").mkdir(parents=True)
     (root / "policy" / "codex" / "agents.md").write_text("# policy\n", encoding="utf-8")
     (root / "reviews").mkdir()
-    (root / "spoke_epistaxis.md").write_text(
+    (root / "projects" / "spoke").mkdir(parents=True)
+    (root / "projects" / "spoke" / "epistaxis.md").write_text(
         "# Spoke Epistaxis\n\n"
         "## Review Notes\n"
         "Full review documents and review tickets live in `reviews/`.\n\n"
@@ -93,7 +94,7 @@ def test_write_ticket_and_append_pointer(tmp_path, monkeypatch):
     ticket_path = root / "reviews" / "spoke_demo-review-ticket_2026-03-29.md"
     assert results[0]["path"] == str(ticket_path)
     assert ticket_path.read_text(encoding="utf-8") == "# Demo\n"
-    note = (root / "spoke_epistaxis.md").read_text(encoding="utf-8")
+    note = (root / "projects" / "spoke" / "epistaxis.md").read_text(encoding="utf-8")
     assert "### 2026-03-29 Review ticket: demo" in note
     assert "- `reviews/spoke_demo-review-ticket_2026-03-29.md`" in note
     assert "## Open Questions" in note
@@ -125,12 +126,12 @@ def test_stage_commit_and_push_current_branch(tmp_path, monkeypatch):
     )
 
     assert results[0]["paths"] == [
-        "spoke_epistaxis.md",
+        "projects/spoke/epistaxis.md",
         f"reviews/{ticket_name}",
     ]
     assert results[1]["commit"] == "abc1234"
     assert results[2]["branch"] == "codex/spoke-demo"
-    assert ["git", "-C", str(root), "add", "spoke_epistaxis.md", f"reviews/{ticket_name}"] in calls
+    assert ["git", "-C", str(root), "add", "projects/spoke/epistaxis.md", f"reviews/{ticket_name}"] in calls
     assert ["git", "-C", str(root), "commit", "-m", "Demo ticket"] in calls
     assert ["git", "-C", str(root), "push", "-u", "origin", "codex/spoke-demo"] in calls
 

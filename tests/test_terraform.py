@@ -113,6 +113,24 @@ def test_parse_attractors():
     assert "stop-test-killing-live_2026-04-02" in topoi[0].attractors
 
 
+def test_parse_semicolon_separated_attractors():
+    text = """\
+# Spoke
+
+## Scoped Local State
+
+### cc-semicolon-0427
+- Attractors: `support-one_2026-04-27`; `stop-two_2026-04-27` (settled); ~~`allow-three_2026-04-27`~~
+- Status: **Active.**
+"""
+    topoi = parse_topoi(text)
+    assert topoi[0].attractors == [
+        "support-one_2026-04-27",
+        "stop-two_2026-04-27",
+        "allow-three_2026-04-27",
+    ]
+
+
 def test_format_topos_summary_with_semeion():
     topos = Topos(
         id="cc-ham-hogg-0402",
