@@ -730,6 +730,38 @@ class TestVADSlicing:
         assert np.all(samples[:1024] == int(0.005 * 32767))
         assert np.any(samples[-1024:] != 0)
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_vad_final_wav_keeps_short_intra_segment_pause(self, mock_sd):
+        """Final WAV trimming should preserve pauses shorter than the silence boundary."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+        for _ in range(4):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+        for _ in range(20):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+
+        samples = _decode_wav_samples(cap.stop())
+        pause_start = 5 * 1024
+        pause_end = 9 * 1024
+
+        assert samples.size == 14 * 1024
+        assert np.any(samples[:pause_start] != 0)
+        assert np.all(samples[pause_start:pause_end] == 0)
+        assert np.any(samples[pause_end:] != 0)
+        assert np.any(samples[-1024:] != 0)
+
     @patch("spoke.capture.sd")
     def test_vad_grace_period_does_not_misclassify_silence_as_speech(self, mock_sd):
         """Silence-only recording during grace period should produce empty WAV."""

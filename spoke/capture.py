@@ -581,8 +581,7 @@ class AudioCapture:
                 self._speech_trigger_count = 0
         else:
             self._current_segment_chunks.append(chunk)
-            if is_speech_now:
-                self._speech_chunks.append(chunk)
+            self._speech_chunks.append(chunk)
 
             force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
 
@@ -598,6 +597,9 @@ class AudioCapture:
                         self._queue_callback_event("vad", False)
                     self._speech_trigger_count = 0
                     self._silence_trigger_count = 0
+
+                    if not force_slice and self._speech_chunks:
+                        del self._speech_chunks[-MIN_SILENCE_FRAMES:]
 
                     if self._encode_queue is not None:
                         segment_samples = np.concatenate(self._current_segment_chunks)
