@@ -1864,8 +1864,9 @@ class SpokeAppDelegate(NSObject):
             self._cancel_spring_active = True
             self._cancel_spring_start = time.monotonic()
             self._detector.cancel_spring_active = True
-            if self._command_overlay is not None:
-                self._command_overlay.set_cancel_spring(1.0)
+            command_overlay = getattr(self, "_command_overlay", None)
+            if command_overlay is not None:
+                command_overlay.set_cancel_spring(1.0)
             return  # don't start recording
 
         if self._transcribing and tts_playing:
@@ -1873,9 +1874,10 @@ class SpokeAppDelegate(NSObject):
             tts.cancel()
             # Fall through to start recording (generation continues)
         # Keep the detector flag aligned with the overlay's real visible state.
+        command_overlay = getattr(self, "_command_overlay", None)
         overlay_visible = (
-            self._command_overlay is not None
-            and getattr(self._command_overlay, "_visible", False)
+            command_overlay is not None
+            and getattr(command_overlay, "_visible", False)
         )
         self._detector.command_overlay_active = overlay_visible
         logger.info("command_overlay_active -> %s (hold start)", overlay_visible)

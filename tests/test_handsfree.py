@@ -27,7 +27,7 @@ class TestHandsFreeControllerWakeWords:
         monkeypatch.setenv("SPOKE_WAKEWORD_LISTEN_MODEL", "/tmp/listen.tflite")
         monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_MODEL", "/tmp/sleep.tflite")
         monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
-        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+        monkeypatch.setattr(HandsFreeController, "_wakeword_listener_cls", FakeWakeWordListener)
 
         controller = HandsFreeController(delegate=MagicMock())
 
@@ -52,7 +52,7 @@ class TestHandsFreeControllerWakeWords:
         monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_MODEL", "/tmp/sleep.tflite")
         monkeypatch.setenv("SPOKE_WAKEWORD_TESSERA_MODEL", "/tmp/tessera.onnx")
         monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
-        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+        monkeypatch.setattr(HandsFreeController, "_wakeword_listener_cls", FakeWakeWordListener)
         monkeypatch.setattr("spoke.handsfree.os.path.exists", lambda path: True)
 
         controller = HandsFreeController(delegate=MagicMock())
@@ -80,7 +80,7 @@ class TestHandsFreeControllerWakeWords:
         monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_MODEL", "/tmp/sleep.tflite")
         monkeypatch.setenv("SPOKE_WAKEWORD_TESSERA_MODEL", "/tmp/tessera.onnx")
         monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
-        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+        monkeypatch.setattr(HandsFreeController, "_wakeword_listener_cls", FakeWakeWordListener)
         monkeypatch.setattr(
             "spoke.handsfree.os.path.exists",
             lambda path: path != "/tmp/tessera.onnx",
@@ -104,7 +104,7 @@ class TestHandsFreeControllerWakeWords:
 
         monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
         monkeypatch.setenv("SPOKE_WAKEWORD_TESSERA_MODEL", "/tmp/tessera.onnx")
-        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+        monkeypatch.setattr(HandsFreeController, "_wakeword_listener_cls", FakeWakeWordListener)
         monkeypatch.setattr(
             "spoke.handsfree.os.path.exists",
             lambda path: path != "/tmp/tessera.onnx",
@@ -129,7 +129,7 @@ class TestHandsFreeControllerWakeWords:
         monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
         monkeypatch.setenv("SPOKE_WAKEWORD_LISTEN_SENSITIVITY", "0.72")
         monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_SENSITIVITY", "0.43")
-        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+        monkeypatch.setattr(HandsFreeController, "_wakeword_listener_cls", FakeWakeWordListener)
 
         controller = HandsFreeController(delegate=MagicMock())
 

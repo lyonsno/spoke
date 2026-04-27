@@ -498,7 +498,9 @@ class TTSClient:
             return
         logger.info("Unloading TTS model %s", self._model_id)
         self._model = None
-        self._warm_completed.clear()
+        warm_completed = getattr(self, "_warm_completed", None)
+        if warm_completed is not None:
+            warm_completed.clear()
 
     @property
     def is_loaded(self) -> bool:

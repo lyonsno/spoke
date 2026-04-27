@@ -268,69 +268,63 @@ class TestParakeetTranscribeWithMock:
 class TestParakeetWiring:
     """Tests for __main__.py wiring — preview-only guard and model_allowed."""
 
-    def test_parakeet_in_model_options(self):
+    def test_parakeet_in_model_options(self, main_module):
         """Parakeet must appear in _MODEL_OPTIONS."""
-        from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
-        ids = [mid for mid, _label in SpokeAppDelegate._MODEL_OPTIONS]
+        ids = [mid for mid, _label in main_module.SpokeAppDelegate._MODEL_OPTIONS]
         assert _PARAKEET_MODEL_ID in ids
 
-    def test_parakeet_in_preview_only_models(self):
+    def test_parakeet_in_preview_only_models(self, main_module):
         """Parakeet must be in _PREVIEW_ONLY_MODELS."""
-        from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
-        assert _PARAKEET_MODEL_ID in SpokeAppDelegate._PREVIEW_ONLY_MODELS
+        assert _PARAKEET_MODEL_ID in main_module.SpokeAppDelegate._PREVIEW_ONLY_MODELS
 
-    def test_sanitize_transcription_role_rejects_parakeet(self, monkeypatch, tmp_path):
+    def test_sanitize_transcription_role_rejects_parakeet(self, main_module, monkeypatch, tmp_path):
         """_sanitize_model_id must fall back when Parakeet is used for transcription."""
-        from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
         # Patch RAM and model-allowed to allow it superficially
-        monkeypatch.setattr("spoke.__main__._RAM_GB", 128.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 128.0)
 
-        delegate = SpokeAppDelegate.__new__(SpokeAppDelegate)
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         result = delegate._sanitize_model_id(_PARAKEET_MODEL_ID, role="transcription")
         assert result != _PARAKEET_MODEL_ID
 
-    def test_sanitize_preview_role_allows_parakeet_when_files_present(self, tmp_path, monkeypatch):
+    def test_sanitize_preview_role_allows_parakeet_when_files_present(self, main_module, tmp_path, monkeypatch):
         """_sanitize_model_id must allow Parakeet for preview when model files exist."""
-        from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
         encoder_dir = tmp_path / "AudioEncoder.mlmodelc"
         encoder_dir.mkdir()
         monkeypatch.setenv("SPOKE_PARAKEET_MODEL_DIR", str(tmp_path))
-        monkeypatch.setattr("spoke.__main__._RAM_GB", 128.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 128.0)
 
-        delegate = SpokeAppDelegate.__new__(SpokeAppDelegate)
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         result = delegate._sanitize_model_id(_PARAKEET_MODEL_ID, role="preview")
         assert result == _PARAKEET_MODEL_ID
 
-    def test_model_allowed_false_when_no_files(self, tmp_path, monkeypatch):
+    def test_model_allowed_false_when_no_files(self, main_module, tmp_path, monkeypatch):
         """_model_allowed must return False when Parakeet files are absent.
 
         Both the env-var path and the HF snapshot fallback must be neutralized
         so the test is not sensitive to whether the real model is cached locally.
         """
         from pathlib import Path
-        from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
         # Point env var at an empty dir (no AudioEncoder.mlmodelc)
         monkeypatch.setenv("SPOKE_PARAKEET_MODEL_DIR", str(tmp_path))
         # Redirect Path.home() so the HF snapshot fallback also finds nothing
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        assert SpokeAppDelegate._model_allowed(_PARAKEET_MODEL_ID) is False
+        assert main_module.SpokeAppDelegate._model_allowed(_PARAKEET_MODEL_ID) is False
 
-    def test_model_allowed_true_when_encoder_present(self, tmp_path, monkeypatch):
+    def test_model_allowed_true_when_encoder_present(self, main_module, tmp_path, monkeypatch):
         """_model_allowed must return True when AudioEncoder.mlmodelc exists."""
-        from spoke.__main__ import SpokeAppDelegate
         from spoke.transcribe_parakeet import _PARAKEET_MODEL_ID
 
         encoder_dir = tmp_path / "AudioEncoder.mlmodelc"
         encoder_dir.mkdir()
         monkeypatch.setenv("SPOKE_PARAKEET_MODEL_DIR", str(tmp_path))
-        assert SpokeAppDelegate._model_allowed(_PARAKEET_MODEL_ID) is True
+        assert main_module.SpokeAppDelegate._model_allowed(_PARAKEET_MODEL_ID) is True

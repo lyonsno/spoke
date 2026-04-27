@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from spoke.epistaxis_operator import EpistaxisOperator, EpistaxisOperatorError, main
+import spoke.epistaxis_operator as epistaxis_operator
+
+EpistaxisOperator = epistaxis_operator.EpistaxisOperator
+EpistaxisOperatorError = epistaxis_operator.EpistaxisOperatorError
+main = epistaxis_operator.main
 
 
 def _make_epistaxis_root(tmp_path: Path) -> Path:
@@ -32,7 +36,7 @@ def _completed(*, stdout: str = "") -> subprocess.CompletedProcess[str]:
 
 def test_refuses_inert_main_checkout(tmp_path, monkeypatch):
     root = _make_epistaxis_root(tmp_path)
-    monkeypatch.setattr("spoke.epistaxis_operator._INERT_EPISTAXIS_MAIN", root)
+    monkeypatch.setattr(epistaxis_operator, "_INERT_EPISTAXIS_MAIN", root)
     operator = EpistaxisOperator(root, "spoke")
 
     with pytest.raises(EpistaxisOperatorError, match="inert Epistaxis main checkout"):
@@ -169,7 +173,8 @@ def test_main_cli_reads_json_plan_and_prints_results(tmp_path, monkeypatch, caps
 
     monkeypatch.setattr(subprocess, "run", _run)
     monkeypatch.setattr(
-        "spoke.epistaxis_operator.EpistaxisOperator",
+        epistaxis_operator,
+        "EpistaxisOperator",
         lambda epistaxis_root, target_repo: operator,
     )
 

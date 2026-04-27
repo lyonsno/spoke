@@ -103,6 +103,8 @@ class HandsFreeController:
         clients, injection, menubar, overlay.
     """
 
+    _wakeword_listener_cls = None
+
     def __init__(self, delegate) -> None:
         self._delegate = delegate
         self._state = HandsFreeState.DORMANT
@@ -177,6 +179,14 @@ class HandsFreeController:
         if self.on_state_change is not None:
             self.on_state_change(new_state)
 
+    def _make_wakeword_listener(self, **kwargs):
+        listener_cls = self._wakeword_listener_cls
+        if listener_cls is None:
+            from .wakeword import WakeWordListener
+
+            listener_cls = WakeWordListener
+        return listener_cls(**kwargs)
+
     # ── Enable / Disable ─────────────────────────────────────
 
     def enable(self) -> None:
@@ -189,7 +199,6 @@ class HandsFreeController:
             logger.error("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY not set — cannot enable hands-free")
             return
 
-        from .wakeword import WakeWordListener
         sensitivities = None
         if self._listen_sensitivity is not None or self._sleep_sensitivity is not None:
             sensitivities = [
@@ -212,7 +221,7 @@ class HandsFreeController:
             model_paths = [self._listen_model, self._sleep_model]
             if tessera_model:
                 model_paths.append(tessera_model)
-            self._wakeword = WakeWordListener(
+            self._wakeword = self._make_wakeword_listener(
                 access_key="",
                 backend="openwakeword",
                 model_paths=model_paths,
@@ -227,7 +236,7 @@ class HandsFreeController:
                     tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
                 ] = "tessera"
         elif self._listen_ppn and self._sleep_ppn:
-            self._wakeword = WakeWordListener(
+            self._wakeword = self._make_wakeword_listener(
                 access_key=self._access_key,
                 backend="porcupine",
                 keyword_paths=[self._listen_ppn, self._sleep_ppn],
@@ -244,7 +253,7 @@ class HandsFreeController:
                     tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
                 ] = "tessera"
         else:
-            self._wakeword = WakeWordListener(
+            self._wakeword = self._make_wakeword_listener(
                 access_key=self._access_key,
                 backend="porcupine",
                 keywords=[self._listen_keyword, self._sleep_keyword],

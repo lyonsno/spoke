@@ -105,7 +105,11 @@ class EpistaxisOperator:
         return results
 
     def _ensure_worktree_guardrails(self) -> None:
-        if self._root == _INERT_EPISTAXIS_MAIN.resolve():
+        try:
+            is_inert_main = self._root.samefile(_INERT_EPISTAXIS_MAIN)
+        except FileNotFoundError:
+            is_inert_main = self._root == _INERT_EPISTAXIS_MAIN.resolve()
+        if is_inert_main:
             raise EpistaxisOperatorError(
                 f"refusing to mutate inert Epistaxis main checkout: {self._root}"
             )
