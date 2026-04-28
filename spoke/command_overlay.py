@@ -1340,7 +1340,7 @@ class CommandOverlay(NSObject):
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)
         known_content_optical_start = (
-            bool(initial_response) and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            has_initial_transcript and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
         )
         self._response_text = ""
         self._utterance_text = ""
@@ -1406,10 +1406,10 @@ class CommandOverlay(NSObject):
                 known_content_optical_start
                 and self._scroll_view is not None
             ):
-                # Recalled/history content should not expose the ordinary
-                # attributed-text layer before the compositor switches to
-                # punch-through text.  The fallback path unhides it again if
-                # the compositor is unavailable.
+                # Initial text should not expose the ordinary attributed-text
+                # layer before the compositor switches to punch-through text.
+                # The fallback path unhides it again if the compositor is
+                # unavailable.
                 self._scroll_view.setHidden_(True)
 
             if initial_response:
@@ -1422,10 +1422,10 @@ class CommandOverlay(NSObject):
 
         self._window.orderFrontRegardless()
         if known_content_optical_start:
-            # Recalled/history content already has its final text.  Arm the
-            # optical compositor while the command window is still alpha-zero
-            # so the user sees one composed entrance, not plain text -> warp ->
-            # punch-through as separate phases.
+            # Initial text is already laid out. Arm the optical compositor
+            # while the command window is still alpha-zero so the user sees one
+            # composed entrance, not plain text -> warp -> punch-through as
+            # separate phases.
             self._start_fullscreen_compositor()
             self._refresh_punchthrough_mask_if_needed()
             if getattr(self, "_fullscreen_compositor", None) is None:
