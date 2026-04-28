@@ -984,13 +984,21 @@ class OverlayCompositorHost:
                 "content_view": content_view,
                 "snapshot": None,
                 "generation": 0,
+                "client": None,
             }
             self._clients[identity.client_id] = entry
         else:
             entry["identity"] = identity
             entry["window"] = window
             entry["content_view"] = content_view
-        return OverlayCompositorClient(self, identity)
+        client = entry.get("client")
+        if client is None or getattr(client, "_host", None) is not self:
+            client = OverlayCompositorClient(self, identity)
+            entry["client"] = client
+        else:
+            client.identity = identity
+            client._client_id = identity.client_id
+        return client
 
     def unregister_client(self, client_id: str) -> None:
         self.release_client(client_id)

@@ -254,6 +254,31 @@ def test_duplicate_client_id_on_same_display_replaces_snapshot_without_second_ho
     assert rendered[0].material.initial_brightness == pytest.approx(0.9)
 
 
+def test_duplicate_client_registration_returns_same_live_handle(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    screen = object()
+    host = registry.host_for_screen(screen)
+
+    first = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(511),
+        content_view=object(),
+    )
+    second = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(512),
+        content_view=object(),
+    )
+
+    assert second is first
+    assert second.publish(_snapshot("assistant.command", generation=2, brightness=0.9))
+    second.release()
+
+    assert _FakeFullScreenCompositor.instances[0].stop_calls == 1
+    assert registry.host_for_screen(screen) is not host
+
+
 def test_overlay_compositor_session_exposes_refresh_brightness():
     from spoke.fullscreen_compositor import _OverlayCompositorSession
 
