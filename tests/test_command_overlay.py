@@ -23,6 +23,11 @@ def _make_rect(x, y, width, height):
 
 def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
+    for name in list(sys.modules):
+        if name == "Quartz" or name.startswith("Quartz."):
+            sys.modules.pop(name, None)
+    sys.modules.update(mock_pyobjc)
+    sys.modules["Quartz.CoreGraphics"] = mock_pyobjc["Quartz"]
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
     mod._start_overlay_fill_worker = lambda work: work()
