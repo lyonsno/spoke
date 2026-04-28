@@ -597,15 +597,10 @@ class MetalWarpPipeline:
                     grid_offset_x=float(box_x0),
                     grid_offset_y=float(box_y0),
                 )
-                if self._params_buffer is not None:
-                    contents_ptr = self._params_buffer.contents()
-                    if contents_ptr is not None:
-                        ctypes.memmove(contents_ptr, params_data, len(params_data))
-                        params_buffer = self._params_buffer
-                    else:
-                        params_buffer = _create_metal_buffer(self._device, params_data)
-                else:
-                    params_buffer = _create_metal_buffer(self._device, params_data)
+                # Each queued encoder reads params later, when the command
+                # buffer executes. Reusing one mutable buffer here makes every
+                # shell see whichever config was written last.
+                params_buffer = _create_metal_buffer(self._device, params_data)
                 if params_buffer is None:
                     continue
                 encoder = command_buffer.computeCommandEncoder()
