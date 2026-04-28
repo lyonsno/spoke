@@ -71,6 +71,53 @@ class TestTerminalOperator:
         assert result["stdout_truncated"] is False
         assert result["stderr_truncated"] is False
 
+    def test_epistaxis_helper_resolves_from_user_local_bin_after_approval(self, tmp_path):
+        from spoke import terminal_operator as terminal_operator
+
+        user_local_bin = str(Path.home() / ".local" / "bin")
+        resolved = f"{user_local_bin}/epistaxis"
+
+        def fake_which(name, path):
+            assert name == "epistaxis"
+            assert user_local_bin in path.split(os.pathsep)
+            return resolved
+
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == [resolved, "zetesis", "what is current state?"]
+            assert user_local_bin in env["PATH"].split(os.pathsep)
+            assert env["HOME"] == "/tmp/epistaxis-home"
+            assert env["CODEX_THREAD_ID"] == "thread-123"
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=b"state\n",
+                stderr=b"",
+            )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HOME": "/tmp/epistaxis-home",
+                    "CODEX_THREAD_ID": "thread-123",
+                },
+                clear=False,
+            ),
+            patch("shutil.which", side_effect=fake_which),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = terminal_operator.TerminalOperator().execute_command(
+                ["epistaxis", "zetesis", "what is current state?"],
+                cwd=str(tmp_path),
+                approval_granted=True,
+            )
+
+        assert result["decision"] == "allow"
+        assert result["executed"] is True
+        assert result["policy_decision"] == "approval_required"
+        assert result["approval_state"] == "granted"
+        assert result["stdout"] == "state\n"
+
     def test_execute_decodes_invalid_binary_output_without_crashing(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 

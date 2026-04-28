@@ -20,7 +20,18 @@ _DEFAULT_CWD = Path.home() / "dev"
 _MAX_TIMEOUT_SECONDS = 30
 _DEFAULT_TIMEOUT_SECONDS = 10
 _DEFAULT_MAX_OUTPUT_CHARS = 4000
-_EXECUTABLE_SEARCH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+_USER_LOCAL_BIN = str(Path.home() / ".local" / "bin")
+_EXECUTABLE_SEARCH_PATH = os.pathsep.join(
+    (
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        _USER_LOCAL_BIN,
+    )
+)
 _SHELL_CONTROL_TOKENS = frozenset({"|", "||", "&&", ";", "<", ">", ">>", "&", "2>", "2>>"})
 _ALLOWED_CWD_ROOTS = (
     _DEFAULT_CWD,
@@ -83,8 +94,18 @@ _APPROVAL_PREFIXES = (
     ("kill",),
     ("open",),
     ("osascript",),
+    ("epistaxis",),
+    ("epistaxis-create-worktree",),
+    ("epistaxis-commit",),
 )
 _PATH_SCOPED_ALLOW_COMMANDS = frozenset({"cat", "head", "tail", "ls", "rg"})
+_EPISTAXIS_EXECUTABLES = frozenset(
+    {
+        "epistaxis",
+        "epistaxis-create-worktree",
+        "epistaxis-commit",
+    }
+)
 _BASE_EXECUTION_ENV = {
     "PATH": _EXECUTABLE_SEARCH_PATH,
     "LANG": "C",
@@ -99,6 +120,19 @@ _GIT_ENV_PASSTHROUGH = (
     "XDG_CONFIG_HOME",
     "GH_CONFIG_DIR",
     "SSH_AUTH_SOCK",
+)
+_EPISTAXIS_ENV_PASSTHROUGH = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "XDG_CONFIG_HOME",
+    "GH_CONFIG_DIR",
+    "SSH_AUTH_SOCK",
+    "CODEX_THREAD_ID",
+    "EPISTAXIS_LIVE_TOOLS_ROOT",
+    "EPISTAXIS_BOOTSTRAP_SOURCE_REPO",
+    "EPISTAXIS_BIN_DIR",
 )
 _RG_SHORT_VALUE_FLAGS = frozenset({"A", "B", "C", "e", "f", "g", "j", "m", "M", "t", "T"})
 _EXECUTION_ENV_OVERRIDES = {
@@ -341,6 +375,11 @@ class TerminalOperator:
         env = dict(_BASE_EXECUTION_ENV)
         if executable_name == "git":
             for key in _GIT_ENV_PASSTHROUGH:
+                value = os.environ.get(key)
+                if value:
+                    env[key] = value
+        if executable_name in _EPISTAXIS_EXECUTABLES:
+            for key in _EPISTAXIS_ENV_PASSTHROUGH:
                 value = os.environ.get(key)
                 if value:
                     env[key] = value
