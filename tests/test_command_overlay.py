@@ -809,6 +809,52 @@ class TestWindowLayering:
 
         assert observed[0] == -1.0
 
+    def test_show_hides_stale_fill_until_first_paint_rebuild_is_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        queued = []
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._fill_image_signature = ("old-dark-fill",)
+        overlay._fill_payload = b"old-fill"
+        overlay.set_brightness(0.86, immediate=True)
+        overlay._fill_layer.reset_mock()
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert queued, "first-paint fill rebuild should be pending asynchronously"
+        overlay._fill_layer.setHidden_.assert_called_with(True)
+        pending_signature = overlay._desired_fill_image_signature
+        assert overlay._fill_hidden_until_signature == pending_signature
+
+        overlay.fillImageReady_(
+            {
+                "signature": pending_signature,
+                "geom_key": ("geom",),
+                "fallback_alpha": None,
+                "raw_interior": None,
+                "edge_ridge": None,
+                "inside_mask": None,
+                "ext_exterior": None,
+                "cached_fill_alpha": None,
+                "sdf_appearance_b": -1.0,
+                "payload": b"fresh-fill",
+                "total_w": 680.0,
+                "total_h": 160.0,
+                "scale": 2.0,
+                "image": "fresh-fill-image",
+                "has_compositor": False,
+            }
+        )
+
+        overlay._fill_layer.setHidden_.assert_called_with(False)
+        assert overlay._fill_hidden_until_signature is None
+
     def test_optical_show_defers_heavy_backdrop_startup_until_after_first_paint(
         self, mock_pyobjc, monkeypatch
     ):

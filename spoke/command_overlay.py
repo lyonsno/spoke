@@ -933,6 +933,8 @@ class CommandOverlay(NSObject):
         self._brightness = 0.0
         self._brightness_target = 0.0
         self._brightness_seeded_externally = False  # True once set_brightness() is called
+        self._suppress_stale_fill_until_ready = False
+        self._fill_hidden_until_signature = None
         self._backdrop_base_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_base_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
@@ -1367,52 +1369,56 @@ class CommandOverlay(NSObject):
         self._tool_mode = False
         self._pulse_timer = None
         self._seed_brightness_from_screen()
+        self._suppress_stale_fill_until_ready = True
 
         # Reset geometry
-        screen_frame = self._screen.frame()
-        sw = screen_frame.size.width
-        f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
-        x = (sw - _OVERLAY_WIDTH) / 2 - f
-        self._window.setFrame_display_animate_(
-            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
-                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
-            True, False
-        )
-        self._content_view.setFrame_(
-            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
-        )
-        self._scroll_view.setFrame_(
-            NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
-        )
-        self._reset_text_geometry(self._scroll_view.frame().size.height)
-        if not has_initial_transcript:
-            self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
-            self._fill_image_brightness = self._brightness
-        else:
-            # Do not let an old fill image masquerade as current during entrance.
-            # show() may reuse the same geometry across very different background
-            # brightness values; force the first theme pass to publish the current
-            # material before the window fades in.
-            self._fill_image_brightness = -1.0
-        self._apply_surface_theme()
-        self._update_backdrop_capture_geometry()
-        self._apply_backdrop_pulse_style(1.0)
-        self._reset_backdrop_layer()
-        if (
-            known_content_optical_start
-            and self._scroll_view is not None
-        ):
-            # Recalled/history content should not expose the ordinary
-            # attributed-text layer before the compositor switches to
-            # punch-through text.  The fallback path unhides it again if
-            # the compositor is unavailable.
-            self._scroll_view.setHidden_(True)
+        try:
+            screen_frame = self._screen.frame()
+            sw = screen_frame.size.width
+            f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+            x = (sw - _OVERLAY_WIDTH) / 2 - f
+            self._window.setFrame_display_animate_(
+                NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                           _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
+                True, False
+            )
+            self._content_view.setFrame_(
+                NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+            )
+            self._scroll_view.setFrame_(
+                NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
+            )
+            self._reset_text_geometry(self._scroll_view.frame().size.height)
+            if not has_initial_transcript:
+                self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+                self._fill_image_brightness = self._brightness
+            else:
+                # Do not let an old fill image masquerade as current during entrance.
+                # show() may reuse the same geometry across very different background
+                # brightness values; force the first theme pass to publish the current
+                # material before the window fades in.
+                self._fill_image_brightness = -1.0
+            self._apply_surface_theme()
+            self._update_backdrop_capture_geometry()
+            self._apply_backdrop_pulse_style(1.0)
+            self._reset_backdrop_layer()
+            if (
+                known_content_optical_start
+                and self._scroll_view is not None
+            ):
+                # Recalled/history content should not expose the ordinary
+                # attributed-text layer before the compositor switches to
+                # punch-through text.  The fallback path unhides it again if
+                # the compositor is unavailable.
+                self._scroll_view.setHidden_(True)
 
-        if initial_response:
-            self._utterance_text = initial_utterance
-            self.set_response_text(initial_response)
-        elif initial_utterance:
-            self.set_utterance(initial_utterance)
+            if initial_response:
+                self._utterance_text = initial_utterance
+                self.set_response_text(initial_response)
+            elif initial_utterance:
+                self.set_utterance(initial_utterance)
+        finally:
+            self._suppress_stale_fill_until_ready = False
 
         self._window.orderFrontRegardless()
         if known_content_optical_start:
@@ -2744,6 +2750,21 @@ class CommandOverlay(NSObject):
 
     # ── ridge masks ────────────────────────────────────────
 
+    def _hide_stale_fill_until_ready(self, signature) -> None:
+        """Prevent an old fill image from flashing during first paint."""
+        self._fill_hidden_until_signature = signature
+        fill_layer = getattr(self, "_fill_layer", None)
+        if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
+            fill_layer.setHidden_(True)
+
+    def _unhide_fill_if_ready(self, signature) -> None:
+        if getattr(self, "_fill_hidden_until_signature", None) != signature:
+            return
+        fill_layer = getattr(self, "_fill_layer", None)
+        if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
+            fill_layer.setHidden_(False)
+        self._fill_hidden_until_signature = None
+
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge mask + build fill image.
 
@@ -2782,7 +2803,10 @@ class CommandOverlay(NSObject):
                 or getattr(self, "_spring_tint_mask_signature", None) == appearance_key
             )
         ):
+            self._unhide_fill_if_ready(appearance_key)
             return
+        if getattr(self, "_suppress_stale_fill_until_ready", False):
+            self._hide_stale_fill_until_ready(appearance_key)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
             if hasattr(self._fill_layer, "setContentsScale_"):
@@ -2794,6 +2818,8 @@ class CommandOverlay(NSObject):
         if pending is not None:
             if pending != appearance_key:
                 self._queued_fill_request = (width, height)
+                if getattr(self, "_fill_hidden_until_signature", None) == pending:
+                    self._fill_hidden_until_signature = appearance_key
             return
 
         self._pending_fill_image_signature = appearance_key
@@ -2943,6 +2969,7 @@ class CommandOverlay(NSObject):
         error = payload.get("error")
         if error:
             logger.debug("Command overlay fill image generation failed: %s", error)
+            self._unhide_fill_if_ready(signature)
             return
         self._fill_payload = payload.get("payload")
         self._fill_image_signature = signature
@@ -2963,6 +2990,7 @@ class CommandOverlay(NSObject):
                     self._fill_layer.setCompositingFilter_(
                         _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
                     )
+            self._unhide_fill_if_ready(signature)
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
             mask = CALayer.alloc().init()
