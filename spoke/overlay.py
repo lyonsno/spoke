@@ -124,6 +124,18 @@ _WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 _POINTS_PER_CM = 72.0 / 2.54
+_PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC", 0.8
+)
+_PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS", 20.0
+)
+_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII", 2.0
+)
+_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII", 2.0
+)
 _PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION", 1.55
 )
@@ -135,11 +147,17 @@ _PREVIEW_OPTICAL_SHELL_TAIL_MM = _env(
 )
 _PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS",
-    (_PREVIEW_OPTICAL_SHELL_BAND_MM / 10.0) * _POINTS_PER_CM * 2.6,
+    (_PREVIEW_OPTICAL_SHELL_BAND_MM / 10.0) * _POINTS_PER_CM,
 )
 _PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS",
     (_PREVIEW_OPTICAL_SHELL_TAIL_MM / 10.0) * _POINTS_PER_CM * 0.75,
+)
+_PREVIEW_OPTICAL_SHELL_X_SQUEEZE = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_X_SQUEEZE", 2.5
+)
+_PREVIEW_OPTICAL_SHELL_Y_SQUEEZE = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_Y_SQUEEZE", 1.5
 )
 _PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
@@ -378,6 +396,25 @@ def _ontology_text_rgb(text_lum: float) -> tuple[float, float, float]:
     return (0.07, 0.10, 0.19)
 
 
+def _preview_warp_tuning_defaults() -> dict[str, float]:
+    band_width_points = (_PREVIEW_OPTICAL_SHELL_BAND_MM / 10.0) * _POINTS_PER_CM
+    tail_width_points = (_PREVIEW_OPTICAL_SHELL_TAIL_MM / 10.0) * _POINTS_PER_CM
+    return {
+        "inflation_x_radii": _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII,
+        "inflation_y_radii": _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII,
+        "core_magnification": _PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION,
+        "band_width_points": band_width_points,
+        "tail_width_points": tail_width_points,
+        "ring_amplitude_points": _PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS,
+        "tail_amplitude_points": _PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS,
+        "bleed_zone_frac": _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC,
+        "exterior_mix_width_points": _PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS,
+        "x_squeeze": _PREVIEW_OPTICAL_SHELL_X_SQUEEZE,
+        "y_squeeze": _PREVIEW_OPTICAL_SHELL_Y_SQUEEZE,
+        "cleanup_blur_radius_points": _PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
+    }
+
+
 class TranscriptionOverlay(NSObject):
     """Manages a frosted overlay window for live transcription preview."""
 
@@ -414,6 +451,7 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_client = None
         self._preview_compositor_identity = None
         self._preview_compositor_generation = 0
+        self._preview_warp_tuning_overrides: dict[str, float] = {}
 
         # Recovery mode state
         self._recovery_mode = False
@@ -436,6 +474,40 @@ class TranscriptionOverlay(NSObject):
         self._last_color_key = None  # last key applied to text storage
         self._typewriter_layout_step = 0  # coalescing counter for _update_layout
         return self
+
+    def preview_warp_tuning_snapshot(self) -> dict[str, float]:
+        tuning = _preview_warp_tuning_defaults()
+        tuning.update(getattr(self, "_preview_warp_tuning_overrides", {}))
+        return tuning
+
+    def set_preview_warp_tuning_value(self, key: str, value: float) -> None:
+        self.update_preview_warp_tuning(**{key: value})
+
+    def update_preview_warp_tuning(self, **updates: float) -> None:
+        defaults = _preview_warp_tuning_defaults()
+        overrides = dict(getattr(self, "_preview_warp_tuning_overrides", {}))
+        for key, value in updates.items():
+            if key not in defaults:
+                continue
+            numeric = float(value)
+            if abs(numeric - defaults[key]) <= 1e-6:
+                overrides.pop(key, None)
+            else:
+                overrides[key] = numeric
+        self._preview_warp_tuning_overrides = overrides
+        self._reapply_preview_warp_tuning()
+
+    def reset_preview_warp_tuning(self) -> None:
+        self._preview_warp_tuning_overrides = {}
+        self._reapply_preview_warp_tuning()
+
+    def _reapply_preview_warp_tuning(self) -> None:
+        if (
+            self._visible
+            and not getattr(self, "_tray_mode", False)
+            and not getattr(self, "_recovery_mode", False)
+        ):
+            self._publish_preview_compositor_snapshot(visible=True)
 
     def setup(self) -> None:
         """Create the overlay window."""
@@ -578,6 +650,12 @@ class TranscriptionOverlay(NSObject):
         screen_frame = self._screen.frame()
         window_frame = self._window.frame()
         content_frame = self._content_view.frame()
+        tuning = self.preview_warp_tuning_snapshot()
+        visible_width = float(content_frame.size.width)
+        visible_height = float(content_frame.size.height)
+        shell_body_corner_r = min(_OVERLAY_CORNER_RADIUS, visible_height * 0.5)
+        shell_width = visible_width + tuning["inflation_x_radii"] * shell_body_corner_r
+        shell_height = visible_height + tuning["inflation_y_radii"] * shell_body_corner_r
 
         screen_origin_x = getattr(getattr(screen_frame, "origin", None), "x", 0.0)
         screen_origin_y = getattr(getattr(screen_frame, "origin", None), "y", 0.0)
@@ -597,28 +675,29 @@ class TranscriptionOverlay(NSObject):
         return OpticalShellGeometrySnapshot(
             center_x=float(capsule_cx) * scale,
             center_y=float(capsule_cy_metal) * scale,
-            content_width_points=float(content_frame.size.width) * scale,
-            content_height_points=float(content_frame.size.height) * scale,
-            corner_radius_points=float(_OVERLAY_CORNER_RADIUS) * scale,
-            band_width_points=(
-                (_PREVIEW_OPTICAL_SHELL_BAND_MM / 10.0) * _POINTS_PER_CM * scale
-            ),
-            tail_width_points=(
-                (_PREVIEW_OPTICAL_SHELL_TAIL_MM / 10.0) * _POINTS_PER_CM * scale
-            ),
+            content_width_points=shell_width * scale,
+            content_height_points=shell_height * scale,
+            corner_radius_points=shell_body_corner_r * scale,
+            band_width_points=tuning["band_width_points"] * scale,
+            tail_width_points=tuning["tail_width_points"] * scale,
         )
 
     def _preview_compositor_material_snapshot(self):
         from spoke.fullscreen_compositor import OpticalShellMaterialSnapshot
 
         brightness = min(max(float(getattr(self, "_brightness", 0.0)), 0.0), 1.0)
+        tuning = self.preview_warp_tuning_snapshot()
         return OpticalShellMaterialSnapshot(
             initial_brightness=brightness,
             min_brightness=0.0,
-            core_magnification=_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION,
-            ring_amplitude_points=_PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS,
-            tail_amplitude_points=_PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS,
-            cleanup_blur_radius_points=_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
+            core_magnification=tuning["core_magnification"],
+            ring_amplitude_points=tuning["ring_amplitude_points"],
+            tail_amplitude_points=tuning["tail_amplitude_points"],
+            bleed_zone_frac=tuning["bleed_zone_frac"],
+            exterior_mix_width_points=tuning["exterior_mix_width_points"],
+            x_squeeze=tuning["x_squeeze"],
+            y_squeeze=tuning["y_squeeze"],
+            cleanup_blur_radius_points=tuning["cleanup_blur_radius_points"],
             debug_visualize=False,
             debug_grid_spacing_points=18.0,
         )

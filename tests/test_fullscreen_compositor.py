@@ -141,6 +141,44 @@ def test_overlay_render_snapshot_is_immutable(monkeypatch):
     assert rendered.geometry.center_x == pytest.approx(1.0)
 
 
+def test_snapshot_round_trip_preserves_preview_warp_shape_controls():
+    from spoke.fullscreen_compositor import (
+        _snapshot_from_shell_config,
+        _snapshot_to_shell_config,
+    )
+
+    identity = _identity("preview.transcription", role="preview")
+    snapshot = _snapshot_from_shell_config(
+        identity,
+        {
+            "center_x": 123.0,
+            "center_y": 456.0,
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 11.3,
+            "tail_width_points": 8.5,
+            "initial_brightness": 0.37,
+            "bleed_zone_frac": 0.8,
+            "exterior_mix_width_points": 20.0,
+            "x_squeeze": 2.5,
+            "y_squeeze": 1.5,
+        },
+        generation=7,
+    )
+
+    assert snapshot.material.bleed_zone_frac == pytest.approx(0.8)
+    assert snapshot.material.exterior_mix_width_points == pytest.approx(20.0)
+    assert snapshot.material.x_squeeze == pytest.approx(2.5)
+    assert snapshot.material.y_squeeze == pytest.approx(1.5)
+
+    round_trip = _snapshot_to_shell_config(snapshot)
+    assert round_trip["bleed_zone_frac"] == pytest.approx(0.8)
+    assert round_trip["exterior_mix_width_points"] == pytest.approx(20.0)
+    assert round_trip["x_squeeze"] == pytest.approx(2.5)
+    assert round_trip["y_squeeze"] == pytest.approx(1.5)
+
+
 def test_registry_reuses_one_host_per_display_for_distinct_clients(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

@@ -3320,6 +3320,8 @@ class TestRuntimePhaseLogging:
             sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
             sys.modules["spoke.terraform_hud"] = MagicMock()
             sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = MagicMock()
+            sys.modules["spoke.preview_warp_hud"] = MagicMock()
+            sys.modules["spoke.preview_warp_hud"].PreviewWarpHUD.alloc.return_value.initWithOverlay_.return_value = MagicMock()
 
             d.applicationDidFinishLaunching_(None)
 
@@ -3332,6 +3334,45 @@ class TestRuntimePhaseLogging:
             is command_overlay.set_compositor_registry.call_args.args[0]
             is d._overlay_compositor_registry
         )
+
+    def test_application_launch_restores_preview_warp_hud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._quit = MagicMock()
+        d._command_client = MagicMock()
+        d._refresh_command_model_options_async = MagicMock()
+        d._request_mic_permission = MagicMock()
+        d._setup_event_tap = MagicMock()
+
+        menubar = MagicMock()
+        menubar.setup = MagicMock()
+        glow = MagicMock()
+        glow.setup = MagicMock()
+        overlay = MagicMock()
+        overlay.setup = MagicMock()
+        command_overlay = MagicMock()
+        command_overlay.setup = MagicMock()
+        preview_warp_hud = MagicMock()
+
+        with patch.object(main_module.MenuBarIcon, "alloc") as mock_menubar_alloc, \
+            patch.object(main_module.GlowOverlay, "alloc") as mock_glow_alloc, \
+            patch.object(main_module.TranscriptionOverlay, "alloc") as mock_overlay_alloc:
+            mock_menubar_alloc.return_value.initWithQuitCallback_selectModelCallback_.return_value = menubar
+            mock_glow_alloc.return_value.initWithScreen_.return_value = glow
+            mock_overlay_alloc.return_value.initWithScreen_.return_value = overlay
+            import sys
+            sys.modules["spoke.command_overlay"] = MagicMock()
+            sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
+            sys.modules["spoke.terraform_hud"] = MagicMock()
+            sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = MagicMock()
+            sys.modules["spoke.preview_warp_hud"] = MagicMock()
+            sys.modules["spoke.preview_warp_hud"].PreviewWarpHUD.alloc.return_value.initWithOverlay_.return_value = preview_warp_hud
+
+            d.applicationDidFinishLaunching_(None)
+
+        preview_warp_hud.restore_visibility.assert_called_once_with()
+        assert menubar._on_toggle_preview_warp is preview_warp_hud.toggle
 
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch

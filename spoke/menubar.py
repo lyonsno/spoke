@@ -88,6 +88,7 @@ class MenuBarIcon(NSObject):
         self._on_quit = on_quit
         self._on_select_model = on_select_model
         self._on_toggle_terraform = None
+        self._on_toggle_preview_warp = None
         self._on_toggle_handsfree = None
         self._status_item = None
         self._status_text = "Idle"
@@ -357,6 +358,13 @@ class MenuBarIcon(NSObject):
             terraform_item.setTarget_(self)
             menu.addItem_(terraform_item)
 
+        if getattr(self, "_on_toggle_preview_warp", None) is not None:
+            preview_warp_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Preview Warp Tuner", "togglePreviewWarp:", "w"
+            )
+            preview_warp_item.setTarget_(self)
+            menu.addItem_(preview_warp_item)
+
         if launch_target:
             menu.addItem_(NSMenuItem.separatorItem())
             for item_id, label, enabled in launch_target["items"]:
@@ -450,6 +458,10 @@ class MenuBarIcon(NSObject):
     def toggleTerraform_(self, sender) -> None:
         if self._on_toggle_terraform is not None:
             self._on_toggle_terraform()
+
+    def togglePreviewWarp_(self, sender) -> None:
+        if self._on_toggle_preview_warp is not None:
+            self._on_toggle_preview_warp()
 
     def quitApp_(self, sender) -> None:
         self._on_quit()

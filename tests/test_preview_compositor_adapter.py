@@ -274,9 +274,56 @@ def test_preview_adapter_publishes_preview_transcription_snapshot_without_starti
     assert snapshot.excluded_window_ids == (701,)
     assert snapshot.geometry.center_x == pytest.approx(1240.0)
     assert snapshot.geometry.center_y == pytest.approx(1160.0)
-    assert snapshot.geometry.content_width_points == pytest.approx(1200.0)
-    assert snapshot.geometry.content_height_points == pytest.approx(160.0)
+    assert snapshot.geometry.content_width_points == pytest.approx(1264.0)
+    assert snapshot.geometry.content_height_points == pytest.approx(224.0)
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
+
+
+def test_preview_warp_tuning_updates_visible_shared_snapshot(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    overlay._visible = True
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+
+    overlay.update_preview_warp_tuning(
+        x_squeeze=3.25,
+        y_squeeze=1.2,
+        ring_amplitude_points=13.5,
+        bleed_zone_frac=0.62,
+        exterior_mix_width_points=33.0,
+    )
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    assert snapshot.generation == 2
+    assert snapshot.material.x_squeeze == pytest.approx(3.25)
+    assert snapshot.material.y_squeeze == pytest.approx(1.2)
+    assert snapshot.material.ring_amplitude_points == pytest.approx(13.5)
+    assert snapshot.material.bleed_zone_frac == pytest.approx(0.62)
+    assert snapshot.material.exterior_mix_width_points == pytest.approx(33.0)
+
+
+def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatch):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+
+    tuning = overlay.preview_warp_tuning_snapshot()
+
+    assert tuning["core_magnification"] == pytest.approx(1.55)
+    assert tuning["x_squeeze"] == pytest.approx(2.5)
+    assert tuning["y_squeeze"] == pytest.approx(1.5)
+    assert tuning["inflation_x_radii"] == pytest.approx(2.0)
+    assert tuning["inflation_y_radii"] == pytest.approx(2.0)
+    assert tuning["bleed_zone_frac"] == pytest.approx(0.8)
+    assert tuning["exterior_mix_width_points"] == pytest.approx(20.0)
+    assert tuning["ring_amplitude_points"] == pytest.approx(
+        (4.0 / 10.0) * overlay_module._POINTS_PER_CM
+    )
 
 
 def test_preview_adapter_hide_releases_only_preview_client_and_leaves_assistant_state(
