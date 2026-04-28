@@ -666,6 +666,31 @@ class TestWindowLayering:
         assert ("scroll_hidden", True) in events
         assert events.index(("scroll_hidden", True)) < events.index(("front", None))
 
+    def test_optical_show_with_prompt_only_keeps_live_text_until_deferred_visual_start(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: events.append(("scroll_hidden", hidden))
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append(
+            ("front", None)
+        )
+        overlay._start_fullscreen_compositor = MagicMock()
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+        )
+
+        assert overlay._utterance_text == "User prompt"
+        assert ("front", None) in events
+        assert ("scroll_hidden", True) not in events
+        overlay._start_fullscreen_compositor.assert_not_called()
+        assert overlay._visual_start_timer is not None
+
     def test_optical_show_with_initial_transcript_arms_visual_stack_before_fade(
         self, mock_pyobjc, monkeypatch
     ):
@@ -701,6 +726,26 @@ class TestWindowLayering:
         assert ("timer", "visualStart:") not in events
         assert events.index(("front", None)) < events.index(("compositor", None))
         assert events.index(("mask", None)) < events.index(("timer", "fadeStep:"))
+
+    def test_visual_start_refreshes_punchthrough_mask_after_deferred_compositor_start(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        timer = MagicMock()
+        overlay._visual_start_timer = timer
+
+        def _start_compositor():
+            overlay._fullscreen_compositor = MagicMock()
+
+        overlay._start_fullscreen_compositor = MagicMock(side_effect=_start_compositor)
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+
+        overlay.visualStart_(timer)
+
+        overlay._start_fullscreen_compositor.assert_called_once()
+        overlay._refresh_punchthrough_mask_if_needed.assert_called_once()
 
     def test_show_with_initial_transcript_skips_default_shell_fill_build(
         self, mock_pyobjc, monkeypatch

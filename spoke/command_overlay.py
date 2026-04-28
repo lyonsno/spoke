@@ -1303,7 +1303,7 @@ class CommandOverlay(NSObject):
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)
         known_content_optical_start = (
-            has_initial_transcript and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            bool(initial_response) and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
         )
         self._response_text = ""
         self._utterance_text = ""
@@ -1358,8 +1358,7 @@ class CommandOverlay(NSObject):
         self._apply_backdrop_pulse_style(1.0)
         self._reset_backdrop_layer()
         if (
-            has_initial_transcript
-            and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            known_content_optical_start
             and self._scroll_view is not None
         ):
             # Recalled/history content should not expose the ordinary
@@ -2477,6 +2476,8 @@ class CommandOverlay(NSObject):
             return
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
             self._start_fullscreen_compositor()
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                self._refresh_punchthrough_mask_if_needed()
         if getattr(self, "_fullscreen_compositor", None) is None:
             self._enable_text_punchthrough(False)
             self._start_backdrop_refresh_timer()
