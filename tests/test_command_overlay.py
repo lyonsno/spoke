@@ -712,6 +712,40 @@ class TestWindowLayering:
         assert events.index(("front", None)) < events.index(("compositor", None))
         assert events.index(("mask", None)) < events.index(("timer", "fadeStep:"))
 
+    def test_optical_show_waits_for_first_compositor_frame_before_entrance(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+
+        class PendingCompositor:
+            presented_count = 0
+
+        def _schedule(_interval, _target, selector, _userinfo, _repeats):
+            events.append(("timer", selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        def _start_compositor():
+            events.append(("compositor", None))
+            overlay._fullscreen_compositor = PendingCompositor()
+
+        overlay._start_fullscreen_compositor = MagicMock(side_effect=_start_compositor)
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+        )
+
+        assert ("compositor", None) in events
+        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "_entrancePopStep:") not in events
+        assert ("timer", "fadeStep:") not in events
+
     def test_optical_show_with_initial_transcript_arms_visual_stack_before_fade(
         self, mock_pyobjc, monkeypatch
     ):

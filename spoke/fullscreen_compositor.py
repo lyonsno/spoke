@@ -282,6 +282,11 @@ class FullScreenCompositor:
         """Average brightness of the capsule region."""
         return self._sampled_brightness
 
+    @property
+    def presented_count(self) -> int:
+        """Number of frames the compositor has successfully presented."""
+        return self._presented_count
+
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
         with self._lock:
@@ -1074,6 +1079,10 @@ class OverlayCompositorHost:
     def refresh_brightness_for_client(self, client_id: str) -> None:
         self.refresh_brightness(client_id)
 
+    @property
+    def presented_count(self) -> int:
+        return int(getattr(self._compositor, "presented_count", 0))
+
     def debug_snapshot(self) -> dict:
         clients = []
         for snapshot in self.render_snapshots():
@@ -1175,6 +1184,18 @@ class OverlayCompositorClient:
         legacy_refresher = getattr(self._host, "refresh_brightness_for_client", None)
         if callable(legacy_refresher):
             legacy_refresher(self._client_id)
+
+    @property
+    def presented_count(self) -> int:
+        if self._host is None:
+            return 0
+        count = getattr(self._host, "presented_count", 0)
+        if callable(count):
+            count = count()
+        try:
+            return int(count)
+        except (TypeError, ValueError):
+            return 0
 
     def release(self) -> None:
         self.stop()

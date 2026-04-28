@@ -1,11 +1,19 @@
 """Tests for the shared fullscreen compositor adapter."""
 
+import sys
 import threading
 import time
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mock_fullscreen_pyobjc(mock_pyobjc):
+    sys.modules.pop("spoke.fullscreen_compositor", None)
+    yield
+    sys.modules.pop("spoke.fullscreen_compositor", None)
 
 
 class _FakeWindow:
@@ -27,6 +35,7 @@ class _FakeFullScreenCompositor:
         self.stop_calls = 0
         self.sampled_configs = []
         self.sampled_brightness = 0.55
+        self.presented_count = 0
         _FakeFullScreenCompositor.instances.append(self)
 
     def start(self, shell_config):
@@ -200,6 +209,23 @@ def test_brightness_sampling_uses_requesting_client_snapshot(monkeypatch):
 
     assert preview.sample_brightness() == pytest.approx(0.83)
     assert _FakeFullScreenCompositor.instances[0].sampled_configs[-1]["client_id"] == "preview.transcription"
+
+
+def test_client_reports_shared_compositor_presented_count(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(411),
+        content_view=object(),
+    )
+    assistant.publish(_snapshot("assistant.command", brightness=0.17))
+    compositor = _FakeFullScreenCompositor.instances[0]
+
+    compositor.presented_count = 3
+
+    assert host.presented_count == 3
+    assert assistant.presented_count == 3
 
 
 def test_duplicate_client_id_on_same_display_replaces_snapshot_without_second_host(monkeypatch):

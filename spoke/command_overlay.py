@@ -76,6 +76,14 @@ _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type t
 _FADE_IN_S = 0.16
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
+_OPTICAL_ENTRANCE_READY_POLL_S = max(
+    0.004,
+    _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
+)
+_OPTICAL_ENTRANCE_READY_TIMEOUT_S = max(
+    _OPTICAL_ENTRANCE_READY_POLL_S,
+    _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_TIMEOUT_S", 0.2),
+)
 _FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
 _FADE_STEPS = 15
 _DISMISS_DURATION_S = 0.2
@@ -950,6 +958,9 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_pixel_size = None
         self._backdrop_timer: NSTimer | None = None
         self._visual_start_timer: NSTimer | None = None
+        self._visual_ready_timer: NSTimer | None = None
+        self._visual_ready_wait_started_at = 0.0
+        self._visual_ready_brightness_synced = False
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
 
@@ -1435,31 +1446,17 @@ class CommandOverlay(NSObject):
             self._refresh_backdrop_snapshot()
         self._start_brightness_sampling()
 
-        # Entrance pop — start slightly oversized, ease back to 1.0.
-        # Runs concurrently with the fade-in for a subtle "I just arrived" feel.
-        self._set_overlay_scale(_ENTRANCE_POP_SCALE)
-        self._pop_step = 0
-        self._pop_steps = max(1, int(_ENTRANCE_POP_S * _DISMISS_ANIM_FPS))
-        self._pop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / _DISMISS_ANIM_FPS, self, "_entrancePopStep:", None, True
-        )
-
-        # Fade in
-        self._fade_step = 0
-        self._fade_from = 0.0
-        self._fade_direction = 1
-        interval = _FADE_IN_S / _FADE_STEPS
-        self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            interval, self, "fadeStep:", None, True
-        )
-
-        # Seed pulse animation state, but do not start the timer until the
-        # entrance fade has completed.  Pulse work touches backdrop and text
-        # styling, so it should not compete with first paint.
-
         # Only live generation owns the thinking timer; history/approval recall does not.
         if start_thinking_timer:
             self._start_thinking_timer(reset=not preserve_thinking_timer)
+
+        if (
+            known_content_optical_start
+            and getattr(self, "_fullscreen_compositor", None) is not None
+        ):
+            self._schedule_visual_ready_start()
+        else:
+            self._start_entrance_animation()
 
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and not known_content_optical_start:
             self._schedule_visual_start()
@@ -2550,6 +2547,12 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._visual_start_timer = None
 
+    def _cancel_visual_ready_start(self) -> None:
+        timer = getattr(self, "_visual_ready_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._visual_ready_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -2569,7 +2572,32 @@ class CommandOverlay(NSObject):
         self._cancel_brightness_sampling()
         self._cancel_backdrop_refresh()
         self._cancel_visual_start()
+        self._cancel_visual_ready_start()
         self._stop_thinking_timer()
+
+    def _start_entrance_animation(self) -> None:
+        """Start the visible entrance once first-paint dependencies are ready."""
+        self._cancel_entrance_pop()
+        self._cancel_fade()
+
+        # Entrance pop — start slightly oversized, ease back to 1.0.
+        # Runs concurrently with the fade-in for a subtle "I just arrived" feel.
+        self._set_overlay_scale(_ENTRANCE_POP_SCALE)
+        self._pop_step = 0
+        self._pop_steps = max(1, int(_ENTRANCE_POP_S * _DISMISS_ANIM_FPS))
+        self._pop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _DISMISS_ANIM_FPS, self, "_entrancePopStep:", None, True
+        )
+
+        # Fade in. Pulse remains deferred until fade completion so it cannot
+        # compete with first paint.
+        self._fade_step = 0
+        self._fade_from = 0.0
+        self._fade_direction = 1
+        interval = _FADE_IN_S / _FADE_STEPS
+        self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            interval, self, "fadeStep:", None, True
+        )
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
@@ -2595,6 +2623,97 @@ class CommandOverlay(NSObject):
         if getattr(self, "_fullscreen_compositor", None) is None:
             self._enable_text_punchthrough(False)
             self._start_backdrop_refresh_timer()
+
+    def _schedule_visual_ready_start(self) -> None:
+        """Hold alpha-zero entrance until the optical compositor is coherent."""
+        self._cancel_visual_ready_start()
+        self._visual_ready_brightness_synced = False
+        if self._optical_compositor_has_presented():
+            self._sync_optical_compositor_brightness(hide_stale_fill=True)
+            self._visual_ready_brightness_synced = True
+            if self._optical_fill_ready():
+                self._start_entrance_animation()
+                return
+        self._visual_ready_wait_started_at = time.perf_counter()
+        self._visual_ready_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _OPTICAL_ENTRANCE_READY_POLL_S,
+            self,
+            "visualReadyStep:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
+
+    def visualReadyStep_(self, timer) -> None:
+        if getattr(self, "_visual_ready_timer", None) is not timer:
+            return
+        if not getattr(self, "_visible", False):
+            self._cancel_visual_ready_start()
+            return
+        elapsed = time.perf_counter() - getattr(
+            self,
+            "_visual_ready_wait_started_at",
+            time.perf_counter(),
+        )
+        compositor_ready = self._optical_compositor_has_presented()
+        if compositor_ready and not getattr(self, "_visual_ready_brightness_synced", False):
+            self._sync_optical_compositor_brightness(hide_stale_fill=True)
+            self._visual_ready_brightness_synced = True
+        if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
+            return
+        if not self._optical_fill_ready():
+            return
+        self._cancel_visual_ready_start()
+        self._start_entrance_animation()
+
+    def _optical_entrance_ready(self) -> bool:
+        return self._optical_compositor_has_presented() and self._optical_fill_ready()
+
+    def _optical_compositor_has_presented(self) -> bool:
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return False
+        count = getattr(compositor, "presented_count", None)
+        if callable(count):
+            try:
+                count = count()
+            except Exception:
+                count = None
+        if not isinstance(count, numbers.Number) or count <= 0:
+            return False
+        return True
+
+    def _optical_fill_ready(self) -> bool:
+        return getattr(self, "_fill_hidden_until_signature", None) is None
+
+    def _sync_optical_compositor_brightness(self, *, hide_stale_fill: bool = False) -> None:
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return
+        refresher = getattr(compositor, "refresh_brightness", None)
+        if callable(refresher):
+            try:
+                refresher()
+            except Exception:
+                logger.debug("Failed to refresh compositor brightness before entrance", exc_info=True)
+        try:
+            brightness = _clamp01(float(getattr(compositor, "sampled_brightness", self._brightness)))
+        except Exception:
+            return
+        self._brightness = brightness
+        self._brightness_target = brightness
+        self._brightness_sample_tick = 0
+        suppress_stale_fill = getattr(
+            self,
+            "_suppress_stale_fill_until_ready",
+            False,
+        )
+        if hide_stale_fill:
+            self._suppress_stale_fill_until_ready = True
+        try:
+            self._apply_surface_theme()
+        finally:
+            self._suppress_stale_fill_until_ready = suppress_stale_fill
 
     def _set_overlay_scale(self, scale: float) -> None:
         if self._wrapper_view is None:
@@ -3269,7 +3388,16 @@ class CommandOverlay(NSObject):
                 # caches so _apply_surface_theme triggers a full rebuild).
                 self._sdf_appearance_b = -1.0
                 self._fill_image_brightness = -1.0
-                self._apply_surface_theme()
+                suppress_stale_fill = getattr(
+                    self,
+                    "_suppress_stale_fill_until_ready",
+                    False,
+                )
+                self._suppress_stale_fill_until_ready = True
+                try:
+                    self._apply_surface_theme()
+                finally:
+                    self._suppress_stale_fill_until_ready = suppress_stale_fill
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
