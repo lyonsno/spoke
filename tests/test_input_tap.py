@@ -978,7 +978,7 @@ class TestLatchedRecording:
         assert result_down is None
         assert result_up is None
 
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
         assert det._awaiting_space_release is True
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         assert det._state == mod._State.IDLE
@@ -1006,9 +1006,9 @@ class TestLatchedRecording:
         result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
         assert result_down is None
 
-        # Space release should route as assistant send (enter_held=True).
+        # Space release with enter held — enter_held deloaded, always False.
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
         # Trailing Enter release must still be swallowed.
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
@@ -1086,7 +1086,7 @@ class TestTrayAwareness:
 
         assert result_down is None
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_tray_space_enter_enter_release_routes_assistant_path(
         self, input_tap_module
@@ -1108,7 +1108,7 @@ class TestTrayAwareness:
 
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert result_up is None
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_approval_spacebar_tap_calls_hold_end_not_forward(
         self, input_tap_module
@@ -1386,7 +1386,7 @@ class TestTrayAwareness:
 
         det.holdTimerFired_(None)
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_space_keydown_clears_stale_observed_enter_when_probe_unavailable(
         self, input_tap_module
@@ -1446,7 +1446,7 @@ class TestTrayAwareness:
 
         det.holdTimerFired_(None)
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_stale_repeat_keydown_promotes_waiting_to_recording_immediately(
         self, input_tap_module
@@ -1550,7 +1550,7 @@ class TestTrayAwareness:
         Quartz.CGEventGetFlags.return_value = 0
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert result_up is None
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
         assert det._awaiting_space_release is True
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
@@ -1576,7 +1576,7 @@ class TestTrayAwareness:
 
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_keypad_enter_tap_before_recording_release_routes_assistant(
         self, input_tap_module
@@ -1601,7 +1601,7 @@ class TestTrayAwareness:
         assert result_up is None
 
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_enter_during_waiting_toggles_overlay_not_assistant(self, input_tap_module):
         """Enter during WAITING (before hold threshold) should toggle overlay
@@ -1645,7 +1645,7 @@ class TestTrayAwareness:
         assert result_down is None
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert result_up is None
@@ -1694,7 +1694,7 @@ class TestTrayAwareness:
         result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
         assert result is None
-        on_end.assert_called_once_with(shift_held=True, enter_held=True)
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
         assert det._pending_release_active is False
 
     def test_recording_release_falls_back_when_enter_does_not_arrive(

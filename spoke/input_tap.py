@@ -9,8 +9,15 @@ State machine:
     WAITING ──[timer fires]──> RECORDING  (call on_hold_start)
     RECORDING ──[space keyUp]──> IDLE  (call on_hold_end)
     RECORDING ──[shift tap]──> LATCHED  (capture continues hands-free)
-    LATCHED ──[enter]──> IDLE  (call on_hold_end with enter_held=True)
-    LATCHED ──[shift+space keyUp]──> IDLE  (call on_hold_end with shift_held=True)
+    LATCHED ──[space press+release]──> IDLE  (call on_hold_end)
+
+Additional gestures (IDLE):
+    Enter + route key (] or number row) ──> send chord (tray send)
+    Space + Delete (overlay visible) ──> cancel generation
+
+Enter is deloaded from recording routing. It no longer selects the
+assistant destination during recording — route keys handle that now.
+The send chord (Enter + route key) replaces the old enter-held pathway.
 """
 
 from __future__ import annotations
@@ -219,6 +226,14 @@ class SpacebarHoldDetector(NSObject):
         # during RECORDING/LATCHED states.
         self._route_key_selector = None
 
+        # Send chord — set by delegate. Called with keycode= when Enter + route
+        # key fires from tray.
+        self._on_send_chord: Callable[..., None] | None = None
+
+        # Cancel generation — set by delegate. Called when Space + Delete fires
+        # while command overlay is visible.
+        self._on_cancel_generation: Callable[[], None] | None = None
+
         return self
 
     # ── public ──────────────────────────────────────────────
@@ -259,25 +274,25 @@ class SpacebarHoldDetector(NSObject):
     def force_end(self) -> None:
         """Programmatically end a recording hold (e.g. recording cap reached)."""
         if self._state in (_State.RECORDING, _State.LATCHED):
-            source_state = self._state
             self._cancel_safety_timer()
             self._cancel_repeat_watchdog()
             self._state = _State.IDLE
             self._reset_route_keys()
             self._awaiting_space_release = True
+            # enter_held is always False — enter is deloaded from recording
+            # routing. Route keys handle destination selection now.
             self._on_hold_end(
                 shift_held=False,
-                enter_held=(
-                    getattr(self, '_enter_held', False)
-                    or (
-                        source_state == _State.LATCHED
-                        and getattr(self, '_enter_latched', False)
-                    )
-                ),
+                enter_held=False,
             )
 
     def _finish_enter_release(self, shift_held: bool = False) -> None:
-        """End an active space-rooted chord because Enter was released first."""
+        """End an active space-rooted chord because Enter was released first.
+
+        Enter is deloaded from recording routing — enter_held is always False.
+        This method still ends the recording (enter release as a gesture exit)
+        but does not route via the enter_held pathway.
+        """
         source_state = self._state
         if source_state == _State.WAITING:
             self._cancel_hold_timer()
@@ -291,7 +306,8 @@ class SpacebarHoldDetector(NSObject):
         self._awaiting_space_release = True
         self._shift_latched = False
         self._enter_latched = False
-        self._on_hold_end(shift_held=shift_held, enter_held=True)
+        # enter_held=False: enter is deloaded from recording routing
+        self._on_hold_end(shift_held=shift_held, enter_held=False)
 
     def uninstall(self) -> None:
         """Disable and remove the event tap."""
@@ -414,13 +430,11 @@ class SpacebarHoldDetector(NSObject):
                 self._enter_latched = False
                 return True
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
-            enter_held = getattr(self, '_enter_held', False)
+            # enter_held is deloaded from recording routing — always False.
+            # Send chord (Enter + route key) handles enter-based sending now.
             self._shift_latched = False
             self._enter_latched = False
-            if enter_held:
-                # Space released while Enter held = assistant send path
-                self._on_hold_end(shift_held=False, enter_held=True)
-            elif getattr(self, 'tray_active', False):
+            if getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
                 # Double-tap detection: shift held + two spacebar taps within
@@ -438,10 +452,10 @@ class SpacebarHoldDetector(NSObject):
                     self._tray_last_shift_space_up = now
                 else:
                     self._tray_last_shift_space_up = 0.0
-                self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
+                self._on_hold_end(shift_held=shift_held, enter_held=False)
             elif shift_held:
                 # Shift + quick tap = signal for tray recall (no space)
-                self._on_hold_end(shift_held=True, enter_held=enter_held)
+                self._on_hold_end(shift_held=True, enter_held=False)
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
@@ -459,28 +473,24 @@ class SpacebarHoldDetector(NSObject):
                 self._enter_latched = False
                 return True
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
-            enter_held = getattr(self, '_enter_held', False)
+            # enter_held deloaded — route keys handle destination selection
             self._shift_latched = False
             self._enter_latched = False
-            if enter_held:
-                self._on_hold_end(shift_held=shift_held, enter_held=True)
-            elif getattr(self, 'tray_active', False):
+            if getattr(self, 'tray_active', False):
                 # Tray-intercepted holds are tray gestures, not recording-release
                 # decisions. Keep them on the tray path even if shift came up
                 # before spacebar.
-                self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
+                self._on_hold_end(shift_held=shift_held, enter_held=False)
                 return True
-            if not enter_held and shift_held:
+            if shift_held:
                 self._start_release_decision_timer(shift_held=True)
-            elif not enter_held:
+            else:
                 self._on_hold_end(shift_held=False, enter_held=False)
             return True
 
         if self._state == _State.LATCHED:
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
-            enter_held = getattr(self, '_enter_held', False) or getattr(
-                self, '_enter_latched', False
-            )
+            # enter_held deloaded from recording routing
             self._shift_latched = False
 
             if getattr(self, '_latched_space_down', False):
@@ -491,12 +501,8 @@ class SpacebarHoldDetector(NSObject):
                 self._state = _State.IDLE
                 self._reset_route_keys()
                 self._enter_latched = False
-                if shift_held:
-                    self._on_hold_end(shift_held=True, enter_held=enter_held)
-                else:
-                    # Spacebar tap without shift inserts at cursor unless Enter
-                    # joined the latched exit chord, in which case it routes as
-                    self._on_hold_end(shift_held=False, enter_held=enter_held)
+                # enter_held deloaded — route keys handle destination
+                self._on_hold_end(shift_held=shift_held, enter_held=False)
                 return True
 
             # Swallow the original release that let the user go hands-free,
@@ -519,6 +525,76 @@ class SpacebarHoldDetector(NSObject):
         if self._state not in (_State.RECORDING, _State.LATCHED):
             return False
         selector.tap(keycode)
+        return True
+
+    def handle_send_chord(self, keycode: int) -> bool:
+        """Handle a potential send chord (Enter + route key from tray).
+
+        Returns True to suppress the key event if a send chord fires.
+        The send chord fires when:
+        - State is IDLE
+        - Tray is active
+        - Enter is currently held
+        - The keycode is a valid route key
+
+        The callback _on_send_chord is called with the keycode so the
+        delegate can determine the destination.
+        """
+        if self._state != _State.IDLE:
+            return False
+        if not getattr(self, 'tray_active', False):
+            return False
+        if not getattr(self, '_enter_held', False):
+            return False
+
+        # Validate the keycode is a known route key
+        from spoke.route_keys import ALL_ROUTE_KEYCODES
+        if keycode not in ALL_ROUTE_KEYCODES:
+            return False
+
+        cb = getattr(self, '_on_send_chord', None)
+        if cb is None:
+            return False
+
+        logger.info("Send chord detected: Enter + keycode=%d", keycode)
+        self._suppress_enter_keyup = True
+        self._enter_held = False
+        self._enter_observed = False
+        self._enter_last_down_monotonic = 0.0
+        cb(keycode=keycode)
+        return True
+
+    def handle_cancel_gesture(self, keycode: int) -> bool:
+        """Handle Space + Delete cancel gesture.
+
+        Returns True to suppress the key event if cancel fires.
+        Fires when:
+        - Space is held (WAITING or RECORDING)
+        - Command overlay is visible
+        - The keycode is DELETE
+
+        Cancels the current generation and returns to IDLE.
+        """
+        if keycode != DELETE_KEYCODE:
+            return False
+        if self._state not in (_State.WAITING, _State.RECORDING):
+            return False
+        if not getattr(self, 'command_overlay_active', False):
+            return False
+
+        cb = getattr(self, '_on_cancel_generation', None)
+        if cb is None:
+            return False
+
+        logger.info("Cancel gesture detected: Space + Delete")
+        self._cancel_hold_timer()
+        if self._state == _State.RECORDING:
+            self._cancel_safety_timer()
+            self._cancel_repeat_watchdog()
+        self._state = _State.IDLE
+        self._awaiting_space_release = True
+        self._suppress_delete_keyup = True
+        cb()
         return True
 
     def _reset_route_keys(self) -> None:
@@ -570,20 +646,11 @@ class SpacebarHoldDetector(NSObject):
         self._safety_timer = None
         if self._state in (_State.RECORDING, _State.LATCHED):
             logger.warning("Safety timeout — auto-stopping recording")
-            source_state = self._state
             self._state = _State.IDLE
             self._cancel_repeat_watchdog()
             self._awaiting_space_release = True
-            self._on_hold_end(
-                shift_held=False,
-                enter_held=(
-                    getattr(self, '_enter_held', False)
-                    or (
-                        source_state == _State.LATCHED
-                        and getattr(self, '_enter_latched', False)
-                    )
-                ),
-            )
+            # enter_held deloaded from recording routing
+            self._on_hold_end(shift_held=False, enter_held=False)
 
     def _cancel_safety_timer(self) -> None:
         if self._safety_timer is not None:
@@ -632,18 +699,10 @@ class SpacebarHoldDetector(NSObject):
         # Quartz confirmed the physical key is up. Requiring another release
         # would swallow the user's next fresh press behind a phantom keyUp.
         self._awaiting_space_release = False
-        # Query Quartz for the real Enter state — _enter_held may be stale if
-        # the Enter keyUp was also lost during this chord.
-        actual_enter = _current_enter_key_state()
-        if actual_enter is not None:
-            self._enter_held = actual_enter
-        enter_held = getattr(self, "_enter_held", False) or (
-            source_state == _State.LATCHED
-            and getattr(self, "_enter_latched", False)
-        )
+        # enter_held deloaded from recording routing
         self._on_hold_end(
             shift_held=self._shift_latched,
-            enter_held=enter_held,
+            enter_held=False,
         )
         return True
 
@@ -722,7 +781,8 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_release_decision_timer()
         self._pending_release_active = False
         self._pending_release_shift_held = False
-        self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
+        # enter_held deloaded from recording routing — always pass False
+        self._on_hold_end(shift_held=shift_held, enter_held=False)
 
     def _enter_observation_is_fresh(self) -> bool:
         last_down = getattr(self, "_enter_last_down_monotonic", 0.0) or 0.0
@@ -799,7 +859,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             det._enter_observed = True
             det._enter_last_down_monotonic = time.monotonic()
             if getattr(det, "_pending_release_active", False):
-                det._finish_pending_release(enter_held=True)
+                det._finish_pending_release(enter_held=False)
                 return None
             # Grace-window intercept: Enter during idle grace period cancels
             # the pending insert and toggles the overlay instead.
@@ -880,6 +940,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
+        # Send chord: Enter + route key from tray (IDLE)
+        if det.handle_send_chord(keycode):
+            return None  # suppress — send chord fired
+        # Cancel gesture: Space + Delete while overlay visible
+        if det.handle_cancel_gesture(keycode):
+            return None  # suppress — cancel fired
         # Route key interception during RECORDING/LATCHED
         if det.handle_route_key_down(keycode):
             return None  # suppress route key

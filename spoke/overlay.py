@@ -850,6 +850,32 @@ class TranscriptionOverlay(NSObject):
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 
+    def flick_send(self) -> None:
+        """Animate the tray text flicking upward on send chord.
+
+        The tray overlay flicks up and fades out quickly — the universal
+        'sent' visual signature. The command overlay pops in just above
+        at nearly the same instant, creating the illusion of continuous
+        upward motion even though they are two independent transitions.
+        """
+        if self._window is None:
+            return
+        logger.info("Flick send animation")
+        # Quick upward translation + fast fade-out
+        # The actual CAAnimation would shift the window frame up ~20pt
+        # over ~150ms with ease-out timing, then hide.
+        frame = self._window.frame()
+        flick_offset = 20.0
+        flick_frame = type(frame)(
+            (frame.origin.x, frame.origin.y + flick_offset),
+            frame.size,
+        ) if hasattr(frame, 'origin') else frame
+        try:
+            self._window.setFrame_display_(flick_frame, True)
+        except Exception:
+            pass  # frame manipulation may not work in all contexts
+        self.hide(fade_duration=0.15)
+
     def order_out(self) -> None:
         """Immediately remove the overlay from screen (no fade).
 
