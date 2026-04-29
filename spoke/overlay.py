@@ -2049,3 +2049,74 @@ class _TimerCallback(NSObject):
 
     def fire_(self, timer):
         self._callback(timer)
+
+
+# ── ghost indicator layer for route key feedback ─────────────
+
+# Ghost rendering constants
+_GHOST_HEIGHT = 22.0           # height of each ghost indicator
+_GHOST_PADDING = 4.0           # horizontal gap between ghosts
+_GHOST_FONT_SIZE = 11.0        # small label font
+_GHOST_FAINT_ALPHA = 0.15      # resting state — present but quiet
+_GHOST_ACTIVE_ALPHA = 0.70     # active state — sharpened
+_GHOST_BOTTOM_GAP = 8.0        # gap between preview overlay top and ghost row
+_BRACKET_PILL_WIDTH = 24.0     # width of the `]` pill indicator
+_BRACKET_PILL_GAP = 8.0        # gap between preview overlay and bracket pill
+
+# Import route key constants lazily to avoid circular imports
+_BRACKET_RIGHT_KEYCODE = 30
+
+
+class GhostIndicatorLayer:
+    """Manages ghost indicator rendering for route key visual feedback.
+
+    Ghost indicators appear above the user preview overlay during recording.
+    Each bound route key gets a small faint label. The active key's label
+    sharpens. The `]` key renders as a separate vertical pill to the right
+    of the preview overlay.
+
+    This class is a pure data/layout model. Actual CALayer rendering is
+    deferred to the overlay's setup when it creates the visual elements.
+
+    Parameters
+    ----------
+    bindings : dict
+        Keycode-to-binding map from route_keys.default_bindings().
+    """
+
+    def __init__(self, bindings: dict[int, dict]):
+        self._bindings = bindings
+        self._active_keycode: int | None = None
+
+    @property
+    def bindings(self) -> dict[int, dict]:
+        return self._bindings
+
+    @property
+    def active_keycode(self) -> int | None:
+        return self._active_keycode
+
+    def set_active(self, keycode: int | None) -> None:
+        """Set which route key ghost is sharpened (or None for all faint)."""
+        self._active_keycode = keycode
+
+    def is_bracket_key(self, keycode: int) -> bool:
+        """Return True if this keycode is the `]` bracket key."""
+        return keycode == _BRACKET_RIGHT_KEYCODE
+
+    def ghost_alpha(self, keycode: int) -> float:
+        """Return the target alpha for a given key's ghost indicator."""
+        if keycode == self._active_keycode:
+            return _GHOST_ACTIVE_ALPHA
+        return _GHOST_FAINT_ALPHA
+
+    def number_row_keys(self) -> list[int]:
+        """Return keycodes for the number row (not bracket), in display order."""
+        return [kc for kc in self._bindings if kc != _BRACKET_RIGHT_KEYCODE]
+
+    def label_for(self, keycode: int) -> str:
+        """Return the display label for a keycode."""
+        entry = self._bindings.get(keycode)
+        if entry:
+            return entry.get("label", "?")
+        return "?"

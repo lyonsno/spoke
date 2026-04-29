@@ -215,6 +215,10 @@ class SpacebarHoldDetector(NSObject):
         # Enter during WAITING = toggle command overlay (before hold threshold fires)
         self._on_enter_during_waiting: Callable[[], None] | None = None
 
+        # Route key selection — set by delegate to enable route key interception
+        # during RECORDING/LATCHED states.
+        self._route_key_selector = None
+
         return self
 
     # ── public ──────────────────────────────────────────────
@@ -259,6 +263,7 @@ class SpacebarHoldDetector(NSObject):
             self._cancel_safety_timer()
             self._cancel_repeat_watchdog()
             self._state = _State.IDLE
+            self._reset_route_keys()
             self._awaiting_space_release = True
             self._on_hold_end(
                 shift_held=False,
@@ -282,6 +287,7 @@ class SpacebarHoldDetector(NSObject):
         if source_state == _State.LATCHED:
             self._latched_space_down = False
         self._state = _State.IDLE
+        self._reset_route_keys()
         self._awaiting_space_release = True
         self._shift_latched = False
         self._enter_latched = False
@@ -446,6 +452,7 @@ class SpacebarHoldDetector(NSObject):
             self._cancel_repeat_watchdog()
             self._suppress_enter_keyup = getattr(self, '_enter_held', False)
             self._state = _State.IDLE
+            self._reset_route_keys()
             if getattr(self, '_tray_gesture_consumed', False):
                 self._tray_gesture_consumed = False
                 self._shift_latched = False
@@ -482,6 +489,7 @@ class SpacebarHoldDetector(NSObject):
                 self._cancel_repeat_watchdog()
                 self._suppress_enter_keyup = getattr(self, '_enter_held', False)
                 self._state = _State.IDLE
+                self._reset_route_keys()
                 self._enter_latched = False
                 if shift_held:
                     self._on_hold_end(shift_held=True, enter_held=enter_held)
@@ -498,6 +506,26 @@ class SpacebarHoldDetector(NSObject):
             return True
 
         return False
+
+    def handle_route_key_down(self, keycode: int) -> bool:
+        """Handle a route key keyDown. Returns True to suppress during recording.
+
+        Route keys are only intercepted during RECORDING or LATCHED states.
+        In IDLE or WAITING, the key passes through to the OS.
+        """
+        selector = getattr(self, "_route_key_selector", None)
+        if selector is None:
+            return False
+        if self._state not in (_State.RECORDING, _State.LATCHED):
+            return False
+        selector.tap(keycode)
+        return True
+
+    def _reset_route_keys(self) -> None:
+        """Reset route key selection. Called at end of every recording."""
+        selector = getattr(self, "_route_key_selector", None)
+        if selector is not None:
+            selector.reset()
 
     # ── timers ──────────────────────────────────────────────
 
@@ -852,6 +880,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
+        # Route key interception during RECORDING/LATCHED
+        if det.handle_route_key_down(keycode):
+            return None  # suppress route key
         if det.handle_key_down(keycode, flags):
             return None  # suppress
     elif event_type == kCGEventKeyUp:
