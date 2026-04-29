@@ -406,6 +406,45 @@ class TestOpticalShellMaterialization:
 
         assert overlay._optical_entrance_ready() is True
 
+    def test_optical_dismiss_uses_stretched_faster_reverse_timeline(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        scheduled = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock()
+
+        def _schedule(interval, _target, selector, _userinfo, _repeats):
+            scheduled.append((interval, selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        overlay._start_fade_out()
+
+        overlay._start_materialization_animation.assert_called_once_with(
+            shell_config,
+            direction=-1,
+        )
+        assert mod._OPTICAL_MATERIALIZATION_DISMISS_S < mod._OPTICAL_MATERIALIZATION_S
+        assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_S * 0.5
+        )
+        assert scheduled[-1] == (
+            pytest.approx(mod._OPTICAL_MATERIALIZATION_DISMISS_S / mod._FADE_STEPS),
+            "fadeStep:",
+        )
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""

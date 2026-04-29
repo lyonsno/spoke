@@ -77,6 +77,7 @@ _FADE_IN_S = 0.16
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
 _OPTICAL_MATERIALIZATION_S = 1.36
+_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_S * 0.5
 _OPTICAL_MATERIALIZATION_BODY_READY = 0.66
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
 _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.04
@@ -2565,15 +2566,17 @@ class CommandOverlay(NSObject):
         self._cancel_fade()
         compositor = getattr(self, "_fullscreen_compositor", None)
         shell_config = self._display_local_optical_shell_config()
+        fade_duration = _FADE_OUT_S
         if compositor is not None and shell_config is not None:
             try:
                 self._start_materialization_animation(shell_config, direction=-1)
+                fade_duration = _OPTICAL_MATERIALIZATION_DISMISS_S
             except Exception:
                 logger.debug("Failed to start command materialization dismissal", exc_info=True)
         self._fade_step = 0
         self._fade_from = self._window.alphaValue() if self._window else 1.0
         self._fade_direction = -1
-        interval = _FADE_OUT_S / _FADE_STEPS
+        interval = fade_duration / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -2712,7 +2715,12 @@ class CommandOverlay(NSObject):
             self._materialization_progress = 1.0
             return
         elapsed = max(time.perf_counter() - getattr(self, "_materialization_started_at", 0.0), 0.0)
-        raw = _clamp01(elapsed / _OPTICAL_MATERIALIZATION_S)
+        duration = (
+            _OPTICAL_MATERIALIZATION_S
+            if getattr(self, "_materialization_direction", 1) > 0
+            else _OPTICAL_MATERIALIZATION_DISMISS_S
+        )
+        raw = _clamp01(elapsed / duration)
         progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
         self._materialization_progress = progress
         try:
