@@ -18,13 +18,19 @@ user-facing control or configuration surface.
 `spoke` carries subscription-auth local coding-agent transport, but those
 backends are not generic tools for the default assistant to call. The
 operator-facing contract is **Agent Shell**: a modal route destination where
-ordinary input goes to the selected agent backend session, while Spoke-owned
-control input and Epistaxis-shaped verbs remain under the operator shell.
+input goes to the selected agent backend session, while explicit Spoke-owned
+mode-control input remains under the operator shell.
 
 The menubar exposes an `Agent Shell` provider selector (`Off`, `Codex`, `Claude
 Code`). This is intentionally separate from `Assistant Backend`: the local
 assistant remains the fuzzy-intent resolver and router, while local coding
 agents are modal worker shells selected by route/mode state.
+
+Epistaxis-shaped utterances are not intercepted by Agent Shell today. The
+previous keyword-based interception was removed because it could not distinguish
+between "run this Epistaxis command" and "talk to the current agent about
+Epistaxis", and there is no dedicated Epistaxis command executor seated behind
+that route yet.
 
 The lower-level provider contract currently wires `codex` through the local
 Codex CLI JSON event stream and requires `codex login` to report ChatGPT

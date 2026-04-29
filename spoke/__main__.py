@@ -3739,9 +3739,6 @@ class SpokeAppDelegate(NSObject):
         if decision.kind == "mode_control" and decision.control_action == "switch_provider":
             self._complete_agent_shell_mode_control(decision.provider, token)
             return True
-        if decision.kind == "epistaxis_verb":
-            logger.info("Agent Shell routed Epistaxis-shaped input away from provider")
-            return False
         return False
 
     def _complete_agent_shell_mode_control(self, provider: str | None, token: int) -> None:

@@ -633,9 +633,12 @@ class TestAgentShellRouting:
             "epistaxis zetesis how fares the tyrant state",
             "zetesis is there incoherence between these lanes",
             "how fares the tyrant state",
+            "run Epístaxis zetesis with --3.1-flash-lite and ask what's up",
         ],
     )
-    def test_active_agent_shell_routes_epistaxis_verbs_away_from_provider(self, utterance):
+    def test_active_agent_shell_does_not_intercept_epistaxis_text_without_executor(
+        self, utterance
+    ):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
         state = AgentShellState(
@@ -648,9 +651,10 @@ class TestAgentShellRouting:
 
         decision = route_agent_shell_input(utterance, state)
 
-        assert decision.kind == "epistaxis_verb"
-        assert decision.provider is None
-        assert decision.epistaxis_text == utterance
+        assert decision.kind == "provider_message"
+        assert decision.provider == "codex"
+        assert decision.provider_session_id == "session-xyz"
+        assert decision.text == utterance
 
     def test_active_agent_shell_routes_provider_switch_as_mode_control(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
@@ -835,7 +839,7 @@ class TestAgentShellDelegateDispatch:
         assert calls[-1].args[0] == "commandComplete:"
         assert calls[-1].args[1]["response"] == "quiet done"
 
-    def test_epistaxis_shaped_text_stays_on_assistant_path_not_provider(
+    def test_epistaxis_shaped_text_stays_with_active_agent_shell_until_executor_exists(
         self, main_module, monkeypatch
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
@@ -845,12 +849,15 @@ class TestAgentShellDelegateDispatch:
 
         delegate._send_text_as_command("epistaxis zetesis how fares the tyrant state")
 
-        assert delegate._agent_backend_manager.launched == []
-        delegate._command_client.stream_command_events.assert_called_once()
-        assert (
-            delegate._command_client.stream_command_events.call_args.args[0]
-            == "epistaxis zetesis how fares the tyrant state"
-        )
+        assert delegate._agent_backend_manager.launched == [
+            {
+                "provider": "codex",
+                "prompt": "epistaxis zetesis how fares the tyrant state",
+                "cwd": str(Path.cwd()),
+                "resume_id": None,
+            }
+        ]
+        delegate._command_client.stream_command_events.assert_not_called()
 
     def test_provider_switch_is_handled_as_mode_control_not_provider_or_assistant(
         self, main_module, monkeypatch
