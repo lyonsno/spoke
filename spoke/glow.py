@@ -935,8 +935,8 @@ def _continuous_dimmer_pass_specs():
         {
             "name": "hold_dimmer",
             "path_kind": "distance_field",
-            "falloff": soft_bloom["falloff"] * 1.8,
-            "power": 2.2,
+            "falloff": soft_bloom["falloff"] * 7.5,
+            "power": 1.35,
             "alpha": min(soft_bloom["fill_alpha"] * _DIM_SDF_BLOOM_MULTIPLIER, 0.95),
         }
     ]

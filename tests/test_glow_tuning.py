@@ -164,6 +164,36 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_screen_dimmer_tail_extends_inward_without_raising_peak_alpha(self, mock_pyobjc):
+        """The hold-space dimmer should fade over a long tail without getting darker at the edge."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            soft_bloom = next(
+                spec
+                for spec in mod._continuous_glow_pass_specs()
+                if spec["name"] == "wide_bloom"
+            )
+            dimmer = mod._continuous_dimmer_pass_specs()[0]
+            old_tail_alpha = mod._distance_field_opacity(
+                soft_bloom["falloff"] * 6.0,
+                soft_bloom["falloff"] * 1.8,
+                2.2,
+            )
+            new_tail_alpha = mod._distance_field_opacity(
+                soft_bloom["falloff"] * 6.0,
+                dimmer["falloff"],
+                dimmer["power"],
+            )
+
+            assert dimmer["alpha"] == pytest.approx(soft_bloom["fill_alpha"] * 4.5)
+            assert dimmer["falloff"] >= soft_bloom["falloff"] * 7.5
+            assert dimmer["power"] < 1.6
+            assert old_tail_alpha < 0.01
+            assert new_tail_alpha > 0.25
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_setup_installs_masked_dimmer_pass_instead_of_flat_fill(
         self, mock_pyobjc, monkeypatch
     ):
