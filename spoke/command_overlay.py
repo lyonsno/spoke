@@ -82,6 +82,15 @@ _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
 _OPTICAL_MATERIALIZATION_S = 1.36
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_S * 0.5
+_OPTICAL_MATERIALIZATION_PUCKER_FAST_S = 0.30
+_OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S = 0.70
+_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = (
+    _OPTICAL_MATERIALIZATION_PUCKER_FAST_S
+    + _OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S
+)
+_OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
+    _OPTICAL_MATERIALIZATION_DISMISS_S + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+)
 _OPTICAL_MATERIALIZATION_BODY_READY = 0.55
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
 _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.04
@@ -623,15 +632,51 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
     height = _lerp(
         _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
         1.0,
-        _smoothstep(
+        _clamp01(
             (p - _OPTICAL_MATERIAL_FILL_SOLID_AT)
             / max(_OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
-        ),
+        )
+        ** 3.0,
     )
     return {
         "opacity": _clamp01(opacity),
         "height_frac": _clamp01(height),
     }
+
+
+def _dismiss_pucker_amount(progress: float) -> float:
+    p = _clamp01(progress)
+    fast_frac = _OPTICAL_MATERIALIZATION_PUCKER_FAST_S / max(
+        _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S,
+        1e-6,
+    )
+    if p <= fast_frac:
+        return _smoothstep(p / max(fast_frac, 1e-6))
+    release_t = (p - fast_frac) / max(1.0 - fast_frac, 1e-6)
+    return (1.0 - _clamp01(release_t)) ** 2.0
+
+
+def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
+    """Return the tiny inverse-warp scar that releases after dismiss closes."""
+    amount = _dismiss_pucker_amount(progress)
+    base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
+    base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
+    config = _materialized_optical_shell_config(shell_config, 0.0)
+    config["content_width_points"] = max(24.0, min(base_w * 0.34, 360.0))
+    config["content_height_points"] = max(2.0, min(base_h * 0.045, 12.0))
+    config["corner_radius_points"] = min(
+        max(float(shell_config.get("corner_radius_points", 1.0)), 1.0),
+        config["content_height_points"] * 0.5,
+    )
+    config["core_magnification"] = 1.0
+    config["x_squeeze"] = -0.58 * amount
+    config["y_squeeze"] = -0.38 * amount
+    if "ring_amplitude_points" in config:
+        config["ring_amplitude_points"] = -abs(float(config["ring_amplitude_points"])) * 0.22 * amount
+    if "tail_amplitude_points" in config:
+        config["tail_amplitude_points"] = -abs(float(config["tail_amplitude_points"])) * 0.18 * amount
+    config["continuous_present"] = True
+    return config
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -1085,6 +1130,9 @@ class CommandOverlay(NSObject):
         self._materialization_direction = 1
         self._materialization_final_shell_config: dict | None = None
         self._deferred_materialization_shell_config: dict | None = None
+        self._pucker_tail_timer: NSTimer | None = None
+        self._pucker_tail_started_at = 0.0
+        self._pucker_tail_shell_config: dict | None = None
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -2677,7 +2725,7 @@ class CommandOverlay(NSObject):
         if compositor is not None and shell_config is not None:
             try:
                 self._start_materialization_animation(shell_config, direction=-1)
-                fade_duration = _OPTICAL_MATERIALIZATION_DISMISS_S
+                fade_duration = _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S
             except Exception:
                 logger.debug("Failed to start command materialization dismissal", exc_info=True)
         self._fade_step = 0
@@ -2738,6 +2786,12 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._materialization_timer = None
 
+    def _cancel_dismiss_pucker_tail_animation(self) -> None:
+        timer = getattr(self, "_pucker_tail_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._pucker_tail_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -2759,6 +2813,7 @@ class CommandOverlay(NSObject):
         self._cancel_visual_start()
         self._cancel_visual_ready_start()
         self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
 
     def _start_entrance_animation(self) -> None:
@@ -2788,6 +2843,7 @@ class CommandOverlay(NSObject):
     def _start_materialization_animation(self, final_shell_config: dict, *, direction: int = 1) -> None:
         """Animate the compositor geometry from/to a pressure slit."""
         self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
         self._deferred_materialization_shell_config = None
         self._materialization_final_shell_config = dict(final_shell_config)
         self._materialization_direction = 1 if direction >= 0 else -1
@@ -2855,6 +2911,48 @@ class CommandOverlay(NSObject):
             else:
                 self._materialization_progress = 0.0
                 self._apply_materialization_fill_state(0.0)
+                self._start_dismiss_pucker_tail_animation(final_config)
+
+    def _start_dismiss_pucker_tail_animation(self, final_shell_config: dict) -> None:
+        """Run the post-close inverse pucker after the dismiss slit shuts."""
+        self._cancel_dismiss_pucker_tail_animation()
+        self._pucker_tail_shell_config = dict(final_shell_config)
+        self._pucker_tail_started_at = time.perf_counter()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            try:
+                compositor.update_shell_config(
+                    _dismiss_pucker_shell_config(self._pucker_tail_shell_config, 0.0)
+                )
+            except Exception:
+                logger.debug("Failed to seed command dismiss pucker", exc_info=True)
+        self._pucker_tail_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _DISMISS_ANIM_FPS,
+            self,
+            "dismissPuckerTailStep:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._pucker_tail_timer)
+
+    def dismissPuckerTailStep_(self, timer) -> None:
+        if getattr(self, "_pucker_tail_timer", None) is not timer:
+            return
+        shell_config = getattr(self, "_pucker_tail_shell_config", None)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if shell_config is None or compositor is None:
+            self._cancel_dismiss_pucker_tail_animation()
+            return
+        elapsed = max(time.perf_counter() - getattr(self, "_pucker_tail_started_at", 0.0), 0.0)
+        progress = _clamp01(elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6))
+        try:
+            compositor.update_shell_config(
+                _dismiss_pucker_shell_config(shell_config, progress)
+            )
+        except Exception:
+            logger.debug("Failed to update command dismiss pucker", exc_info=True)
+        if progress >= 1.0:
+            self._cancel_dismiss_pucker_tail_animation()
 
     def _set_materialization_layer_scale(
         self,
@@ -2915,6 +3013,7 @@ class CommandOverlay(NSObject):
         if content is None:
             return
         state = _materialization_fill_state(progress)
+        hide_material_layers = False
         if getattr(self, "_materialization_direction", 1) < 0:
             # On dismiss, the local material body should vanish before the
             # compositor slit closes. Otherwise the shrinking compositor shell
@@ -2923,6 +3022,7 @@ class CommandOverlay(NSObject):
                 "opacity": 0.0,
                 "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
             }
+            hide_material_layers = True
         try:
             content_frame = content.frame()
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
@@ -2940,6 +3040,12 @@ class CommandOverlay(NSObject):
             )
         fill = getattr(self, "_fill_layer", None)
         self._set_layer_opacity_without_actions(fill, state["opacity"])
+        if hide_material_layers:
+            for layer_name in ("_boost_layer", "_spring_tint_layer"):
+                self._set_layer_opacity_without_actions(
+                    getattr(self, layer_name, None),
+                    0.0,
+                )
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
@@ -3961,6 +4067,7 @@ class CommandOverlay(NSObject):
 
     def _stop_fullscreen_compositor(self):
         self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)
