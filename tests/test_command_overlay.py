@@ -445,6 +445,54 @@ class TestOpticalShellMaterialization:
             "fadeStep:",
         )
 
+    def test_toggle_cancel_dismiss_uses_optical_reverse_when_compositor_is_active(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = True
+        overlay._streaming = True
+        overlay._start_fade_out = MagicMock()
+        overlay._set_overlay_scale = MagicMock()
+
+        overlay.cancel_dismiss()
+
+        assert overlay._visible is False
+        assert overlay._streaming is False
+        overlay._window.setAlphaValue_.assert_called_with(1.0)
+        overlay._set_overlay_scale.assert_called_once_with(1.0)
+        overlay._start_fade_out.assert_called_once()
+        assert overlay._cancel_timer_anim is None
+
+    def test_materialization_choreographs_core_magnification_overshoot(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "core_magnification": 14.0,
+        }
+
+        seed = mod._materialized_optical_shell_config(base, 0.0)
+        early = mod._materialized_optical_shell_config(base, 0.20)
+        surge = mod._materialized_optical_shell_config(base, 0.62)
+        peak = mod._materialized_optical_shell_config(base, 0.72)
+        settle = mod._materialized_optical_shell_config(base, 0.90)
+        final = mod._materialized_optical_shell_config(base, 1.0)
+
+        assert seed["core_magnification"] < base["core_magnification"] * 0.10
+        assert early["core_magnification"] > seed["core_magnification"]
+        assert surge["core_magnification"] > base["core_magnification"]
+        assert peak["core_magnification"] == pytest.approx(
+            base["core_magnification"] * 1.20
+        )
+        assert settle["core_magnification"] > base["core_magnification"]
+        assert settle["core_magnification"] < peak["core_magnification"]
+        assert final["core_magnification"] == pytest.approx(base["core_magnification"])
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""

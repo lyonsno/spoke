@@ -83,6 +83,10 @@ _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
 _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.04
 _OPTICAL_MATERIALIZATION_SPREAD_END = 0.55
 _OPTICAL_MATERIALIZATION_BLOOM_START = 0.50
+_OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = 0.04
+_OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
+_OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
+_OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -560,6 +564,35 @@ def _materialized_optical_shell_config(
     config["content_width_points"] = width
     config["content_height_points"] = height
     config["corner_radius_points"] = min(base_radius, height * 0.5)
+    if "core_magnification" in config:
+        base_mag = max(float(config.get("core_magnification", 1.0)), 0.0)
+        seed_mag = base_mag * _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC
+        if p <= _OPTICAL_MATERIALIZATION_MAG_ACCEL_END:
+            t = _clamp01(p / _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
+            config["core_magnification"] = _lerp(seed_mag, base_mag * 0.82, t * t)
+        elif p <= _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT:
+            t = _clamp01(
+                (p - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
+                / (
+                    _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+                    - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+                )
+            )
+            config["core_magnification"] = _lerp(
+                base_mag * 0.82,
+                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
+                t,
+            )
+        else:
+            t = _clamp01(
+                (p - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT)
+                / max(1.0 - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT, 1e-6)
+            )
+            config["core_magnification"] = _lerp(
+                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
+                base_mag,
+                t * t,
+            )
     for key in ("band_width_points", "tail_width_points"):
         if key in config:
             config[key] = max(1.0, float(config[key]) * _lerp(0.25, 1.0, p))
@@ -1604,6 +1637,12 @@ class CommandOverlay(NSObject):
             return
         self._cancel_all_timers()
         self._streaming = False
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            self._visible = False
+            self._window.setAlphaValue_(1.0)
+            self._set_overlay_scale(1.0)
+            self._start_fade_out()
+            return
         self._visible = True  # keep visible for the animation
 
         self._cancel_elapsed = 0.0
