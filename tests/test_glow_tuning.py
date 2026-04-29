@@ -141,8 +141,8 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_screen_dimmer_uses_own_stronger_sdf_pass(self, mock_pyobjc):
-        """The hold-space dimmer should use its own stronger SDF pass, not a flat wash."""
+    def test_screen_dimmer_uses_own_soft_sdf_pass(self, mock_pyobjc):
+        """The hold-space dimmer should use its own soft SDF pass, not a flat wash."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
@@ -159,13 +159,13 @@ class TestGlowTuning:
             assert dimmer["path_kind"] == "distance_field"
             assert dimmer["falloff"] > soft_bloom["falloff"]
             assert dimmer["power"] < soft_bloom["power"]
-            assert dimmer["alpha"] == pytest.approx(soft_bloom["fill_alpha"] * 4.5)
+            assert dimmer["alpha"] == pytest.approx(soft_bloom["fill_alpha"] * 2.25)
             assert dimmer["alpha"] < 1.0
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_screen_dimmer_tail_extends_inward_without_raising_peak_alpha(self, mock_pyobjc):
-        """The hold-space dimmer should fade over a long tail without getting darker at the edge."""
+    def test_screen_dimmer_becomes_lower_intensity_long_tail_veil(self, mock_pyobjc):
+        """The dimmer should get less intense at the rim while spreading into a shallow veil."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
@@ -175,22 +175,35 @@ class TestGlowTuning:
                 if spec["name"] == "wide_bloom"
             )
             dimmer = mod._continuous_dimmer_pass_specs()[0]
-            old_tail_alpha = mod._distance_field_opacity(
+            old_edge_alpha = soft_bloom["fill_alpha"] * 4.5
+            old_mid_alpha = old_edge_alpha * mod._distance_field_opacity(
                 soft_bloom["falloff"] * 6.0,
-                soft_bloom["falloff"] * 1.8,
-                2.2,
+                soft_bloom["falloff"] * 7.5,
+                1.35,
             )
-            new_tail_alpha = mod._distance_field_opacity(
+            old_far_alpha = old_edge_alpha * mod._distance_field_opacity(
+                soft_bloom["falloff"] * 12.0,
+                soft_bloom["falloff"] * 7.5,
+                1.35,
+            )
+            new_edge_alpha = dimmer["alpha"]
+            new_mid_alpha = new_edge_alpha * mod._distance_field_opacity(
                 soft_bloom["falloff"] * 6.0,
                 dimmer["falloff"],
                 dimmer["power"],
             )
+            new_far_alpha = new_edge_alpha * mod._distance_field_opacity(
+                soft_bloom["falloff"] * 12.0,
+                dimmer["falloff"],
+                dimmer["power"],
+            )
 
-            assert dimmer["alpha"] == pytest.approx(soft_bloom["fill_alpha"] * 4.5)
-            assert dimmer["falloff"] >= soft_bloom["falloff"] * 7.5
-            assert dimmer["power"] < 1.6
-            assert old_tail_alpha < 0.01
-            assert new_tail_alpha > 0.25
+            assert new_edge_alpha == pytest.approx(old_edge_alpha * 0.5)
+            assert new_mid_alpha < old_mid_alpha
+            assert new_far_alpha > old_far_alpha
+            assert new_far_alpha < old_edge_alpha * 0.25
+            assert dimmer["falloff"] >= soft_bloom["falloff"] * 16.0
+            assert dimmer["power"] <= 1.15
         finally:
             sys.modules.pop("spoke.glow", None)
 

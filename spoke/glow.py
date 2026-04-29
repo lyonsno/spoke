@@ -119,7 +119,7 @@ _GLOW_TEST_RMS = os.environ.get("SPOKE_GLOW_TEST_RMS")
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.636  # pumped 50%
-_DIM_SDF_BLOOM_MULTIPLIER = 4.5
+_DIM_SDF_BLOOM_MULTIPLIER = 2.25
 
 def _dim_target_for_brightness(brightness: float) -> float:
     # Spike to 0.80 at mid-gray
@@ -927,7 +927,7 @@ def _continuous_glow_pass_specs():
 
 
 def _continuous_dimmer_pass_specs():
-    """Masked hold-space dimmer, tuned as a stronger cousin of the soft bloom."""
+    """Masked hold-space dimmer, tuned as a broad low-intensity veil."""
     soft_bloom = next(
         spec for spec in _continuous_glow_pass_specs() if spec["name"] == "wide_bloom"
     )
@@ -935,8 +935,8 @@ def _continuous_dimmer_pass_specs():
         {
             "name": "hold_dimmer",
             "path_kind": "distance_field",
-            "falloff": soft_bloom["falloff"] * 7.5,
-            "power": 1.35,
+            "falloff": soft_bloom["falloff"] * 16.0,
+            "power": 1.15,
             "alpha": min(soft_bloom["fill_alpha"] * _DIM_SDF_BLOOM_MULTIPLIER, 0.95),
         }
     ]
