@@ -1128,10 +1128,8 @@ class TestAgentShellRouting:
 
 class TestAgentShellMenuState:
     def test_delegate_exposes_agent_shell_provider_menu_without_backend_replacement(
-        self, monkeypatch
+        self, monkeypatch, main_module
     ):
-        import spoke.__main__ as main_module
-
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._command_client = MagicMock()
         delegate._command_backend = "local"
@@ -1165,13 +1163,14 @@ class TestAgentShellMenuState:
             "items": [
                 ("off", "Off", False, True),
                 ("codex", "Codex", True, True),
+                ("codex-new-session", "Codex: New Session", False, True),
                 ("claude-code", "Claude Code", False, False),
             ],
         }
 
-    def test_delegate_exposes_agent_shell_session_catalog_menu_items(self, monkeypatch):
-        import spoke.__main__ as main_module
-
+    def test_delegate_exposes_agent_shell_session_catalog_menu_items(
+        self, monkeypatch, main_module
+    ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._agent_shell_provider = "codex"
         delegate._agent_backend_manager = MagicMock()
@@ -1196,14 +1195,72 @@ class TestAgentShellMenuState:
         assert delegate._agent_shell_menu_state()["items"] == [
             ("off", "Off", False, True),
             ("codex", "Codex", True, True),
+            ("codex-new-session", "Codex: New Session", False, True),
             ("claude-code", "Claude Code", False, False),
             ("codex-session:codex-thread-1", "Codex: first codex question", False, True),
             ("codex-session:codex-thread-2", "Codex: second codex question", True, True),
         ]
 
-    def test_agent_shell_session_selection_restores_catalog_snapshot(self, monkeypatch):
-        import spoke.__main__ as main_module
+    def test_agent_shell_new_codex_session_clears_active_record_but_keeps_catalog(
+        self, monkeypatch, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "spoke_session_id": "spoke-old",
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+                "last_header": "Worktree: old-tree",
+                "last_footer": "model gpt-5.5 | cwd /tmp/old",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-2",
+                        "last_utterance": "second codex question",
+                        "last_response": "second codex answer",
+                        "last_header": "Worktree: old-tree",
+                        "last_footer": "model gpt-5.5 | cwd /tmp/old",
+                    }
+                ],
+            }
+        }
+        delegate._save_preference = MagicMock()
+        delegate._menubar = MagicMock()
+        delegate._command_overlay = MagicMock()
+        delegate._command_overlay._visible = True
+        delegate._command_client = MagicMock()
+        delegate._command_client.history = []
+        delegate._last_command_utterance = "local prompt"
+        delegate._last_command_response = "local response"
+        delegate._sync_command_overlay_brightness = MagicMock()
+        delegate._detector = MagicMock()
 
+        delegate._apply_agent_shell_selection("codex-new-session")
+
+        record = delegate._agent_shell_sessions["codex"]
+        assert delegate._agent_shell_provider == "codex"
+        assert record["spoke_session_id"] is None
+        assert record["provider_session_id"] is None
+        assert record["last_utterance"] is None
+        assert record["last_response"] is None
+        assert record["last_header"] is None
+        assert record["last_footer"] is None
+        assert record["sessions"] == [
+            {
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+                "last_header": "Worktree: old-tree",
+                "last_footer": "model gpt-5.5 | cwd /tmp/old",
+            }
+        ]
+        delegate._menubar.set_status_text.assert_called_with("Agent Shell: Codex new session")
+
+    def test_agent_shell_session_selection_restores_catalog_snapshot(
+        self, monkeypatch, main_module
+    ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._agent_shell_provider = "off"
         delegate._agent_backend_manager = MagicMock()
@@ -1260,9 +1317,7 @@ class TestAgentShellMenuState:
             },
         )
 
-    def test_agent_shell_chrome_events_persist_to_provider_record(self):
-        import spoke.__main__ as main_module
-
+    def test_agent_shell_chrome_events_persist_to_provider_record(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._transcription_token = 7
         delegate._agent_shell_provider = "codex"
@@ -1278,9 +1333,7 @@ class TestAgentShellMenuState:
         assert record["last_header"] == "Worktree: codex-spinal-tap"
         assert record["last_footer"] == "model gpt-5.5 | cwd /tmp/spoke"
 
-    def test_recalling_agent_shell_snapshot_restores_persisted_chrome(self):
-        import spoke.__main__ as main_module
-
+    def test_recalling_agent_shell_snapshot_restores_persisted_chrome(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._command_client = MagicMock()
         delegate._agent_shell_provider = "codex"
@@ -1299,6 +1352,7 @@ class TestAgentShellMenuState:
         delegate._command_overlay._visible = False
         delegate._detector = MagicMock()
         delegate._sync_command_overlay_brightness = MagicMock()
+        delegate._transcribing = False
 
         delegate._toggle_command_overlay()
 
@@ -1307,9 +1361,7 @@ class TestAgentShellMenuState:
         assert kwargs["agent_shell_header"] == "Worktree: codex-spinal-tap"
         assert kwargs["agent_shell_footer"] == "model gpt-5.5 | cwd /tmp/spoke"
 
-    def test_switching_agent_shell_off_clears_visible_chrome(self):
-        import spoke.__main__ as main_module
-
+    def test_switching_agent_shell_off_clears_visible_chrome(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._agent_shell_provider = "codex"
         delegate._agent_backend_manager = MagicMock()
@@ -1322,10 +1374,48 @@ class TestAgentShellMenuState:
         delegate._last_command_response = "local response"
         delegate._save_preference = MagicMock()
         delegate._menubar = MagicMock()
+        delegate._sync_command_overlay_brightness = MagicMock()
+        delegate._detector = MagicMock()
 
         delegate._apply_agent_shell_selection("off")
 
-        delegate._command_overlay.clear_agent_shell_chrome.assert_called_once()
+        delegate._command_overlay.replace_transcript.assert_called_once_with(
+            utterance="local prompt",
+            response="local response",
+            agent_shell_header="",
+            agent_shell_footer="",
+        )
+
+    def test_repaint_visible_overlay_replaces_transcript_in_one_batch(self, main_module):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "hello codex",
+                "last_response": "hello from codex",
+                "last_header": "Worktree: codex-spinal-tap",
+                "last_footer": "model gpt-5.5 | cwd /tmp/spoke",
+                "sessions": [],
+            }
+        }
+        delegate._command_overlay = MagicMock()
+        delegate._command_overlay._visible = True
+        delegate._command_client = MagicMock()
+        delegate._sync_command_overlay_brightness = MagicMock()
+        delegate._detector = MagicMock()
+
+        delegate._repaint_visible_command_overlay_for_current_route()
+
+        delegate._command_overlay.replace_transcript.assert_called_once_with(
+            utterance="hello codex",
+            response="hello from codex",
+            agent_shell_header="Worktree: codex-spinal-tap",
+            agent_shell_footer="model gpt-5.5 | cwd /tmp/spoke",
+        )
+        delegate._command_overlay.set_utterance.assert_not_called()
+        delegate._command_overlay.set_response_text.assert_not_called()
 
 
 class TestAgentShellDelegateDispatch:

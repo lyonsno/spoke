@@ -1063,6 +1063,31 @@ class TestWindowLayering:
         assert "User prompt\n\nThought for 2s" in combined
         assert "User prompt\nThought for 2s" not in combined
 
+    def test_set_utterance_uses_same_user_font_as_recalled_transcript(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_utterance("Live prompt")
+        live = overlay._text_view.textStorage().setAttributedString_.call_args[0][0]
+
+        overlay._utterance_text = "Live prompt"
+        overlay.set_response_text("")
+        recalled = overlay._text_view.textStorage().setAttributedString_.call_args[0][0]
+
+        font_name = sys.modules["AppKit"].NSFontAttributeName
+        live_font = [value for name, value, _ in live.attributes if name == font_name]
+        recalled_font = [value for name, value, _ in recalled.attributes if name == font_name]
+        assert live_font
+        assert live_font == recalled_font
+        assert live_font[-1] == mod.NSFont.systemFontOfSize_weight_(
+            mod._USER_FONT_SIZE,
+            0.0,
+        )
+
     def test_append_token_keeps_breathing_room_after_collapsed_thinking(
         self, mock_pyobjc, monkeypatch
     ):
@@ -1087,7 +1112,8 @@ class TestWindowLayering:
             .appendAttributedString_.call_args_list[0][0][0]
             .text
         )
-        assert first_append == "\n\n"
+        assert first_append == overlay._leading_response_separator()
+        assert "─" in first_append
 
     def test_set_thinking_collapsed_starts_below_utterance(
         self, mock_pyobjc, monkeypatch
@@ -2185,7 +2211,7 @@ class TestGeometryCaps:
         header_frame = overlay._agent_shell_header_label.setFrame_.call_args[0][0]
         footer_frame = overlay._agent_shell_footer_label.setFrame_.call_args[0][0]
 
-        assert content_frame.size.height == pytest.approx(180.0)
+        assert content_frame.size.height == pytest.approx(196.0)
         assert footer_frame.origin.y >= 8.0
         assert (
             header_frame.origin.y + header_frame.size.height
@@ -2193,6 +2219,14 @@ class TestGeometryCaps:
         )
         assert scroll_frame.origin.y >= footer_frame.origin.y + footer_frame.size.height
         assert scroll_frame.origin.y + scroll_frame.size.height <= header_frame.origin.y
+        assert header_frame.origin.x >= 28.0
+        assert footer_frame.origin.x >= 28.0
+        assert scroll_frame.origin.x >= 28.0
+        assert (
+            scroll_frame.origin.y
+            >= footer_frame.origin.y + footer_frame.size.height + 10.0
+        )
+        assert scroll_frame.origin.y + scroll_frame.size.height <= header_frame.origin.y - 10.0
 
     def test_update_layout_reframes_agent_shell_chrome_even_at_same_height(
         self, mock_pyobjc, monkeypatch

@@ -5340,6 +5340,7 @@ class SpokeAppDelegate(NSObject):
         items = [
             ("off", "Off", selected == "off", True),
             ("codex", "Codex", selected == "codex", True),
+            ("codex-new-session", "Codex: New Session", False, True),
             ("claude-code", "Claude Code", selected == "claude-code", False),
         ]
         for entry in codex_sessions:
@@ -5374,19 +5375,32 @@ class SpokeAppDelegate(NSObject):
         try:
             self._sync_command_overlay_brightness(immediate=True)
             agent_shell_provider = self._active_agent_shell_provider()
-            if agent_shell_provider is None:
-                clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
-                if callable(clear_chrome):
-                    clear_chrome()
-            overlay.set_utterance(utterance)
-            overlay.set_response_text(_command_overlay_recall_preview(response))
+            chrome = (
+                self._agent_shell_chrome_snapshot(agent_shell_provider)
+                if agent_shell_provider is not None
+                else {}
+            )
+            replace_transcript = getattr(overlay, "replace_transcript", None)
+            if callable(replace_transcript):
+                replace_transcript(
+                    utterance=utterance,
+                    response=_command_overlay_recall_preview(response),
+                    agent_shell_header=chrome.get("agent_shell_header", ""),
+                    agent_shell_footer=chrome.get("agent_shell_footer", ""),
+                )
+            else:
+                if agent_shell_provider is None:
+                    clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
+                    if callable(clear_chrome):
+                        clear_chrome()
+                overlay.set_utterance(utterance)
+                overlay.set_response_text(_command_overlay_recall_preview(response))
             if agent_shell_provider is not None:
-                chrome = self._agent_shell_chrome_snapshot(agent_shell_provider)
                 header = chrome.get("agent_shell_header")
                 footer = chrome.get("agent_shell_footer")
-                if header:
+                if header and not callable(replace_transcript):
                     overlay.set_agent_shell_header(header)
-                if footer:
+                if footer and not callable(replace_transcript):
                     overlay.set_agent_shell_footer(footer)
             overlay.finish()
             detector = getattr(self, "_detector", None)
@@ -5396,6 +5410,19 @@ class SpokeAppDelegate(NSObject):
             logger.exception("Repaint command overlay after Agent Shell selection failed")
 
     def _apply_agent_shell_selection(self, provider: str) -> None:
+        if provider == "codex-new-session":
+            old_record = self._agent_shell_session_record("codex")
+            catalog = self._sanitize_agent_shell_catalog(old_record.get("sessions"))
+            record = self._empty_agent_shell_session_record()
+            record["sessions"] = catalog
+            self._agent_shell_sessions["codex"] = record
+            self._agent_shell_provider = "codex"
+            self._save_preference("agent_shell_provider", "codex")
+            self._persist_agent_shell_sessions()
+            if self._menubar is not None:
+                self._menubar.set_status_text("Agent Shell: Codex new session")
+            self._repaint_visible_command_overlay_for_current_route()
+            return
         if provider.startswith("codex-session:"):
             provider_session_id = provider.removeprefix("codex-session:")
             record = self._agent_shell_session_record("codex")
