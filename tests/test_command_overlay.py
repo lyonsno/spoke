@@ -616,6 +616,51 @@ class TestOpticalShellMaterialization:
         expected_h = total_h * mod._materialization_fill_state(0.55)["height_frac"]
         assert last_frame[1][1] == pytest.approx(expected_h)
 
+    def test_materialization_temporarily_clears_punchthrough_mask(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._text_punchthrough = True
+        overlay._punchthrough_mask_layer = MagicMock()
+
+        overlay._start_materialization_animation(
+            {
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+
+        overlay._fill_layer.setMask_.assert_called_with(None)
+        assert overlay._punchthrough_mask_layer is None
+        assert overlay._punchthrough_mask_dirty is True
+
+    def test_entrance_materialization_rebuilds_punchthrough_mask_after_full_body(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        overlay._text_punchthrough = True
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._refresh_punchthrough_mask_if_needed.assert_called_once()
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""

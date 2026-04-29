@@ -2238,6 +2238,18 @@ class CommandOverlay(NSObject):
         """Return True while slit materialization owns shell-body geometry."""
         return getattr(self, "_materialization_timer", None) is not None
 
+    def _clear_punchthrough_mask_for_materialization(self) -> None:
+        """Let the shell body materialize before text punch-through owns a mask."""
+        fill = getattr(self, "_fill_layer", None)
+        if fill is not None and hasattr(fill, "setMask_"):
+            fill.setMask_(None)
+        self._punchthrough_mask_layer = None
+        boost = getattr(self, "_boost_layer", None)
+        if boost is not None and hasattr(boost, "setMask_"):
+            boost.setMask_(None)
+        self._boost_mask_layer = None
+        self._punchthrough_mask_dirty = True
+
     def _pulseStepInner(self):
         if self._text_view is None:
             return
@@ -2770,6 +2782,7 @@ class CommandOverlay(NSObject):
         self._materialization_direction = 1 if direction >= 0 else -1
         self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
         self._materialization_started_at = time.perf_counter()
+        self._clear_punchthrough_mask_for_materialization()
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             try:
@@ -2821,6 +2834,8 @@ class CommandOverlay(NSObject):
             if getattr(self, "_materialization_direction", 1) > 0:
                 self._materialization_progress = 1.0
                 self._apply_materialization_fill_state(1.0)
+                if getattr(self, "_text_punchthrough", False):
+                    self._refresh_punchthrough_mask_if_needed()
             else:
                 self._materialization_progress = 0.0
                 self._apply_materialization_fill_state(0.0)
