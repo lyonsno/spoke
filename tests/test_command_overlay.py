@@ -2261,6 +2261,80 @@ class TestGeometryCaps:
 
         assert observed == [False]
 
+    def test_punchthrough_mask_uses_scroll_view_frame_for_text_origin(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._text_punchthrough = True
+        overlay._punchthrough_mask_dirty = True
+        overlay._content_view.frame.return_value = ((140.0, 140.0), (600.0, 244.0))
+        overlay._scroll_view.frame.return_value = _make_rect(28.0, 52.0, 544.0, 140.0)
+        overlay._scroll_view.contentView.return_value.bounds.return_value = _make_rect(
+            0.0,
+            7.0,
+            544.0,
+            140.0,
+        )
+        overlay._text_view.frame.return_value = _make_rect(0.0, 0.0, 544.0, 156.0)
+        overlay._fill_layer.frame.return_value = ((0.0, 0.0), (880.0, 524.0))
+        overlay._fill_layer.mask.return_value = None
+        overlay._boost_layer.mask.return_value = None
+
+        class _DrawableStorage:
+            def __init__(self):
+                self.rects = []
+
+            def length(self):
+                return 12
+
+            def drawInRect_(self, rect):
+                self.rects.append(rect)
+
+        storage = _DrawableStorage()
+        overlay._text_view.textStorage.return_value = storage
+
+        quartz = sys.modules["Quartz"]
+        monkeypatch.setattr(quartz, "CGColorSpaceCreateDeviceRGB", lambda: "cs", raising=False)
+        monkeypatch.setattr(quartz, "CGBitmapContextCreate", lambda *args: "ctx", raising=False)
+        monkeypatch.setattr(quartz, "CGBitmapContextCreateImage", lambda _ctx: "image", raising=False)
+        monkeypatch.setattr(quartz, "CGRectMake", lambda *args: args, raising=False)
+        for name in (
+            "CGContextSetRGBFillColor",
+            "CGContextFillRect",
+            "CGContextSetBlendMode",
+            "CGContextSaveGState",
+            "CGContextRestoreGState",
+            "CGContextTranslateCTM",
+            "CGContextScaleCTM",
+        ):
+            monkeypatch.setattr(quartz, name, MagicMock(), raising=False)
+        monkeypatch.setattr(quartz, "kCGImageAlphaPremultipliedLast", 1, raising=False)
+        monkeypatch.setattr(quartz, "kCGBlendModeDestinationOut", 1, raising=False)
+        monkeypatch.setattr(sys.modules["Foundation"], "NSMakeRect", _make_rect, raising=False)
+
+        graphics_context = SimpleNamespace(
+            graphicsContextWithCGContext_flipped_=MagicMock(return_value="nsctx"),
+            saveGraphicsState=MagicMock(),
+            setCurrentContext_=MagicMock(),
+            restoreGraphicsState=MagicMock(),
+        )
+        monkeypatch.setattr(
+            sys.modules["AppKit"],
+            "NSGraphicsContext",
+            graphics_context,
+            raising=False,
+        )
+
+        overlay._update_punchthrough_mask()
+
+        assert storage.rects
+        rect = storage.rects[0]
+        content_top = 524.0 - 140.0 - 244.0
+        expected_y = content_top + (244.0 - 52.0 - 140.0) + mod._TRANSCRIPT_TEXT_VERTICAL_INSET - 7.0
+        assert rect.origin.x == pytest.approx(168.0)
+        assert rect.origin.y == pytest.approx(expected_y)
+
     def test_update_layout_reframes_agent_shell_chrome_even_at_same_height(
         self, mock_pyobjc, monkeypatch
     ):
