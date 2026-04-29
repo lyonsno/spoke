@@ -1317,6 +1317,48 @@ class TestAgentShellMenuState:
             },
         )
 
+    def test_agent_shell_session_selection_detaches_stale_spoke_run_identity(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.get_session.return_value = {
+            "id": "spoke-new",
+            "provider_session_id": "codex-thread-2",
+        }
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "spoke_session_id": "spoke-new",
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "first codex question",
+                        "last_response": "first codex answer",
+                    },
+                    {
+                        "provider_session_id": "codex-thread-2",
+                        "last_utterance": "second codex question",
+                        "last_response": "second codex answer",
+                    },
+                ],
+            }
+        }
+        delegate._save_preference = MagicMock()
+        delegate._menubar = MagicMock()
+        delegate._command_overlay = None
+
+        delegate._apply_agent_shell_selection("codex-session:codex-thread-1")
+        record = delegate._agent_shell_session_record("codex")
+
+        assert record["spoke_session_id"] is None
+        assert record["provider_session_id"] == "codex-thread-1"
+        assert record["last_utterance"] == "first codex question"
+        assert delegate._agent_shell_state("codex").provider_session_id == "codex-thread-1"
+
     def test_agent_shell_chrome_events_persist_to_provider_record(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._transcription_token = 7

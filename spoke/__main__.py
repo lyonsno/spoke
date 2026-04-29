@@ -5430,6 +5430,7 @@ class SpokeAppDelegate(NSObject):
                 if entry.get("provider_session_id") != provider_session_id:
                     continue
                 self._agent_shell_provider = "codex"
+                record["spoke_session_id"] = None
                 record["provider_session_id"] = provider_session_id
                 record["last_utterance"] = entry.get("last_utterance")
                 record["last_response"] = entry.get("last_response")
