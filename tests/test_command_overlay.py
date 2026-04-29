@@ -498,17 +498,17 @@ class TestOpticalShellMaterialization:
 
         seed = mod._materialization_fill_state(0.0)
         wide_warp = mod._materialization_fill_state(0.55)
-        solid_slit = mod._materialization_fill_state(0.62)
-        blooming = mod._materialization_fill_state(0.75)
+        early_slit = mod._materialization_fill_state(0.62)
+        blooming = mod._materialization_fill_state(0.90)
         full = mod._materialization_fill_state(1.0)
 
         assert seed["opacity"] == pytest.approx(0.0)
         assert seed["height_frac"] < 0.04
         assert wide_warp["opacity"] == pytest.approx(0.0)
         assert wide_warp["height_frac"] < 0.04
-        assert solid_slit["opacity"] > 0.95
-        assert solid_slit["height_frac"] < 0.20
-        assert blooming["height_frac"] > 0.85
+        assert early_slit["opacity"] < 0.35
+        assert early_slit["height_frac"] < 0.12
+        assert blooming["height_frac"] > 0.70
         assert full["opacity"] == pytest.approx(1.0)
         assert full["height_frac"] == pytest.approx(1.0)
 
@@ -794,6 +794,22 @@ class TestOpticalShellMaterialization:
         overlay._materialization_direction = -1
 
         overlay._apply_materialization_fill_state(0.90)
+
+        overlay._fill_layer.setOpacity_.assert_called_with(0.0)
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+            "transform.scale.y",
+        )
+
+    def test_reverse_materialization_start_never_presents_full_fill_box(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+
+        overlay._apply_materialization_fill_state(1.0)
 
         overlay._fill_layer.setOpacity_.assert_called_with(0.0)
         overlay._fill_layer.setValue_forKeyPath_.assert_any_call(

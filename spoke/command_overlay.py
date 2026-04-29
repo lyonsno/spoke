@@ -92,8 +92,8 @@ _OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
 _OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
-_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.62
-_OPTICAL_MATERIAL_FILL_FULL_AT = 0.76
+_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.78
+_OPTICAL_MATERIAL_FILL_FULL_AT = 0.96
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.022
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
@@ -2892,6 +2892,24 @@ class CommandOverlay(NSObject):
                 except Exception:
                     logger.debug("Failed to commit command materialization transaction", exc_info=True)
 
+    def _set_layer_opacity_without_actions(self, layer, opacity: float) -> None:
+        if layer is None or not hasattr(layer, "setOpacity_"):
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            layer.setOpacity_(opacity)
+        except Exception:
+            logger.debug("Failed to update command materialization layer opacity", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization opacity transaction", exc_info=True)
+
     def _apply_materialization_fill_state(self, progress: float) -> None:
         content = getattr(self, "_content_view", None)
         if content is None:
@@ -2901,18 +2919,9 @@ class CommandOverlay(NSObject):
             # On dismiss, the local material body should vanish before the
             # compositor slit closes. Otherwise the shrinking compositor shell
             # can expose this layer as a dark backing plate.
-            p = _clamp01(progress)
-            if p <= 0.90:
-                remaining = 0.0
-            else:
-                remaining = 1.0 - _smoothstep((1.0 - p) / 0.10)
             state = {
-                "opacity": remaining,
-                "height_frac": _lerp(
-                    _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
-                    1.0,
-                    remaining,
-                ),
+                "opacity": 0.0,
+                "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
             }
         try:
             content_frame = content.frame()
@@ -2930,8 +2939,7 @@ class CommandOverlay(NSObject):
                 height_frac=state["height_frac"],
             )
         fill = getattr(self, "_fill_layer", None)
-        if fill is not None and hasattr(fill, "setOpacity_"):
-            fill.setOpacity_(state["opacity"])
+        self._set_layer_opacity_without_actions(fill, state["opacity"])
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
