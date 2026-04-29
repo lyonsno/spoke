@@ -172,6 +172,7 @@ from .agent_backend_presenter import (
 )
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
+from .agent_thread_cards import card_display_contract
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -3730,6 +3731,7 @@ class SpokeAppDelegate(NSObject):
         }
         if "updated_sequence" in raw_card:
             card["updated_sequence"] = raw_card["updated_sequence"]
+        card["display"] = card_display_contract(card, selected=card["selected"])
         return card
 
     def _agent_shell_thread_cards_snapshot(self, provider: str | None) -> list[dict]:

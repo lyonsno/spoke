@@ -262,3 +262,59 @@ def build_agent_thread_card(session: dict[str, Any]) -> AgentThreadCard:
         latest_response=result,
         updated_sequence=updated_sequence,
     )
+
+
+def _card_mapping(card: AgentThreadCard | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(card, AgentThreadCard):
+        return card.to_dict()
+    return card if isinstance(card, dict) else {}
+
+
+def _compact_status(card: dict[str, Any]) -> str:
+    return " · ".join(
+        part
+        for part in (
+            _string(card.get("title")).strip(),
+            _string(card.get("activity_line")).strip(),
+        )
+        if part
+    )
+
+
+def card_display_contract(
+    card: AgentThreadCard | dict[str, Any],
+    *,
+    selected: bool,
+) -> dict[str, Any]:
+    """Return backend/HUD-consumable selected/inactive display semantics.
+
+    The contract names what should be primary, compact, or hidden; HUD code
+    still owns placement, typography, and interaction.
+    """
+    card_data = _card_mapping(card)
+    readiness = _string(card_data.get("readiness")).strip()
+    latest_response = _string(card_data.get("latest_response"))
+    compact_text = _compact_status(card_data)
+    if not selected:
+        display_state = "inactive"
+        show_latest_response = False
+        primary_text = compact_text or _string(card_data.get("bearing"))
+    elif readiness == "working":
+        display_state = "selected_working"
+        show_latest_response = False
+        primary_text = compact_text or "Working"
+    else:
+        display_state = "selected_resting"
+        show_latest_response = bool(latest_response)
+        primary_text = latest_response or compact_text
+
+    return {
+        "display_state": display_state,
+        "selected": bool(selected),
+        "readiness": readiness,
+        "show_latest_response": show_latest_response,
+        "primary_text": primary_text,
+        "compact_text": compact_text,
+        "bearing": _string(card_data.get("bearing")),
+        "latest_response": latest_response,
+    }

@@ -150,3 +150,96 @@ def test_working_card_without_orientation_does_not_echo_full_prompt():
     assert card.title == "Agent thread"
     assert card.activity_line == "Working"
     assert card.bearing == prompt
+
+
+def test_selected_resting_display_exposes_latest_real_response():
+    from spoke.agent_thread_cards import build_agent_thread_card, card_display_contract
+
+    card = build_agent_thread_card(
+        {
+            "id": "agent-backend-codex-1",
+            "provider": "codex",
+            "state": "completed",
+            "prompt": "summarize the packet",
+            "result": "Here is the real Codex response, not a bearing summary.",
+            "backend_events": [
+                {
+                    "sequence": 2,
+                    "kind": "thread_waypoint",
+                    "text": "Session: summarize packet\nImmediate next step: hand off",
+                    "data": {
+                        "kind": "current_intent",
+                        "text": "Session: summarize packet\nImmediate next step: hand off",
+                        "source": "fixture",
+                    },
+                }
+            ],
+        }
+    )
+
+    display = card_display_contract(card, selected=True)
+
+    assert display["display_state"] == "selected_resting"
+    assert display["show_latest_response"] is True
+    assert display["primary_text"] == "Here is the real Codex response, not a bearing summary."
+    assert display["compact_text"] == "summarize packet · Ready to read"
+    assert "summarize packet" in display["bearing"]
+
+
+def test_selected_working_display_exposes_compact_status_not_full_prompt():
+    from spoke.agent_thread_cards import build_agent_thread_card, card_display_contract
+
+    card = build_agent_thread_card(
+        {
+            "id": "agent-backend-codex-2",
+            "provider": "codex",
+            "state": "running",
+            "prompt": "long operator prompt that should not become active working chrome",
+            "backend_events": [
+                {
+                    "sequence": 3,
+                    "kind": "command_execution",
+                    "text": "uv run pytest",
+                    "data": {
+                        "command": "uv run pytest -q tests/test_agent_thread_cards.py",
+                        "status": "in_progress",
+                    },
+                }
+            ],
+        }
+    )
+
+    display = card_display_contract(card, selected=True)
+
+    assert display["display_state"] == "selected_working"
+    assert display["show_latest_response"] is False
+    assert display["primary_text"] == "Agent thread · Running: uv run pytest -q tests/test_agent_thread_cards.py"
+    assert display["compact_text"] == display["primary_text"]
+
+
+def test_inactive_display_exposes_compact_bearing_and_hides_latest_response():
+    from spoke.agent_thread_cards import build_agent_thread_card, card_display_contract
+
+    card = build_agent_thread_card(
+        {
+            "id": "agent-backend-codex-3",
+            "provider": "codex",
+            "state": "completed",
+            "prompt": "fix tests",
+            "result": "Detailed response should stay out of inactive cards.",
+            "backend_events": [
+                {
+                    "sequence": 1,
+                    "kind": "agent_message",
+                    "text": "**Anagnosis**\nThe lane is hardening thread-card semantics.",
+                }
+            ],
+        }
+    )
+
+    display = card_display_contract(card, selected=False)
+
+    assert display["display_state"] == "inactive"
+    assert display["show_latest_response"] is False
+    assert display["primary_text"] == "hardening thread-card semantics · Ready to read"
+    assert display["latest_response"] == "Detailed response should stay out of inactive cards."

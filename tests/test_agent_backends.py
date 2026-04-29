@@ -1397,8 +1397,13 @@ class TestAgentShellMenuState:
         ]
         assert cards[0]["title"] == "first codex question"
         assert cards[0]["selected"] is False
+        assert cards[0]["display"]["display_state"] == "inactive"
+        assert cards[0]["display"]["show_latest_response"] is False
         assert cards[1]["title"] == "custom second thread"
         assert cards[1]["selected"] is True
+        assert cards[1]["display"]["display_state"] == "selected_resting"
+        assert cards[1]["display"]["show_latest_response"] is True
+        assert cards[1]["display"]["primary_text"] == "second codex answer"
 
     def test_agent_shell_chrome_events_persist_to_provider_record(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
