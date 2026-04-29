@@ -211,20 +211,22 @@ class TestRecoveryDismiss:
         assert d._tray_active is True
         assert d._tray_index == 0
 
-    def test_space_release_during_tray_inserts(self, main_module, monkeypatch):
-        """Spacebar release during tray should insert text at cursor."""
+    def test_space_release_during_tray_inserts_space(self, main_module, monkeypatch):
+        """Spacebar release during tray should insert a space character, keeping tray active."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
-        d._tray_stack = ["insert this"]
+        d._tray_stack = [main_module.TrayEntry(text="insert this")]
         d._tray_index = 0
+        d._tray_cursor_pos = len("insert this")
         d._recovery_text = "insert this"
         d._recovery_hold_active = True  # simulates _on_hold_start tray intercept
 
-        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
-             patch("spoke.__main__.inject_text"):
-            d._on_hold_end(shift_held=False)
+        d._on_hold_end(shift_held=False)
 
-        assert d._tray_active is False
+        # Tray stays active — spacebar tap types a space, doesn't dismiss
+        assert d._tray_active is True
+        entry = d._get_tray_entry(d._tray_index)
+        assert entry.text == "insert this "
 
     def test_dismiss_button_restores_clipboard(self, main_module, monkeypatch):
         """Dismiss callback should restore original clipboard and hide overlay."""

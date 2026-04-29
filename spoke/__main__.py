@@ -521,6 +521,34 @@ def _omnivoice_prompt_lexicon_text() -> str:
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
 
+# macOS virtual keycode → character mapping for tray keyboard input.
+# Covers US QWERTY layout — sufficient for basic tray editing. Keys not
+# in this table are silently ignored (modifier-only keys, function keys, etc.)
+_KEYCODE_MAP: dict[int, tuple[str, str]] = {
+    # keycode: (normal, shifted)
+    0: ("a", "A"), 1: ("s", "S"), 2: ("d", "D"), 3: ("f", "F"),
+    4: ("h", "H"), 5: ("g", "G"), 6: ("z", "Z"), 7: ("x", "X"),
+    8: ("c", "C"), 9: ("v", "V"), 11: ("b", "B"), 12: ("q", "Q"),
+    13: ("w", "W"), 14: ("e", "E"), 15: ("r", "R"), 16: ("y", "Y"),
+    17: ("t", "T"), 18: ("1", "!"), 19: ("2", "@"), 20: ("3", "#"),
+    21: ("4", "$"), 22: ("6", "^"), 23: ("5", "%"), 24: ("=", "+"),
+    25: ("9", "("), 26: ("7", "&"), 27: ("-", "_"), 28: ("8", "*"),
+    29: ("0", ")"), 30: ("]", "}"), 31: ("o", "O"), 32: ("u", "U"),
+    33: ("[", "{"), 34: ("i", "I"), 35: ("p", "P"), 37: ("l", "L"),
+    38: ("j", "J"), 39: ("'", '"'), 40: ("k", "K"), 41: (";", ":"),
+    42: ("\\", "|"), 43: (",", "<"), 44: ("/", "?"), 45: ("n", "N"),
+    46: ("m", "M"), 47: (".", ">"), 48: ("\t", "\t"), 50: ("`", "~"),
+}
+
+
+def _keycode_to_char(keycode: int, shift: bool) -> str | None:
+    """Convert a macOS virtual keycode to a character, or None if unmappable."""
+    pair = _KEYCODE_MAP.get(keycode)
+    if pair is None:
+        return None
+    return pair[1] if shift else pair[0]
+
+
 def get_clipboard_text() -> str | None:
     """Read plain text from the system clipboard. Returns None if empty."""
     try:
@@ -983,6 +1011,7 @@ class SpokeAppDelegate(NSObject):
         # on explicit space-rooted gestures instead of ambient key capture.
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
+        self._detector._on_tray_key = self._on_tray_key
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
@@ -2397,9 +2426,9 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Enter-first release during tray — sending current tray entry")
                 self._tray_send_current()
             elif tray_active:
-                # Spacebar from tray (tap or hold release) = insert
-                logger.info("Spacebar during tray — inserting text")
-                self._tray_insert_current()
+                # Spacebar tap from tray = type a space character into the tray
+                logger.info("Spacebar during tray — inserting space character")
+                self._tray_insert_char(" ")
             else:
                 # Spacebar from recovery (non-tray) = retry insert
                 logger.info("Spacebar during recovery — retrying Insert")
@@ -3182,7 +3211,12 @@ class SpokeAppDelegate(NSObject):
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
                 return
-        self._enter_tray(text)
+        recording_from_tray = getattr(self, "_recording_from_tray", False)
+        self._recording_from_tray = False
+        if recording_from_tray:
+            self._tray_append_transcription(text)
+        else:
+            self._enter_tray(text)
 
     def trayTranscriptionFailed_(self, payload: dict) -> None:
         """Main thread: tray transcription failed — fall back to preview text."""
@@ -3375,6 +3409,41 @@ class SpokeAppDelegate(NSObject):
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    # macOS virtual keycodes for tray keyboard routing
+    _KC_LEFT = 123
+    _KC_RIGHT = 124
+    _KC_DELETE = 51
+    _KC_FWD_DELETE = 117
+    _KC_V = 9
+
+    def _on_tray_key(self, keycode: int, flags: int) -> None:
+        """Handle a keystroke routed from the event tap while tray is active.
+
+        Dispatches to the appropriate tray editing method based on the keycode.
+        Called on the main thread from the event tap callback.
+        """
+        if not self._tray_active:
+            return
+        cmd_held = bool(flags & 0x00100000)  # kCGEventFlagMaskCommand
+
+        if cmd_held and keycode == self._KC_V:
+            self._tray_paste()
+        elif keycode == self._KC_LEFT:
+            self._tray_move_cursor(-1)
+        elif keycode == self._KC_RIGHT:
+            self._tray_move_cursor(1)
+        elif keycode in (self._KC_DELETE, self._KC_FWD_DELETE):
+            self._tray_backspace()
+        else:
+            # Map keycode to character — for printable keys only.
+            # CGEventTap gives us virtual keycodes, not characters. For a
+            # full implementation we'd need TISCopyCurrentKeyboardInputSource,
+            # but for the common case (ASCII letters/digits/punctuation) a
+            # static lookup is sufficient. Non-mappable keycodes are ignored.
+            char = _keycode_to_char(keycode, bool(flags & 0x00020000))
+            if char:
+                self._tray_insert_char(char)
 
     def _on_tray_shift_tap(self) -> None:
         """Shift tap (no spacebar) during tray = dismiss."""

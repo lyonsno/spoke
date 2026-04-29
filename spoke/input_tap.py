@@ -975,6 +975,20 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 return None  # suppress enter while a latched exit chord is active
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
+        # Tray mode: route regular keystrokes to tray editing when active.
+        # Spacebar, enter, and shift are excluded — they have their own tray
+        # gesture paths. Everything else (letters, arrows, backspace, Cmd+V)
+        # goes to the delegate via _on_tray_key and is suppressed.
+        if (
+            getattr(det, 'tray_active', False)
+            and det._state == _State.IDLE
+            and keycode != SPACEBAR_KEYCODE
+            and keycode not in ENTER_KEYCODES
+        ):
+            on_tray_key = getattr(det, '_on_tray_key', None)
+            if on_tray_key is not None:
+                on_tray_key(keycode, flags)
+                return None
         if keycode == SPACEBAR_KEYCODE:
             logger.debug("keyDown space: flags=%#x shift=%s state=%s",
                          flags, bool(flags & kCGEventFlagMaskShift), det._state)
