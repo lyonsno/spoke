@@ -284,6 +284,72 @@ def test_refresh_brightness_uses_requesting_client_snapshot(monkeypatch):
     assert compositor.sampled_configs[-1]["client_id"] == "preview.transcription"
 
 
+def test_fullscreen_compositor_brightness_uses_latest_pixel_buffer_not_windowserver(monkeypatch):
+    import Quartz
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    pixel_buffer = object()
+    pixel_calls = []
+    windowserver_calls = []
+
+    def sample_pixel_buffer(pb, width, height, config, screen):
+        pixel_calls.append((pb, width, height, dict(config), screen))
+        return 0.82
+
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "_sample_pixel_buffer_brightness",
+        sample_pixel_buffer,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Quartz,
+        "CGWindowListCreateImage",
+        lambda *args: windowserver_calls.append(args) or None,
+        raising=False,
+    )
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._screen = object()
+    compositor._window = None
+    compositor._latest_iosurface = object()
+    compositor._latest_pixel_buffer = pixel_buffer
+    compositor._latest_width = 120
+    compositor._latest_height = 80
+    compositor._sampled_brightness = 0.5
+    compositor._presented_count = 0
+
+    brightness = compositor.sample_brightness_for_config(
+        {
+            "client_id": "preview.transcription",
+            "center_x": 20.0,
+            "content_width_points": 40.0,
+        }
+    )
+
+    assert brightness == pytest.approx(0.82)
+    assert pixel_calls == [
+        (
+            pixel_buffer,
+            120,
+            80,
+            {
+                "client_id": "preview.transcription",
+                "center_x": 20.0,
+                "content_width_points": 40.0,
+            },
+            compositor._screen,
+        )
+    ]
+    assert windowserver_calls == []
+    diagnostics = compositor.diagnostics_snapshot()
+    assert diagnostics["brightness_samples"] == 1
+    assert diagnostics["windowserver_brightness_samples"] == 0
+
+
 def test_client_reports_shared_compositor_presented_count(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
@@ -619,6 +685,15 @@ def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
             self.warp_calls += 1
             return True
 
+        def diagnostics_snapshot(self):
+            return {
+                "drawable_copy_frames": self.warp_calls,
+                "drawable_copy_pixels": self.warp_calls * 5_000,
+                "mip_generation_frames": self.warp_calls,
+                "mip_generation_source_pixels": self.warp_calls * 5_000,
+                "warp_dispatch_pixels": self.warp_calls * 231,
+            }
+
     now = [1.0]
 
     def monotonic():
@@ -649,7 +724,9 @@ def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
     compositor._metal_layer = Layer()
     compositor._pipeline = Pipeline()
     compositor._sample_iosurface_brightness = (
-        lambda _iosurface, _w, _h, _config: setattr(compositor, "_sampled_brightness", 0.7)
+        lambda _iosurface, _w, _h, _config, _pixel_buffer=None: setattr(
+            compositor, "_sampled_brightness", 0.7
+        )
     )
 
     compositor.submit_iosurface(object(), width=100, height=50, pixel_buffer=object())
@@ -675,3 +752,31 @@ def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
     assert diagnostics["avg_compositor_tick_ms"] > 0.0
     assert diagnostics["avg_warp_to_drawable_ms"] > 0.0
     assert diagnostics["avg_brightness_sample_ms"] > 0.0
+    assert diagnostics["drawable_copy_frames"] == 2
+    assert diagnostics["drawable_copy_pixels"] == 10_000
+    assert diagnostics["mip_generation_frames"] == 2
+    assert diagnostics["mip_generation_source_pixels"] == 10_000
+    assert diagnostics["warp_dispatch_pixels"] == 462
+
+
+def test_fullscreen_compositor_keeps_residency_diagnostics_when_pipeline_snapshot_fails(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Pipeline:
+        def diagnostics_snapshot(self):
+            raise RuntimeError("diagnostics unavailable")
+
+    monkeypatch.setattr(fullscreen_compositor.logger, "debug", lambda *args, **kwargs: None)
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._presented_count = 2
+    compositor._pipeline = Pipeline()
+
+    diagnostics = compositor.diagnostics_snapshot()
+
+    assert diagnostics["presented_frames"] == 2
+    assert diagnostics["capture_frames"] == 0
+    assert "mip_generation_frames" not in diagnostics

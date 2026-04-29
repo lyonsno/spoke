@@ -303,3 +303,148 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
         metal_warp.struct.unpack("20f", buffer.payload())[10]
         for buffer in params_buffers
     ] == [pytest.approx(25.0), pytest.approx(75.0)]
+
+
+def test_warp_diagnostics_record_fullscreen_mip_cost_against_bounded_shell(monkeypatch):
+    """Current blur source work is full-frame even when the shell dispatch is bounded."""
+
+    class FakeBuffer:
+        def __init__(self, data_or_length):
+            if isinstance(data_or_length, bytes):
+                self._raw = ctypes.create_string_buffer(data_or_length)
+            else:
+                self._raw = ctypes.create_string_buffer(int(data_or_length))
+
+        def contents(self):
+            return ctypes.addressof(self._raw)
+
+    class FakeTexture:
+        def __init__(self, width, height):
+            self._width = width
+            self._height = height
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeTextureDescriptor:
+        def __init__(self, width=0, height=0):
+            self.width = width
+            self.height = height
+
+        @classmethod
+        def texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            cls, _fmt, width, height, _mipmapped
+        ):
+            return cls(width, height)
+
+        def setUsage_(self, _usage):
+            return None
+
+    fake_objc = types.ModuleType("objc")
+    fake_objc.lookUpClass = lambda name: FakeTextureDescriptor
+    monkeypatch.setitem(sys.modules, "objc", fake_objc)
+
+    class FakeDevice:
+        def newTextureWithDescriptor_iosurface_plane_(self, desc, _surface, _plane):
+            return FakeTexture(desc.width, desc.height)
+
+        def newTextureWithDescriptor_(self, desc):
+            return FakeTexture(desc.width, desc.height)
+
+        def newBufferWithLength_options_(self, length, _options):
+            return FakeBuffer(length)
+
+    class FakeBlitEncoder:
+        def copyFromTexture_toTexture_(self, *_args):
+            return None
+
+        def copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+            self, *_args
+        ):
+            return None
+
+        def generateMipmapsForTexture_(self, _texture):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeComputeEncoder:
+        def setComputePipelineState_(self, _pipeline):
+            return None
+
+        def setTexture_atIndex_(self, _texture, _index):
+            return None
+
+        def setBuffer_offset_atIndex_(self, _buffer, _offset, _index):
+            return None
+
+        def dispatchThreads_threadsPerThreadgroup_(self, _grid, _threadgroup):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeCommandBuffer:
+        def blitCommandEncoder(self):
+            return FakeBlitEncoder()
+
+        def computeCommandEncoder(self):
+            return FakeComputeEncoder()
+
+        def presentDrawable_(self, _drawable):
+            return None
+
+        def commit(self):
+            return None
+
+    class FakeCommandQueue:
+        def commandBuffer(self):
+            return FakeCommandBuffer()
+
+    class FakeDrawable:
+        def texture(self):
+            return FakeTexture(100, 50)
+
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._device = FakeDevice()
+    pipeline._command_queue = FakeCommandQueue()
+    pipeline._pipeline = object()
+    pipeline._mip_texture = None
+    pipeline._mip_texture_size = None
+    pipeline._accum_textures = [None, None]
+    pipeline._accum_texture_size = None
+    pipeline._accum_index = 0
+    pipeline._accum_generation = 0
+    pipeline._thread_exec_width = 8
+    pipeline._max_tg_height = 8
+    pipeline._params_buffer = FakeBuffer(metal_warp._WARP_PARAMS_SIZE)
+
+    shell_config = {
+        "center_x": 50.0,
+        "center_y": 25.0,
+        "content_width_points": 20.0,
+        "content_height_points": 10.0,
+        "bleed_zone_frac": 0.0,
+    }
+    expected_box = metal_warp._warp_dispatch_box(100, 50, shell_config)
+    expected_dispatch_pixels = (expected_box[2] - expected_box[0]) * (expected_box[3] - expected_box[1])
+
+    assert pipeline.warp_to_drawable(
+        object(),
+        FakeDrawable(),
+        width=100,
+        height=50,
+        shell_config=shell_config,
+    )
+
+    diagnostics = pipeline.diagnostics_snapshot()
+    assert diagnostics["drawable_copy_frames"] == 1
+    assert diagnostics["drawable_copy_pixels"] == 5_000
+    assert diagnostics["mip_generation_frames"] == 1
+    assert diagnostics["mip_generation_source_pixels"] == 5_000
+    assert diagnostics["warp_dispatch_pixels"] == expected_dispatch_pixels
+    assert diagnostics["warp_dispatch_pixels"] < diagnostics["mip_generation_source_pixels"]
