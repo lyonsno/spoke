@@ -99,6 +99,14 @@ def _shell_y_squeeze(shell_config: dict[str, float]) -> float:
     return float(shell_config.get("y_squeeze", _WARP_Y_SQUEEZE))
 
 
+def _shell_mip_blur_strength(shell_config: dict[str, float]) -> float:
+    return min(max(float(shell_config.get("mip_blur_strength", 1.0)), 0.0), 1.0)
+
+
+def _shell_needs_mip_texture(shell_config: dict[str, float]) -> bool:
+    return _shell_mip_blur_strength(shell_config) > 1e-6
+
+
 def _warp_exterior_mix_weight(capsule_sdf: float, mix_width_points: float) -> float:
     width = max(float(mix_width_points), 1e-6)
     x = min(max(float(capsule_sdf) / width, 0.0), 1.0)
@@ -600,8 +608,17 @@ class MetalWarpPipeline:
             command_buffer.commit()
             return True
 
-        # Create or reuse a mipmapped texture for blur LOD sampling.
-        if self._mip_texture is None or self._mip_texture_size != (in_w, in_h):
+        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
+            dict(config) for config in shell_config if config
+        ]
+        needs_mip_texture = any(_shell_needs_mip_texture(config) for config in shell_configs)
+
+        # Create or reuse a mipmapped texture only for material shells that
+        # actually want blur LOD sampling. Fill-less pressure scars should
+        # sample the original input texture directly.
+        if needs_mip_texture and (
+            self._mip_texture is None or self._mip_texture_size != (in_w, in_h)
+        ):
             mip_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
                 80, in_w, in_h, True,
             )
@@ -618,7 +635,7 @@ class MetalWarpPipeline:
         blit = command_buffer.blitCommandEncoder()
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
         self._record_drawable_copy(in_w, in_h)
-        if self._mip_texture is not None:
+        if needs_mip_texture and self._mip_texture is not None:
             origin = (0, 0, 0)
             size = (in_w, in_h, 1)
             try:
@@ -634,10 +651,6 @@ class MetalWarpPipeline:
             blit.generateMipmapsForTexture_(self._mip_texture)
             self._record_mip_generation(in_w, in_h)
         blit.endEncoding()
-
-        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
-            dict(config) for config in shell_config if config
-        ]
 
         if len(shell_configs) > 1:
             # Shared fullscreen hosts can carry multiple overlays on the same
@@ -671,7 +684,11 @@ class MetalWarpPipeline:
                     continue
                 encoder = command_buffer.computeCommandEncoder()
                 encoder.setComputePipelineState_(self._pipeline)
-                warp_input = self._mip_texture if self._mip_texture is not None else input_texture
+                warp_input = (
+                    self._mip_texture
+                    if _shell_needs_mip_texture(config) and self._mip_texture is not None
+                    else input_texture
+                )
                 encoder.setTexture_atIndex_(warp_input, 0)
                 encoder.setTexture_atIndex_(output_texture, 1)
                 if accum_read is not None and accum_write is not None:
@@ -727,7 +744,11 @@ class MetalWarpPipeline:
 
                 encoder = command_buffer.computeCommandEncoder()
                 encoder.setComputePipelineState_(self._pipeline)
-                warp_input = self._mip_texture if self._mip_texture is not None else input_texture
+                warp_input = (
+                    self._mip_texture
+                    if _shell_needs_mip_texture(active_config) and self._mip_texture is not None
+                    else input_texture
+                )
                 encoder.setTexture_atIndex_(warp_input, 0)
                 encoder.setTexture_atIndex_(output_texture, 1)
                 if accum_read is not None and accum_write is not None:

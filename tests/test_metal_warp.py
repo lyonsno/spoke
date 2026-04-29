@@ -463,3 +463,164 @@ def test_warp_diagnostics_record_fullscreen_mip_cost_against_bounded_shell(monke
     assert diagnostics["mip_generation_source_pixels"] == 5_000
     assert diagnostics["warp_dispatch_pixels"] == expected_dispatch_pixels
     assert diagnostics["warp_dispatch_pixels"] < diagnostics["mip_generation_source_pixels"]
+
+
+def test_crisp_shell_skips_mip_generation_and_samples_input_texture(monkeypatch):
+    """A fill-less pressure scar should not travel through the material mip path."""
+
+    class FakeBuffer:
+        def __init__(self, data_or_length):
+            if isinstance(data_or_length, bytes):
+                self._raw = ctypes.create_string_buffer(data_or_length)
+            else:
+                self._raw = ctypes.create_string_buffer(int(data_or_length))
+
+        def contents(self):
+            return ctypes.addressof(self._raw)
+
+    class FakeTexture:
+        def __init__(self, width, height, label):
+            self._width = width
+            self._height = height
+            self.label = label
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeTextureDescriptor:
+        def __init__(self, width=0, height=0, mipmapped=False):
+            self.width = width
+            self.height = height
+            self.mipmapped = mipmapped
+
+        @classmethod
+        def texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            cls, _fmt, width, height, mipmapped
+        ):
+            return cls(width, height, mipmapped)
+
+        def setUsage_(self, _usage):
+            return None
+
+    fake_objc = types.ModuleType("objc")
+    fake_objc.lookUpClass = lambda name: FakeTextureDescriptor
+    monkeypatch.setitem(sys.modules, "objc", fake_objc)
+
+    class FakeDevice:
+        def __init__(self):
+            self.created_mipmapped = []
+
+        def newTextureWithDescriptor_iosurface_plane_(self, desc, _surface, _plane):
+            return FakeTexture(desc.width, desc.height, "input")
+
+        def newTextureWithDescriptor_(self, desc):
+            self.created_mipmapped.append(desc.mipmapped)
+            return FakeTexture(desc.width, desc.height, "output")
+
+        def newBufferWithLength_options_(self, length, _options):
+            return FakeBuffer(length)
+
+    class FakeBlitEncoder:
+        def __init__(self):
+            self.mipmap_calls = 0
+
+        def copyFromTexture_toTexture_(self, *_args):
+            return None
+
+        def copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+            self, *_args
+        ):
+            return None
+
+        def generateMipmapsForTexture_(self, _texture):
+            self.mipmap_calls += 1
+
+        def endEncoding(self):
+            return None
+
+    class FakeComputeEncoder:
+        def __init__(self):
+            self.texture0 = None
+
+        def setComputePipelineState_(self, _pipeline):
+            return None
+
+        def setTexture_atIndex_(self, texture, index):
+            if index == 0:
+                self.texture0 = texture
+
+        def setBuffer_offset_atIndex_(self, _buffer, _offset, _index):
+            return None
+
+        def dispatchThreads_threadsPerThreadgroup_(self, _grid, _threadgroup):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeCommandBuffer:
+        def __init__(self):
+            self.blit_encoder = FakeBlitEncoder()
+            self.compute_encoder = FakeComputeEncoder()
+
+        def blitCommandEncoder(self):
+            return self.blit_encoder
+
+        def computeCommandEncoder(self):
+            return self.compute_encoder
+
+        def presentDrawable_(self, _drawable):
+            return None
+
+        def commit(self):
+            return None
+
+    class FakeCommandQueue:
+        def __init__(self):
+            self.command_buffers = []
+
+        def commandBuffer(self):
+            command_buffer = FakeCommandBuffer()
+            self.command_buffers.append(command_buffer)
+            return command_buffer
+
+    class FakeDrawable:
+        def texture(self):
+            return FakeTexture(100, 50, "drawable")
+
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._device = FakeDevice()
+    pipeline._command_queue = FakeCommandQueue()
+    pipeline._pipeline = object()
+    pipeline._mip_texture = None
+    pipeline._mip_texture_size = None
+    pipeline._accum_textures = [None, None]
+    pipeline._accum_texture_size = None
+    pipeline._accum_index = 0
+    pipeline._accum_generation = 0
+    pipeline._thread_exec_width = 8
+    pipeline._max_tg_height = 8
+    pipeline._params_buffer = FakeBuffer(metal_warp._WARP_PARAMS_SIZE)
+
+    assert pipeline.warp_to_drawable(
+        object(),
+        FakeDrawable(),
+        width=100,
+        height=50,
+        shell_config={
+            "center_x": 50.0,
+            "center_y": 25.0,
+            "content_width_points": 20.0,
+            "content_height_points": 10.0,
+            "mip_blur_strength": 0.0,
+        },
+    )
+
+    command_buffer = pipeline._command_queue.command_buffers[-1]
+    assert True not in pipeline._device.created_mipmapped
+    assert command_buffer.blit_encoder.mipmap_calls == 0
+    assert command_buffer.compute_encoder.texture0.label == "input"
+    assert pipeline.diagnostics_snapshot()["mip_generation_frames"] == 0
