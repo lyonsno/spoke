@@ -321,6 +321,10 @@ def _create_metal_buffer(device, data: bytes):
 _WARP_PARAMS_SIZE = struct.calcsize("20f")
 
 
+def _diagnostic_pixels(width, height) -> int:
+    return max(int(width), 0) * max(int(height), 0)
+
+
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
@@ -401,6 +405,7 @@ class MetalWarpPipeline:
         self._accum_texture_size = None
         self._accum_index = 0
         self._accum_generation = 0  # incremented on resize for atomicity
+        self._ensure_diagnostics_fields()
 
         # Cache threadgroup dimensions — these are hardware constants
         self._thread_exec_width = pipeline.threadExecutionWidth()
@@ -413,6 +418,61 @@ class MetalWarpPipeline:
 
         logger.info("Metal warp pipeline created (threadgroup=%dx%d)",
                      self._thread_exec_width, self._max_tg_height)
+
+    def _ensure_diagnostics_fields(self) -> None:
+        defaults = {
+            "_drawable_copy_frames": 0,
+            "_drawable_copy_pixels": 0,
+            "_mip_generation_frames": 0,
+            "_mip_generation_source_pixels": 0,
+            "_warp_dispatches": 0,
+            "_warp_dispatch_pixels": 0,
+        }
+        if not hasattr(self, "_diagnostics_lock"):
+            self._diagnostics_lock = threading.Lock()
+        for name, value in defaults.items():
+            if not hasattr(self, name):
+                setattr(self, name, value)
+
+    def _record_drawable_copy(self, width, height) -> None:
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            self._drawable_copy_frames += 1
+            self._drawable_copy_pixels += _diagnostic_pixels(width, height)
+
+    def _record_mip_generation(self, width, height) -> None:
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            self._mip_generation_frames += 1
+            self._mip_generation_source_pixels += _diagnostic_pixels(width, height)
+
+    def _record_warp_dispatch(self, width, height) -> None:
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            self._warp_dispatches += 1
+            self._warp_dispatch_pixels += _diagnostic_pixels(width, height)
+
+    def diagnostics_snapshot(self) -> dict[str, int | float]:
+        """Return counters for the full-screen copy/mip work feeding the shell."""
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            drawable_copy_frames = int(self._drawable_copy_frames)
+            drawable_copy_pixels = int(self._drawable_copy_pixels)
+            mip_generation_frames = int(self._mip_generation_frames)
+            mip_generation_source_pixels = int(self._mip_generation_source_pixels)
+            warp_dispatches = int(self._warp_dispatches)
+            warp_dispatch_pixels = int(self._warp_dispatch_pixels)
+        return {
+            "drawable_copy_frames": drawable_copy_frames,
+            "drawable_copy_pixels": drawable_copy_pixels,
+            "mip_generation_frames": mip_generation_frames,
+            "mip_generation_source_pixels": mip_generation_source_pixels,
+            "warp_dispatches": warp_dispatches,
+            "warp_dispatch_pixels": warp_dispatch_pixels,
+            "avg_drawable_copy_mp": drawable_copy_pixels / max(drawable_copy_frames, 1) / 1_000_000.0,
+            "avg_mip_generation_source_mp": mip_generation_source_pixels / max(mip_generation_frames, 1) / 1_000_000.0,
+            "avg_warp_dispatch_mp": warp_dispatch_pixels / max(warp_dispatches, 1) / 1_000_000.0,
+        }
 
     def warp_iosurface(self, input_surface, *, width, height, shell_config):
         """Run the warp on an IOSurface and return a new IOSurface with the result."""
@@ -553,6 +613,7 @@ class MetalWarpPipeline:
         # drawable is written before presentation (no tearing on 120Hz).
         blit = command_buffer.blitCommandEncoder()
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
+        self._record_drawable_copy(in_w, in_h)
         if self._mip_texture is not None:
             origin = (0, 0, 0)
             size = (in_w, in_h, 1)
@@ -567,6 +628,7 @@ class MetalWarpPipeline:
                 except Exception:
                     pass
             blit.generateMipmapsForTexture_(self._mip_texture)
+            self._record_mip_generation(in_w, in_h)
         blit.endEncoding()
 
         shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
@@ -616,6 +678,7 @@ class MetalWarpPipeline:
                 grid_size = (box_w, box_h, 1)
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
+                self._record_warp_dispatch(box_w, box_h)
         else:
             # Pass 2: compute warp over capsule bounding box only
             active_config = shell_configs[0] if shell_configs else {}
@@ -672,6 +735,7 @@ class MetalWarpPipeline:
                 grid_size = (box_w, box_h, 1)
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
+                self._record_warp_dispatch(box_w, box_h)
 
                 # Flip accumulation buffer — only if generation hasn't changed
                 # (a resize between dispatch and here would invalidate the flip).

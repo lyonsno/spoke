@@ -619,6 +619,15 @@ def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
             self.warp_calls += 1
             return True
 
+        def diagnostics_snapshot(self):
+            return {
+                "drawable_copy_frames": self.warp_calls,
+                "drawable_copy_pixels": self.warp_calls * 5_000,
+                "mip_generation_frames": self.warp_calls,
+                "mip_generation_source_pixels": self.warp_calls * 5_000,
+                "warp_dispatch_pixels": self.warp_calls * 231,
+            }
+
     now = [1.0]
 
     def monotonic():
@@ -675,3 +684,8 @@ def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
     assert diagnostics["avg_compositor_tick_ms"] > 0.0
     assert diagnostics["avg_warp_to_drawable_ms"] > 0.0
     assert diagnostics["avg_brightness_sample_ms"] > 0.0
+    assert diagnostics["drawable_copy_frames"] == 2
+    assert diagnostics["drawable_copy_pixels"] == 10_000
+    assert diagnostics["mip_generation_frames"] == 2
+    assert diagnostics["mip_generation_source_pixels"] == 10_000
+    assert diagnostics["warp_dispatch_pixels"] == 462

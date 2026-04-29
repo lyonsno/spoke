@@ -365,7 +365,7 @@ class FullScreenCompositor:
             total_brightness_sample_ms = float(self._total_brightness_sample_ms)
             duplicate_frames = int(self._duplicate_frames)
             skipped_frames = int(self._skipped_frames)
-        return {
+        diagnostics = {
             "capture_frames": capture_frames,
             "capture_fps": _fps_from_intervals(capture_frames, capture_interval_ms),
             "display_link_ticks": display_ticks,
@@ -408,6 +408,13 @@ class FullScreenCompositor:
                 brightness_samples,
             ),
         }
+        pipeline_diagnostics = getattr(self._pipeline, "diagnostics_snapshot", None)
+        if callable(pipeline_diagnostics):
+            try:
+                diagnostics.update(dict(pipeline_diagnostics()))
+            except Exception:
+                logger.debug("Metal pipeline diagnostics snapshot failed", exc_info=True)
+        return diagnostics
 
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
