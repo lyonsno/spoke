@@ -161,6 +161,10 @@ from .handsfree import (
 )
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
+from .agent_backend_presenter import (
+    AgentBackendPresentationState,
+    present_backend_events,
+)
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
 from .subagents import SubagentManager, run_search_subagent_query
@@ -1101,6 +1105,7 @@ class SpokeAppDelegate(NSObject):
             self._agent_backend_manager = AgentBackendManager()
             self._agent_shell_provider = self._load_preference("agent_shell_provider") or "off"
             self._agent_shell_sessions: dict[str, dict[str, str | None]] = {}
+            self._agent_backend_presentation_states = {}
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
             self._turn_carver = TurnCarver(
                 base_url=command_url,
@@ -1161,6 +1166,7 @@ class SpokeAppDelegate(NSObject):
             self._agent_backend_manager = None
             self._agent_shell_provider = "off"
             self._agent_shell_sessions = {}
+            self._agent_backend_presentation_states = {}
 
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
@@ -3638,6 +3644,79 @@ class SpokeAppDelegate(NSObject):
         if isinstance(provider_session_id, str) and provider_session_id:
             record["provider_session_id"] = provider_session_id
 
+    def _agent_backend_presentation_state(
+        self,
+        session_id: str,
+    ) -> AgentBackendPresentationState:
+        states = getattr(self, "_agent_backend_presentation_states", None)
+        if not isinstance(states, dict):
+            states = {}
+            self._agent_backend_presentation_states = states
+        state = states.get(session_id)
+        if not isinstance(state, AgentBackendPresentationState):
+            state = AgentBackendPresentationState()
+            states[session_id] = state
+        return state
+
+    def _present_agent_backend_events(
+        self,
+        session_id: str,
+        session: dict,
+        seen_sequence: int,
+        token: int,
+    ) -> int:
+        events = session.get("backend_events")
+        if not isinstance(events, list):
+            return seen_sequence
+        new_events = [
+            event
+            for event in events
+            if isinstance(event, dict)
+            and isinstance(event.get("sequence"), int)
+            and event["sequence"] > seen_sequence
+        ]
+        if not new_events:
+            return seen_sequence
+        state = self._agent_backend_presentation_state(session_id)
+        for action in present_backend_events(new_events, state):
+            if action.kind == "response_delta" and action.text:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToken:",
+                    {"token": token, "text": action.text},
+                    False,
+                )
+            elif action.kind == "status" and action.text:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToken:",
+                    {"token": token, "text": f"{action.text}\n"},
+                    False,
+                )
+            elif action.kind == "narrator_summary" and action.text:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "narratorSummary:",
+                    {"token": token, "summary": action.text},
+                    False,
+                )
+            elif action.kind == "tool_start":
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToolStart:",
+                    {"token": token},
+                    False,
+                )
+            elif action.kind == "tool_end":
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToolEnd:",
+                    {"token": token},
+                    False,
+                )
+            elif action.kind == "error" and action.text:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToken:",
+                    {"token": token, "text": f"{action.text}\n"},
+                    False,
+                )
+        return max(event["sequence"] for event in new_events)
+
     def _maybe_route_agent_shell_text(self, text: str, token: int) -> bool:
         provider = self._active_agent_shell_provider()
         if provider is None:
@@ -3714,10 +3793,17 @@ class SpokeAppDelegate(NSObject):
                     raise RuntimeError(f"{label} did not return a Spoke session id")
 
                 session = launched
+                seen_backend_event_sequence = 0
                 while token == self._transcription_token:
                     latest = manager.get_session(session_id)
                     if isinstance(latest, dict):
                         session = latest
+                        seen_backend_event_sequence = self._present_agent_backend_events(
+                            session_id,
+                            session,
+                            seen_backend_event_sequence,
+                            token,
+                        )
                     state = session.get("state") if isinstance(session, dict) else None
                     if state in {"completed", "failed", "cancelled"}:
                         break

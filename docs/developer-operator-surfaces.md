@@ -38,3 +38,10 @@ provider session/thread ids, carry the requested working directory, preserve
 structured backend events for future command/tool-loop rendering, and surface
 backend-unavailable failures as operator-visible state rather than as raw
 terminal-command failures.
+
+Backend event presentation is a shared policy layer, not Codex-specific UI
+glue. `spoke.agent_backend_presenter` maps provider events into compact actions
+such as response deltas, tool start/end, status lines, narrator summaries, and
+errors. Raw command/tool output remains hidden by default; operator surfaces
+should show liveness and status first, with scrollback or expansion built on
+the stored structured events later.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -77,6 +79,72 @@ class _FakeAgentBackendManager:
     def cancel(self, session_id):
         self.cancelled.append(session_id)
         return {"id": session_id, "state": "cancelled"}
+
+
+class _StreamingFakeAgentBackendManager:
+    def __init__(self):
+        self.launched: list[dict] = []
+        self.poll_count = 0
+
+    def launch(self, **kwargs):
+        self.launched.append(kwargs)
+        return {
+            "id": "agent-backend-codex-1",
+            "provider": "codex",
+            "state": "running",
+            "provider_session_id": None,
+            "backend_events": [],
+            "result": None,
+            "error": None,
+        }
+
+    def get_session(self, session_id):
+        self.poll_count += 1
+        if self.poll_count == 1:
+            return {
+                "id": session_id,
+                "provider": "codex",
+                "state": "running",
+                "provider_session_id": "codex-thread-1",
+                "backend_events": [
+                    {
+                        "sequence": 1,
+                        "kind": "command_execution",
+                        "text": "pytest tests/test_agent_backends.py\nSECRET OUTPUT",
+                        "data": {
+                            "id": "cmd-1",
+                            "type": "command_execution",
+                            "command": "pytest tests/test_agent_backends.py",
+                            "aggregated_output": "SECRET OUTPUT",
+                            "status": "in_progress",
+                        },
+                    },
+                    {
+                        "sequence": 2,
+                        "kind": "reasoning",
+                        "text": "checking the focused test",
+                        "data": {
+                            "id": "reason-1",
+                            "type": "reasoning",
+                            "text": "checking the focused test",
+                        },
+                    },
+                ],
+                "result": None,
+                "error": None,
+            }
+        return {
+            "id": session_id,
+            "provider": "codex",
+            "state": "completed",
+            "provider_session_id": "codex-thread-1",
+            "backend_events": [],
+            "result": "done",
+            "error": None,
+        }
+
+    def cancel(self, _session_id):
+        return {"state": "cancelled"}
 
 
 def _make_agent_shell_delegate(main_module):
@@ -171,13 +239,68 @@ class TestAgentBackendManager:
         assert "1 passed" in event.text
         assert event.data["status"] == "completed"
 
+    def test_manager_publishes_backend_events_while_session_is_running(self):
+        from spoke.agent_backends import (
+            AgentBackendEvent,
+            AgentBackendManager,
+            AgentBackendRunResult,
+        )
+
+        event_added = threading.Event()
+        release = threading.Event()
+
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
+            event_sink(
+                AgentBackendEvent(
+                    kind="reasoning",
+                    text="checking the focused test",
+                    data={"id": "reason-1", "type": "reasoning"},
+                )
+            )
+            event_added.set()
+            assert release.wait(timeout=2)
+            return AgentBackendRunResult(
+                provider=provider,
+                session_id="codex-thread-123",
+                final_response="Plan complete.",
+            )
+
+        manager = AgentBackendManager(backend_runner=fake_runner)
+
+        launched = manager.launch(
+            provider="codex",
+            prompt="inspect the failing tests",
+            cwd="/tmp/project",
+        )
+        assert event_added.wait(timeout=2)
+        running = manager.get_session(launched["id"])
+
+        assert running["state"] == "running"
+        assert running["backend_events"] == [
+            {
+                "sequence": 1,
+                "kind": "reasoning",
+                "text": "checking the focused test",
+                "data": {"id": "reason-1", "type": "reasoning"},
+            }
+        ]
+
+        release.set()
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            completed = manager.get_session(launched["id"])
+            if completed["state"] == "completed":
+                break
+            time.sleep(0.01)
+        assert completed["state"] == "completed"
+
     def test_launch_tracks_provider_cwd_resume_and_result_identity(self, tmp_path):
         from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
 
         calls = []
         _DeferredThread.created = []
 
-        def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
             calls.append((provider, prompt, cwd, resume_id, cancel_check()))
             return AgentBackendRunResult(
                 provider=provider,
@@ -221,7 +344,7 @@ class TestAgentBackendManager:
 
         _DeferredThread.created = []
 
-        def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
             raise AgentBackendUnavailable("Codex CLI is not logged in with ChatGPT")
 
         manager = AgentBackendManager(
@@ -270,7 +393,7 @@ class TestAgentBackendManager:
 
         _DeferredThread.created = []
 
-        def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
             assert cancel_check() is True
             return AgentBackendRunResult(
                 provider=provider,
@@ -348,6 +471,91 @@ class TestAgentBackendToolDispatch:
         assert "ANTHROPIC_API_KEY" not in text
         assert "OPENAI_API_KEY" not in text
         assert "api key" not in text.casefold()
+
+
+class TestAgentBackendPresentation:
+    def test_presenter_maps_events_to_compact_actions_without_raw_output(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_backend_events,
+        )
+
+        state = AgentBackendPresentationState()
+        actions = present_backend_events(
+            [
+                {
+                    "sequence": 1,
+                    "kind": "command_execution",
+                    "text": "pytest tests/test_agent_backends.py\nSECRET OUTPUT",
+                    "data": {
+                        "id": "cmd-1",
+                        "type": "command_execution",
+                        "command": "pytest tests/test_agent_backends.py",
+                        "aggregated_output": "SECRET OUTPUT",
+                        "status": "in_progress",
+                    },
+                },
+                {
+                    "sequence": 2,
+                    "kind": "reasoning",
+                    "text": "checking the focused test",
+                    "data": {
+                        "id": "reason-1",
+                        "type": "reasoning",
+                        "text": "checking the focused test",
+                    },
+                },
+            ],
+            state,
+        )
+
+        assert [(action.kind, action.text) for action in actions] == [
+            ("tool_start", ""),
+            ("status", "Codex running: pytest tests/test_agent_backends.py"),
+            ("narrator_summary", "checking the focused test"),
+        ]
+        assert all("SECRET OUTPUT" not in action.text for action in actions)
+
+    def test_presenter_streams_only_new_agent_message_text(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_backend_events,
+        )
+
+        state = AgentBackendPresentationState()
+        first = present_backend_events(
+            [
+                {
+                    "sequence": 1,
+                    "kind": "agent_message",
+                    "text": "hello",
+                    "data": {"id": "msg-1", "type": "agent_message", "text": "hello"},
+                }
+            ],
+            state,
+        )
+        second = present_backend_events(
+            [
+                {
+                    "sequence": 2,
+                    "kind": "agent_message",
+                    "text": "hello world",
+                    "data": {
+                        "id": "msg-1",
+                        "type": "agent_message",
+                        "text": "hello world",
+                    },
+                }
+            ],
+            state,
+        )
+
+        assert [(action.kind, action.text) for action in first] == [
+            ("response_delta", "hello")
+        ]
+        assert [(action.kind, action.text) for action in second] == [
+            ("response_delta", " world")
+        ]
 
 
 class TestAgentShellRouting:
@@ -523,6 +731,34 @@ class TestAgentShellDelegateDispatch:
         assert not any("Started Codex session" in text for text in token_texts)
         assert calls[-1].args[0] == "commandFailed:"
         assert calls[-1].args[1]["error"] == "backend failed"
+
+    def test_running_backend_events_are_presented_without_raw_output(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _StreamingFakeAgentBackendManager()
+
+        delegate._send_text_as_command("inspect the failing test")
+
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        token_texts = [
+            call.args[1]["text"]
+            for call in calls
+            if call.args[0] == "commandToken:" and "text" in call.args[1]
+        ]
+        assert "Codex running: pytest tests/test_agent_backends.py\n" in token_texts
+        assert all("SECRET OUTPUT" not in text for text in token_texts)
+        assert any(call.args[0] == "commandToolStart:" for call in calls)
+        assert any(
+            call.args[0] == "narratorSummary:"
+            and call.args[1]["summary"] == "checking the focused test"
+            for call in calls
+        )
+        assert calls[-1].args[0] == "commandComplete:"
+        assert calls[-1].args[1]["response"] == "done"
 
     def test_epistaxis_shaped_text_stays_on_assistant_path_not_provider(
         self, main_module, monkeypatch
