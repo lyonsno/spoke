@@ -1971,7 +1971,7 @@ def execute_tool(
     tool_output_mode: str = "text",
     approval_granted: bool = False,
     subagent_manager: Any | None = None,
-    agent_sdk_manager: Any | None = None,
+    agent_backend_manager: Any | None = None,
     history_compactor: Callable[[dict], str] | None = None,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.

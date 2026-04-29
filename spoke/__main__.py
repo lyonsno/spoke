@@ -161,7 +161,7 @@ from .handsfree import (
 )
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
-from .agent_sdk_operator import AgentSDKManager
+from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
@@ -1098,7 +1098,7 @@ class SpokeAppDelegate(NSObject):
                     cancel_check=cancel_check,
                 )
             )
-            self._agent_sdk_manager = AgentSDKManager()
+            self._agent_backend_manager = AgentBackendManager()
             self._agent_shell_provider = self._load_preference("agent_shell_provider") or "off"
             self._agent_shell_sessions: dict[str, dict[str, str | None]] = {}
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
@@ -1158,7 +1158,7 @@ class SpokeAppDelegate(NSObject):
             self._scene_cache = None
             self._tool_schemas = None
             self._subagent_manager = None
-            self._agent_sdk_manager = None
+            self._agent_backend_manager = None
             self._agent_shell_provider = "off"
             self._agent_shell_sessions = {}
 
@@ -3592,7 +3592,7 @@ class SpokeAppDelegate(NSObject):
         provider = getattr(self, "_agent_shell_provider", "off") or "off"
         if provider not in _AGENT_SHELL_PROVIDERS:
             return None
-        if getattr(self, "_agent_sdk_manager", None) is None:
+        if getattr(self, "_agent_backend_manager", None) is None:
             return None
         return provider
 
@@ -3606,7 +3606,7 @@ class SpokeAppDelegate(NSObject):
             record = {"spoke_session_id": None, "provider_session_id": None}
             sessions[provider] = record
         spoke_session_id = record.get("spoke_session_id")
-        manager = getattr(self, "_agent_sdk_manager", None)
+        manager = getattr(self, "_agent_backend_manager", None)
         if isinstance(spoke_session_id, str) and spoke_session_id and manager is not None:
             latest = manager.get_session(spoke_session_id)
             if isinstance(latest, dict):
@@ -3687,7 +3687,7 @@ class SpokeAppDelegate(NSObject):
         token: int,
     ) -> None:
         provider = decision.provider
-        manager = getattr(self, "_agent_sdk_manager", None)
+        manager = getattr(self, "_agent_backend_manager", None)
         if provider not in _AGENT_SHELL_PROVIDERS or manager is None:
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandFailed:",
@@ -3931,7 +3931,7 @@ class SpokeAppDelegate(NSObject):
                 tts_client=_tool_tts_client(name),
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
-                agent_sdk_manager=getattr(self, "_agent_sdk_manager", None),
+                agent_backend_manager=getattr(self, "_agent_backend_manager", None),
                 history_compactor=_compact_history,
                 **kwargs,
             )

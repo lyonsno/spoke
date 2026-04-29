@@ -16,7 +16,7 @@ _ALLOWED_PROVIDERS = {"codex"}
 _BILLING_CREDENTIAL_ENV = ("OPENAI_" + "API_KEY", "CODEX_" + "API_KEY")
 
 
-class AgentSDKUnavailable(RuntimeError):
+class AgentBackendUnavailable(RuntimeError):
     """Raised when a local agent backend is not installed or not ready."""
 
 
@@ -28,7 +28,7 @@ class AgentBackendEvent:
 
 
 @dataclass(frozen=True)
-class AgentSDKRunResult:
+class AgentBackendRunResult:
     provider: str
     session_id: str | None
     final_response: str
@@ -58,7 +58,7 @@ def _codex_login_status(codex_path: str, env: dict[str, str]) -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise AgentSDKUnavailable(f"Codex login status failed: {exc}") from exc
+        raise AgentBackendUnavailable(f"Codex login status failed: {exc}") from exc
     return result.stdout or ""
 
 
@@ -66,7 +66,7 @@ def _require_codex_subscription_login(codex_path: str, env: dict[str, str]) -> N
     status = _codex_login_status(codex_path, env)
     if "ChatGPT" in status:
         return
-    raise AgentSDKUnavailable(
+    raise AgentBackendUnavailable(
         "Codex CLI is not logged in with ChatGPT subscription auth; "
         "billing-backed Codex credentials are disabled for Spoke Agent Shell."
     )
@@ -122,10 +122,10 @@ def _run_codex_cli(
     cwd: str,
     resume_id: str | None,
     cancel_check: Callable[[], bool] | None,
-) -> AgentSDKRunResult:
+) -> AgentBackendRunResult:
     codex_path = shutil.which("codex")
     if not codex_path:
-        raise AgentSDKUnavailable("Codex CLI is not installed or not on PATH")
+        raise AgentBackendUnavailable("Codex CLI is not installed or not on PATH")
     env = _subscription_only_env()
     _require_codex_subscription_login(codex_path, env)
 
@@ -146,7 +146,7 @@ def _run_codex_cli(
             bufsize=1,
         )
     except OSError as exc:
-        raise AgentSDKUnavailable(f"Codex CLI failed to start: {exc}") from exc
+        raise AgentBackendUnavailable(f"Codex CLI failed to start: {exc}") from exc
 
     provider_session_id = resume_id
     final_response = ""
@@ -208,7 +208,7 @@ def _run_codex_cli(
         process.stderr.close()
     return_code = process.wait()
     if cancel_check is not None and cancel_check():
-        return AgentSDKRunResult(
+        return AgentBackendRunResult(
             provider="codex",
             session_id=provider_session_id,
             final_response=final_response,
@@ -217,7 +217,7 @@ def _run_codex_cli(
     if return_code != 0:
         detail = stream_error or stderr.strip() or f"exit status {return_code}"
         raise RuntimeError(f"Codex CLI failed: {detail}")
-    return AgentSDKRunResult(
+    return AgentBackendRunResult(
         provider="codex",
         session_id=provider_session_id,
         final_response=final_response,
@@ -225,13 +225,13 @@ def _run_codex_cli(
     )
 
 
-def run_agent_sdk_session(
+def run_agent_backend_session(
     provider: str,
     prompt: str,
     cwd: str,
     resume_id: str | None,
     cancel_check: Callable[[], bool] | None = None,
-) -> AgentSDKRunResult:
+) -> AgentBackendRunResult:
     provider = provider.strip().lower()
     if provider == "codex":
         return _run_codex_cli(
@@ -241,26 +241,26 @@ def run_agent_sdk_session(
             cancel_check=cancel_check,
         )
     if provider == "claude-code":
-        raise AgentSDKUnavailable(
+        raise AgentBackendUnavailable(
             "Claude Code CLI backend is reserved but not wired yet; "
             "Anthropic Agent SDK is excluded from this no-billing design."
         )
     raise ValueError(f"Unsupported agent backend: {provider}")
 
 
-class AgentSDKManager:
+class AgentBackendManager:
     """Track operator-owned local agent backend sessions."""
 
     def __init__(
         self,
         *,
-        sdk_runner: Callable[
+        backend_runner: Callable[
             [str, str, str, str | None, Callable[[], bool]],
-            AgentSDKRunResult,
-        ] = run_agent_sdk_session,
+            AgentBackendRunResult,
+        ] = run_agent_backend_session,
         thread_factory: Callable[..., Any] = threading.Thread,
     ):
-        self._sdk_runner = sdk_runner
+        self._backend_runner = backend_runner
         self._thread_factory = thread_factory
         self._lock = threading.Lock()
         self._counter = 0
@@ -361,14 +361,14 @@ class AgentSDKManager:
             cancel_event = session["_cancel_event"]
 
         try:
-            result = self._sdk_runner(
+            result = self._backend_runner(
                 provider,
                 prompt,
                 cwd,
                 resume_id,
                 cancel_event.is_set,
             )
-        except AgentSDKUnavailable as exc:
+        except AgentBackendUnavailable as exc:
             with self._lock:
                 session = self._sessions[session_id]
                 if session["_cancel_event"].is_set():

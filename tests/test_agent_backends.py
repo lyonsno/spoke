@@ -110,7 +110,7 @@ def _make_agent_shell_delegate(main_module):
 
 class TestAgentBackendManager:
     def test_codex_backend_env_strips_billing_credentials(self, monkeypatch):
-        from spoke.agent_sdk_operator import _subscription_only_env
+        from spoke.agent_backends import _subscription_only_env
 
         monkeypatch.setenv("OPENAI_API_KEY", "forbidden")
         monkeypatch.setenv("CODEX_API_KEY", "forbidden")
@@ -123,24 +123,24 @@ class TestAgentBackendManager:
         assert env["CODEX_HOME"] == "/tmp/codex-home"
 
     def test_codex_backend_rejects_non_chatgpt_login_status(self, monkeypatch):
-        from spoke.agent_sdk_operator import AgentSDKUnavailable, _require_codex_subscription_login
+        from spoke.agent_backends import AgentBackendUnavailable, _require_codex_subscription_login
 
         def fake_status(_codex_path, _env):
             return "Logged in using billing credentials"
 
-        monkeypatch.setattr("spoke.agent_sdk_operator._codex_login_status", fake_status)
+        monkeypatch.setattr("spoke.agent_backends._codex_login_status", fake_status)
 
-        with pytest.raises(AgentSDKUnavailable, match="ChatGPT subscription"):
+        with pytest.raises(AgentBackendUnavailable, match="ChatGPT subscription"):
             _require_codex_subscription_login("/usr/local/bin/codex", {})
 
     def test_codex_json_item_events_preserve_tool_loop_shape(self):
-        from spoke.agent_sdk_operator import _event_from_codex_item
+        from spoke.agent_backends import _event_from_codex_item
 
         event = _event_from_codex_item(
             {
                 "id": "cmd-1",
                 "type": "command_execution",
-                "command": "pytest tests/test_agent_sdk_operator.py",
+                "command": "pytest tests/test_agent_backends.py",
                 "aggregated_output": "1 passed",
                 "status": "completed",
                 "exit_code": 0,
@@ -149,26 +149,26 @@ class TestAgentBackendManager:
 
         assert event is not None
         assert event.kind == "command_execution"
-        assert "pytest tests/test_agent_sdk_operator.py" in event.text
+        assert "pytest tests/test_agent_backends.py" in event.text
         assert "1 passed" in event.text
         assert event.data["status"] == "completed"
 
     def test_launch_tracks_provider_cwd_resume_and_result_identity(self, tmp_path):
-        from spoke.agent_sdk_operator import AgentSDKManager, AgentSDKRunResult
+        from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
 
         calls = []
         _DeferredThread.created = []
 
         def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
             calls.append((provider, prompt, cwd, resume_id, cancel_check()))
-            return AgentSDKRunResult(
+            return AgentBackendRunResult(
                 provider=provider,
                 session_id="codex-thread-123",
                 final_response="Plan complete.",
             )
 
-        manager = AgentSDKManager(
-            sdk_runner=fake_runner,
+        manager = AgentBackendManager(
+            backend_runner=fake_runner,
             thread_factory=_DeferredThread,
         )
 
@@ -196,18 +196,18 @@ class TestAgentBackendManager:
         assert result["result_preview"] == "Plan complete."
 
     def test_backend_unavailable_is_visible_without_looking_like_terminal_failure(self):
-        from spoke.agent_sdk_operator import (
-            AgentSDKManager,
-            AgentSDKUnavailable,
+        from spoke.agent_backends import (
+            AgentBackendManager,
+            AgentBackendUnavailable,
         )
 
         _DeferredThread.created = []
 
         def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
-            raise AgentSDKUnavailable("Codex CLI is not logged in with ChatGPT")
+            raise AgentBackendUnavailable("Codex CLI is not logged in with ChatGPT")
 
-        manager = AgentSDKManager(
-            sdk_runner=fake_runner,
+        manager = AgentBackendManager(
+            backend_runner=fake_runner,
             thread_factory=_DeferredThread,
         )
 
@@ -226,10 +226,10 @@ class TestAgentBackendManager:
 
     @pytest.mark.parametrize("provider", ["", "search", "gpt"])
     def test_rejects_unknown_providers(self, provider):
-        from spoke.agent_sdk_operator import AgentSDKManager
+        from spoke.agent_backends import AgentBackendManager
 
-        manager = AgentSDKManager(
-            sdk_runner=MagicMock(),
+        manager = AgentBackendManager(
+            backend_runner=MagicMock(),
             thread_factory=_DeferredThread,
         )
 
@@ -237,10 +237,10 @@ class TestAgentBackendManager:
             manager.launch(provider=provider, prompt="hello", cwd="/tmp/project")
 
     def test_rejects_empty_prompt(self):
-        from spoke.agent_sdk_operator import AgentSDKManager
+        from spoke.agent_backends import AgentBackendManager
 
-        manager = AgentSDKManager(
-            sdk_runner=MagicMock(),
+        manager = AgentBackendManager(
+            backend_runner=MagicMock(),
             thread_factory=_DeferredThread,
         )
 
@@ -248,20 +248,20 @@ class TestAgentBackendManager:
             manager.launch(provider="codex", prompt="   ", cwd="/tmp/project")
 
     def test_cancelled_session_does_not_publish_result(self):
-        from spoke.agent_sdk_operator import AgentSDKManager, AgentSDKRunResult
+        from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
 
         _DeferredThread.created = []
 
         def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
             assert cancel_check() is True
-            return AgentSDKRunResult(
+            return AgentBackendRunResult(
                 provider=provider,
                 session_id="codex-thread-123",
                 final_response="Should be discarded",
             )
 
-        manager = AgentSDKManager(
-            sdk_runner=fake_runner,
+        manager = AgentBackendManager(
+            backend_runner=fake_runner,
             thread_factory=_DeferredThread,
         )
 
@@ -301,7 +301,7 @@ class TestAgentBackendToolDispatch:
                 "cwd": "/tmp/project",
                 "resume_id": "thread-1",
             },
-            agent_sdk_manager=fake_manager,
+            agent_backend_manager=fake_manager,
         )
 
         assert json.loads(result) == {"error": "Unknown tool: launch_agent_session"}
@@ -322,7 +322,7 @@ class TestAgentBackendToolDispatch:
         assert "codex_app_server" not in text
 
     def test_backend_module_does_not_offer_api_credit_or_claude_agent_sdk_path(self):
-        module_path = Path(__file__).resolve().parents[1] / "spoke" / "agent_sdk_operator.py"
+        module_path = Path(__file__).resolve().parents[1] / "spoke" / "agent_backends.py"
         text = module_path.read_text(encoding="utf-8")
 
         assert "claude_agent_sdk" not in text
@@ -427,7 +427,7 @@ class TestAgentShellMenuState:
         delegate._command_model_options = [("qwen-test", "qwen-test", True)]
         delegate._command_server_unreachable = False
         delegate._agent_shell_provider = "codex"
-        delegate._agent_sdk_manager = MagicMock()
+        delegate._agent_backend_manager = MagicMock()
         delegate._load_cloud_provider_preference = MagicMock(return_value="google")
         delegate._load_preference = MagicMock(return_value=None)
         delegate._select_model = MagicMock(return_value=[])
@@ -464,11 +464,11 @@ class TestAgentShellDelegateDispatch:
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
         delegate._agent_shell_provider = "codex"
-        delegate._agent_sdk_manager = _FakeAgentBackendManager(result="Patch looks good.")
+        delegate._agent_backend_manager = _FakeAgentBackendManager(result="Patch looks good.")
 
         delegate._send_text_as_command("inspect the failing test")
 
-        assert delegate._agent_sdk_manager.launched == [
+        assert delegate._agent_backend_manager.launched == [
             {
                 "provider": "codex",
                 "prompt": "inspect the failing test",
@@ -492,11 +492,11 @@ class TestAgentShellDelegateDispatch:
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
         delegate._agent_shell_provider = "codex"
-        delegate._agent_sdk_manager = _FakeAgentBackendManager()
+        delegate._agent_backend_manager = _FakeAgentBackendManager()
 
         delegate._send_text_as_command("epistaxis zetesis how fares the tyrant state")
 
-        assert delegate._agent_sdk_manager.launched == []
+        assert delegate._agent_backend_manager.launched == []
         delegate._command_client.stream_command_events.assert_called_once()
         assert (
             delegate._command_client.stream_command_events.call_args.args[0]
@@ -509,12 +509,12 @@ class TestAgentShellDelegateDispatch:
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
         delegate._agent_shell_provider = "claude-code"
-        delegate._agent_sdk_manager = _FakeAgentBackendManager()
+        delegate._agent_backend_manager = _FakeAgentBackendManager()
 
         delegate._send_text_as_command("switch to codex")
 
         assert delegate._agent_shell_provider == "codex"
-        delegate._agent_sdk_manager.launched == []
+        delegate._agent_backend_manager.launched == []
         delegate._command_client.stream_command_events.assert_not_called()
         delegate._save_preference.assert_called_once_with("agent_shell_provider", "codex")
         calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
