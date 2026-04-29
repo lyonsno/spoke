@@ -936,6 +936,8 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
         self._narrator_shimmer_active = False
+        self._agent_shell_header_label = None
+        self._agent_shell_footer_label = None
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -1101,7 +1103,7 @@ class CommandOverlay(NSObject):
         self._content_view = content
 
         # Scroll view with text view for response text
-        scroll_frame = NSMakeRect(24, 16, _OVERLAY_WIDTH - 48, _OVERLAY_HEIGHT - 32)
+        scroll_frame = NSMakeRect(24, 20, _OVERLAY_WIDTH - 48, _OVERLAY_HEIGHT - 44)
         self._scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
         self._scroll_view.setHasVerticalScroller_(False)
         self._scroll_view.setHasHorizontalScroller_(False)
@@ -1158,10 +1160,56 @@ class CommandOverlay(NSObject):
         self._thinking_label.setHidden_(True)
         content.addSubview_(self._thinking_label)
 
+        from AppKit import NSTextAlignmentLeft
+
+        header_w = _OVERLAY_WIDTH - timer_w - 34.0
+        self._agent_shell_header_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(14.0, _OVERLAY_HEIGHT - 22.0, header_w, 16.0)
+        )
+        self._agent_shell_header_label.setEditable_(False)
+        self._agent_shell_header_label.setSelectable_(False)
+        self._agent_shell_header_label.setBezeled_(False)
+        self._agent_shell_header_label.setDrawsBackground_(False)
+        self._agent_shell_header_label.setAlignment_(NSTextAlignmentLeft)
+        self._agent_shell_header_label.setLineBreakMode_(4)
+        self._agent_shell_header_label.setMaximumNumberOfLines_(1)
+        self._agent_shell_header_label.setFont_(
+            NSFont.systemFontOfSize_weight_(11.0, 0.0)
+        )
+        self._agent_shell_header_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.72
+            )
+        )
+        self._agent_shell_header_label.setStringValue_("")
+        self._agent_shell_header_label.setHidden_(True)
+        content.addSubview_(self._agent_shell_header_label)
+
+        self._agent_shell_footer_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(14.0, 4.0, _OVERLAY_WIDTH - 28.0, 14.0)
+        )
+        self._agent_shell_footer_label.setEditable_(False)
+        self._agent_shell_footer_label.setSelectable_(False)
+        self._agent_shell_footer_label.setBezeled_(False)
+        self._agent_shell_footer_label.setDrawsBackground_(False)
+        self._agent_shell_footer_label.setAlignment_(NSTextAlignmentLeft)
+        self._agent_shell_footer_label.setLineBreakMode_(4)
+        self._agent_shell_footer_label.setMaximumNumberOfLines_(1)
+        self._agent_shell_footer_label.setFont_(
+            NSFont.systemFontOfSize_weight_(10.0, 0.0)
+        )
+        self._agent_shell_footer_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.68
+            )
+        )
+        self._agent_shell_footer_label.setStringValue_("")
+        self._agent_shell_footer_label.setHidden_(True)
+        content.addSubview_(self._agent_shell_footer_label)
+
         # Narrator summary label — below the thinking timer, left-aligned
         # Up to 3 lines of wrapping text; only the latest summary is shown.
         import AppKit as _AppKit
-        from AppKit import NSTextAlignmentLeft
         _NARRATOR_FONT_SIZE = 12.0
         _NARRATOR_LINE_HEIGHT = 15.0
         _NARRATOR_MAX_LINES = 3
@@ -1356,6 +1404,7 @@ class CommandOverlay(NSObject):
         self._response_text = ""
         self._utterance_text = ""
         self._collapsed_text = ""
+        self._clear_agent_shell_chrome()
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -1397,7 +1446,7 @@ class CommandOverlay(NSObject):
                 NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
             )
             self._scroll_view.setFrame_(
-                NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
+                NSMakeRect(48, 20, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 44)
             )
             self._reset_text_geometry(self._scroll_view.frame().size.height)
             if not has_initial_transcript:
@@ -1658,6 +1707,31 @@ class CommandOverlay(NSObject):
         )
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
+
+    def _clear_agent_shell_chrome(self) -> None:
+        for label in (
+            getattr(self, "_agent_shell_header_label", None),
+            getattr(self, "_agent_shell_footer_label", None),
+        ):
+            if label is not None:
+                label.setStringValue_("")
+                label.setHidden_(True)
+
+    def set_agent_shell_header(self, text: str) -> None:
+        """Set the Agent Shell identity line above the transcript."""
+        label = getattr(self, "_agent_shell_header_label", None)
+        if label is not None:
+            label.setStringValue_(text)
+            label.setHidden_(not bool(text))
+            self._apply_agent_shell_chrome_theme()
+
+    def set_agent_shell_footer(self, text: str) -> None:
+        """Set the Agent Shell metadata line below the transcript."""
+        label = getattr(self, "_agent_shell_footer_label", None)
+        if label is not None:
+            label.setStringValue_(text)
+            label.setHidden_(not bool(text))
+            self._apply_agent_shell_chrome_theme()
 
     def _make_collapsed_attributed(self, text: str):
         """Build an attributed string for collapsed thinking text."""
@@ -2826,6 +2900,21 @@ class CommandOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, alpha)
         )
 
+    def _apply_agent_shell_chrome_theme(self) -> None:
+        """Keep Agent Shell metadata readable on the adaptive surface."""
+        labels = (
+            getattr(self, "_agent_shell_header_label", None),
+            getattr(self, "_agent_shell_footer_label", None),
+        )
+        for label in labels:
+            if label is None or label.isHidden():
+                continue
+            label.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.72
+                )
+            )
+
     def _sync_narrator_visibility(self, text_height: float | None = None) -> None:
         """Hide the fixed narrator label before it overlaps transcript text."""
         if self._narrator_label is None or self._narrator_label.isHidden():
@@ -3734,8 +3823,16 @@ class CommandOverlay(NSObject):
                     NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
                 )
                 self._scroll_view.setFrame_(
-                    NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
+                    NSMakeRect(12, 20, _OVERLAY_WIDTH - 24, new_height - 44)
                 )
+                if self._agent_shell_header_label is not None:
+                    self._agent_shell_header_label.setFrame_(
+                        NSMakeRect(14.0, new_height - 22.0, _OVERLAY_WIDTH - 106.0, 16.0)
+                    )
+                if self._agent_shell_footer_label is not None:
+                    self._agent_shell_footer_label.setFrame_(
+                        NSMakeRect(14.0, 4.0, _OVERLAY_WIDTH - 28.0, 14.0)
+                    )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()
                 shell_config = self._current_optical_shell_config()
@@ -3794,6 +3891,7 @@ class CommandOverlay(NSObject):
             self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
         self._apply_thinking_label_theme()
         self._apply_narrator_theme()
+        self._apply_agent_shell_chrome_theme()
 
     def _apply_thinking_label_theme(self) -> None:
         if self._thinking_label is None or self._thinking_label.isHidden():

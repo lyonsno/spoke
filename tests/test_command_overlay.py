@@ -43,6 +43,10 @@ def _make_overlay(mock_pyobjc):
     overlay._thinking_label = MagicMock()
     overlay._thinking_label.isHidden.return_value = False
     overlay._narrator_label = MagicMock()
+    overlay._agent_shell_header_label = MagicMock()
+    overlay._agent_shell_header_label.isHidden.return_value = True
+    overlay._agent_shell_footer_label = MagicMock()
+    overlay._agent_shell_footer_label.isHidden.return_value = True
     overlay._screen = MagicMock()
     overlay._screen.frame.return_value = MagicMock(
         size=MagicMock(width=1920, height=1080)
@@ -477,6 +481,23 @@ class TestShowFinishHide:
         assert overlay._streaming is False
         assert overlay._thinking_timer is None
 
+    def test_agent_shell_header_and_footer_set_explicit_chrome(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._agent_shell_header_label = MagicMock()
+        overlay._agent_shell_footer_label = MagicMock()
+
+        overlay.set_agent_shell_header("Topos: codex-spoke-spinal-tap")
+        overlay.set_agent_shell_footer("model gpt-5.5 | cwd /tmp/spoke | 5h 19% | 7d 18%")
+
+        overlay._agent_shell_header_label.setStringValue_.assert_called_once_with(
+            "Topos: codex-spoke-spinal-tap"
+        )
+        overlay._agent_shell_header_label.setHidden_.assert_called_once_with(False)
+        overlay._agent_shell_footer_label.setStringValue_.assert_called_once_with(
+            "model gpt-5.5 | cwd /tmp/spoke | 5h 19% | 7d 18%"
+        )
+        overlay._agent_shell_footer_label.setHidden_.assert_called_once_with(False)
+
 
 class TestWindowLayering:
     """Command overlay should stack independently from the preview overlay."""
@@ -499,11 +520,22 @@ class TestWindowLayering:
         thinking_builder = MagicMock()
         thinking_label = MagicMock()
         thinking_builder.initWithFrame_.return_value = thinking_label
+        header_builder = MagicMock()
+        header_label = MagicMock()
+        header_builder.initWithFrame_.return_value = header_label
+        footer_builder = MagicMock()
+        footer_label = MagicMock()
+        footer_builder.initWithFrame_.return_value = footer_label
         narrator_builder = MagicMock()
         narrator_label = MagicMock()
         narrator_builder.initWithFrame_.return_value = narrator_label
         text_field_cls = MagicMock()
-        text_field_cls.alloc.side_effect = [thinking_builder, narrator_builder]
+        text_field_cls.alloc.side_effect = [
+            thinking_builder,
+            header_builder,
+            footer_builder,
+            narrator_builder,
+        ]
         monkeypatch.setattr(sys.modules["AppKit"], "NSTextField", text_field_cls)
         monkeypatch.setattr(sys.modules["AppKit"], "NSTextAlignmentRight", 2, raising=False)
         monkeypatch.setattr(sys.modules["AppKit"], "NSTextAlignmentLeft", 0, raising=False)
@@ -516,7 +548,13 @@ class TestWindowLayering:
 
         overlay.setup()
 
+        header_frame = header_builder.initWithFrame_.call_args[0][0]
+        footer_frame = footer_builder.initWithFrame_.call_args[0][0]
         narrator_frame = narrator_builder.initWithFrame_.call_args[0][0]
+        header_label.setMaximumNumberOfLines_.assert_called_once_with(1)
+        footer_label.setMaximumNumberOfLines_.assert_called_once_with(1)
+        assert footer_frame.origin.y >= 0.0
+        assert header_frame.origin.y + header_frame.size.height <= mod._OVERLAY_HEIGHT
         narrator_label.setMaximumNumberOfLines_.assert_called_once_with(3)
         assert narrator_frame.size.height == pytest.approx(45.0)
         assert narrator_frame.origin.y >= 0.0

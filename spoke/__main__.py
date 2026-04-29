@@ -3856,6 +3856,18 @@ class SpokeAppDelegate(NSObject):
                 {"token": token, "active": bool(action.active)},
                 False,
             )
+        elif action.kind == "metadata_footer" and action.text:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "agentShellFooter:",
+                {"token": token, "text": action.text},
+                False,
+            )
+        elif action.kind == "metadata_header" and action.text:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "agentShellHeader:",
+                {"token": token, "text": action.text},
+                False,
+            )
         elif action.kind == "tool_start":
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandToolStart:",
@@ -4474,6 +4486,34 @@ class SpokeAppDelegate(NSObject):
                 overlay.set_narrator_summary(summary)
             except Exception:
                 logger.exception("Command overlay failed to set narrator summary")
+
+    def agentShellHeader_(self, payload: dict) -> None:
+        """Main thread: update the Agent Shell identity line."""
+        if payload.get("token") != self._transcription_token:
+            return
+        text = payload.get("text", "")
+        if not text:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_agent_shell_header(text)
+            except Exception:
+                logger.exception("Command overlay failed to set Agent Shell header")
+
+    def agentShellFooter_(self, payload: dict) -> None:
+        """Main thread: update the Agent Shell metadata footer."""
+        if payload.get("token") != self._transcription_token:
+            return
+        text = payload.get("text", "")
+        if not text:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_agent_shell_footer(text)
+            except Exception:
+                logger.exception("Command overlay failed to set Agent Shell footer")
 
     def commandToken_(self, payload: dict) -> None:
         """Main thread: append a streamed token to the command overlay."""

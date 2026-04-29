@@ -273,6 +273,126 @@ class TestAgentBackendManager:
         assert "1 passed" in event.text
         assert event.data["status"] == "completed"
 
+    def test_codex_log_events_preserve_shell_metadata_shape(self):
+        from spoke.agent_backends import _events_from_codex_stream_event
+
+        session_events = _events_from_codex_stream_event(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "codex-thread-1",
+                    "cwd": "/tmp/spoke",
+                    "cli_version": "0.125.0",
+                    "model_provider": "openai",
+                },
+            }
+        )
+        context_events = _events_from_codex_stream_event(
+            {
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/tmp/spoke",
+                    "model": "gpt-5.5",
+                },
+            }
+        )
+        usage_events = _events_from_codex_stream_event(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "primary": {"used_percent": 19.0, "window_minutes": 300},
+                        "secondary": {"used_percent": 18.0, "window_minutes": 10080},
+                        "plan_type": "pro",
+                    },
+                },
+            }
+        )
+
+        assert len(session_events) == 1
+        assert session_events[0].kind == "session_metadata"
+        assert session_events[0].text == "/tmp/spoke"
+        assert session_events[0].data == {
+            "provider_session_id": "codex-thread-1",
+            "cwd": "/tmp/spoke",
+            "cli_version": "0.125.0",
+            "model_provider": "openai",
+        }
+        assert context_events[0].kind == "session_metadata"
+        assert context_events[0].data == {"cwd": "/tmp/spoke", "model": "gpt-5.5"}
+        assert usage_events[0].kind == "usage_limits"
+        assert usage_events[0].data["five_hour_percent"] == 19.0
+        assert usage_events[0].data["seven_day_percent"] == 18.0
+        assert usage_events[0].data["plan_type"] == "pro"
+
+    def test_codex_session_log_backfills_metadata_events(self, tmp_path):
+        from spoke.agent_backends import _events_from_codex_session_log
+
+        session_id = "019dd871-0786-7243-89d3-849cc0fb023e"
+        log_dir = tmp_path / "sessions" / "2026" / "04" / "29"
+        log_dir.mkdir(parents=True)
+        log_path = log_dir / f"rollout-2026-04-29T04-52-59-{session_id}.jsonl"
+        log_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": session_id,
+                                "cwd": "/private/tmp/spoke",
+                                "cli_version": "0.125.0",
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn_context",
+                            "payload": {"cwd": "/private/tmp/spoke", "model": "gpt-5.5"},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "event_msg",
+                            "payload": {
+                                "type": "token_count",
+                                "rate_limits": {
+                                    "primary": {
+                                        "used_percent": 19.0,
+                                        "window_minutes": 300,
+                                    },
+                                    "secondary": {
+                                        "used_percent": 18.0,
+                                        "window_minutes": 10080,
+                                    },
+                                },
+                            },
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        events = _events_from_codex_session_log(session_id, codex_home=tmp_path)
+
+        assert [(event.kind, event.data) for event in events] == [
+            (
+                "session_metadata",
+                {
+                    "provider_session_id": session_id,
+                    "cwd": "/private/tmp/spoke",
+                    "cli_version": "0.125.0",
+                },
+            ),
+            ("session_metadata", {"cwd": "/private/tmp/spoke", "model": "gpt-5.5"}),
+            (
+                "usage_limits",
+                {"five_hour_percent": 19.0, "seven_day_percent": 18.0},
+            ),
+        ]
+
     def test_manager_publishes_backend_events_while_session_is_running(self):
         from spoke.agent_backends import (
             AgentBackendEvent,
@@ -590,6 +710,77 @@ class TestAgentBackendPresentation:
         assert [(action.kind, action.text) for action in second] == [
             ("response_delta", " world")
         ]
+
+    def test_presenter_composes_agent_shell_metadata_footer_and_topos_header(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_backend_events,
+        )
+
+        state = AgentBackendPresentationState()
+        actions = present_backend_events(
+            [
+                {
+                    "sequence": 1,
+                    "kind": "session_metadata",
+                    "text": "/private/tmp/spoke",
+                    "data": {"cwd": "/private/tmp/spoke", "model": "gpt-5.5"},
+                },
+                {
+                    "sequence": 2,
+                    "kind": "usage_limits",
+                    "data": {
+                        "five_hour_percent": 19.0,
+                        "seven_day_percent": 18.5,
+                        "plan_type": "pro",
+                    },
+                },
+                {
+                    "sequence": 3,
+                    "kind": "command_execution",
+                    "text": "epistaxis update\nTopos: codex-spoke-spinal-tap",
+                    "data": {
+                        "id": "cmd-1",
+                        "type": "command_execution",
+                        "command": "epistaxis update",
+                        "aggregated_output": "Topos: codex-spoke-spinal-tap",
+                        "status": "completed",
+                    },
+                },
+                {
+                    "sequence": 4,
+                    "kind": "agent_message",
+                    "text": "Recorded the Spoke state.",
+                    "data": {
+                        "id": "msg-1",
+                        "type": "agent_message",
+                        "text": "Recorded the Spoke state.",
+                    },
+                },
+            ],
+            state,
+        )
+
+        assert ("metadata_footer", "model gpt-5.5 | cwd /private/tmp/spoke") in [
+            (action.kind, action.text[:43]) for action in actions
+        ]
+        assert any(
+            action.kind == "metadata_footer"
+            and "5h 19%" in action.text
+            and "7d 18.5%" in action.text
+            and "pro" in action.text
+            for action in actions
+        )
+        assert any(
+            action.kind == "metadata_header"
+            and action.text == "Topos: codex-spoke-spinal-tap"
+            for action in actions
+        )
+        assert any(
+            action.kind == "response_delta"
+            and action.text == "Recorded the Spoke state."
+            for action in actions
+        )
 
     def test_presenter_exposes_backend_liveness_actions(self):
         from spoke.agent_backend_presenter import present_backend_liveness
@@ -959,6 +1150,84 @@ class TestAgentShellDelegateDispatch:
         assert any(
             call.args[0] == "narratorSummary:"
             and call.args[1]["summary"] == "checking the focused test"
+            for call in calls
+        )
+        assert calls[-1].args[0] == "commandComplete:"
+        assert calls[-1].args[1]["response"] == "done"
+
+    def test_backend_metadata_events_drive_agent_shell_chrome(
+        self, main_module, monkeypatch
+    ):
+        class _MetadataBackendManager(_StreamingFakeAgentBackendManager):
+            def get_session(self, session_id):
+                self.poll_count += 1
+                if self.poll_count == 1:
+                    return {
+                        "id": session_id,
+                        "provider": "codex",
+                        "state": "running",
+                        "provider_session_id": "codex-thread-1",
+                        "backend_events": [
+                            {
+                                "sequence": 1,
+                                "kind": "session_metadata",
+                                "text": "/private/tmp/spoke",
+                                "data": {
+                                    "cwd": "/private/tmp/spoke",
+                                    "model": "gpt-5.5",
+                                },
+                            },
+                            {
+                                "sequence": 2,
+                                "kind": "usage_limits",
+                                "data": {
+                                    "five_hour_percent": 19.0,
+                                    "seven_day_percent": 18.0,
+                                },
+                            },
+                            {
+                                "sequence": 3,
+                                "kind": "agent_message",
+                                "text": "Created Topos: codex-spoke-spinal-tap",
+                                "data": {
+                                    "id": "msg-1",
+                                    "type": "agent_message",
+                                    "text": "Created Topos: codex-spoke-spinal-tap",
+                                },
+                            },
+                        ],
+                        "result": None,
+                        "error": None,
+                    }
+                return {
+                    "id": session_id,
+                    "provider": "codex",
+                    "state": "completed",
+                    "provider_session_id": "codex-thread-1",
+                    "backend_events": [],
+                    "result": "done",
+                    "error": None,
+                }
+
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _MetadataBackendManager()
+
+        delegate._send_text_as_command("create your topos")
+
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        assert any(
+            call.args[0] == "agentShellFooter:"
+            and "model gpt-5.5" in call.args[1]["text"]
+            and "5h 19%" in call.args[1]["text"]
+            and "7d 18%" in call.args[1]["text"]
+            for call in calls
+        )
+        assert any(
+            call.args[0] == "agentShellHeader:"
+            and call.args[1]["text"] == "Topos: codex-spoke-spinal-tap"
             for call in calls
         )
         assert calls[-1].args[0] == "commandComplete:"
