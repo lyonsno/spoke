@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .agent_shell_identity import AgentShellIdentity, resolve_agent_shell_identity
+from .agent_thread_cards import (
+    build_agent_thread_card,
+    extract_thread_waypoints_from_text,
+)
 
 
 _ALLOWED_PROVIDERS = {"codex"}
@@ -263,6 +267,26 @@ def _events_from_codex_stream_event(event: dict[str, Any]) -> list[AgentBackendE
     return []
 
 
+def _thread_waypoint_events_from_text(
+    text: str,
+    *,
+    sequence: int = 0,
+    source: str,
+) -> list[AgentBackendEvent]:
+    return [
+        AgentBackendEvent(
+            kind="thread_waypoint",
+            text=waypoint.text,
+            data=waypoint.to_event_data(),
+        )
+        for waypoint in extract_thread_waypoints_from_text(
+            text,
+            sequence=sequence,
+            source=source,
+        )
+    ]
+
+
 def _codex_sessions_root(
     env: dict[str, str] | None = None,
     codex_home: Path | None = None,
@@ -306,6 +330,7 @@ def _events_from_codex_session_log(
     session_meta_event: AgentBackendEvent | None = None
     turn_context_event: AgentBackendEvent | None = None
     usage_event: AgentBackendEvent | None = None
+    waypoint_events: list[AgentBackendEvent] = []
     try:
         with path.open(encoding="utf-8") as handle:
             for index, line in enumerate(handle):
@@ -330,13 +355,22 @@ def _events_from_codex_session_log(
                     turn_context_event = parsed[0]
                 elif event_type == "event_msg":
                     usage_event = parsed[0]
+                for parsed_event in parsed:
+                    if parsed_event.kind == "agent_message" and parsed_event.text:
+                        waypoint_events.extend(
+                            _thread_waypoint_events_from_text(
+                                parsed_event.text,
+                                sequence=index,
+                                source="codex-log",
+                            )
+                        )
     except OSError:
         return []
     return [
         event
         for event in (session_meta_event, turn_context_event, usage_event)
         if event is not None
-    ]
+    ] + waypoint_events
 
 
 def _append_event(
@@ -760,4 +794,5 @@ class AgentBackendManager:
             "error": session.get("error"),
             "backend_unavailable": bool(session.get("backend_unavailable")),
             "poll_hint": poll_hint,
+            "thread_card": build_agent_thread_card(session).to_dict(),
         }

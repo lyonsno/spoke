@@ -19,6 +19,7 @@ class AgentBackendPresentationState:
     plan_type: str = ""
     topos_name: str = ""
     topos_source: str = ""
+    thread_card_summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -261,6 +262,26 @@ def present_backend_events(
             if text:
                 actions.append(AgentBackendPresentation(kind="error", text=text))
     return actions
+
+
+def present_thread_card(
+    card: dict[str, Any] | None,
+    state: AgentBackendPresentationState,
+) -> list[AgentBackendPresentation]:
+    if not isinstance(card, dict):
+        return []
+    readiness = _string(card.get("readiness")).strip()
+    if readiness not in {"working", "failed", "cancelled"}:
+        return []
+    title = _string(card.get("title")).strip()
+    activity = _string(card.get("activity_line")).strip()
+    if not title and not activity:
+        return []
+    summary = " · ".join(part for part in (title, activity) if part)
+    if not summary or summary == state.thread_card_summary:
+        return []
+    state.thread_card_summary = summary
+    return [AgentBackendPresentation(kind="narrator_summary", text=summary)]
 
 
 def present_backend_liveness(label: str) -> list[AgentBackendPresentation]:

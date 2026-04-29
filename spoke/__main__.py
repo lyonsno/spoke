@@ -168,6 +168,7 @@ from .agent_backend_presenter import (
     present_backend_events,
     present_backend_idle,
     present_backend_liveness,
+    present_thread_card,
 )
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
@@ -3831,6 +3832,19 @@ class SpokeAppDelegate(NSObject):
             self._apply_agent_backend_presentation_action(action, token)
         return max(event["sequence"] for event in new_events)
 
+    def _present_agent_thread_card(
+        self,
+        session_id: str,
+        session: dict,
+        token: int,
+    ) -> None:
+        state = self._agent_backend_presentation_state(session_id)
+        card = session.get("thread_card")
+        if not isinstance(card, dict):
+            return
+        for action in present_thread_card(card, state):
+            self._apply_agent_backend_presentation_action(action, token)
+
     def _apply_agent_backend_presentation_action(self, action, token: int) -> None:
         if action.kind == "response_delta" and action.text:
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3970,6 +3984,7 @@ class SpokeAppDelegate(NSObject):
                     latest = manager.get_session(session_id)
                     if isinstance(latest, dict):
                         session = latest
+                        self._present_agent_thread_card(session_id, session, token)
                         seen_backend_event_sequence = self._present_agent_backend_events(
                             session_id,
                             session,

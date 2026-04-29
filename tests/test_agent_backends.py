@@ -393,6 +393,99 @@ class TestAgentBackendManager:
             ),
         ]
 
+    def test_codex_session_log_extracts_thread_waypoints_from_assistant_messages(
+        self, tmp_path
+    ):
+        from spoke.agent_backends import _events_from_codex_session_log
+
+        session_id = "019dd871-0786-7243-89d3-849cc0fb023e"
+        log_dir = tmp_path / "sessions" / "2026" / "04" / "29"
+        log_dir.mkdir(parents=True)
+        log_path = log_dir / f"rollout-2026-04-29T04-52-59-{session_id}.jsonl"
+        log_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": (
+                                            "**Anagnosis**\n"
+                                            "The lane is turning Codex logs into "
+                                            "Agent Thread Cards.\n"
+                                            "Next step is a read-side extractor."
+                                        ),
+                                    }
+                                ],
+                            },
+                        }
+                    )
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        events = _events_from_codex_session_log(session_id, codex_home=tmp_path)
+
+        assert [(event.kind, event.data["kind"], event.text) for event in events] == [
+            (
+                "thread_waypoint",
+                "anagnosis",
+                "The lane is turning Codex logs into Agent Thread Cards.\n"
+                "Next step is a read-side extractor.",
+            )
+        ]
+
+    def test_public_session_exposes_thread_card_from_waypoints(self):
+        from spoke.agent_backends import AgentBackendManager
+
+        session = {
+            "id": "agent-backend-codex-1",
+            "provider": "codex",
+            "prompt": "build thread cards",
+            "cwd": "/tmp/spoke",
+            "resume_id": None,
+            "state": "completed",
+            "created_at": "now",
+            "started_at": "now",
+            "finished_at": "later",
+            "provider_session_id": "codex-thread-1",
+            "result": "Done. Cards are available.",
+            "events": [
+                {
+                    "sequence": 1,
+                    "kind": "thread_waypoint",
+                    "text": "The lane is building thread-card bearings.",
+                    "data": {
+                        "kind": "anagnosis",
+                        "source": "codex-log",
+                        "sequence": 1,
+                    },
+                }
+            ],
+            "event_counter": 1,
+            "error": None,
+            "backend_unavailable": False,
+        }
+
+        public = AgentBackendManager._public_session(session)
+
+        assert public["thread_card"] == {
+            "thread_id": "agent-backend-codex-1",
+            "provider": "codex",
+            "title": "building thread-card bearings",
+            "readiness": "ready",
+            "bearing": "The lane is building thread-card bearings.",
+            "activity_line": "Ready to read",
+            "latest_response": "Done. Cards are available.",
+            "updated_sequence": 1,
+        }
+
     def test_codex_identity_event_uses_epistaxis_resolver_before_transcript_regex(self):
         from spoke.agent_backends import AgentBackendEvent, _agent_shell_identity_event
         from spoke.agent_shell_identity import AgentShellIdentity
@@ -922,6 +1015,30 @@ class TestAgentBackendPresentation:
         ]
         assert actions[-1].active is True
 
+    def test_presenter_maps_running_thread_card_to_narrator_summary(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_thread_card,
+        )
+
+        state = AgentBackendPresentationState()
+        card = {
+            "title": "build Agent Shell cards",
+            "readiness": "working",
+            "activity_line": "Running: uv run pytest -q tests/test_agent_thread_cards.py",
+        }
+
+        first = present_thread_card(card, state)
+        second = present_thread_card(card, state)
+
+        assert [(action.kind, action.text) for action in first] == [
+            (
+                "narrator_summary",
+                "build Agent Shell cards · Running: uv run pytest -q tests/test_agent_thread_cards.py",
+            )
+        ]
+        assert second == []
+
 
 class TestAgentShellRouting:
     def test_active_agent_shell_routes_ordinary_input_to_selected_provider(self):
@@ -1391,6 +1508,59 @@ class TestAgentShellDelegateDispatch:
         )
         assert calls[-1].args[0] == "commandComplete:"
         assert calls[-1].args[1]["response"] == "quiet done"
+
+    def test_running_agent_shell_thread_card_updates_narrator_when_no_reasoning(
+        self, main_module, monkeypatch
+    ):
+        class _CardBackendManager(_StreamingFakeAgentBackendManager):
+            def get_session(self, session_id):
+                self.poll_count += 1
+                if self.poll_count == 1:
+                    return {
+                        "id": session_id,
+                        "provider": "codex",
+                        "state": "running",
+                        "provider_session_id": "codex-thread-1",
+                        "backend_events": [],
+                        "thread_card": {
+                            "title": "build Agent Shell cards",
+                            "readiness": "working",
+                            "activity_line": "Running focused tests",
+                        },
+                        "result": None,
+                        "error": None,
+                    }
+                return {
+                    "id": session_id,
+                    "provider": "codex",
+                    "state": "completed",
+                    "provider_session_id": "codex-thread-1",
+                    "backend_events": [],
+                    "thread_card": {
+                        "title": "build Agent Shell cards",
+                        "readiness": "ready",
+                        "activity_line": "Ready to read",
+                    },
+                    "result": "done",
+                    "error": None,
+                }
+
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _CardBackendManager()
+
+        delegate._send_text_as_command("build the cards")
+
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        assert any(
+            call.args[0] == "narratorSummary:"
+            and call.args[1]["summary"] == "build Agent Shell cards · Running focused tests"
+            for call in calls
+        )
+        assert calls[-1].args[0] == "commandComplete:"
+        assert calls[-1].args[1]["response"] == "done"
 
     def test_epistaxis_shaped_text_stays_with_active_agent_shell_until_executor_exists(
         self, main_module, monkeypatch
