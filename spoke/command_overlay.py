@@ -78,7 +78,7 @@ _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
 _OPTICAL_MATERIALIZATION_S = 1.36
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_S * 0.5
-_OPTICAL_MATERIALIZATION_BODY_READY = 0.66
+_OPTICAL_MATERIALIZATION_BODY_READY = 0.55
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
 _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.04
 _OPTICAL_MATERIALIZATION_SPREAD_END = 0.55
@@ -88,7 +88,8 @@ _OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
 _OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
-_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.66
+_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.62
+_OPTICAL_MATERIAL_FILL_FULL_AT = 0.76
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.022
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
@@ -620,7 +621,7 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
         1.0,
         _smoothstep(
             (p - _OPTICAL_MATERIAL_FILL_SOLID_AT)
-            / max(1.0 - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
+            / max(_OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
         ),
     )
     return {
@@ -2622,7 +2623,7 @@ class CommandOverlay(NSObject):
         elif boost_layer is not None:
             boost_layer.setHidden_(True)
         # Update text punch-through mask (if active)
-        if getattr(self, "_text_punchthrough", False):
+        if getattr(self, "_text_punchthrough", False) and not materialization_owns_fill:
             self._update_punchthrough_mask()
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:

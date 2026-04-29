@@ -498,7 +498,8 @@ class TestOpticalShellMaterialization:
 
         seed = mod._materialization_fill_state(0.0)
         wide_warp = mod._materialization_fill_state(0.55)
-        solid_slit = mod._materialization_fill_state(0.66)
+        solid_slit = mod._materialization_fill_state(0.62)
+        blooming = mod._materialization_fill_state(0.75)
         full = mod._materialization_fill_state(1.0)
 
         assert seed["opacity"] == pytest.approx(0.0)
@@ -507,6 +508,7 @@ class TestOpticalShellMaterialization:
         assert wide_warp["height_frac"] < 0.04
         assert solid_slit["opacity"] > 0.95
         assert solid_slit["height_frac"] < 0.20
+        assert blooming["height_frac"] > 0.85
         assert full["opacity"] == pytest.approx(1.0)
         assert full["height_frac"] == pytest.approx(1.0)
 
@@ -564,6 +566,23 @@ class TestOpticalShellMaterialization:
             assert call.args[0] == pytest.approx(
                 mod._materialization_fill_state(0.30)["opacity"]
             )
+
+    def test_pulse_does_not_regenerate_punchthrough_mask_during_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.sampled_brightness = 0.0
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.30
+        overlay._text_punchthrough = True
+        overlay._text_view.textStorage.return_value.length.return_value = 12
+        overlay._update_punchthrough_mask = MagicMock()
+
+        overlay._pulseStepInner()
+
+        overlay._update_punchthrough_mask.assert_not_called()
 
     def test_fill_image_ready_preserves_active_materialization_geometry(
         self, mock_pyobjc
