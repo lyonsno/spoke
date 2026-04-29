@@ -514,7 +514,8 @@ class FullScreenCompositor:
                 windowserver_brightness_samples,
             ),
         }
-        pipeline_diagnostics = getattr(self._pipeline, "diagnostics_snapshot", None)
+        pipeline = getattr(self, "_pipeline", None)
+        pipeline_diagnostics = getattr(pipeline, "diagnostics_snapshot", None)
         if callable(pipeline_diagnostics):
             try:
                 diagnostics.update(dict(pipeline_diagnostics()))
