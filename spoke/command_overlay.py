@@ -88,6 +88,8 @@ _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = (
     _OPTICAL_MATERIALIZATION_PUCKER_FAST_S
     + _OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S
 )
+_OPTICAL_MATERIALIZATION_PUCKER_INTENSITY = 0.25
+_OPTICAL_MATERIALIZATION_PUCKER_REBOUND = 0.55
 _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
     _OPTICAL_MATERIALIZATION_DISMISS_S + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
 )
@@ -648,20 +650,26 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
 
 
 def _dismiss_pucker_amount(progress: float) -> float:
+    """Signed dismiss scar amount: inward pinch, weaker rebound, then rest."""
     p = _clamp01(progress)
-    fast_frac = _OPTICAL_MATERIALIZATION_PUCKER_FAST_S / max(
-        _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S,
-        1e-6,
-    )
-    if p <= fast_frac:
-        return _smoothstep(p / max(fast_frac, 1e-6))
-    release_t = (p - fast_frac) / max(1.0 - fast_frac, 1e-6)
-    return (1.0 - _clamp01(release_t)) ** 2.0
+    pinch_peak = 0.18
+    neutral_cross = 0.42
+    rebound_peak = 0.58
+    if p <= pinch_peak:
+        return _smoothstep(p / pinch_peak)
+    if p <= neutral_cross:
+        t = (p - pinch_peak) / max(neutral_cross - pinch_peak, 1e-6)
+        return 1.0 - _smoothstep(t)
+    if p <= rebound_peak:
+        t = (p - neutral_cross) / max(rebound_peak - neutral_cross, 1e-6)
+        return -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND * _smoothstep(t)
+    t = (p - rebound_peak) / max(1.0 - rebound_peak, 1e-6)
+    return -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND * (1.0 - _smoothstep(t))
 
 
 def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     """Return the tiny inverse-warp scar that releases after dismiss closes."""
-    amount = _dismiss_pucker_amount(progress)
+    amount = _dismiss_pucker_amount(progress) * _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY
     base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
@@ -672,12 +680,13 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
         config["content_height_points"] * 0.5,
     )
     config["core_magnification"] = 1.0
-    config["x_squeeze"] = -2.32 * amount
-    config["y_squeeze"] = -1.52 * amount
+    config["cleanup_blur_radius_points"] = 0.0
+    config["x_squeeze"] = 2.32 * amount
+    config["y_squeeze"] = 1.52 * amount
     if "ring_amplitude_points" in config:
-        config["ring_amplitude_points"] = -abs(float(config["ring_amplitude_points"])) * 0.88 * amount
+        config["ring_amplitude_points"] = abs(float(config["ring_amplitude_points"])) * 0.88 * amount
     if "tail_amplitude_points" in config:
-        config["tail_amplitude_points"] = -abs(float(config["tail_amplitude_points"])) * 0.72 * amount
+        config["tail_amplitude_points"] = abs(float(config["tail_amplitude_points"])) * 0.72 * amount
     config["continuous_present"] = True
     return config
 

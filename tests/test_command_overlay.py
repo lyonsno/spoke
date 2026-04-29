@@ -534,7 +534,9 @@ class TestOpticalShellMaterialization:
         assert gathering["height_frac"] < 0.25
         assert snap["height_frac"] - gathering["height_frac"] > 0.55
 
-    def test_dismiss_pucker_tail_pulses_then_releases_slowly(self, mock_pyobjc):
+    def test_dismiss_pucker_tail_pinches_rebounds_then_releases_without_blur(
+        self, mock_pyobjc
+    ):
         mod = importlib.import_module("spoke.command_overlay")
         base = {
             "center_x": 640.0,
@@ -544,19 +546,26 @@ class TestOpticalShellMaterialization:
             "corner_radius_points": 32.0,
             "ring_amplitude_points": 30.0,
             "tail_amplitude_points": 8.0,
+            "cleanup_blur_radius_points": 0.75,
         }
 
-        peak = mod._dismiss_pucker_shell_config(base, 0.30)
-        lingering = mod._dismiss_pucker_shell_config(base, 0.55)
+        pinch = mod._dismiss_pucker_shell_config(base, 0.18)
+        rebound = mod._dismiss_pucker_shell_config(base, 0.52)
         rest = mod._dismiss_pucker_shell_config(base, 1.0)
 
-        assert peak["content_width_points"] > base["content_width_points"]
-        assert peak["content_height_points"] > base["content_height_points"] * 0.50
-        assert peak["x_squeeze"] < -2.0
-        assert peak["y_squeeze"] < -1.40
-        assert abs(lingering["x_squeeze"]) > abs(rest["x_squeeze"])
-        assert abs(lingering["x_squeeze"]) < abs(peak["x_squeeze"])
+        assert pinch["content_width_points"] > base["content_width_points"]
+        assert pinch["content_height_points"] > base["content_height_points"] * 0.50
+        assert pinch["x_squeeze"] > 0.0
+        assert pinch["y_squeeze"] > 0.0
+        assert pinch["ring_amplitude_points"] > 0.0
+        assert pinch["tail_amplitude_points"] > 0.0
+        assert pinch["x_squeeze"] == pytest.approx(2.32 * 0.25, rel=0.20)
+        assert rebound["x_squeeze"] < 0.0
+        assert rebound["ring_amplitude_points"] < 0.0
+        assert abs(rebound["x_squeeze"]) < abs(pinch["x_squeeze"])
         assert rest["x_squeeze"] == pytest.approx(0.0)
+        assert rest["ring_amplitude_points"] == pytest.approx(0.0)
+        assert pinch["cleanup_blur_radius_points"] == pytest.approx(0.0)
 
     def test_reverse_materialization_hides_local_layers_before_compositor_seed(
         self, mock_pyobjc
