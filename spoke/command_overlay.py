@@ -87,6 +87,9 @@ _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = 0.04
 _OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
+_OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
+_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.66
+_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.022
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -601,6 +604,29 @@ def _materialized_optical_shell_config(
             config[key] = float(config[key]) * _lerp(0.35, 1.0, p)
     config["continuous_present"] = True
     return config
+
+
+def _materialization_fill_state(progress: float) -> dict[str, float]:
+    p = _clamp01(progress)
+    if p <= _OPTICAL_MATERIAL_FILL_START:
+        opacity = 0.0
+    else:
+        opacity = _smoothstep(
+            (p - _OPTICAL_MATERIAL_FILL_START)
+            / max(_OPTICAL_MATERIAL_FILL_SOLID_AT - _OPTICAL_MATERIAL_FILL_START, 1e-6)
+        )
+    height = _lerp(
+        _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+        1.0,
+        _smoothstep(
+            (p - _OPTICAL_MATERIAL_FILL_SOLID_AT)
+            / max(1.0 - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
+        ),
+    )
+    return {
+        "opacity": _clamp01(opacity),
+        "height_frac": _clamp01(height),
+    }
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -2145,11 +2171,17 @@ class CommandOverlay(NSObject):
         progress = self._fade_step / _FADE_STEPS
 
         if self._fade_direction == 1:
-            eased = progress * progress
-            alpha = eased
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                alpha = 1.0
+            else:
+                eased = progress * progress
+                alpha = eased
         else:
-            eased = progress * progress
-            alpha = self._fade_from * (1.0 - eased)
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                alpha = self._fade_from
+            else:
+                eased = progress * progress
+                alpha = self._fade_from * (1.0 - eased)
 
             # Fade utterance at double rate
             if self._text_view is not None and self._utterance_text:
@@ -2735,6 +2767,7 @@ class CommandOverlay(NSObject):
                 )
             except Exception:
                 logger.debug("Failed to seed command materialization shell", exc_info=True)
+        self._apply_materialization_fill_state(self._materialization_progress)
         self._materialization_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _DISMISS_ANIM_FPS,
             self,
@@ -2762,6 +2795,7 @@ class CommandOverlay(NSObject):
         raw = _clamp01(elapsed / duration)
         progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
         self._materialization_progress = progress
+        self._apply_materialization_fill_state(progress)
         try:
             compositor.update_shell_config(
                 _materialized_optical_shell_config(final_config, progress)
@@ -2772,8 +2806,33 @@ class CommandOverlay(NSObject):
             self._cancel_materialization_animation()
             if getattr(self, "_materialization_direction", 1) > 0:
                 self._materialization_progress = 1.0
+                self._apply_materialization_fill_state(1.0)
             else:
                 self._materialization_progress = 0.0
+                self._apply_materialization_fill_state(0.0)
+
+    def _apply_materialization_fill_state(self, progress: float) -> None:
+        content = getattr(self, "_content_view", None)
+        if content is None:
+            return
+        state = _materialization_fill_state(progress)
+        try:
+            content_frame = content.frame()
+            f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+            total_w = float(content_frame.size.width) + 2 * f
+            total_h = float(content_frame.size.height) + 2 * f
+        except Exception:
+            return
+        h = max(total_h * state["height_frac"], 1.0)
+        y = (total_h - h) * 0.5
+        frame = ((0, y), (total_w, h))
+        for layer_name in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
+            layer = getattr(self, layer_name, None)
+            if layer is not None and hasattr(layer, "setFrame_"):
+                layer.setFrame_(frame)
+        fill = getattr(self, "_fill_layer", None)
+        if fill is not None and hasattr(fill, "setOpacity_"):
+            fill.setOpacity_(state["opacity"])
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""

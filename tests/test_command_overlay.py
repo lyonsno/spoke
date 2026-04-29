@@ -493,6 +493,59 @@ class TestOpticalShellMaterialization:
         assert settle["core_magnification"] < peak["core_magnification"]
         assert final["core_magnification"] == pytest.approx(base["core_magnification"])
 
+    def test_material_fill_lags_warp_spread_then_blooms_vertically(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        seed = mod._materialization_fill_state(0.0)
+        wide_warp = mod._materialization_fill_state(0.55)
+        solid_slit = mod._materialization_fill_state(0.66)
+        full = mod._materialization_fill_state(1.0)
+
+        assert seed["opacity"] == pytest.approx(0.0)
+        assert seed["height_frac"] < 0.04
+        assert wide_warp["opacity"] == pytest.approx(0.0)
+        assert wide_warp["height_frac"] < 0.04
+        assert solid_slit["opacity"] > 0.95
+        assert solid_slit["height_frac"] < 0.20
+        assert full["opacity"] == pytest.approx(1.0)
+        assert full["height_frac"] == pytest.approx(1.0)
+
+    def test_materialization_step_updates_fill_layer_without_window_alpha_fade(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._fill_layer.setFrame_.assert_called()
+        overlay._fill_layer.setOpacity_.assert_called()
+        assert overlay._window.setAlphaValue_.call_args is None
+
+    def test_optical_fade_out_keeps_window_opaque_until_reverse_collapse_finishes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fade_direction = -1
+        overlay._fade_from = 1.0
+        overlay._fade_step = 0
+
+        overlay.fadeStep_(None)
+
+        overlay._window.setAlphaValue_.assert_called_with(1.0)
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""
