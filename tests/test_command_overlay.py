@@ -378,13 +378,16 @@ class TestOpticalShellMaterialization:
         }
 
         seed = mod._materialized_optical_shell_config(base, 0.0)
-        spread = mod._materialized_optical_shell_config(base, 0.50)
+        gathering = mod._materialized_optical_shell_config(base, 0.50)
+        spread = mod._materialized_optical_shell_config(base, 0.77)
         final = mod._materialized_optical_shell_config(base, 1.0)
 
         assert seed["center_x"] == pytest.approx(base["center_x"])
         assert seed["center_y"] == pytest.approx(base["center_y"])
         assert seed["content_width_points"] < base["content_width_points"] * 0.20
-        assert seed["content_height_points"] < base["content_height_points"] * 0.12
+        assert seed["content_height_points"] < base["content_height_points"] * 0.035
+        assert gathering["content_width_points"] < base["content_width_points"] * 0.40
+        assert gathering["content_height_points"] < base["content_height_points"] * 0.45
         assert spread["content_width_points"] > base["content_width_points"] * 0.80
         assert spread["content_height_points"] < base["content_height_points"] * 0.45
         assert final == pytest.approx(base)
@@ -443,6 +446,7 @@ class TestOpticalShellMaterialization:
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S > (
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
         )
+        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(2.0)
         assert scheduled[-1] == (
             pytest.approx(
                 mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S / mod._FADE_STEPS
@@ -548,11 +552,37 @@ class TestOpticalShellMaterialization:
 
         assert peak["content_width_points"] < base["content_width_points"] * 0.45
         assert peak["content_height_points"] < base["content_height_points"] * 0.10
-        assert peak["x_squeeze"] < 0.0
-        assert peak["y_squeeze"] < 0.0
+        assert peak["x_squeeze"] < -1.0
+        assert peak["y_squeeze"] < -0.70
         assert abs(lingering["x_squeeze"]) > abs(rest["x_squeeze"])
         assert abs(lingering["x_squeeze"]) < abs(peak["x_squeeze"])
         assert rest["x_squeeze"] == pytest.approx(0.0)
+
+    def test_reverse_materialization_hides_local_layers_before_compositor_seed(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        order = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.update_shell_config.side_effect = (
+            lambda _config: order.append("compositor")
+        )
+        overlay._fill_layer.setOpacity_.side_effect = (
+            lambda _opacity: order.append("fill-opacity")
+        )
+
+        overlay._start_materialization_animation(
+            {
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            },
+            direction=-1,
+        )
+
+        assert order[:2] == ["fill-opacity", "compositor"]
 
     def test_materialization_step_updates_fill_layer_without_window_alpha_fade(
         self, mock_pyobjc, monkeypatch

@@ -82,8 +82,8 @@ _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
 _OPTICAL_MATERIALIZATION_S = 1.36
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_S * 0.5
-_OPTICAL_MATERIALIZATION_PUCKER_FAST_S = 0.30
-_OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S = 0.70
+_OPTICAL_MATERIALIZATION_PUCKER_FAST_S = 0.60
+_OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S = 1.40
 _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = (
     _OPTICAL_MATERIALIZATION_PUCKER_FAST_S
     + _OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S
@@ -93,15 +93,15 @@ _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
 )
 _OPTICAL_MATERIALIZATION_BODY_READY = 0.55
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
-_OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.04
-_OPTICAL_MATERIALIZATION_SPREAD_END = 0.55
-_OPTICAL_MATERIALIZATION_BLOOM_START = 0.50
+_OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.028
+_OPTICAL_MATERIALIZATION_SPREAD_END = 0.77
+_OPTICAL_MATERIALIZATION_BLOOM_START = 0.70
 _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = 0.04
 _OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
 _OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
-_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.78
+_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.84
 _OPTICAL_MATERIAL_FILL_FULL_AT = 0.96
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.022
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
@@ -568,13 +568,13 @@ def _materialized_optical_shell_config(
     base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
     base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
 
-    spread_t = _smoothstep(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
+    spread_t = _clamp01(p / _OPTICAL_MATERIALIZATION_SPREAD_END) ** 3.0
     bloom_t = _smoothstep(
         (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
         / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
     )
     seed_w = max(24.0, min(base_w * _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
-    seed_h = max(3.0, min(base_h * _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC, 10.0))
+    seed_h = max(2.5, min(base_h * _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC, 7.0))
     width = _lerp(seed_w, base_w, spread_t)
     height = _lerp(seed_h, base_h, bloom_t)
 
@@ -669,12 +669,12 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
         config["content_height_points"] * 0.5,
     )
     config["core_magnification"] = 1.0
-    config["x_squeeze"] = -0.58 * amount
-    config["y_squeeze"] = -0.38 * amount
+    config["x_squeeze"] = -1.16 * amount
+    config["y_squeeze"] = -0.76 * amount
     if "ring_amplitude_points" in config:
-        config["ring_amplitude_points"] = -abs(float(config["ring_amplitude_points"])) * 0.22 * amount
+        config["ring_amplitude_points"] = -abs(float(config["ring_amplitude_points"])) * 0.44 * amount
     if "tail_amplitude_points" in config:
-        config["tail_amplitude_points"] = -abs(float(config["tail_amplitude_points"])) * 0.18 * amount
+        config["tail_amplitude_points"] = -abs(float(config["tail_amplitude_points"])) * 0.36 * amount
     config["continuous_present"] = True
     return config
 
@@ -2850,6 +2850,8 @@ class CommandOverlay(NSObject):
         self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
         self._materialization_started_at = time.perf_counter()
         self._clear_punchthrough_mask_for_materialization()
+        if self._materialization_direction < 0:
+            self._apply_materialization_fill_state(self._materialization_progress)
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             try:
@@ -2861,7 +2863,8 @@ class CommandOverlay(NSObject):
                 )
             except Exception:
                 logger.debug("Failed to seed command materialization shell", exc_info=True)
-        self._apply_materialization_fill_state(self._materialization_progress)
+        if self._materialization_direction > 0:
+            self._apply_materialization_fill_state(self._materialization_progress)
         self._materialization_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _DISMISS_ANIM_FPS,
             self,
