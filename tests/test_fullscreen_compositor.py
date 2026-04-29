@@ -689,3 +689,26 @@ def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
     assert diagnostics["mip_generation_frames"] == 2
     assert diagnostics["mip_generation_source_pixels"] == 10_000
     assert diagnostics["warp_dispatch_pixels"] == 462
+
+
+def test_fullscreen_compositor_keeps_residency_diagnostics_when_pipeline_snapshot_fails(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Pipeline:
+        def diagnostics_snapshot(self):
+            raise RuntimeError("diagnostics unavailable")
+
+    monkeypatch.setattr(fullscreen_compositor.logger, "debug", lambda *args, **kwargs: None)
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._presented_count = 2
+    compositor._pipeline = Pipeline()
+
+    diagnostics = compositor.diagnostics_snapshot()
+
+    assert diagnostics["presented_frames"] == 2
+    assert diagnostics["capture_frames"] == 0
+    assert "mip_generation_frames" not in diagnostics
