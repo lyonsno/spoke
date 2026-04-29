@@ -44,7 +44,8 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
-_AGENT_SHELL_PROVIDERS = {"claude", "codex"}
+_AGENT_SHELL_PROVIDERS = {"codex", "claude-code"}
+_AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex"}
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -99,10 +100,10 @@ def _format_command_http_error(exc) -> str:
 
 
 def _agent_shell_provider_label(provider: str | None) -> str:
-    if provider == "claude":
-        return "Claude Agent SDK"
+    if provider == "claude-code":
+        return "Claude Code"
     if provider == "codex":
-        return "Codex SDK"
+        return "Codex"
     return "Agent Shell"
 
 
@@ -3661,6 +3662,17 @@ class SpokeAppDelegate(NSObject):
                 False,
             )
             return
+        if provider not in _AGENT_SHELL_SELECTABLE_PROVIDERS:
+            label = _agent_shell_provider_label(provider)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:",
+                {
+                    "token": token,
+                    "error": f"{label} backend is reserved but not wired yet.",
+                },
+                False,
+            )
+            return
         self._apply_agent_shell_selection(provider)
         label = _agent_shell_provider_label(provider)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4914,19 +4926,19 @@ class SpokeAppDelegate(NSObject):
 
     def _agent_shell_menu_state(self) -> dict:
         selected = getattr(self, "_agent_shell_provider", "off") or "off"
-        if selected not in {"off", "claude", "codex"}:
+        if selected not in {"off", "codex", "claude-code"}:
             selected = "off"
         return {
             "title": "Agent Shell",
             "items": [
                 ("off", "Off", selected == "off", True),
-                ("claude", "Claude Agent SDK", selected == "claude", True),
-                ("codex", "Codex SDK", selected == "codex", True),
+                ("codex", "Codex", selected == "codex", True),
+                ("claude-code", "Claude Code", selected == "claude-code", False),
             ],
         }
 
     def _apply_agent_shell_selection(self, provider: str) -> None:
-        provider = provider if provider in {"off", "claude", "codex"} else "off"
+        provider = provider if provider in {"off", "codex"} else "off"
         self._agent_shell_provider = provider
         self._save_preference("agent_shell_provider", provider)
         if self._menubar is not None:

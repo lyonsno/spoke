@@ -325,8 +325,8 @@ class TestMenuBarIcon:
                     "title": "Agent Shell",
                     "items": [
                         ("off", "Off", False, True),
-                        ("claude", "Claude Agent SDK", False, True),
-                        ("codex", "Codex SDK", True, True),
+                        ("codex", "Codex", True, True),
+                        ("claude-code", "Claude Code", False, False),
                     ],
                 }
             }
@@ -340,8 +340,8 @@ class TestMenuBarIcon:
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
         assert any(call.args == ("Agent Shell", None, "") for call in calls)
         assert any(call.args == ("Off", "selectModel:", "") for call in calls)
-        assert any(call.args == ("Claude Agent SDK", "selectModel:", "") for call in calls)
-        assert any(call.args == ("Codex SDK", "selectModel:", "") for call in calls)
+        assert any(call.args == ("Codex", "selectModel:", "") for call in calls)
+        assert any(call.args == ("Claude Code", "selectModel:", "") for call in calls)
 
     def test_agent_shell_selection_refreshes_menu_checkmark(self, menubar_module, monkeypatch):
         """Selecting an Agent Shell provider should visibly update the menu in-place."""
@@ -399,8 +399,8 @@ class TestMenuBarIcon:
                     "title": "Agent Shell",
                     "items": [
                         ("off", "Off", selected == "off", True),
-                        ("claude", "Claude Agent SDK", selected == "claude", True),
-                        ("codex", "Codex SDK", selected == "codex", True),
+                        ("codex", "Codex", selected == "codex", True),
+                        ("claude-code", "Claude Code", selected == "claude-code", False),
                     ],
                 }
             }
@@ -413,7 +413,7 @@ class TestMenuBarIcon:
         icon._recording_image = None
 
         icon.setup()
-        codex_item = next(item for item in created_items if item.title == "Codex SDK")
+        codex_item = next(item for item in created_items if item.title == "Codex")
         assert codex_item.state == 0
 
         sender = MagicMock()
@@ -421,7 +421,7 @@ class TestMenuBarIcon:
         icon.selectModel_(sender)
 
         rebuilt_codex_item = [
-            item for item in created_items if item.title == "Codex SDK"
+            item for item in created_items if item.title == "Codex"
         ][-1]
         rebuilt_off_item = [
             item for item in created_items if item.title == "Off"

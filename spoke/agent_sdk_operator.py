@@ -1,20 +1,30 @@
-"""SDK-backed coding-agent sessions for the operator shell."""
+"""Local-auth coding-agent backend sessions for the operator shell."""
 
 from __future__ import annotations
 
-import asyncio
-import importlib
+import json
+import os
+import shutil
+import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 
-_ALLOWED_PROVIDERS = {"claude", "codex"}
+_ALLOWED_PROVIDERS = {"codex"}
+_BILLING_CREDENTIAL_ENV = ("OPENAI_" + "API_KEY", "CODEX_" + "API_KEY")
 
 
 class AgentSDKUnavailable(RuntimeError):
-    """Raised when an optional provider SDK is not installed or not ready."""
+    """Raised when a local agent backend is not installed or not ready."""
+
+
+@dataclass(frozen=True)
+class AgentBackendEvent:
+    kind: str
+    text: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -22,140 +32,196 @@ class AgentSDKRunResult:
     provider: str
     session_id: str | None
     final_response: str
+    events: tuple[AgentBackendEvent, ...] = ()
 
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _message_text(message: Any) -> str:
-    result = getattr(message, "result", None)
-    if isinstance(result, str):
-        return result
-    content = getattr(message, "content", None)
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "".join(parts)
-    return ""
+def _subscription_only_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for name in _BILLING_CREDENTIAL_ENV:
+        env.pop(name, None)
+    return env
 
 
-def _message_session_id(message: Any) -> str | None:
-    data = getattr(message, "data", None)
-    if isinstance(data, dict):
-        session_id = data.get("session_id")
-        if isinstance(session_id, str) and session_id:
-            return session_id
-    session_id = getattr(message, "session_id", None)
-    if isinstance(session_id, str) and session_id:
-        return session_id
-    return None
-
-
-async def _run_claude_agent_sdk_async(
-    *,
-    prompt: str,
-    cwd: str,
-    resume_id: str | None,
-    cancel_check: Callable[[], bool] | None,
-) -> AgentSDKRunResult:
+def _codex_login_status(codex_path: str, env: dict[str, str]) -> str:
     try:
-        sdk = importlib.import_module("claude_agent_sdk")
-    except ImportError as exc:
-        raise AgentSDKUnavailable(
-            "claude-agent-sdk is not installed; install it to enable Claude Agent SDK sessions"
-        ) from exc
-
-    options_kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "allowed_tools": ["Read", "Glob", "Grep", "Bash", "Edit", "Write"],
-        "permission_mode": "default",
-    }
-    if resume_id:
-        options_kwargs["resume"] = resume_id
-    options = sdk.ClaudeAgentOptions(**options_kwargs)
-
-    final_response = ""
-    provider_session_id = resume_id
-    async for message in sdk.query(prompt=prompt, options=options):
-        if cancel_check is not None and cancel_check():
-            break
-        provider_session_id = _message_session_id(message) or provider_session_id
-        text = _message_text(message)
-        if text:
-            final_response = text
-    return AgentSDKRunResult(
-        provider="claude",
-        session_id=provider_session_id,
-        final_response=final_response,
-    )
-
-
-def _run_claude_agent_sdk(
-    *,
-    prompt: str,
-    cwd: str,
-    resume_id: str | None,
-    cancel_check: Callable[[], bool] | None,
-) -> AgentSDKRunResult:
-    return asyncio.run(
-        _run_claude_agent_sdk_async(
-            prompt=prompt,
-            cwd=cwd,
-            resume_id=resume_id,
-            cancel_check=cancel_check,
+        result = subprocess.run(
+            [codex_path, "login", "status"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+            env=env,
+            check=False,
         )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AgentSDKUnavailable(f"Codex login status failed: {exc}") from exc
+    return result.stdout or ""
+
+
+def _require_codex_subscription_login(codex_path: str, env: dict[str, str]) -> None:
+    status = _codex_login_status(codex_path, env)
+    if "ChatGPT" in status:
+        return
+    raise AgentSDKUnavailable(
+        "Codex CLI is not logged in with ChatGPT subscription auth; "
+        "billing-backed Codex credentials are disabled for Spoke Agent Shell."
     )
 
 
-def _run_codex_sdk(
+def _codex_command(
+    *,
+    codex_path: str,
+    prompt: str,
+    cwd: str,
+    resume_id: str | None,
+) -> list[str]:
+    if resume_id:
+        return [codex_path, "exec", "resume", "--json", resume_id, prompt]
+    return [codex_path, "exec", "--json", "--cd", cwd, prompt]
+
+
+def _event_from_codex_item(item: dict[str, Any]) -> AgentBackendEvent | None:
+    item_type = item.get("type")
+    if not isinstance(item_type, str) or not item_type:
+        return None
+    text = ""
+    if item_type == "agent_message":
+        raw = item.get("text")
+        text = raw if isinstance(raw, str) else ""
+    elif item_type == "reasoning":
+        raw = item.get("text")
+        text = raw if isinstance(raw, str) else ""
+    elif item_type == "command_execution":
+        command = item.get("command")
+        output = item.get("aggregated_output")
+        text = command if isinstance(command, str) else ""
+        if isinstance(output, str) and output:
+            text = f"{text}\n{output}" if text else output
+    elif item_type == "file_change":
+        changes = item.get("changes")
+        if isinstance(changes, list):
+            paths = [
+                change.get("path")
+                for change in changes
+                if isinstance(change, dict) and isinstance(change.get("path"), str)
+            ]
+            text = ", ".join(paths)
+    elif item_type == "error":
+        raw = item.get("message")
+        text = raw if isinstance(raw, str) else ""
+    return AgentBackendEvent(kind=item_type, text=text, data=item)
+
+
+def _run_codex_cli(
     *,
     prompt: str,
     cwd: str,
     resume_id: str | None,
     cancel_check: Callable[[], bool] | None,
 ) -> AgentSDKRunResult:
-    try:
-        sdk = importlib.import_module("codex_app_server")
-    except ImportError as exc:
-        raise AgentSDKUnavailable(
-            "codex_app_server is not installed; install the experimental Codex Python SDK "
-            "from a local open-source Codex checkout or use the TypeScript @openai/codex-sdk bridge"
-        ) from exc
+    codex_path = shutil.which("codex")
+    if not codex_path:
+        raise AgentSDKUnavailable("Codex CLI is not installed or not on PATH")
+    env = _subscription_only_env()
+    _require_codex_subscription_login(codex_path, env)
 
-    if cancel_check is not None and cancel_check():
-        return AgentSDKRunResult(provider="codex", session_id=resume_id, final_response="")
-
-    with sdk.Codex() as codex:
-        if resume_id and hasattr(codex, "resume_thread"):
-            thread = codex.resume_thread(resume_id)
-        elif resume_id and hasattr(codex, "thread_resume"):
-            thread = codex.thread_resume(resume_id)
-        else:
-            try:
-                thread = codex.thread_start(cwd=cwd)
-            except TypeError:
-                thread = codex.thread_start()
-        result = thread.run(prompt)
-
-    session_id = (
-        getattr(result, "thread_id", None)
-        or getattr(thread, "id", None)
-        or getattr(thread, "thread_id", None)
-        or resume_id
+    command = _codex_command(
+        codex_path=codex_path,
+        prompt=prompt,
+        cwd=cwd,
+        resume_id=resume_id,
     )
-    final_response = getattr(result, "final_response", None)
-    if final_response is None:
-        final_response = getattr(result, "output_text", None)
-    if final_response is None:
-        final_response = str(result)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        raise AgentSDKUnavailable(f"Codex CLI failed to start: {exc}") from exc
+
+    provider_session_id = resume_id
+    final_response = ""
+    events: list[AgentBackendEvent] = []
+    stream_error = ""
+    assert process.stdout is not None
+    try:
+        for line in process.stdout:
+            if cancel_check is not None and cancel_check():
+                process.terminate()
+                break
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                events.append(AgentBackendEvent(kind="raw_output", text=stripped))
+                continue
+            event_type = event.get("type")
+            if event_type == "thread.started":
+                thread_id = event.get("thread_id")
+                if isinstance(thread_id, str) and thread_id:
+                    provider_session_id = thread_id
+                    events.append(
+                        AgentBackendEvent(
+                            kind="thread_started",
+                            text=thread_id,
+                            data=event,
+                        )
+                    )
+            elif event_type in {"item.started", "item.updated", "item.completed"}:
+                item = event.get("item")
+                if isinstance(item, dict):
+                    backend_event = _event_from_codex_item(item)
+                    if backend_event is not None:
+                        events.append(backend_event)
+                    if event_type == "item.completed" and item.get("type") == "agent_message":
+                        text = item.get("text")
+                        if isinstance(text, str) and text:
+                            final_response = text
+            elif event_type == "turn.failed":
+                error = event.get("error")
+                if isinstance(error, dict):
+                    message = error.get("message")
+                    if isinstance(message, str):
+                        stream_error = message
+            elif event_type == "error":
+                message = event.get("message")
+                if isinstance(message, str):
+                    stream_error = message
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+    stderr = ""
+    if process.stderr is not None:
+        stderr = process.stderr.read()
+        process.stderr.close()
+    return_code = process.wait()
+    if cancel_check is not None and cancel_check():
+        return AgentSDKRunResult(
+            provider="codex",
+            session_id=provider_session_id,
+            final_response=final_response,
+            events=tuple(events),
+        )
+    if return_code != 0:
+        detail = stream_error or stderr.strip() or f"exit status {return_code}"
+        raise RuntimeError(f"Codex CLI failed: {detail}")
     return AgentSDKRunResult(
         provider="codex",
-        session_id=session_id,
+        session_id=provider_session_id,
         final_response=final_response,
+        events=tuple(events),
     )
 
 
@@ -167,25 +233,23 @@ def run_agent_sdk_session(
     cancel_check: Callable[[], bool] | None = None,
 ) -> AgentSDKRunResult:
     provider = provider.strip().lower()
-    if provider == "claude":
-        return _run_claude_agent_sdk(
-            prompt=prompt,
-            cwd=cwd,
-            resume_id=resume_id,
-            cancel_check=cancel_check,
-        )
     if provider == "codex":
-        return _run_codex_sdk(
+        return _run_codex_cli(
             prompt=prompt,
             cwd=cwd,
             resume_id=resume_id,
             cancel_check=cancel_check,
         )
-    raise ValueError(f"Unsupported SDK agent provider: {provider}")
+    if provider == "claude-code":
+        raise AgentSDKUnavailable(
+            "Claude Code CLI backend is reserved but not wired yet; "
+            "Anthropic Agent SDK is excluded from this no-billing design."
+        )
+    raise ValueError(f"Unsupported agent backend: {provider}")
 
 
 class AgentSDKManager:
-    """Track operator-owned SDK agent sessions."""
+    """Track operator-owned local agent backend sessions."""
 
     def __init__(
         self,
@@ -213,7 +277,7 @@ class AgentSDKManager:
     ) -> dict[str, Any]:
         provider = provider.strip().lower() if isinstance(provider, str) else ""
         if provider not in _ALLOWED_PROVIDERS:
-            raise ValueError(f"Unsupported SDK agent provider: {provider}")
+            raise ValueError(f"Unsupported agent backend: {provider}")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
         if not isinstance(cwd, str) or not cwd.strip():
@@ -226,7 +290,7 @@ class AgentSDKManager:
 
         with self._lock:
             self._counter += 1
-            session_id = f"sdk-agent-{provider}-{self._counter}"
+            session_id = f"agent-backend-{provider}-{self._counter}"
             cancel_event = threading.Event()
             session = {
                 "id": session_id,
@@ -240,8 +304,9 @@ class AgentSDKManager:
                 "finished_at": None,
                 "provider_session_id": None,
                 "result": None,
+                "events": [],
                 "error": None,
-                "sdk_unavailable": False,
+                "backend_unavailable": False,
                 "_cancel_event": cancel_event,
             }
             self._sessions[session_id] = session
@@ -266,14 +331,14 @@ class AgentSDKManager:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                return {"error": f"Unknown SDK agent session: {session_id}"}
+                return {"error": f"Unknown agent backend session: {session_id}"}
             return self._public_session(session)
 
     def cancel(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                return {"error": f"Unknown SDK agent session: {session_id}"}
+                return {"error": f"Unknown agent backend session: {session_id}"}
             if session["state"] in {"completed", "failed", "cancelled"}:
                 return self._public_session(session)
             session["_cancel_event"].set()
@@ -311,7 +376,7 @@ class AgentSDKManager:
                 else:
                     session["state"] = "failed"
                     session["error"] = str(exc)
-                    session["sdk_unavailable"] = True
+                    session["backend_unavailable"] = True
                 session["finished_at"] = _iso_now()
             return
         except Exception as exc:
@@ -333,6 +398,10 @@ class AgentSDKManager:
                 session["state"] = "completed"
                 session["provider_session_id"] = result.session_id
                 session["result"] = result.final_response
+                session["events"] = [
+                    {"kind": event.kind, "text": event.text, "data": event.data}
+                    for event in result.events
+                ]
             session["finished_at"] = _iso_now()
 
     @staticmethod
@@ -344,7 +413,7 @@ class AgentSDKManager:
         poll_hint = None
         if session["state"] in {"queued", "running", "cancelling"}:
             poll_hint = (
-                "SDK agent still in flight. Continue other work and check "
+                "Agent backend still in flight. Continue other work and check "
                 "again later when useful."
             )
         return {
@@ -360,7 +429,8 @@ class AgentSDKManager:
             "provider_session_id": session["provider_session_id"],
             "result": result,
             "result_preview": preview,
+            "backend_events": list(session.get("events") or []),
             "error": session.get("error"),
-            "sdk_unavailable": bool(session.get("sdk_unavailable")),
+            "backend_unavailable": bool(session.get("backend_unavailable")),
             "poll_hint": poll_hint,
         }

@@ -1,7 +1,7 @@
 """Modal Agent Shell routing.
 
-Agent Shell mode routes ordinary operator input to a selected SDK-backed
-provider session while keeping Spoke-owned control and Epistaxis verbs out of
+Agent Shell mode routes ordinary operator input to a selected local-auth agent
+backend session while keeping Spoke-owned control and Epistaxis verbs out of
 the provider transcript.
 """
 
@@ -72,11 +72,11 @@ def _looks_like_epistaxis(text: str) -> bool:
 
 def _provider_switch(text: str) -> str | None:
     normalized = _normalized_text(text)
-    match = re.search(r"\b(?:switch|change|route|use)\s+(?:to\s+)?(claude|codex)\b", normalized)
+    if re.search(r"\b(?:switch|change|route|use)\s+(?:to\s+)?claude\s+code\b", normalized):
+        return "claude-code"
+    match = re.search(r"\b(?:switch|change|route|use)\s+(?:to\s+)?(codex)\b", normalized)
     if match:
         return match.group(1)
-    if "claude code" in normalized and re.search(r"\b(?:switch|change|route|use)\b", normalized):
-        return "claude"
     return None
 
 

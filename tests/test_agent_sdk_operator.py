@@ -1,4 +1,4 @@
-"""Tests for SDK-backed operator agent sessions."""
+"""Tests for local-auth operator agent backend sessions."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class _ImmediateThread:
         self._target(*self._args, **self._kwargs)
 
 
-class _FakeAgentSDKManager:
+class _FakeAgentBackendManager:
     def __init__(self, *, final_state: str = "completed", result: str = "agent result"):
         self.final_state = final_state
         self.result = result
@@ -54,7 +54,7 @@ class _FakeAgentSDKManager:
         self.launched.append(kwargs)
         provider = kwargs["provider"]
         return {
-            "id": f"sdk-agent-{provider}-1",
+            "id": f"agent-backend-{provider}-1",
             "provider": provider,
             "state": "queued",
             "provider_session_id": None,
@@ -108,7 +108,51 @@ def _make_agent_shell_delegate(main_module):
     return delegate
 
 
-class TestAgentSDKManager:
+class TestAgentBackendManager:
+    def test_codex_backend_env_strips_billing_credentials(self, monkeypatch):
+        from spoke.agent_sdk_operator import _subscription_only_env
+
+        monkeypatch.setenv("OPENAI_API_KEY", "forbidden")
+        monkeypatch.setenv("CODEX_API_KEY", "forbidden")
+        monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
+
+        env = _subscription_only_env()
+
+        assert "OPENAI_API_KEY" not in env
+        assert "CODEX_API_KEY" not in env
+        assert env["CODEX_HOME"] == "/tmp/codex-home"
+
+    def test_codex_backend_rejects_non_chatgpt_login_status(self, monkeypatch):
+        from spoke.agent_sdk_operator import AgentSDKUnavailable, _require_codex_subscription_login
+
+        def fake_status(_codex_path, _env):
+            return "Logged in using billing credentials"
+
+        monkeypatch.setattr("spoke.agent_sdk_operator._codex_login_status", fake_status)
+
+        with pytest.raises(AgentSDKUnavailable, match="ChatGPT subscription"):
+            _require_codex_subscription_login("/usr/local/bin/codex", {})
+
+    def test_codex_json_item_events_preserve_tool_loop_shape(self):
+        from spoke.agent_sdk_operator import _event_from_codex_item
+
+        event = _event_from_codex_item(
+            {
+                "id": "cmd-1",
+                "type": "command_execution",
+                "command": "pytest tests/test_agent_sdk_operator.py",
+                "aggregated_output": "1 passed",
+                "status": "completed",
+                "exit_code": 0,
+            }
+        )
+
+        assert event is not None
+        assert event.kind == "command_execution"
+        assert "pytest tests/test_agent_sdk_operator.py" in event.text
+        assert "1 passed" in event.text
+        assert event.data["status"] == "completed"
+
     def test_launch_tracks_provider_cwd_resume_and_result_identity(self, tmp_path):
         from spoke.agent_sdk_operator import AgentSDKManager, AgentSDKRunResult
 
@@ -119,7 +163,7 @@ class TestAgentSDKManager:
             calls.append((provider, prompt, cwd, resume_id, cancel_check()))
             return AgentSDKRunResult(
                 provider=provider,
-                session_id="claude-session-123",
+                session_id="codex-thread-123",
                 final_response="Plan complete.",
             )
 
@@ -129,13 +173,13 @@ class TestAgentSDKManager:
         )
 
         launched = manager.launch(
-            provider="claude",
+            provider="codex",
             prompt="inspect the failing tests",
             cwd=str(tmp_path),
             resume_id="prior-session",
         )
-        assert launched["id"] == "sdk-agent-claude-1"
-        assert launched["provider"] == "claude"
+        assert launched["id"] == "agent-backend-codex-1"
+        assert launched["provider"] == "codex"
         assert launched["state"] == "queued"
         assert launched["cwd"] == str(tmp_path)
         assert launched["resume_id"] == "prior-session"
@@ -144,14 +188,14 @@ class TestAgentSDKManager:
 
         result = manager.get_session(launched["id"])
         assert calls == [
-            ("claude", "inspect the failing tests", str(tmp_path), "prior-session", False)
+            ("codex", "inspect the failing tests", str(tmp_path), "prior-session", False)
         ]
         assert result["state"] == "completed"
-        assert result["provider_session_id"] == "claude-session-123"
+        assert result["provider_session_id"] == "codex-thread-123"
         assert result["result"] == "Plan complete."
         assert result["result_preview"] == "Plan complete."
 
-    def test_sdk_unavailable_is_visible_without_looking_like_terminal_failure(self):
+    def test_backend_unavailable_is_visible_without_looking_like_terminal_failure(self):
         from spoke.agent_sdk_operator import (
             AgentSDKManager,
             AgentSDKUnavailable,
@@ -160,7 +204,7 @@ class TestAgentSDKManager:
         _DeferredThread.created = []
 
         def fake_runner(provider, prompt, cwd, resume_id, cancel_check):
-            raise AgentSDKUnavailable("claude-agent-sdk is not installed")
+            raise AgentSDKUnavailable("Codex CLI is not logged in with ChatGPT")
 
         manager = AgentSDKManager(
             sdk_runner=fake_runner,
@@ -168,7 +212,7 @@ class TestAgentSDKManager:
         )
 
         launched = manager.launch(
-            provider="claude",
+            provider="codex",
             prompt="make a patch",
             cwd="/tmp/project",
         )
@@ -176,8 +220,8 @@ class TestAgentSDKManager:
 
         result = manager.get_session(launched["id"])
         assert result["state"] == "failed"
-        assert result["sdk_unavailable"] is True
-        assert "claude-agent-sdk" in result["error"]
+        assert result["backend_unavailable"] is True
+        assert "ChatGPT" in result["error"]
         assert result["result"] is None
 
     @pytest.mark.parametrize("provider", ["", "search", "gpt"])
@@ -189,7 +233,7 @@ class TestAgentSDKManager:
             thread_factory=_DeferredThread,
         )
 
-        with pytest.raises(ValueError, match="Unsupported SDK agent provider"):
+        with pytest.raises(ValueError, match="Unsupported agent backend"):
             manager.launch(provider=provider, prompt="hello", cwd="/tmp/project")
 
     def test_rejects_empty_prompt(self):
@@ -233,8 +277,8 @@ class TestAgentSDKManager:
         assert result["provider_session_id"] is None
 
 
-class TestAgentSDKToolDispatch:
-    def test_generic_tool_schemas_do_not_expose_raw_sdk_agent_controls(self):
+class TestAgentBackendToolDispatch:
+    def test_generic_tool_schemas_do_not_expose_raw_agent_backend_controls(self):
         from spoke import tool_dispatch
 
         schemas = tool_dispatch.get_tool_schemas()
@@ -245,7 +289,7 @@ class TestAgentSDKToolDispatch:
         assert "get_agent_session_result" not in names
         assert "cancel_agent_session" not in names
 
-    def test_execute_tool_does_not_launch_sdk_sessions_from_generic_surface(self):
+    def test_execute_tool_does_not_launch_agent_backend_sessions_from_generic_surface(self):
         from spoke import tool_dispatch
 
         fake_manager = MagicMock()
@@ -263,19 +307,29 @@ class TestAgentSDKToolDispatch:
         assert json.loads(result) == {"error": "Unknown tool: launch_agent_session"}
         fake_manager.launch.assert_not_called()
 
-    def test_operator_prompt_does_not_present_sdk_sessions_as_generic_tools(self):
+    def test_operator_prompt_does_not_present_agent_backends_as_generic_tools(self):
         import spoke.command as command
 
         assert "launch_agent_session" not in command.COMMAND_SYSTEM_PROMPT
         assert "Claude Agent SDK" not in command.COMMAND_SYSTEM_PROMPT
         assert "Codex SDK" not in command.COMMAND_SYSTEM_PROMPT
 
-    def test_dispatch_module_does_not_import_claude_or_codex_sdk_directly(self):
+    def test_dispatch_module_does_not_import_agent_backends_directly(self):
         module_path = Path(__file__).resolve().parents[1] / "spoke" / "tool_dispatch.py"
         text = module_path.read_text(encoding="utf-8")
 
         assert "claude_agent_sdk" not in text
         assert "codex_app_server" not in text
+
+    def test_backend_module_does_not_offer_api_credit_or_claude_agent_sdk_path(self):
+        module_path = Path(__file__).resolve().parents[1] / "spoke" / "agent_sdk_operator.py"
+        text = module_path.read_text(encoding="utf-8")
+
+        assert "claude_agent_sdk" not in text
+        assert "Claude Agent SDK" not in text
+        assert "ANTHROPIC_API_KEY" not in text
+        assert "OPENAI_API_KEY" not in text
+        assert "api key" not in text.casefold()
 
 
 class TestAgentShellRouting:
@@ -285,7 +339,7 @@ class TestAgentShellRouting:
         state = AgentShellState(
             active=True,
             provider="codex",
-            spoke_session_id="sdk-agent-codex-1",
+            spoke_session_id="agent-backend-codex-1",
             provider_session_id="thread-abc",
             cwd="/tmp/project",
         )
@@ -297,7 +351,7 @@ class TestAgentShellRouting:
 
         assert decision.kind == "provider_message"
         assert decision.provider == "codex"
-        assert decision.spoke_session_id == "sdk-agent-codex-1"
+        assert decision.spoke_session_id == "agent-backend-codex-1"
         assert decision.provider_session_id == "thread-abc"
         assert decision.cwd == "/tmp/project"
         assert decision.text == "inspect the failing test and propose the smallest fix"
@@ -315,8 +369,8 @@ class TestAgentShellRouting:
 
         state = AgentShellState(
             active=True,
-            provider="claude",
-            spoke_session_id="sdk-agent-claude-1",
+            provider="codex",
+            spoke_session_id="agent-backend-codex-1",
             provider_session_id="session-xyz",
             cwd="/tmp/project",
         )
@@ -330,13 +384,24 @@ class TestAgentShellRouting:
     def test_active_agent_shell_routes_provider_switch_as_mode_control(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
-        state = AgentShellState(active=True, provider="claude", cwd="/tmp/project")
+        state = AgentShellState(active=True, provider="claude-code", cwd="/tmp/project")
 
         decision = route_agent_shell_input("switch to codex", state)
 
         assert decision.kind == "mode_control"
         assert decision.control_action == "switch_provider"
         assert decision.provider == "codex"
+
+    def test_active_agent_shell_recognizes_claude_code_as_distinct_cli_backend(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        state = AgentShellState(active=True, provider="codex", cwd="/tmp/project")
+
+        decision = route_agent_shell_input("switch to Claude Code", state)
+
+        assert decision.kind == "mode_control"
+        assert decision.control_action == "switch_provider"
+        assert decision.provider == "claude-code"
 
     def test_inactive_agent_shell_leaves_input_for_normal_assistant(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
@@ -386,8 +451,8 @@ class TestAgentShellMenuState:
             "title": "Agent Shell",
             "items": [
                 ("off", "Off", False, True),
-                ("claude", "Claude Agent SDK", False, True),
-                ("codex", "Codex SDK", True, True),
+                ("codex", "Codex", True, True),
+                ("claude-code", "Claude Code", False, False),
             ],
         }
 
@@ -399,7 +464,7 @@ class TestAgentShellDelegateDispatch:
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
         delegate._agent_shell_provider = "codex"
-        delegate._agent_sdk_manager = _FakeAgentSDKManager(result="Patch looks good.")
+        delegate._agent_sdk_manager = _FakeAgentBackendManager(result="Patch looks good.")
 
         delegate._send_text_as_command("inspect the failing test")
 
@@ -413,7 +478,7 @@ class TestAgentShellDelegateDispatch:
         ]
         delegate._command_client.stream_command_events.assert_not_called()
         assert delegate._agent_shell_sessions["codex"] == {
-            "spoke_session_id": "sdk-agent-codex-1",
+            "spoke_session_id": "agent-backend-codex-1",
             "provider_session_id": "codex-provider-session-1",
         }
         calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
@@ -426,8 +491,8 @@ class TestAgentShellDelegateDispatch:
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
-        delegate._agent_shell_provider = "claude"
-        delegate._agent_sdk_manager = _FakeAgentSDKManager()
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_sdk_manager = _FakeAgentBackendManager()
 
         delegate._send_text_as_command("epistaxis zetesis how fares the tyrant state")
 
@@ -443,8 +508,8 @@ class TestAgentShellDelegateDispatch:
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
-        delegate._agent_shell_provider = "claude"
-        delegate._agent_sdk_manager = _FakeAgentSDKManager()
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_sdk_manager = _FakeAgentBackendManager()
 
         delegate._send_text_as_command("switch to codex")
 
@@ -454,4 +519,4 @@ class TestAgentShellDelegateDispatch:
         delegate._save_preference.assert_called_once_with("agent_shell_provider", "codex")
         calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         assert calls[-1].args[0] == "commandComplete:"
-        assert "Agent Shell switched to Codex SDK" in calls[-1].args[1]["response"]
+        assert "Agent Shell switched to Codex" in calls[-1].args[1]["response"]
