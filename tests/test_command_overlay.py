@@ -930,6 +930,26 @@ class TestOpticalShellMaterialization:
             shell_config
         )
 
+    def test_dismiss_pucker_tail_hides_local_material_layers(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+
+        overlay._start_dismiss_pucker_tail_animation(shell_config)
+
+        overlay._backdrop_layer.setHidden_.assert_called_with(True)
+        overlay._fill_layer.setHidden_.assert_called_with(True)
+        overlay._boost_layer.setHidden_.assert_called_with(True)
+        overlay._spring_tint_layer.setHidden_.assert_called_with(True)
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""

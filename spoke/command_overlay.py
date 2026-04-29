@@ -2703,6 +2703,8 @@ class CommandOverlay(NSObject):
                 # Warm golden-amber tint — visible, thermal, not alarming
                 cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
                 self._spring_tint_layer.setBackgroundColor_(cg_color)
+                if hasattr(self._spring_tint_layer, "setHidden_"):
+                    self._spring_tint_layer.setHidden_(False)
                 spring_scale = (
                     _COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE
                     if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
@@ -2713,6 +2715,8 @@ class CommandOverlay(NSObject):
                 self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
+                if hasattr(self._spring_tint_layer, "setHidden_"):
+                    self._spring_tint_layer.setHidden_(True)
         metrics = getattr(self, "_metrics", None)
         if metrics is not None:
             present_end = time.perf_counter()
@@ -2932,6 +2936,7 @@ class CommandOverlay(NSObject):
     def _start_dismiss_pucker_tail_animation(self, final_shell_config: dict) -> None:
         """Run the post-close inverse pucker after the dismiss slit shuts."""
         self._cancel_dismiss_pucker_tail_animation()
+        self._hide_local_shell_layers_for_pucker_tail()
         self._pucker_tail_shell_config = dict(final_shell_config)
         self._pucker_tail_started_at = time.perf_counter()
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -3023,6 +3028,37 @@ class CommandOverlay(NSObject):
                     transaction.commit()
                 except Exception:
                     logger.debug("Failed to commit command materialization opacity transaction", exc_info=True)
+
+    def _set_layer_hidden_without_actions(self, layer, hidden: bool) -> None:
+        if layer is None or not hasattr(layer, "setHidden_"):
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            layer.setHidden_(hidden)
+        except Exception:
+            logger.debug("Failed to update command materialization hidden state", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization hidden transaction", exc_info=True)
+
+    def _hide_local_shell_layers_for_pucker_tail(self) -> None:
+        """Keep old rectangular CA layers out of the compositor-only scar."""
+        for layer_name in (
+            "_backdrop_layer",
+            "_fill_layer",
+            "_boost_layer",
+            "_spring_tint_layer",
+        ):
+            layer = getattr(self, layer_name, None)
+            if layer_name != "_backdrop_layer":
+                self._set_layer_opacity_without_actions(layer, 0.0)
+            self._set_layer_hidden_without_actions(layer, True)
 
     def _apply_materialization_fill_state(self, progress: float) -> None:
         content = getattr(self, "_content_view", None)
