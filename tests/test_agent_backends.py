@@ -393,6 +393,47 @@ class TestAgentBackendManager:
             ),
         ]
 
+    def test_codex_identity_event_uses_epistaxis_resolver_before_transcript_regex(self):
+        from spoke.agent_backends import AgentBackendEvent, _agent_shell_identity_event
+        from spoke.agent_shell_identity import AgentShellIdentity
+
+        def resolver(**kwargs):
+            assert kwargs["provider"] == "codex"
+            assert kwargs["provider_session_id"] == "codex-thread-1"
+            assert kwargs["cwd"] == "/tmp/spoke"
+            assert "regex-fallback-wrong" in kwargs["transcript_text"]
+            return AgentShellIdentity(
+                topos_name="codex-epistaxis-owned-topos",
+                source="epistaxis-session-id",
+                confidence="exact",
+            )
+
+        event = _agent_shell_identity_event(
+            provider="codex",
+            provider_session_id="codex-thread-1",
+            cwd="/tmp/spoke",
+            final_response="Created Topos: regex-fallback-wrong",
+            events=[
+                AgentBackendEvent(
+                    kind="agent_message",
+                    text="Created Topos: regex-fallback-wrong",
+                )
+            ],
+            identity_resolver=resolver,
+        )
+
+        assert event == AgentBackendEvent(
+            kind="topos_identity",
+            text="codex-epistaxis-owned-topos",
+            data={
+                "name": "codex-epistaxis-owned-topos",
+                "source": "epistaxis-session-id",
+                "confidence": "exact",
+                "provider_session_id": "codex-thread-1",
+                "cwd": "/tmp/spoke",
+            },
+        )
+
     def test_manager_publishes_backend_events_while_session_is_running(self):
         from spoke.agent_backends import (
             AgentBackendEvent,
@@ -737,14 +778,12 @@ class TestAgentBackendPresentation:
                 },
                 {
                     "sequence": 3,
-                    "kind": "command_execution",
-                    "text": "epistaxis update\nTopos: codex-spoke-spinal-tap",
+                    "kind": "topos_identity",
+                    "text": "codex-spoke-spinal-tap",
                     "data": {
-                        "id": "cmd-1",
-                        "type": "command_execution",
-                        "command": "epistaxis update",
-                        "aggregated_output": "Topos: codex-spoke-spinal-tap",
-                        "status": "completed",
+                        "name": "codex-spoke-spinal-tap",
+                        "source": "epistaxis-session-id",
+                        "confidence": "exact",
                     },
                 },
                 {
@@ -781,6 +820,32 @@ class TestAgentBackendPresentation:
             and action.text == "Recorded the Spoke state."
             for action in actions
         )
+
+    def test_presenter_does_not_infer_topos_from_tool_output_without_identity_event(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_backend_events,
+        )
+
+        actions = present_backend_events(
+            [
+                {
+                    "sequence": 1,
+                    "kind": "command_execution",
+                    "text": "epistaxis update\nTopos: regex-fallback-wrong",
+                    "data": {
+                        "id": "cmd-1",
+                        "type": "command_execution",
+                        "command": "epistaxis update",
+                        "aggregated_output": "Topos: regex-fallback-wrong",
+                        "status": "completed",
+                    },
+                }
+            ],
+            AgentBackendPresentationState(),
+        )
+
+        assert all(action.kind != "metadata_header" for action in actions)
 
     def test_presenter_exposes_backend_liveness_actions(self):
         from spoke.agent_backend_presenter import present_backend_liveness
@@ -1187,12 +1252,12 @@ class TestAgentShellDelegateDispatch:
                             },
                             {
                                 "sequence": 3,
-                                "kind": "agent_message",
-                                "text": "Created Topos: codex-spoke-spinal-tap",
+                                "kind": "topos_identity",
+                                "text": "codex-spoke-spinal-tap",
                                 "data": {
-                                    "id": "msg-1",
-                                    "type": "agent_message",
-                                    "text": "Created Topos: codex-spoke-spinal-tap",
+                                    "name": "codex-spoke-spinal-tap",
+                                    "source": "epistaxis-worktree",
+                                    "confidence": "exact",
                                 },
                             },
                         ],

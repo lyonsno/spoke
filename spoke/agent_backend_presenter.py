@@ -5,8 +5,6 @@ future scrollback surfaces can share one compact event contract.
 """
 
 from __future__ import annotations
-
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -67,26 +65,6 @@ def _metadata_footer_text(state: AgentBackendPresentationState) -> str:
     if state.plan_type:
         parts.append(state.plan_type)
     return " | ".join(parts)
-
-
-_TOPOS_PATTERNS = (
-    re.compile(
-        r"\btopos\s*[:=]\s*`?([A-Za-z0-9][A-Za-z0-9_.-]*-[A-Za-z0-9_.-]*)`?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:created|opened|registered|recorded)\s+(?:a\s+)?topos\s+`?([A-Za-z0-9][A-Za-z0-9_.-]*-[A-Za-z0-9_.-]*)`?",
-        re.IGNORECASE,
-    ),
-)
-
-
-def _extract_topos_name(text: str) -> str:
-    for pattern in _TOPOS_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return match.group(1).rstrip(".,;:")
-    return ""
 
 
 def _item_id(data: dict[str, Any], fallback: str) -> str:
@@ -202,10 +180,10 @@ def _usage_actions(
 
 
 def _topos_actions(
-    text: str,
+    name: str,
     state: AgentBackendPresentationState,
 ) -> list[AgentBackendPresentation]:
-    name = _extract_topos_name(text)
+    name = name.strip()
     if not name or name == state.topos_name:
         return []
     state.topos_name = name
@@ -220,18 +198,6 @@ def present_backend_events(
     for event in events:
         kind = _string(event.get("kind"))
         data = _event_data(event)
-        identity_text = "\n".join(
-            part
-            for part in (
-                _string(event.get("text")),
-                _string(data.get("text")),
-                _string(data.get("aggregated_output")),
-                _string(data.get("message")),
-            )
-            if part
-        )
-        if identity_text:
-            actions.extend(_topos_actions(identity_text, state))
         if kind == "agent_message":
             actions.extend(_agent_message_action(event, data, state))
         elif kind == "reasoning":
@@ -249,9 +215,9 @@ def present_backend_events(
         elif kind == "usage_limits":
             actions.extend(_usage_actions(data, state))
         elif kind == "topos_identity":
-            name = _string(data.get("name")).strip()
+            name = _string(data.get("name")).strip() or _string(event.get("text")).strip()
             if name:
-                actions.extend(_topos_actions(f"Topos: {name}", state))
+                actions.extend(_topos_actions(name, state))
         elif kind == "web_search":
             query = _string(data.get("query")).strip()
             if query:
