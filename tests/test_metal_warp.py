@@ -43,7 +43,7 @@ def test_pack_warp_params_uses_shell_specific_bleed_zone_frac():
             "exterior_mix_width_points": 20.0,
         },
     )
-    values = metal_warp.struct.unpack("20f", payload)
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
     assert values[16] == pytest.approx(0.8)
     assert values[17] == pytest.approx(20.0)
 
@@ -60,9 +60,24 @@ def test_pack_warp_params_uses_shell_specific_axis_squeeze():
             "y_squeeze": 1.2,
         },
     )
-    values = metal_warp.struct.unpack("20f", payload)
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
     assert values[18] == pytest.approx(3.25)
     assert values[19] == pytest.approx(1.2)
+
+
+def test_pack_warp_params_uses_shell_specific_mip_blur_strength():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "mip_blur_strength": 0.0,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+    assert values[20] == pytest.approx(0.0)
 
 
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
@@ -300,7 +315,7 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     assert len(params_buffers) == 2
     assert len({id(buffer) for buffer in params_buffers}) == 2
     assert [
-        metal_warp.struct.unpack("20f", buffer.payload())[10]
+        metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, buffer.payload())[10]
         for buffer in params_buffers
     ] == [pytest.approx(25.0), pytest.approx(75.0)]
 

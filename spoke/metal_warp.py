@@ -147,6 +147,7 @@ struct WarpParams {{
     float exteriorMixWidth; // width of the exterior onset band in pixels
     float xSqueeze;
     float ySqueeze;
+    float mipBlurStrength; // 0 = crisp level-0 sampling, 1 = material blur LOD
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -262,7 +263,8 @@ kernel void opticalShellWarp(
         0.0f,
         {_WARP_ALIAS_MIP_BIAS_MAX}f
     );
-    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f);
+    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f)
+        * clamp(params.mipBlurStrength, 0.0f, 1.0f);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 warpedColor;
@@ -318,7 +320,8 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("20f")
+_WARP_PARAMS_FORMAT = "21f"
+_WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
 def _diagnostic_pixels(width, height) -> int:
@@ -328,7 +331,7 @@ def _diagnostic_pixels(width, height) -> int:
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "20f",
+        _WARP_PARAMS_FORMAT,
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -349,6 +352,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("exterior_mix_width_points", _WARP_EXTERIOR_MIX_WIDTH_POINTS)),
         _shell_x_squeeze(shell_config),
         _shell_y_squeeze(shell_config),
+        float(shell_config.get("mip_blur_strength", 1.0)),
     )
 
 

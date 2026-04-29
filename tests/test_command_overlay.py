@@ -566,6 +566,7 @@ class TestOpticalShellMaterialization:
         assert rest["x_squeeze"] == pytest.approx(0.0)
         assert rest["ring_amplitude_points"] == pytest.approx(0.0)
         assert pinch["cleanup_blur_radius_points"] == pytest.approx(0.0)
+        assert pinch["mip_blur_strength"] == pytest.approx(0.0)
 
     def test_reverse_materialization_hides_local_layers_before_compositor_seed(
         self, mock_pyobjc

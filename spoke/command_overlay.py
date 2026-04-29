@@ -681,6 +681,7 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     )
     config["core_magnification"] = 1.0
     config["cleanup_blur_radius_points"] = 0.0
+    config["mip_blur_strength"] = 0.0
     config["x_squeeze"] = 2.32 * amount
     config["y_squeeze"] = 1.52 * amount
     if "ring_amplitude_points" in config:
