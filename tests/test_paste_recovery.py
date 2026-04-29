@@ -169,7 +169,7 @@ class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
     def test_spacebar_hold_during_tray_starts_recording(self, main_module, monkeypatch):
-        """Plain spacebar hold during tray should dismiss tray and start recording."""
+        """Plain spacebar hold during tray should record-from-tray (tray stays active)."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
         d._tray_stack = ["some text"]
@@ -179,9 +179,10 @@ class TestRecoveryDismiss:
 
         d._on_hold_start()
 
-        # Should dismiss tray and start recording
+        # Tray stays active — transcription will append at cursor
         d._capture.start.assert_called_once()
-        assert d._tray_active is False
+        assert d._tray_active is True
+        assert d._recording_from_tray is True
 
     def test_shift_space_during_tray_navigates_down(self, main_module, monkeypatch):
         """Shift+space during tray should navigate down (toward older entries)."""

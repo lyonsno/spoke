@@ -519,6 +519,18 @@ def _omnivoice_prompt_lexicon_text() -> str:
     )
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
+
+
+def get_clipboard_text() -> str | None:
+    """Read plain text from the system clipboard. Returns None if empty."""
+    try:
+        from AppKit import NSPasteboard
+        pb = NSPasteboard.generalPasteboard()
+        text = pb.stringForType_("public.utf8-plain-text")
+        return text if text else None
+    except Exception:
+        logger.debug("Failed to read clipboard", exc_info=True)
+        return None
 _PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 os.environ["SPOKE_LAUNCH_ID"] = _PROCESS_LAUNCH_ID
 
@@ -1179,6 +1191,9 @@ class SpokeAppDelegate(NSObject):
         self._tray_stack: list[TrayEntry | str] = []
         self._tray_index: int = 0
         self._tray_active: bool = False
+        self._tray_cursor_pos: int = 0
+        self._tray_selection: tuple[int, int] | None = None
+        self._recording_from_tray: bool = False
         self._tray_tool_result: dict | None = None
 
         # Recovery mode state (implementation detail of tray)
@@ -1938,10 +1953,11 @@ class SpokeAppDelegate(NSObject):
                 self._recovery_hold_active = True
                 logger.info("Hold started during tray with shift — waiting for release (navigate)")
                 return
-            # Plain spacebar hold during tray = dismiss tray, start recording
-            logger.info("Hold started during tray — dismissing tray, starting new recording")
-            self._dismiss_tray()
-            # Fall through to start recording
+            # Plain spacebar hold during tray = record-from-tray. Tray stays
+            # active; transcription will append at the cursor position.
+            logger.info("Hold started during tray — recording from tray (cursor=%d)", getattr(self, '_tray_cursor_pos', 0))
+            self._recording_from_tray = True
+            # Fall through to start recording (tray stays visible)
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
             logger.info("Hold started during recovery — waiting for release")
@@ -3236,11 +3252,15 @@ class SpokeAppDelegate(NSObject):
         if activate:
             self._tray_active = True
             self._detector.tray_active = True
+            # Place cursor at end of text for immediate editing
+            self._tray_cursor_pos = len(text)
+            self._tray_selection = None
             logger.info(
-                "Entering tray (entries=%d index=%d text_len=%d)",
+                "Entering tray (entries=%d index=%d text_len=%d cursor=%d)",
                 len(self._tray_stack),
                 self._tray_index,
                 len(text),
+                self._tray_cursor_pos,
             )
 
             if self._glow is not None:
@@ -3265,6 +3285,9 @@ class SpokeAppDelegate(NSObject):
             self._acknowledge_tray_entry(self._tray_index)
         entry = self._get_tray_entry(self._tray_index)
         text = entry.text
+        # Place cursor at end when switching entries
+        self._tray_cursor_pos = len(text)
+        self._tray_selection = None
         # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
@@ -3273,6 +3296,69 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
             self._menubar.set_status_text(f"Tray [{pos}]")
+
+    # ── editable tray ─────────────────────────────────────
+
+    def _tray_insert_char(self, char: str) -> None:
+        """Insert a character at the current cursor position in the tray."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        entry = self._get_tray_entry(self._tray_index)
+        pos = getattr(self, "_tray_cursor_pos", len(entry.text))
+        entry.text = entry.text[:pos] + char + entry.text[pos:]
+        self._tray_cursor_pos = pos + len(char)
+        self._recovery_text = entry.text
+        self._tray_refresh_overlay()
+
+    def _tray_move_cursor(self, delta: int) -> None:
+        """Move the tray cursor by delta positions (negative = left, positive = right)."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        entry = self._get_tray_entry(self._tray_index)
+        pos = getattr(self, "_tray_cursor_pos", len(entry.text))
+        new_pos = max(0, min(len(entry.text), pos + delta))
+        self._tray_cursor_pos = new_pos
+
+    def _tray_backspace(self) -> None:
+        """Delete the character before the cursor in the tray."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        entry = self._get_tray_entry(self._tray_index)
+        pos = getattr(self, "_tray_cursor_pos", len(entry.text))
+        if pos <= 0:
+            return
+        entry.text = entry.text[:pos - 1] + entry.text[pos:]
+        self._tray_cursor_pos = pos - 1
+        self._recovery_text = entry.text
+        self._tray_refresh_overlay()
+
+    def _tray_paste(self) -> None:
+        """Paste system clipboard text at the cursor position in the tray."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        clipboard_text = get_clipboard_text()
+        if not clipboard_text:
+            return
+        self._tray_insert_char(clipboard_text)
+
+    def _tray_append_transcription(self, text: str) -> None:
+        """Insert transcribed text at the cursor position in the tray.
+
+        Called when a recording made from within the tray completes.
+        The transcription is spliced into the tray entry at the current
+        cursor position, and the cursor advances past the inserted text.
+        """
+        if not self._tray_active or not self._tray_stack:
+            return
+        self._tray_insert_char(text)
+
+    def _tray_refresh_overlay(self) -> None:
+        """Update the overlay to reflect current tray entry text."""
+        if not self._tray_stack:
+            return
+        entry = self._get_tray_entry(self._tray_index)
+        if self._overlay is not None:
+            self._overlay.show_tray(entry.text, owner=entry.display_owner)
 
     def _dismiss_tray(self) -> None:
         """Dismiss the tray overlay. Stack is preserved for re-entry."""

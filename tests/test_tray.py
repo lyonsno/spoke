@@ -375,7 +375,7 @@ class TestTrayGestures:
     """Gestures available while the tray is active."""
 
     def test_spacebar_hold_from_tray_starts_recording(self, main_module, monkeypatch):
-        """Plain spacebar hold from tray should dismiss tray and start recording."""
+        """Plain spacebar hold from tray should record-from-tray (tray stays active)."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._tray_active = True
         d._tray_stack = ["old text"]
@@ -386,9 +386,10 @@ class TestTrayGestures:
 
         d._on_hold_start()
 
-        # Should dismiss tray and start recording
+        # Tray stays active — transcription will append at cursor
         d._capture.start.assert_called_once()
-        assert d._tray_active is False
+        assert d._tray_active is True
+        assert d._recording_from_tray is True
 
     def test_shift_spacebar_hold_from_tray_navigates(self, main_module, monkeypatch):
         """Shift+spacebar hold from tray should wait for release (navigation)."""
