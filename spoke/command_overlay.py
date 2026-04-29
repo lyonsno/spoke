@@ -149,7 +149,7 @@ _AGENT_SHELL_FOOTER_HEIGHT = 16.0
 _AGENT_SHELL_CHROME_X = 28.0
 _AGENT_SHELL_HEADER_TOP_INSET = 10.0
 _AGENT_SHELL_FOOTER_BOTTOM_INSET = 8.0
-_AGENT_SHELL_TRANSCRIPT_GAP = 12.0
+_AGENT_SHELL_TRANSCRIPT_GAP = 28.0
 _AGENT_SHELL_VERTICAL_PAD = (
     _AGENT_SHELL_HEADER_TOP_INSET
     + _AGENT_SHELL_HEADER_HEIGHT
@@ -3954,16 +3954,7 @@ class CommandOverlay(NSObject):
                     NSMakeRect(_AGENT_SHELL_CHROME_X, footer_y, footer_w, footer_h)
                 )
             if height_changed:
-                suppress_stale_fill = getattr(
-                    self,
-                    "_suppress_stale_fill_until_ready",
-                    False,
-                )
-                self._suppress_stale_fill_until_ready = True
-                try:
-                    self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
-                finally:
-                    self._suppress_stale_fill_until_ready = suppress_stale_fill
+                self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()
                 shell_config = self._current_optical_shell_config()
                 if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
