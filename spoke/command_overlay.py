@@ -36,6 +36,10 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
+try:
+    from Quartz import CATransaction
+except ImportError:  # pragma: no cover - unavailable in lightweight test fakes
+    CATransaction = None
 
 from .backdrop_stream import (
     _apply_optical_shell_warp_ci_image,
@@ -2205,7 +2209,10 @@ class CommandOverlay(NSObject):
         if self._fade_step >= _FADE_STEPS:
             self._cancel_fade()
             if self._fade_direction == 1:
-                if not getattr(self, "_recording_load_shed", False):
+                if (
+                    not getattr(self, "_recording_load_shed", False)
+                    and not self._materialization_owns_fill_layers()
+                ):
                     self._start_pulse_timer()
             elif self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
@@ -2662,6 +2669,7 @@ class CommandOverlay(NSObject):
 
     def _start_fade_out(self) -> None:
         self._cancel_fade()
+        self._cancel_pulse()
         compositor = getattr(self, "_fullscreen_compositor", None)
         shell_config = self._display_local_optical_shell_config()
         fade_duration = _FADE_OUT_S
@@ -2837,9 +2845,50 @@ class CommandOverlay(NSObject):
                 self._apply_materialization_fill_state(1.0)
                 if getattr(self, "_text_punchthrough", False):
                     self._refresh_punchthrough_mask_if_needed()
+                if (
+                    getattr(self, "_visible", False)
+                    and not getattr(self, "_recording_load_shed", False)
+                ):
+                    self._start_pulse_timer()
             else:
                 self._materialization_progress = 0.0
                 self._apply_materialization_fill_state(0.0)
+
+    def _set_materialization_layer_scale(
+        self,
+        layer,
+        *,
+        total_w: float,
+        total_h: float,
+        height_frac: float,
+    ) -> None:
+        """Scale shell body layers from their center without moving frames."""
+        if layer is None:
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            if hasattr(layer, "setAnchorPoint_"):
+                layer.setAnchorPoint_((0.5, 0.5))
+            if hasattr(layer, "setBounds_"):
+                layer.setBounds_(((0, 0), (total_w, total_h)))
+            if hasattr(layer, "setPosition_"):
+                layer.setPosition_((total_w * 0.5, total_h * 0.5))
+            if hasattr(layer, "setValue_forKeyPath_"):
+                layer.setValue_forKeyPath_(
+                    max(_clamp01(height_frac), 0.001),
+                    "transform.scale.y",
+                )
+        except Exception:
+            logger.debug("Failed to update command materialization layer scale", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization transaction", exc_info=True)
 
     def _apply_materialization_fill_state(self, progress: float) -> None:
         content = getattr(self, "_content_view", None)
@@ -2853,13 +2902,14 @@ class CommandOverlay(NSObject):
             total_h = float(content_frame.size.height) + 2 * f
         except Exception:
             return
-        h = max(total_h * state["height_frac"], 1.0)
-        y = (total_h - h) * 0.5
-        frame = ((0, y), (total_w, h))
         for layer_name in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
             layer = getattr(self, layer_name, None)
-            if layer is not None and hasattr(layer, "setFrame_"):
-                layer.setFrame_(frame)
+            self._set_materialization_layer_scale(
+                layer,
+                total_w=total_w,
+                total_h=total_h,
+                height_frac=state["height_frac"],
+            )
         fill = getattr(self, "_fill_layer", None)
         if fill is not None and hasattr(fill, "setOpacity_"):
             fill.setOpacity_(state["opacity"])

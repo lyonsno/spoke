@@ -531,7 +531,7 @@ class TestOpticalShellMaterialization:
 
         overlay.materializationStep_(overlay._materialization_timer)
 
-        overlay._fill_layer.setFrame_.assert_called()
+        overlay._fill_layer.setValue_forKeyPath_.assert_called()
         overlay._fill_layer.setOpacity_.assert_called()
         assert overlay._window.setAlphaValue_.call_args is None
 
@@ -605,15 +605,10 @@ class TestOpticalShellMaterialization:
             }
         )
 
-        last_frame = overlay._fill_layer.setFrame_.call_args[0][0]
-        feather = (
-            mod._OPTICAL_SHELL_FEATHER
-            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
-            else mod._OUTER_FEATHER
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._materialization_fill_state(0.55)["height_frac"],
+            "transform.scale.y",
         )
-        total_h = 104.0 + 2 * feather
-        expected_h = total_h * mod._materialization_fill_state(0.55)["height_frac"]
-        assert last_frame[1][1] == pytest.approx(expected_h)
 
     def test_ridge_mask_refresh_preserves_active_materialization_geometry(
         self, mock_pyobjc, monkeypatch
@@ -625,15 +620,10 @@ class TestOpticalShellMaterialization:
 
         overlay._apply_ridge_masks(600.0, 80.0)
 
-        last_frame = overlay._fill_layer.setFrame_.call_args[0][0]
-        feather = (
-            mod._OPTICAL_SHELL_FEATHER
-            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
-            else mod._OUTER_FEATHER
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._materialization_fill_state(0.55)["height_frac"],
+            "transform.scale.y",
         )
-        total_h = 104.0 + 2 * feather
-        expected_h = total_h * mod._materialization_fill_state(0.55)["height_frac"]
-        assert last_frame[1][1] == pytest.approx(expected_h)
 
     def test_materialization_temporarily_clears_punchthrough_mask(
         self, mock_pyobjc
@@ -679,6 +669,64 @@ class TestOpticalShellMaterialization:
         overlay.materializationStep_(overlay._materialization_timer)
 
         overlay._refresh_punchthrough_mask_if_needed.assert_called_once()
+
+    def test_fade_in_defers_pulse_until_materialization_finishes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._fade_direction = 1
+        overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._start_pulse_timer = MagicMock()
+
+        overlay.fadeStep_(None)
+
+        overlay._start_pulse_timer.assert_not_called()
+
+    def test_entrance_materialization_completion_starts_deferred_pulse(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        overlay._visible = True
+        overlay._recording_load_shed = False
+        overlay._start_pulse_timer = MagicMock()
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._start_pulse_timer.assert_called_once()
+
+    def test_dismiss_stops_pulse_before_reverse_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value={
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+        overlay._cancel_pulse = MagicMock()
+
+        overlay._start_fade_out()
+
+        overlay._cancel_pulse.assert_called_once()
 
 
 class TestShowFinishHide:
