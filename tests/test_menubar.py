@@ -343,6 +343,92 @@ class TestMenuBarIcon:
         assert any(call.args == ("Claude Agent SDK", "selectModel:", "") for call in calls)
         assert any(call.args == ("Codex SDK", "selectModel:", "") for call in calls)
 
+    def test_agent_shell_selection_refreshes_menu_checkmark(self, menubar_module, monkeypatch):
+        """Selecting an Agent Shell provider should visibly update the menu in-place."""
+        AppKit = __import__("AppKit")
+
+        created_items = []
+
+        class FakeMenuItem:
+            def __init__(self, title, action, key):
+                self.title = title
+                self.action = action
+                self.key = key
+                self.target = None
+                self.represented_object = None
+                self.enabled = None
+                self.state = 0
+                self.submenu = None
+
+            def setEnabled_(self, enabled):
+                self.enabled = enabled
+
+            def setTarget_(self, target):
+                self.target = target
+
+            def setRepresentedObject_(self, represented_object):
+                self.represented_object = represented_object
+
+            def setState_(self, state):
+                self.state = state
+
+            def setSubmenu_(self, submenu):
+                self.submenu = submenu
+
+        class FakeMenuItemAllocator:
+            def initWithTitle_action_keyEquivalent_(self, title, action, key):
+                item = FakeMenuItem(title, action, key)
+                created_items.append(item)
+                return item
+
+        monkeypatch.setattr(AppKit.NSMenuItem, "alloc", MagicMock(return_value=FakeMenuItemAllocator()))
+        monkeypatch.setattr(AppKit.NSMenuItem, "separatorItem", MagicMock(return_value=FakeMenuItem("—", None, "")))
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = MagicMock()
+
+        selected = "off"
+
+        def on_select(selection=None):
+            nonlocal selected
+            if selection is not None:
+                role, value = selection
+                assert role == "agent_shell"
+                selected = value
+                return None
+            return {
+                "agent_shell": {
+                    "title": "Agent Shell",
+                    "items": [
+                        ("off", "Off", selected == "off", True),
+                        ("claude", "Claude Agent SDK", selected == "claude", True),
+                        ("codex", "Codex SDK", selected == "codex", True),
+                    ],
+                }
+            }
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(side_effect=on_select)
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+        codex_item = next(item for item in created_items if item.title == "Codex SDK")
+        assert codex_item.state == 0
+
+        sender = MagicMock()
+        sender.representedObject.return_value = codex_item.represented_object
+        icon.selectModel_(sender)
+
+        rebuilt_codex_item = [
+            item for item in created_items if item.title == "Codex SDK"
+        ][-1]
+        rebuilt_off_item = [
+            item for item in created_items if item.title == "Off"
+        ][-1]
+        assert rebuilt_codex_item.state == 1
+        assert rebuilt_off_item.state == 0
+
     def test_build_menu_shows_launch_target_submenu(self, menubar_module):
         """Registry-backed launch targets should appear as flat items at the bottom of the menu."""
         AppKit = __import__("AppKit")
