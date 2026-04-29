@@ -2891,6 +2891,10 @@ class SpokeAppDelegate(NSObject):
 
     def _last_command_overlay_snapshot(self) -> tuple[str, str] | None:
         """Return the most recent assistant overlay content, including failures."""
+        agent_shell_provider = self._active_agent_shell_provider()
+        if agent_shell_provider is not None:
+            return self._agent_shell_overlay_snapshot(agent_shell_provider)
+
         utterance = getattr(self, "_last_command_utterance", "")
         response = getattr(self, "_last_command_response", "")
         if self._command_client is not None:
@@ -3365,36 +3369,37 @@ class SpokeAppDelegate(NSObject):
             self._command_client is not None
             and self._command_overlay is not None
         ):
-            pending_snapshot_getter = getattr(
-                self._command_client, "pending_approval_snapshot", None
-            )
-            snapshot = (
-                pending_snapshot_getter()
-                if callable(pending_snapshot_getter)
-                else None
-            )
-            if isinstance(snapshot, dict):
-                utterance = snapshot.get("utterance", "")
-                base_response = snapshot.get("base_response", "")
-                approval_request = snapshot.get("approval_request") or {}
-                self._pending_command_approval_active = True
-                self._pending_command_approval_request = approval_request
-                self._last_command_utterance = utterance
-                self._command_streaming_text = base_response
-                logger.info("Double-tap Enter — restoring durable pending approval overlay")
-                try:
-                    self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show(
-                        start_thinking_timer=False,
-                        initial_utterance=utterance,
-                        initial_response=self._compose_pending_approval_overlay_body(),
-                    )
-                    self._command_overlay.finish()
-                    self._detector.approval_active = True
-                    self._detector.command_overlay_active = True
-                except Exception:
-                    logger.exception("Restore durable pending approval overlay failed")
-                return
+            if self._active_agent_shell_provider() is None:
+                pending_snapshot_getter = getattr(
+                    self._command_client, "pending_approval_snapshot", None
+                )
+                snapshot = (
+                    pending_snapshot_getter()
+                    if callable(pending_snapshot_getter)
+                    else None
+                )
+                if isinstance(snapshot, dict):
+                    utterance = snapshot.get("utterance", "")
+                    base_response = snapshot.get("base_response", "")
+                    approval_request = snapshot.get("approval_request") or {}
+                    self._pending_command_approval_active = True
+                    self._pending_command_approval_request = approval_request
+                    self._last_command_utterance = utterance
+                    self._command_streaming_text = base_response
+                    logger.info("Double-tap Enter — restoring durable pending approval overlay")
+                    try:
+                        self._sync_command_overlay_brightness(immediate=True)
+                        self._command_overlay.show(
+                            start_thinking_timer=False,
+                            initial_utterance=utterance,
+                            initial_response=self._compose_pending_approval_overlay_body(),
+                        )
+                        self._command_overlay.finish()
+                        self._detector.approval_active = True
+                        self._detector.command_overlay_active = True
+                    except Exception:
+                        logger.exception("Restore durable pending approval overlay failed")
+                    return
             snapshot = self._last_command_overlay_snapshot()
             if snapshot is not None:
                 last_utterance, last_response = snapshot
@@ -3623,6 +3628,26 @@ class SpokeAppDelegate(NSObject):
                     record["provider_session_id"] = provider_session_id
         return record
 
+    def _agent_shell_overlay_snapshot(self, provider: str) -> tuple[str, str] | None:
+        record = self._agent_shell_session_record(provider)
+        utterance = record.get("last_utterance")
+        response = record.get("last_response")
+        if isinstance(utterance, str) and utterance and isinstance(response, str) and response:
+            return utterance, response
+        return None
+
+    def _remember_agent_shell_overlay_snapshot(
+        self,
+        provider: str,
+        utterance: str,
+        response: str,
+    ) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS or not utterance or not response:
+            return
+        record = self._agent_shell_session_record(provider)
+        record["last_utterance"] = utterance
+        record["last_response"] = response
+
     def _agent_shell_state(self, provider: str) -> AgentShellState:
         record = self._agent_shell_session_record(provider)
         spoke_session_id = record.get("spoke_session_id")
@@ -3782,6 +3807,8 @@ class SpokeAppDelegate(NSObject):
                 False,
             )
             return
+        self._command_turn_route = "agent_shell"
+        self._command_turn_provider = provider
 
         def _run() -> None:
             label = _agent_shell_provider_label(provider)
@@ -4234,6 +4261,8 @@ class SpokeAppDelegate(NSObject):
         self._command_streaming_text = ""
         self._pending_command_approval_active = False
         self._pending_command_approval_request = None
+        self._command_turn_route = "local"
+        self._command_turn_provider = None
         self._detector.approval_active = False
         # Hide the input overlay
         if self._overlay is not None:
@@ -4373,6 +4402,15 @@ class SpokeAppDelegate(NSObject):
         if visible_response:
             self._last_command_response = visible_response
             self._command_streaming_text = visible_response
+            if getattr(self, "_command_turn_route", None) == "agent_shell":
+                provider = getattr(self, "_command_turn_provider", None)
+                utterance = getattr(self, "_last_command_utterance", "")
+                if isinstance(provider, str):
+                    self._remember_agent_shell_overlay_snapshot(
+                        provider,
+                        utterance,
+                        visible_response,
+                    )
         if overlay is not None and visible_response:
             try:
                 # If the streamed visible body already matches the final
