@@ -143,6 +143,99 @@ def _average_ms(total_ms: float, count: int) -> float:
     return total_ms / count
 
 
+def _clamp_sample_bounds(start: float, extent: float, limit: int) -> tuple[int, int] | None:
+    lo = max(int(start), 0)
+    hi = min(int(start + extent), int(limit))
+    if hi <= lo:
+        return None
+    return lo, hi
+
+
+def _sample_pixel_buffer_brightness(
+    pixel_buffer,
+    width: int,
+    height: int,
+    config: dict,
+    screen,
+) -> float | None:
+    """Sample shell-region luminance from the live SCK pixel buffer."""
+    if pixel_buffer is None or width <= 0 or height <= 0:
+        return None
+    bridge = _load_screencapturekit_bridge()
+    if bridge is None:
+        return None
+    cv_lib = bridge.get("_cv_lib")
+    if cv_lib is None:
+        return None
+
+    raw_pb = objc.pyobjc_id(pixel_buffer)
+    readonly = 1
+    try:
+        cv_lib.CVPixelBufferLockBaseAddress.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        cv_lib.CVPixelBufferLockBaseAddress.restype = ctypes.c_int
+        cv_lib.CVPixelBufferUnlockBaseAddress.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        cv_lib.CVPixelBufferUnlockBaseAddress.restype = ctypes.c_int
+        cv_lib.CVPixelBufferGetBaseAddress.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetBaseAddress.restype = ctypes.c_void_p
+        cv_lib.CVPixelBufferGetBytesPerRow.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetBytesPerRow.restype = ctypes.c_size_t
+        cv_lib.CVPixelBufferGetWidth.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetWidth.restype = ctypes.c_size_t
+        cv_lib.CVPixelBufferGetHeight.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetHeight.restype = ctypes.c_size_t
+    except Exception:
+        return None
+
+    try:
+        if cv_lib.CVPixelBufferLockBaseAddress(raw_pb, readonly) != 0:
+            return None
+    except Exception:
+        return None
+
+    try:
+        base = cv_lib.CVPixelBufferGetBaseAddress(raw_pb)
+        bytes_per_row = int(cv_lib.CVPixelBufferGetBytesPerRow(raw_pb))
+        buffer_width = int(cv_lib.CVPixelBufferGetWidth(raw_pb) or width)
+        buffer_height = int(cv_lib.CVPixelBufferGetHeight(raw_pb) or height)
+        if not base or bytes_per_row <= 0 or buffer_width <= 0 or buffer_height <= 0:
+            return None
+
+        cx = float(config.get("center_x", buffer_width * 0.5))
+        cy = float(config.get("center_y", buffer_height * 0.5))
+        rw = float(config.get("content_width_points", buffer_width)) * 0.5
+        rh = float(config.get("content_height_points", buffer_height)) * 0.5
+        x_bounds = _clamp_sample_bounds(cx - rw, rw * 2.0, buffer_width)
+        y_bounds = _clamp_sample_bounds(cy - rh, rh * 2.0, buffer_height)
+        if x_bounds is None or y_bounds is None:
+            return None
+
+        x0, x1 = x_bounds
+        y0, y1 = y_bounds
+        data = (ctypes.c_ubyte * (bytes_per_row * buffer_height)).from_address(base)
+        total = 0.0
+        count = 0
+        for sy in range(y0, y1, 5):
+            row = sy * bytes_per_row
+            for sx in range(x0, x1, 5):
+                offset = row + (sx * 4)
+                if offset + 2 < len(data):
+                    b = data[offset]
+                    g = data[offset + 1]
+                    r = data[offset + 2]
+                    total += (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                    count += 1
+        if count <= 0:
+            return None
+        return total / count
+    except Exception:
+        return None
+    finally:
+        try:
+            cv_lib.CVPixelBufferUnlockBaseAddress(raw_pb, readonly)
+        except Exception:
+            pass
+
+
 def _fps_from_intervals(count: int, total_interval_ms: float) -> float:
     if count <= 1 or total_interval_ms <= 0:
         return 0.0
@@ -202,6 +295,7 @@ class FullScreenCompositor:
         self._duplicate_frames = 0
         self._skipped_frames = 0
         self._brightness_samples = 0
+        self._windowserver_brightness_samples = 0
         self._warp_to_drawable_calls = 0
         self._total_capture_frame_interval_ms = 0.0
         self._total_display_link_interval_ms = 0.0
@@ -211,6 +305,7 @@ class FullScreenCompositor:
         self._total_presented_frame_ms = 0.0
         self._total_warp_to_drawable_ms = 0.0
         self._total_brightness_sample_ms = 0.0
+        self._total_windowserver_brightness_sample_ms = 0.0
         self._last_capture_frame_at = None
         self._last_display_link_at = None
         self._last_presented_at = None
@@ -328,6 +423,7 @@ class FullScreenCompositor:
             "_duplicate_frames": 0,
             "_skipped_frames": 0,
             "_brightness_samples": 0,
+            "_windowserver_brightness_samples": 0,
             "_warp_to_drawable_calls": 0,
             "_total_capture_frame_interval_ms": 0.0,
             "_total_display_link_interval_ms": 0.0,
@@ -337,6 +433,7 @@ class FullScreenCompositor:
             "_total_presented_frame_ms": 0.0,
             "_total_warp_to_drawable_ms": 0.0,
             "_total_brightness_sample_ms": 0.0,
+            "_total_windowserver_brightness_sample_ms": 0.0,
             "_last_capture_frame_at": None,
             "_last_display_link_at": None,
             "_last_presented_at": None,
@@ -354,6 +451,7 @@ class FullScreenCompositor:
             display_ticks = int(self._display_link_ticks)
             presented_frames = int(self._presented_count)
             brightness_samples = int(self._brightness_samples)
+            windowserver_brightness_samples = int(self._windowserver_brightness_samples)
             warp_calls = int(self._warp_to_drawable_calls)
             capture_interval_ms = float(self._total_capture_frame_interval_ms)
             display_interval_ms = float(self._total_display_link_interval_ms)
@@ -363,6 +461,9 @@ class FullScreenCompositor:
             total_presented_frame_ms = float(self._total_presented_frame_ms)
             total_warp_to_drawable_ms = float(self._total_warp_to_drawable_ms)
             total_brightness_sample_ms = float(self._total_brightness_sample_ms)
+            total_windowserver_brightness_sample_ms = float(
+                self._total_windowserver_brightness_sample_ms
+            )
             duplicate_frames = int(self._duplicate_frames)
             skipped_frames = int(self._skipped_frames)
         return {
@@ -375,6 +476,7 @@ class FullScreenCompositor:
             "skipped_frames": skipped_frames,
             "duplicate_frames": duplicate_frames,
             "brightness_samples": brightness_samples,
+            "windowserver_brightness_samples": windowserver_brightness_samples,
             "avg_capture_frame_interval_ms": _average_ms(
                 capture_interval_ms,
                 max(capture_frames - 1, 0),
@@ -407,39 +509,70 @@ class FullScreenCompositor:
                 total_brightness_sample_ms,
                 brightness_samples,
             ),
+            "avg_windowserver_brightness_sample_ms": _average_ms(
+                total_windowserver_brightness_sample_ms,
+                windowserver_brightness_samples,
+            ),
         }
 
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
         with self._lock:
             configs = list(self._shell_configs)
+            iosurface = self._latest_iosurface
+            pixel_buffer = self._latest_pixel_buffer
             w = self._latest_width
             h = self._latest_height
         if not configs or w <= 0 or h <= 0:
             return
-        self._sample_brightness_with_diagnostics(None, w, h, configs[0])
+        self._sample_brightness_with_diagnostics(
+            iosurface,
+            w,
+            h,
+            configs[0],
+            pixel_buffer,
+        )
 
     def sample_brightness_for_config(self, config: dict) -> float:
         """Sample brightness for a specific shell config."""
         with self._lock:
+            iosurface = self._latest_iosurface
+            pixel_buffer = self._latest_pixel_buffer
             w = self._latest_width
             h = self._latest_height
         if config is None or w <= 0 or h <= 0:
             return self._sampled_brightness
-        self._sample_brightness_with_diagnostics(None, w, h, config)
+        self._sample_brightness_with_diagnostics(
+            iosurface,
+            w,
+            h,
+            config,
+            pixel_buffer,
+        )
         return self._sampled_brightness
 
-    def _sample_brightness_with_diagnostics(self, iosurface, w, h, config) -> None:
+    def _sample_brightness_with_diagnostics(
+        self,
+        iosurface,
+        w,
+        h,
+        config,
+        pixel_buffer=None,
+    ) -> None:
         self._ensure_diagnostics_fields()
         sample_start = time.monotonic()
+        source = None
         try:
-            self._sample_iosurface_brightness(iosurface, w, h, config)
+            source = self._sample_iosurface_brightness(iosurface, w, h, config, pixel_buffer)
         finally:
             sample_end = time.monotonic()
             elapsed_ms = max((sample_end - sample_start) * 1000.0, 0.0)
             with self._lock:
                 self._brightness_samples += 1
                 self._total_brightness_sample_ms += elapsed_ms
+                if source == "windowserver":
+                    self._windowserver_brightness_samples += 1
+                    self._total_windowserver_brightness_sample_ms += elapsed_ms
                 if self._last_brightness_sample_at is not None:
                     self._total_brightness_sample_interval_ms += max(
                         (sample_end - self._last_brightness_sample_at) * 1000.0,
@@ -447,14 +580,18 @@ class FullScreenCompositor:
                     )
                 self._last_brightness_sample_at = sample_end
 
-    def _sample_iosurface_brightness(self, iosurface, w, h, config):
+    def _sample_iosurface_brightness(self, iosurface, w, h, config, pixel_buffer=None):
         """Sample average luminance of the capsule region.
 
-        Uses CGWindowListCreateImage on a small rect centered on the
-        capsule, excluding the compositor's own window.  This captures
-        the raw desktop content behind the overlay — the same content
-        the warp is transforming.
+        Prefer the live SCK pixel buffer already feeding the Metal warp.
+        Fall back to a WindowServer rect capture only when the frame buffer
+        cannot be read.
         """
+        sampled = _sample_pixel_buffer_brightness(pixel_buffer, w, h, config, self._screen)
+        if sampled is not None:
+            self._sampled_brightness = sampled
+            return "pixel_buffer"
+
         try:
             from Quartz import (
                 CGWindowListCreateImage,
@@ -518,8 +655,10 @@ class FullScreenCompositor:
                         count += 1
             if count > 0:
                 self._sampled_brightness = total / count
+            return "windowserver"
         except Exception:
             pass  # non-critical — keep previous brightness
+        return None
 
     @property
     def is_running(self) -> bool:
@@ -1325,6 +1464,7 @@ class OverlayCompositorHost:
             "skipped_frames": 0,
             "duplicate_frames": 0,
             "brightness_samples": 0,
+            "windowserver_brightness_samples": 0,
             "avg_capture_frame_interval_ms": 0.0,
             "avg_display_link_interval_ms": 0.0,
             "avg_presented_interval_ms": 0.0,
@@ -1333,6 +1473,7 @@ class OverlayCompositorHost:
             "avg_presented_frame_ms": 0.0,
             "avg_warp_to_drawable_ms": 0.0,
             "avg_brightness_sample_ms": 0.0,
+            "avg_windowserver_brightness_sample_ms": 0.0,
         }
 
     def debug_snapshot(self) -> dict:
