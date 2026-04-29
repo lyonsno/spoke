@@ -546,6 +546,76 @@ class TestOpticalShellMaterialization:
 
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
+    def test_pulse_does_not_override_fill_opacity_during_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.sampled_brightness = 0.0
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.30
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        assert overlay._fill_layer.setOpacity_.call_args_list
+        for call in overlay._fill_layer.setOpacity_.call_args_list:
+            assert call.args[0] == pytest.approx(
+                mod._materialization_fill_state(0.30)["opacity"]
+            )
+
+    def test_fill_image_ready_preserves_active_materialization_geometry(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.55
+        overlay._desired_fill_image_signature = ("sig",)
+        overlay._pending_fill_image_signature = ("sig",)
+
+        overlay.fillImageReady_(
+            {
+                "signature": ("sig",),
+                "total_w": 680.0,
+                "total_h": 160.0,
+                "scale": 2.0,
+                "image": "fill-image",
+                "payload": b"payload",
+                "has_compositor": True,
+            }
+        )
+
+        last_frame = overlay._fill_layer.setFrame_.call_args[0][0]
+        feather = (
+            mod._OPTICAL_SHELL_FEATHER
+            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else mod._OUTER_FEATHER
+        )
+        total_h = 104.0 + 2 * feather
+        expected_h = total_h * mod._materialization_fill_state(0.55)["height_frac"]
+        assert last_frame[1][1] == pytest.approx(expected_h)
+
+    def test_ridge_mask_refresh_preserves_active_materialization_geometry(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: None)
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.55
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        last_frame = overlay._fill_layer.setFrame_.call_args[0][0]
+        feather = (
+            mod._OPTICAL_SHELL_FEATHER
+            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else mod._OUTER_FEATHER
+        )
+        total_h = 104.0 + 2 * feather
+        expected_h = total_h * mod._materialization_fill_state(0.55)["height_frac"]
+        assert last_frame[1][1] == pytest.approx(expected_h)
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""

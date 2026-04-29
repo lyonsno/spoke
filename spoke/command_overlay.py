@@ -2234,6 +2234,10 @@ class CommandOverlay(NSObject):
             if metrics is not None:
                 metrics.record_display_tick(now=time.perf_counter())
 
+    def _materialization_owns_fill_layers(self) -> bool:
+        """Return True while slit materialization owns shell-body geometry."""
+        return getattr(self, "_materialization_timer", None) is not None
+
     def _pulseStepInner(self):
         if self._text_view is None:
             return
@@ -2523,7 +2527,12 @@ class CommandOverlay(NSObject):
         # its presence from a much more assertive fill ramp than the command
         # overlay previously used, so mirror that shape here while preserving
         # the pulse-driven rhythm.
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+        materialization_owns_fill = self._materialization_owns_fill_layers()
+        if (
+            hasattr(self, '_fill_layer')
+            and self._fill_layer is not None
+            and not materialization_owns_fill
+        ):
             fill_drive = _lerp(breath, breath * breath, t)
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
                 fill_min = _lerp(
@@ -2574,7 +2583,10 @@ class CommandOverlay(NSObject):
                 self._last_min_brightness = 0.0
         # Boost layer: glyph-shaped lift/drop behind punch-through text.
         boost_layer = getattr(self, "_boost_layer", None)
-        if boost_layer is not None and getattr(self, "_text_punchthrough", False):
+        if boost_layer is not None and materialization_owns_fill:
+            boost_layer.setHidden_(True)
+            boost_layer.setOpacity_(0.0)
+        elif boost_layer is not None and getattr(self, "_text_punchthrough", False):
             boost_rgb, boost_opacity = _punchthrough_boost_style_for_brightness(t)
             try:
                 from Quartz import CGColorCreateSRGB
@@ -2602,7 +2614,9 @@ class CommandOverlay(NSObject):
             self._update_punchthrough_mask()
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
-            if spring > 0.01:
+            if materialization_owns_fill:
+                self._spring_tint_layer.setOpacity_(0.0)
+            elif spring > 0.01:
                 from Quartz import CGColorCreateSRGB
                 # Warm golden-amber tint — visible, thermal, not alarming
                 cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
@@ -3172,6 +3186,10 @@ class CommandOverlay(NSObject):
                 self._fill_layer.setContentsScale_(scale)
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
+        if self._materialization_owns_fill_layers():
+            self._apply_materialization_fill_state(
+                getattr(self, "_materialization_progress", 1.0)
+            )
 
         pending = getattr(self, "_pending_fill_image_signature", None)
         if pending is not None:
@@ -3358,6 +3376,11 @@ class CommandOverlay(NSObject):
             mask.setContentsGravity_("resize")
             self._spring_tint_layer.setMask_(mask)
             self._spring_tint_mask_signature = signature
+
+        if self._materialization_owns_fill_layers():
+            self._apply_materialization_fill_state(
+                getattr(self, "_materialization_progress", 1.0)
+            )
 
         queued = getattr(self, "_queued_fill_request", None)
         if queued is not None:
