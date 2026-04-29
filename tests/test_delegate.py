@@ -5530,6 +5530,23 @@ class TestOverlayRecallSnapshots:
             "Let me check. \n[calling capture_context…]\nDone.",
         )
 
+    def test_command_complete_preserves_streamed_agent_shell_transcript(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 7
+        d._transcribing = True
+        d._command_overlay = MagicMock()
+        d._last_command_utterance = "inspect the failing test"
+        d._command_streaming_text = "Codex running: pytest\npartial answer\n"
+
+        d.commandComplete_({"token": 7, "response": "final answer"})
+
+        expected = "Codex running: pytest\npartial answer\n\nfinal answer"
+        assert d._last_command_response == expected
+        assert d._command_streaming_text == expected
+        d._command_overlay.set_response_text.assert_called_once_with(expected)
+
     def test_last_command_overlay_snapshot_prefers_delegate_snapshot_over_stale_history(
         self, main_module, monkeypatch
     ):

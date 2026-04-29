@@ -164,6 +164,8 @@ from .optical_shell_metrics import OpticalShellMetrics
 from .agent_backend_presenter import (
     AgentBackendPresentationState,
     present_backend_events,
+    present_backend_idle,
+    present_backend_liveness,
 )
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
@@ -3679,43 +3681,52 @@ class SpokeAppDelegate(NSObject):
             return seen_sequence
         state = self._agent_backend_presentation_state(session_id)
         for action in present_backend_events(new_events, state):
-            if action.kind == "response_delta" and action.text:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToken:",
-                    {"token": token, "text": action.text},
-                    False,
-                )
-            elif action.kind == "status" and action.text:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToken:",
-                    {"token": token, "text": f"{action.text}\n"},
-                    False,
-                )
-            elif action.kind == "narrator_summary" and action.text:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "narratorSummary:",
-                    {"token": token, "summary": action.text},
-                    False,
-                )
-            elif action.kind == "tool_start":
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToolStart:",
-                    {"token": token},
-                    False,
-                )
-            elif action.kind == "tool_end":
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToolEnd:",
-                    {"token": token},
-                    False,
-                )
-            elif action.kind == "error" and action.text:
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToken:",
-                    {"token": token, "text": f"{action.text}\n"},
-                    False,
-                )
+            self._apply_agent_backend_presentation_action(action, token)
         return max(event["sequence"] for event in new_events)
+
+    def _apply_agent_backend_presentation_action(self, action, token: int) -> None:
+        if action.kind == "response_delta" and action.text:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandToken:",
+                {"token": token, "text": action.text},
+                False,
+            )
+        elif action.kind == "status" and action.text:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandToken:",
+                {"token": token, "text": f"{action.text}\n"},
+                False,
+            )
+        elif action.kind == "narrator_summary" and action.text:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "narratorSummary:",
+                {"token": token, "summary": action.text},
+                False,
+            )
+        elif action.kind == "narrator_shimmer":
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "narratorShimmer:",
+                {"token": token, "active": bool(action.active)},
+                False,
+            )
+        elif action.kind == "tool_start":
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandToolStart:",
+                {"token": token},
+                False,
+            )
+        elif action.kind == "tool_end":
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandToolEnd:",
+                {"token": token},
+                False,
+            )
+        elif action.kind == "error" and action.text:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandToken:",
+                {"token": token, "text": f"{action.text}\n"},
+                False,
+            )
 
     def _maybe_route_agent_shell_text(self, text: str, token: int) -> bool:
         provider = self._active_agent_shell_provider()
@@ -3794,6 +3805,8 @@ class SpokeAppDelegate(NSObject):
 
                 session = launched
                 seen_backend_event_sequence = 0
+                for action in present_backend_liveness(label):
+                    self._apply_agent_backend_presentation_action(action, token)
                 while token == self._transcription_token:
                     latest = manager.get_session(session_id)
                     if isinstance(latest, dict):
@@ -3818,6 +3831,8 @@ class SpokeAppDelegate(NSObject):
                     state = session.get("state")
                     if state == "completed":
                         response = session.get("result") or f"{label} session completed."
+                        for action in present_backend_idle():
+                            self._apply_agent_backend_presentation_action(action, token)
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
                             "commandComplete:",
                             {"token": token, "response": str(response)},
@@ -3825,6 +3840,8 @@ class SpokeAppDelegate(NSObject):
                         )
                         return
                     if state == "cancelled":
+                        for action in present_backend_idle():
+                            self._apply_agent_backend_presentation_action(action, token)
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
                             "commandFailed:",
                             {"token": token, "error": f"{label} session cancelled"},
@@ -3832,6 +3849,8 @@ class SpokeAppDelegate(NSObject):
                         )
                         return
                     error = session.get("error") or f"{label} session failed"
+                    for action in present_backend_idle():
+                        self._apply_agent_backend_presentation_action(action, token)
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "commandFailed:",
                         {"token": token, "error": str(error)},
@@ -3839,6 +3858,8 @@ class SpokeAppDelegate(NSObject):
                     )
                     return
 
+                for action in present_backend_idle():
+                    self._apply_agent_backend_presentation_action(action, token)
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "commandFailed:",
                     {"token": token, "error": f"{label} returned an invalid session"},
@@ -3846,6 +3867,8 @@ class SpokeAppDelegate(NSObject):
                 )
             except Exception as exc:
                 logger.exception("Agent Shell provider turn failed")
+                for action in present_backend_idle():
+                    self._apply_agent_backend_presentation_action(action, token)
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "commandFailed:",
                     {"token": token, "error": str(exc)},
@@ -4338,16 +4361,28 @@ class SpokeAppDelegate(NSObject):
         overlay = self._command_overlay
         if overlay is not None:
             overlay.set_tool_active(False)
-        response = payload.get("response", "")
-        if response:
-            self._last_command_response = response
-        if overlay is not None and response:
+        response = str(payload.get("response") or "")
+        streaming = getattr(self, "_command_streaming_text", "")
+        visible_response = response
+        if streaming:
+            streaming_body = streaming.rstrip()
+            response_body = response.strip()
+            if response_body and response_body not in streaming:
+                visible_response = (
+                    f"{streaming_body}\n\n{response}" if streaming_body else response
+                )
+            else:
+                visible_response = streaming
+        if visible_response:
+            self._last_command_response = visible_response
+            self._command_streaming_text = visible_response
+        if overlay is not None and visible_response:
             try:
                 # If the streamed visible body already matches the final
                 # response, preserve it in place so collapsed thinking and
                 # tool/result ordering do not get rebuilt back to the top.
-                if getattr(self, "_command_streaming_text", "") != response:
-                    overlay.set_response_text(response)
+                if streaming != visible_response:
+                    overlay.set_response_text(visible_response)
             except Exception:
                 logger.exception("Command overlay failed to apply final response text")
         if overlay is not None:

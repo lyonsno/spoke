@@ -19,6 +19,7 @@ class AgentBackendPresentationState:
 class AgentBackendPresentation:
     kind: str
     text: str = ""
+    active: bool | None = None
 
 
 def _event_data(event: dict[str, Any]) -> dict[str, Any]:
@@ -138,3 +139,15 @@ def present_backend_events(
             if text:
                 actions.append(AgentBackendPresentation(kind="error", text=text))
     return actions
+
+
+def present_backend_liveness(label: str) -> list[AgentBackendPresentation]:
+    provider = label.strip() or "Agent"
+    return [
+        AgentBackendPresentation(kind="narrator_summary", text=f"{provider} thinking"),
+        AgentBackendPresentation(kind="narrator_shimmer", active=True),
+    ]
+
+
+def present_backend_idle() -> list[AgentBackendPresentation]:
+    return [AgentBackendPresentation(kind="narrator_shimmer", active=False)]

@@ -147,6 +147,40 @@ class _StreamingFakeAgentBackendManager:
         return {"state": "cancelled"}
 
 
+class _QuietRunningAgentBackendManager:
+    def __init__(self):
+        self.launched: list[dict] = []
+        self.poll_count = 0
+
+    def launch(self, **kwargs):
+        self.launched.append(kwargs)
+        return {
+            "id": "agent-backend-codex-quiet",
+            "provider": "codex",
+            "state": "running",
+            "provider_session_id": None,
+            "backend_events": [],
+            "result": None,
+            "error": None,
+        }
+
+    def get_session(self, session_id):
+        self.poll_count += 1
+        state = "running" if self.poll_count == 1 else "completed"
+        return {
+            "id": session_id,
+            "provider": "codex",
+            "state": state,
+            "provider_session_id": "codex-thread-quiet",
+            "backend_events": [],
+            "result": "quiet done",
+            "error": None,
+        }
+
+    def cancel(self, _session_id):
+        return {"state": "cancelled"}
+
+
 def _make_agent_shell_delegate(main_module):
     delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
     delegate._transcription_token = 0
@@ -557,6 +591,17 @@ class TestAgentBackendPresentation:
             ("response_delta", " world")
         ]
 
+    def test_presenter_exposes_backend_liveness_actions(self):
+        from spoke.agent_backend_presenter import present_backend_liveness
+
+        actions = present_backend_liveness("Codex")
+
+        assert [(action.kind, action.text) for action in actions] == [
+            ("narrator_summary", "Codex thinking"),
+            ("narrator_shimmer", ""),
+        ]
+        assert actions[-1].active is True
+
 
 class TestAgentShellRouting:
     def test_active_agent_shell_routes_ordinary_input_to_selected_provider(self):
@@ -759,6 +804,36 @@ class TestAgentShellDelegateDispatch:
         )
         assert calls[-1].args[0] == "commandComplete:"
         assert calls[-1].args[1]["response"] == "done"
+
+    def test_quiet_running_agent_shell_keeps_thinking_gloss_alive(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _QuietRunningAgentBackendManager()
+
+        delegate._send_text_as_command("keep working")
+
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        assert any(
+            call.args[0] == "narratorSummary:"
+            and call.args[1]["summary"] == "Codex thinking"
+            for call in calls
+        )
+        assert any(
+            call.args[0] == "narratorShimmer:"
+            and call.args[1]["active"] is True
+            for call in calls
+        )
+        assert any(
+            call.args[0] == "narratorShimmer:"
+            and call.args[1]["active"] is False
+            for call in calls
+        )
+        assert calls[-1].args[0] == "commandComplete:"
+        assert calls[-1].args[1]["response"] == "quiet done"
 
     def test_epistaxis_shaped_text_stays_on_assistant_path_not_provider(
         self, main_module, monkeypatch
