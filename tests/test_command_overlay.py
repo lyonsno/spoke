@@ -811,6 +811,46 @@ class TestWindowLayering:
         assert ("timer", "_entrancePopStep:") not in events
         assert ("timer", "fadeStep:") not in events
 
+    def test_optical_show_waits_for_materialized_body_even_after_first_compositor_frame(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+
+        class PresentedCompositor:
+            presented_count = 1
+            sampled_brightness = 0.5
+
+            def refresh_brightness(self):
+                events.append(("brightness", None))
+
+        def _schedule(_interval, _target, selector, _userinfo, _repeats):
+            events.append(("timer", selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        def _start_compositor():
+            events.append(("compositor", None))
+            overlay._fullscreen_compositor = PresentedCompositor()
+            overlay._materialization_progress = 0.10
+
+        overlay._start_fullscreen_compositor = MagicMock(side_effect=_start_compositor)
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+        )
+
+        assert ("compositor", None) in events
+        assert ("brightness", None) in events
+        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "_entrancePopStep:") not in events
+        assert ("timer", "fadeStep:") not in events
+
     def test_optical_show_with_initial_transcript_arms_visual_stack_before_fade(
         self, mock_pyobjc, monkeypatch
     ):

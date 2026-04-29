@@ -2759,7 +2759,7 @@ class CommandOverlay(NSObject):
         if self._optical_compositor_has_presented():
             self._sync_optical_compositor_brightness(hide_stale_fill=True)
             self._visual_ready_brightness_synced = True
-            if self._optical_fill_ready():
+            if self._optical_entrance_ready():
                 self._start_entrance_animation()
                 return
         self._visual_ready_wait_started_at = time.perf_counter()
