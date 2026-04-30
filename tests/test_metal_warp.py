@@ -97,6 +97,32 @@ def test_pack_warp_params_uses_shell_specific_scar_mode_controls():
     assert values[22] == pytest.approx(-0.25)
 
 
+def test_pack_warp_params_uses_shell_specific_seam_pucker_controls():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "warp_mode": 1.0,
+            "scar_amount": 0.75,
+            "scar_seam_length_frac": 0.62,
+            "scar_seam_thickness_frac": 0.44,
+            "scar_seam_focus_frac": 0.27,
+            "scar_vertical_grip": 0.51,
+            "scar_horizontal_grip": 0.19,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+
+    assert values[23] == pytest.approx(0.62)
+    assert values[24] == pytest.approx(0.44)
+    assert values[25] == pytest.approx(0.27)
+    assert values[26] == pytest.approx(0.51)
+    assert values[27] == pytest.approx(0.19)
+
+
 def test_metal_shader_has_separate_radial_scar_mode():
     source = metal_warp._metal_shader_source()
     assert "params.warpMode > 1.5f" in source

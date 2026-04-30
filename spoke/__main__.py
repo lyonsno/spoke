@@ -1262,10 +1262,18 @@ class SpokeAppDelegate(NSObject):
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
         self._preview_warp_hud.restore_visibility()
         self._menubar._on_toggle_preview_warp = self._preview_warp_hud.toggle
+        if getattr(self, "_command_overlay", None) is not None:
+            from .seam_pucker_hud import SeamPuckerHUD
+            self._seam_pucker_hud = SeamPuckerHUD.alloc().initWithOverlay_(
+                self._command_overlay
+            )
+            self._seam_pucker_hud.restore_visibility()
+            self._menubar._on_toggle_seam_pucker = self._seam_pucker_hud.toggle
 
         # Hands-free mode — expose the toggle when a wakeword backend is configured
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
+        self._menubar.refresh_menu()
 
         # Iron Giant: install event tap and probe mic in parallel.
         # The event tap (spacebar interception) only needs Accessibility permission,
@@ -6646,6 +6654,8 @@ class SpokeAppDelegate(NSObject):
             self._terraform_hud.cleanup()
         if hasattr(self, "_preview_warp_hud") and self._preview_warp_hud is not None:
             self._preview_warp_hud.cleanup()
+        if hasattr(self, "_seam_pucker_hud") and self._seam_pucker_hud is not None:
+            self._seam_pucker_hud.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 
@@ -6801,6 +6811,8 @@ def main() -> None:
         delegate._detector.uninstall()
         if hasattr(delegate, "_preview_warp_hud") and delegate._preview_warp_hud is not None:
             delegate._preview_warp_hud.cleanup()
+        if hasattr(delegate, "_seam_pucker_hud") and delegate._seam_pucker_hud is not None:
+            delegate._seam_pucker_hud.cleanup()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
         # Remove heartbeat so next launch doesn't see us as a zombie.

@@ -99,6 +99,11 @@ _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.50
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.36
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 0.44
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 0.70
+_OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = 0.15
+_OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 0.34
+_OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 0.20
+_OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = 0.07
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
 _OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
@@ -700,6 +705,19 @@ def _dismiss_seam_latch_amount(progress: float) -> float:
     )
 
 
+def _seam_pucker_tuning_defaults() -> dict[str, float]:
+    return {
+        "preview_progress": _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45,
+        "seam_latch_start": _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
+        "seam_latch_intensity": _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY,
+        "scar_seam_length_frac": _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
+        "scar_seam_thickness_frac": _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC,
+        "scar_seam_focus_frac": _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC,
+        "scar_vertical_grip": _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP,
+        "scar_horizontal_grip": _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP,
+    }
+
+
 def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
     """Diagnostic gain envelope: quick visibility peak, long elastic decay."""
     p = _clamp01(progress)
@@ -715,17 +733,35 @@ def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
     return _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN * math.exp(-5.0 * t)
 
 
-def _apply_dismiss_seam_latch_fields(config: dict, progress: float) -> dict:
+def _apply_dismiss_seam_latch_fields(
+    config: dict,
+    progress: float,
+    tuning: dict[str, float] | None = None,
+) -> dict:
     """Apply the crisp seam latch while the slit is still zipping closed."""
     updated = dict(config)
-    amount = (
-        _dismiss_seam_latch_amount(progress)
-        * _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY
-    )
+    settings = _seam_pucker_tuning_defaults()
+    if tuning:
+        for key, value in tuning.items():
+            if key in settings:
+                settings[key] = float(value)
+    p = _clamp01(progress)
+    overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    t = _clamp01((overlap_start - p) / overlap_start)
+    amount = _lerp(
+        settings["seam_latch_start"],
+        1.0,
+        1.0 - (1.0 - t) ** 3.0,
+    ) * settings["seam_latch_intensity"]
     updated["cleanup_blur_radius_points"] = 0.0
     updated["mip_blur_strength"] = 0.0
     updated["warp_mode"] = 1.0
     updated["scar_amount"] = amount
+    updated["scar_seam_length_frac"] = settings["scar_seam_length_frac"]
+    updated["scar_seam_thickness_frac"] = settings["scar_seam_thickness_frac"]
+    updated["scar_seam_focus_frac"] = settings["scar_seam_focus_frac"]
+    updated["scar_vertical_grip"] = settings["scar_vertical_grip"]
+    updated["scar_horizontal_grip"] = settings["scar_horizontal_grip"]
     updated["x_squeeze"] = 1.0
     updated["y_squeeze"] = 1.0
     updated["ring_amplitude_points"] = 0.0
@@ -1221,6 +1257,8 @@ class CommandOverlay(NSObject):
         self._pucker_tail_timer: NSTimer | None = None
         self._pucker_tail_started_at = 0.0
         self._pucker_tail_shell_config: dict | None = None
+        self._seam_pucker_tuning_overrides: dict[str, float] = {}
+        self._seam_pucker_tuning_preview_active = False
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -1229,6 +1267,68 @@ class CommandOverlay(NSObject):
 
     def set_compositor_registry(self, registry) -> None:
         self._compositor_registry = registry
+
+    def seam_pucker_tuning_snapshot(self) -> dict[str, float]:
+        tuning = _seam_pucker_tuning_defaults()
+        tuning.update(getattr(self, "_seam_pucker_tuning_overrides", {}))
+        return tuning
+
+    def set_seam_pucker_tuning_value(self, key: str, value: float) -> None:
+        self.update_seam_pucker_tuning(**{key: value})
+
+    def update_seam_pucker_tuning(self, **updates: float) -> None:
+        defaults = _seam_pucker_tuning_defaults()
+        overrides = dict(getattr(self, "_seam_pucker_tuning_overrides", {}))
+        for key, value in updates.items():
+            if key not in defaults:
+                continue
+            numeric = float(value)
+            if abs(numeric - defaults[key]) <= 1e-6:
+                overrides.pop(key, None)
+            else:
+                overrides[key] = numeric
+        self._seam_pucker_tuning_overrides = overrides
+        self._reapply_seam_pucker_tuning()
+
+    def reset_seam_pucker_tuning(self) -> None:
+        self._seam_pucker_tuning_overrides = {}
+        self._reapply_seam_pucker_tuning()
+
+    def preview_seam_pucker_tuning(self) -> None:
+        self._seam_pucker_tuning_preview_active = True
+        self._reapply_seam_pucker_tuning()
+
+    def release_seam_pucker_tuning_preview(self) -> None:
+        self._seam_pucker_tuning_preview_active = False
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        final_config = self._display_local_optical_shell_config()
+        if compositor is not None and final_config is not None:
+            try:
+                compositor.update_shell_config(final_config)
+            except Exception:
+                logger.debug("Failed to release seam pucker preview", exc_info=True)
+
+    def _reapply_seam_pucker_tuning(self) -> None:
+        if not getattr(self, "_seam_pucker_tuning_preview_active", False):
+            return
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None or not getattr(self, "_visible", False):
+            return
+        final_config = self._display_local_optical_shell_config()
+        if final_config is None:
+            return
+        tuning = self.seam_pucker_tuning_snapshot()
+        progress = _clamp01(tuning.get("preview_progress", 0.2))
+        preview_config = _materialized_optical_shell_config(final_config, progress)
+        preview_config = _apply_dismiss_seam_latch_fields(
+            preview_config,
+            progress,
+            tuning,
+        )
+        try:
+            compositor.update_shell_config(preview_config)
+        except Exception:
+            logger.debug("Failed to apply seam pucker tuning preview", exc_info=True)
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -2994,6 +3094,7 @@ class CommandOverlay(NSObject):
                     shell_config = _apply_dismiss_seam_latch_fields(
                         shell_config,
                         progress,
+                        self.seam_pucker_tuning_snapshot(),
                     )
             compositor.update_shell_config(
                 shell_config

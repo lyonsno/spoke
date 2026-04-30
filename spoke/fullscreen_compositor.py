@@ -63,6 +63,11 @@ class OpticalShellMaterialSnapshot:
     mip_blur_strength: float = 1.0
     warp_mode: float = 0.0
     scar_amount: float = 0.0
+    scar_seam_length_frac: float = 0.70
+    scar_seam_thickness_frac: float = 0.15
+    scar_seam_focus_frac: float = 0.34
+    scar_vertical_grip: float = 0.20
+    scar_horizontal_grip: float = 0.07
     bleed_zone_frac: float | None = None
     exterior_mix_width_points: float | None = None
     x_squeeze: float | None = None
@@ -1250,6 +1255,11 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "mip_blur_strength": snapshot.material.mip_blur_strength,
         "warp_mode": snapshot.material.warp_mode,
         "scar_amount": snapshot.material.scar_amount,
+        "scar_seam_length_frac": snapshot.material.scar_seam_length_frac,
+        "scar_seam_thickness_frac": snapshot.material.scar_seam_thickness_frac,
+        "scar_seam_focus_frac": snapshot.material.scar_seam_focus_frac,
+        "scar_vertical_grip": snapshot.material.scar_vertical_grip,
+        "scar_horizontal_grip": snapshot.material.scar_horizontal_grip,
         "cleanup_blur_radius_points": snapshot.material.cleanup_blur_radius_points,
         "debug_visualize": snapshot.material.debug_visualize,
         "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
@@ -1300,6 +1310,11 @@ def _snapshot_from_shell_config(
         mip_blur_strength=float(config.get("mip_blur_strength", 1.0)),
         warp_mode=float(config.get("warp_mode", 0.0)),
         scar_amount=float(config.get("scar_amount", 0.0)),
+        scar_seam_length_frac=float(config.get("scar_seam_length_frac", 0.70)),
+        scar_seam_thickness_frac=float(config.get("scar_seam_thickness_frac", 0.15)),
+        scar_seam_focus_frac=float(config.get("scar_seam_focus_frac", 0.34)),
+        scar_vertical_grip=float(config.get("scar_vertical_grip", 0.20)),
+        scar_horizontal_grip=float(config.get("scar_horizontal_grip", 0.07)),
         bleed_zone_frac=_optional_float("bleed_zone_frac"),
         exterior_mix_width_points=_optional_float("exterior_mix_width_points"),
         x_squeeze=_optional_float("x_squeeze"),

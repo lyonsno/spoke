@@ -227,15 +227,30 @@ def test_snapshot_round_trip_preserves_scar_warp_controls():
             "initial_brightness": 0.37,
             "warp_mode": 1.0,
             "scar_amount": -0.25,
+            "scar_seam_length_frac": 0.61,
+            "scar_seam_thickness_frac": 0.42,
+            "scar_seam_focus_frac": 0.23,
+            "scar_vertical_grip": 0.52,
+            "scar_horizontal_grip": 0.18,
         },
         generation=7,
     )
 
     assert snapshot.material.warp_mode == pytest.approx(1.0)
     assert snapshot.material.scar_amount == pytest.approx(-0.25)
+    assert snapshot.material.scar_seam_length_frac == pytest.approx(0.61)
+    assert snapshot.material.scar_seam_thickness_frac == pytest.approx(0.42)
+    assert snapshot.material.scar_seam_focus_frac == pytest.approx(0.23)
+    assert snapshot.material.scar_vertical_grip == pytest.approx(0.52)
+    assert snapshot.material.scar_horizontal_grip == pytest.approx(0.18)
     round_trip = _snapshot_to_shell_config(snapshot)
     assert round_trip["warp_mode"] == pytest.approx(1.0)
     assert round_trip["scar_amount"] == pytest.approx(-0.25)
+    assert round_trip["scar_seam_length_frac"] == pytest.approx(0.61)
+    assert round_trip["scar_seam_thickness_frac"] == pytest.approx(0.42)
+    assert round_trip["scar_seam_focus_frac"] == pytest.approx(0.23)
+    assert round_trip["scar_vertical_grip"] == pytest.approx(0.52)
+    assert round_trip["scar_horizontal_grip"] == pytest.approx(0.18)
 
 
 def test_registry_reuses_one_host_per_display_for_distinct_clients(monkeypatch):

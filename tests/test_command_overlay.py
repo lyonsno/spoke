@@ -582,6 +582,43 @@ class TestOpticalShellMaterialization:
         assert midway > start
         assert closed == pytest.approx(1.0)
 
+    def test_dismiss_seam_latch_applies_tunable_horizontal_pucker_fields(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "content_width_points": 800.0,
+            "content_height_points": 120.0,
+            "cleanup_blur_radius_points": 8.0,
+            "mip_blur_strength": 1.0,
+            "ring_amplitude_points": 20.0,
+            "tail_amplitude_points": 7.0,
+        }
+
+        tuned = mod._apply_dismiss_seam_latch_fields(
+            base,
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.5,
+        )
+
+        assert tuned["warp_mode"] == pytest.approx(1.0)
+        assert tuned["mip_blur_strength"] == pytest.approx(0.0)
+        assert tuned["scar_amount"] > 0.0
+        assert tuned["scar_seam_length_frac"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
+        )
+        assert tuned["scar_seam_thickness_frac"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC
+        )
+        assert tuned["scar_seam_focus_frac"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC
+        )
+        assert tuned["scar_vertical_grip"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP
+        )
+        assert tuned["scar_horizontal_grip"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP
+        )
+
     def test_dismiss_radial_tail_uses_underdamped_oscillator(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
 

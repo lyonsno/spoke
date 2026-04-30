@@ -89,6 +89,7 @@ class MenuBarIcon(NSObject):
         self._on_select_model = on_select_model
         self._on_toggle_terraform = None
         self._on_toggle_preview_warp = None
+        self._on_toggle_seam_pucker = None
         self._on_toggle_handsfree = None
         self._status_item = None
         self._status_text = "Idle"
@@ -365,6 +366,13 @@ class MenuBarIcon(NSObject):
             preview_warp_item.setTarget_(self)
             menu.addItem_(preview_warp_item)
 
+        if getattr(self, "_on_toggle_seam_pucker", None) is not None:
+            seam_pucker_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Assistant Seam Pucker Tuner", "toggleSeamPucker:", "p"
+            )
+            seam_pucker_item.setTarget_(self)
+            menu.addItem_(seam_pucker_item)
+
         if launch_target:
             menu.addItem_(NSMenuItem.separatorItem())
             for item_id, label, enabled in launch_target["items"]:
@@ -462,6 +470,10 @@ class MenuBarIcon(NSObject):
     def togglePreviewWarp_(self, sender) -> None:
         if self._on_toggle_preview_warp is not None:
             self._on_toggle_preview_warp()
+
+    def toggleSeamPucker_(self, sender) -> None:
+        if self._on_toggle_seam_pucker is not None:
+            self._on_toggle_seam_pucker()
 
     def quitApp_(self, sender) -> None:
         self._on_quit()

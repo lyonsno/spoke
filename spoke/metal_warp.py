@@ -158,6 +158,11 @@ struct WarpParams {{
     float mipBlurStrength; // 0 = crisp level-0 sampling, 1 = material blur LOD
     float warpMode; // 0 = material shell, 1 = seam-tension scar
     float scarAmount; // signed: positive pinches inward, negative rebounds outward
+    float scarSeamLengthFrac; // normalized half-length before horizontal falloff
+    float scarSeamThicknessFrac; // normalized vertical falloff thickness
+    float scarSeamFocusFrac; // normalized near-seam focus width
+    float scarVerticalGrip; // vertical pinch strength for seam scar
+    float scarHorizontalGrip; // side pinch strength for seam scar
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -249,18 +254,24 @@ kernel void opticalShellWarp(
         float2 extent = max(halfRect, float2(1.0f, 1.0f));
         float x01 = clamp(abs(p.x) / extent.x, 0.0f, 1.0f);
         float y01 = clamp(abs(p.y) / extent.y, 0.0f, 1.0f);
-        float xFalloff = 1.0f - smoothstep(0.70f, 1.0f, x01);
-        float yFalloff = 1.0f - smoothstep(0.15f, 1.0f, y01);
+        float lengthFrac = clamp(params.scarSeamLengthFrac, 0.05f, 1.0f);
+        float thicknessFrac = clamp(params.scarSeamThicknessFrac, 0.01f, 1.5f);
+        float focusFrac = clamp(params.scarSeamFocusFrac, 0.01f, 1.0f);
+        float xFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, x01);
+        float yFalloff = exp(-y01 / thicknessFrac);
         float field = xFalloff * yFalloff;
-        float seamFocus = 1.0f - smoothstep(0.0f, 0.34f, y01);
-        float sideFocus = 1.0f - smoothstep(0.0f, 0.82f, x01);
+        float seamFocus = exp(-y01 / focusFrac);
+        float sideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), x01);
         float amount = clamp(params.scarAmount, -2.0f, 2.0f);
-        float verticalGrip = mix(0.055f, 0.20f, seamFocus);
-        float horizontalGrip = mix(0.020f, 0.070f, sideFocus) * (0.35f + 0.65f * seamFocus);
-        float2 displacement = p * float2(horizontalGrip, verticalGrip) * amount * field;
+        float verticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * seamFocus);
+        float horizontalGrip = max(params.scarHorizontalGrip, 0.0f) * sideFocus * (0.25f + 0.75f * seamFocus);
+        // Positive seam scar samples toward the seam rather than reusing the
+        // material shell's outward bulge; this is the horizontal pucker family
+        // the live tuner is meant to overdetermine visually.
+        float2 displacement = -p * float2(horizontalGrip, verticalGrip) * amount * field;
         result = d + displacement;
-        scaleX = 1.0f + horizontalGrip * amount * field;
-        scaleY = 1.0f + verticalGrip * amount * field;
+        scaleX = 1.0f - horizontalGrip * amount * field;
+        scaleY = 1.0f - verticalGrip * amount * field;
     }} else {{
     float curveBoost = min(
         {_WARP_CURVEBOOST_CAP}f,
@@ -371,7 +382,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "23f"
+_WARP_PARAMS_FORMAT = "28f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -406,6 +417,11 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("mip_blur_strength", 1.0)),
         float(shell_config.get("warp_mode", 0.0)),
         float(shell_config.get("scar_amount", 0.0)),
+        float(shell_config.get("scar_seam_length_frac", 0.70)),
+        float(shell_config.get("scar_seam_thickness_frac", 0.15)),
+        float(shell_config.get("scar_seam_focus_frac", 0.34)),
+        float(shell_config.get("scar_vertical_grip", 0.20)),
+        float(shell_config.get("scar_horizontal_grip", 0.07)),
     )
 
 
