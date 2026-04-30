@@ -234,12 +234,14 @@ class TestAgentBackendManager:
 
         monkeypatch.setenv("OPENAI_API_KEY", "forbidden")
         monkeypatch.setenv("CODEX_API_KEY", "forbidden")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "forbidden")
         monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
 
         env = _subscription_only_env()
 
         assert "OPENAI_API_KEY" not in env
         assert "CODEX_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
         assert env["CODEX_HOME"] == "/tmp/codex-home"
 
     def test_codex_backend_rejects_non_chatgpt_login_status(self, monkeypatch):
@@ -252,6 +254,91 @@ class TestAgentBackendManager:
 
         with pytest.raises(AgentBackendUnavailable, match="ChatGPT subscription"):
             _require_codex_subscription_login("/usr/local/bin/codex", {})
+
+    def test_claude_backend_requires_subscription_auth_status(self, monkeypatch):
+        from spoke.agent_backends import (
+            AgentBackendUnavailable,
+            _require_claude_subscription_login,
+        )
+
+        def fake_status(_claude_path, _env):
+            return {
+                "loggedIn": True,
+                "authMethod": "console",
+                "apiProvider": "firstParty",
+                "subscriptionType": "max",
+            }
+
+        monkeypatch.setattr("spoke.agent_backends._claude_auth_status", fake_status)
+
+        with pytest.raises(AgentBackendUnavailable, match="subscription auth"):
+            _require_claude_subscription_login("/opt/homebrew/bin/claude", {})
+
+    def test_claude_stream_events_preserve_session_output_and_limit_shape(self):
+        from spoke.agent_backends import _events_from_claude_stream_event
+
+        init_events = _events_from_claude_stream_event(
+            {
+                "type": "system",
+                "subtype": "init",
+                "cwd": "/tmp/spoke",
+                "session_id": "claude-thread-1",
+                "model": "claude-opus-4-6[1m]",
+                "claude_code_version": "2.1.81",
+                "apiKeySource": "none",
+            }
+        )
+        assistant_events = _events_from_claude_stream_event(
+            {
+                "type": "assistant",
+                "session_id": "claude-thread-1",
+                "message": {
+                    "content": [{"type": "text", "text": "Claude docked."}],
+                },
+            }
+        )
+        limit_events = _events_from_claude_stream_event(
+            {
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "rateLimitType": "five_hour",
+                    "status": "allowed",
+                    "isUsingOverage": False,
+                },
+            }
+        )
+
+        assert [(event.kind, event.text, event.data) for event in init_events] == [
+            (
+                "session_metadata",
+                "/tmp/spoke",
+                {
+                    "provider_session_id": "claude-thread-1",
+                    "cwd": "/tmp/spoke",
+                    "model": "claude-opus-4-6[1m]",
+                    "cli_version": "2.1.81",
+                    "credential_source": "none",
+                },
+            )
+        ]
+        assert [(event.kind, event.text, event.data) for event in assistant_events] == [
+            (
+                "agent_message",
+                "Claude docked.",
+                {"type": "agent_message", "text": "Claude docked."},
+            )
+        ]
+        assert [(event.kind, event.text, event.data) for event in limit_events] == [
+            (
+                "usage_limits",
+                "",
+                {
+                    "rate_limit_type": "five_hour",
+                    "status": "allowed",
+                    "is_using_overage": False,
+                },
+            )
+        ]
 
     def test_codex_json_item_events_preserve_tool_loop_shape(self):
         from spoke.agent_backends import _event_from_codex_item
@@ -623,6 +710,51 @@ class TestAgentBackendManager:
         assert result["provider_session_id"] == "codex-thread-123"
         assert result["result"] == "Plan complete."
         assert result["result_preview"] == "Plan complete."
+
+    def test_launch_accepts_claude_code_through_shared_session_contract(self, tmp_path):
+        from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
+
+        calls = []
+        _DeferredThread.created = []
+
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
+            calls.append((provider, prompt, cwd, resume_id, cancel_check()))
+            return AgentBackendRunResult(
+                provider=provider,
+                session_id="claude-thread-123",
+                final_response="Claude plan complete.",
+            )
+
+        manager = AgentBackendManager(
+            backend_runner=fake_runner,
+            thread_factory=_DeferredThread,
+        )
+
+        launched = manager.launch(
+            provider="claude-code",
+            prompt="inspect the failing tests",
+            cwd=str(tmp_path),
+            resume_id="prior-claude-session",
+        )
+        assert launched["id"] == "agent-backend-claude-code-1"
+        assert launched["provider"] == "claude-code"
+
+        _DeferredThread.created[-1].run_now()
+
+        result = manager.get_session(launched["id"])
+        assert calls == [
+            (
+                "claude-code",
+                "inspect the failing tests",
+                str(tmp_path),
+                "prior-claude-session",
+                False,
+            )
+        ]
+        assert result["state"] == "completed"
+        assert result["provider_session_id"] == "claude-thread-123"
+        assert result["thread_card"]["provider"] == "claude-code"
+        assert result["thread_card"]["latest_response"] == "Claude plan complete."
 
     def test_backend_unavailable_is_visible_without_looking_like_terminal_failure(self):
         from spoke.agent_backends import (
