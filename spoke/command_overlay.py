@@ -1259,6 +1259,7 @@ class CommandOverlay(NSObject):
         self._pucker_tail_shell_config: dict | None = None
         self._seam_pucker_tuning_overrides: dict[str, float] = {}
         self._seam_pucker_tuning_preview_active = False
+        self._seam_pucker_tuning_started_overlay = False
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -1296,10 +1297,19 @@ class CommandOverlay(NSObject):
 
     def preview_seam_pucker_tuning(self) -> None:
         self._seam_pucker_tuning_preview_active = True
+        if not self._ensure_seam_pucker_tuning_surface():
+            return
         self._reapply_seam_pucker_tuning()
 
     def release_seam_pucker_tuning_preview(self) -> None:
         self._seam_pucker_tuning_preview_active = False
+        if getattr(self, "_seam_pucker_tuning_started_overlay", False):
+            self._seam_pucker_tuning_started_overlay = False
+            try:
+                self.hide()
+            except Exception:
+                logger.debug("Failed to hide summoned seam pucker preview", exc_info=True)
+            return
         compositor = getattr(self, "_fullscreen_compositor", None)
         final_config = self._display_local_optical_shell_config()
         if compositor is not None and final_config is not None:
@@ -1307,9 +1317,43 @@ class CommandOverlay(NSObject):
                 compositor.update_shell_config(final_config)
             except Exception:
                 logger.debug("Failed to release seam pucker preview", exc_info=True)
+        self._materialization_direction = 1
+        self._materialization_progress = 1.0
+        self._apply_materialization_fill_state(1.0)
+
+    def _ensure_seam_pucker_tuning_surface(self) -> bool:
+        """Create/hold a visible static compositor surface for seam tuning."""
+        if getattr(self, "_window", None) is None:
+            return False
+        if not getattr(self, "_visible", False):
+            self._seam_pucker_tuning_started_overlay = True
+            self.show(
+                start_thinking_timer=False,
+                initial_response="Seam pucker tuning preview",
+            )
+            self._streaming = False
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            self._start_fullscreen_compositor()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return False
+        self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
+        self._cancel_pulse()
+        self._cancel_linger()
+        self._cancel_visual_start()
+        self._cancel_visual_ready_start()
+        try:
+            self._window.setAlphaValue_(1.0)
+            self._window.orderFrontRegardless()
+        except Exception:
+            logger.debug("Failed to front seam pucker tuning surface", exc_info=True)
+        return True
 
     def _reapply_seam_pucker_tuning(self) -> None:
         if not getattr(self, "_seam_pucker_tuning_preview_active", False):
+            return
+        if not self._ensure_seam_pucker_tuning_surface():
             return
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None or not getattr(self, "_visible", False):
@@ -1319,6 +1363,9 @@ class CommandOverlay(NSObject):
             return
         tuning = self.seam_pucker_tuning_snapshot()
         progress = _clamp01(tuning.get("preview_progress", 0.2))
+        self._materialization_direction = 1
+        self._materialization_progress = progress
+        self._apply_materialization_fill_state(progress)
         preview_config = _materialized_optical_shell_config(final_config, progress)
         preview_config = _apply_dismiss_seam_latch_fields(
             preview_config,

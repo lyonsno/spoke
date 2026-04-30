@@ -619,6 +619,77 @@ class TestOpticalShellMaterialization:
             mod._OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP
         )
 
+    def test_seam_pucker_tuner_summons_static_preview_when_overlay_hidden(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        final_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._display_local_optical_shell_config = MagicMock(return_value=final_config)
+        overlay._apply_materialization_fill_state = MagicMock()
+
+        def fake_show(**kwargs):
+            overlay._visible = True
+            overlay._fullscreen_compositor = compositor
+
+        overlay.show = MagicMock(side_effect=fake_show)
+
+        overlay.preview_seam_pucker_tuning()
+
+        overlay.show.assert_called_once()
+        assert overlay.show.call_args.kwargs["start_thinking_timer"] is False
+        assert overlay._seam_pucker_tuning_started_overlay is True
+        overlay._apply_materialization_fill_state.assert_called()
+        config = compositor.update_shell_config.call_args.args[0]
+        assert config["warp_mode"] == pytest.approx(1.0)
+        assert config["mip_blur_strength"] == pytest.approx(0.0)
+        assert config["content_width_points"] < final_config["content_width_points"]
+        assert config["content_height_points"] < final_config["content_height_points"]
+
+    def test_seam_pucker_tuner_reapplies_static_preview_on_slider_update(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value={
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+        overlay._apply_materialization_fill_state = MagicMock()
+
+        overlay.preview_seam_pucker_tuning()
+        first_count = overlay._fullscreen_compositor.update_shell_config.call_count
+        overlay.set_seam_pucker_tuning_value("scar_vertical_grip", 0.88)
+
+        assert overlay._fullscreen_compositor.update_shell_config.call_count == first_count + 1
+        config = overlay._fullscreen_compositor.update_shell_config.call_args.args[0]
+        assert config["scar_vertical_grip"] == pytest.approx(0.88)
+        overlay._apply_materialization_fill_state.assert_called()
+
+    def test_seam_pucker_tuner_release_hides_overlay_it_summoned(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._seam_pucker_tuning_preview_active = True
+        overlay._seam_pucker_tuning_started_overlay = True
+        overlay.hide = MagicMock()
+
+        overlay.release_seam_pucker_tuning_preview()
+
+        overlay.hide.assert_called_once()
+
     def test_dismiss_radial_tail_uses_underdamped_oscillator(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
 
