@@ -97,17 +97,18 @@ _OPTICAL_MATERIALIZATION_S = (
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
 _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.50
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
-_OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.36
-_OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 0.44
-_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 0.70
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.0
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 2.0
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 1.0
 _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = 0.15
-_OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 0.34
-_OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 0.20
-_OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = 0.07
-_OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION = 1.0
-_OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP = 1.0
+_OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 1.0
+_OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 1.0
+_OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = 0.60
+_OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION = 0.0
+_OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP = 0.0
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = 0.72
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = 96.0
+_DISMISS_SEAM_CLIENT_ID = "assistant.command.dismiss_seam"
 _SEAM_PUCKER_TUNING_CLIENT_ID = "assistant.seam_pucker_tuner"
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
@@ -807,6 +808,20 @@ def _apply_dismiss_seam_latch_fields(
     return updated
 
 
+def _dismiss_seam_latch_shell_config(
+    final_shell_config: dict,
+    progress: float,
+    tuning: dict[str, float] | None = None,
+) -> dict:
+    """Return the full-width seam field layered over the close animation."""
+    config = dict(final_shell_config)
+    config["client_id"] = _DISMISS_SEAM_CLIENT_ID
+    config["role"] = "assistant"
+    config["visible"] = True
+    config["z_index"] = 10
+    return _apply_dismiss_seam_latch_fields(config, progress, tuning)
+
+
 def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
     """Apply the post-close radial underdamped pucker without blur."""
     updated = dict(config)
@@ -1298,6 +1313,7 @@ class CommandOverlay(NSObject):
         self._seam_pucker_tuning_preview_active = False
         self._seam_pucker_tuning_started_preview = False
         self._seam_pucker_tuning_compositor = None
+        self._dismiss_seam_compositor = None
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -1466,6 +1482,62 @@ class CommandOverlay(NSObject):
                 compositor.stop()
             except Exception:
                 logger.debug("Failed to stop seam pucker tuning compositor", exc_info=True)
+
+    def _ensure_dismiss_seam_compositor(self):
+        """Register the transient seam layer without disturbing the main shell."""
+        compositor = getattr(self, "_dismiss_seam_compositor", None)
+        if compositor is not None:
+            return compositor
+        final_config = getattr(self, "_materialization_final_shell_config", None)
+        if final_config is None:
+            return None
+        progress = getattr(self, "_materialization_progress", 0.0)
+        config = _dismiss_seam_latch_shell_config(
+            final_config,
+            progress,
+            self.seam_pucker_tuning_snapshot(),
+        )
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=_DISMISS_SEAM_CLIENT_ID,
+                role="assistant",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start command dismiss seam compositor", exc_info=True)
+            return None
+        self._dismiss_seam_compositor = compositor
+        return compositor
+
+    def _update_dismiss_seam_compositor(self, final_config: dict, progress: float) -> None:
+        compositor = self._ensure_dismiss_seam_compositor()
+        if compositor is None:
+            return
+        try:
+            compositor.update_shell_config(
+                _dismiss_seam_latch_shell_config(
+                    final_config,
+                    progress,
+                    self.seam_pucker_tuning_snapshot(),
+                )
+            )
+        except Exception:
+            logger.debug("Failed to update command dismiss seam compositor", exc_info=True)
+
+    def _stop_dismiss_seam_compositor(self) -> None:
+        compositor = getattr(self, "_dismiss_seam_compositor", None)
+        self._dismiss_seam_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop command dismiss seam compositor", exc_info=True)
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -3116,6 +3188,7 @@ class CommandOverlay(NSObject):
         if timer is not None:
             timer.invalidate()
             self._materialization_timer = None
+        self._stop_dismiss_seam_compositor()
 
     def _cancel_dismiss_pucker_tail_animation(self) -> None:
         timer = getattr(self, "_pucker_tail_timer", None)
@@ -3144,6 +3217,7 @@ class CommandOverlay(NSObject):
         self._cancel_visual_start()
         self._cancel_visual_ready_start()
         self._cancel_materialization_animation()
+        self._stop_dismiss_seam_compositor()
         self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
 
@@ -3228,11 +3302,9 @@ class CommandOverlay(NSObject):
             shell_config = _materialized_optical_shell_config(final_config, progress)
             if getattr(self, "_materialization_direction", 1) < 0:
                 if progress <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
-                    shell_config = _apply_dismiss_seam_latch_fields(
-                        shell_config,
-                        progress,
-                        self.seam_pucker_tuning_snapshot(),
-                    )
+                    self._update_dismiss_seam_compositor(final_config, progress)
+                else:
+                    self._stop_dismiss_seam_compositor()
             compositor.update_shell_config(
                 shell_config
             )
@@ -3261,6 +3333,7 @@ class CommandOverlay(NSObject):
     ) -> None:
         """Run the post-close inverse pucker after the dismiss slit shuts."""
         self._cancel_dismiss_pucker_tail_animation()
+        self._stop_dismiss_seam_compositor()
         self._hide_local_shell_layers_for_pucker_tail()
         self._pucker_tail_shell_config = dict(final_shell_config)
         self._pucker_tail_started_at = time.perf_counter()

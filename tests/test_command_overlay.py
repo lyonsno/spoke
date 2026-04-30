@@ -616,7 +616,7 @@ class TestOpticalShellMaterialization:
         assert gathering["height_frac"] < 0.25
         assert snap["height_frac"] - gathering["height_frac"] > 0.55
 
-    def test_dismiss_seam_latch_is_already_puckered_and_deepens_to_closure(
+    def test_dismiss_seam_latch_grows_from_neutral_to_closure_pucker(
         self, mock_pyobjc
     ):
         mod = importlib.import_module("spoke.command_overlay")
@@ -629,7 +629,7 @@ class TestOpticalShellMaterialization:
         )
         closed = mod._dismiss_seam_latch_amount(0.0)
 
-        assert start > 0.30
+        assert start == pytest.approx(0.0)
         assert midway > start
         assert closed == pytest.approx(1.0)
 
@@ -651,7 +651,7 @@ class TestOpticalShellMaterialization:
             mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.5,
         )
 
-        assert tuned["warp_mode"] == pytest.approx(3.0)
+        assert tuned["warp_mode"] == pytest.approx(1.0)
         assert tuned["mip_blur_strength"] == pytest.approx(0.0)
         assert tuned["scar_amount"] > 0.0
         assert tuned["scar_seam_length_frac"] == pytest.approx(
@@ -669,8 +669,25 @@ class TestOpticalShellMaterialization:
         assert tuned["scar_horizontal_grip"] == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP
         )
-        assert tuned["scar_axis_rotation"] == pytest.approx(1.0)
-        assert tuned["scar_mirrored_lip"] == pytest.approx(1.0)
+        assert tuned["scar_axis_rotation"] == pytest.approx(0.0)
+        assert tuned["scar_mirrored_lip"] == pytest.approx(0.0)
+
+    def test_dismiss_seam_defaults_match_smoked_unrotated_static_field(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        tuning = mod._seam_pucker_tuning_defaults()
+
+        assert tuning["seam_latch_start"] == pytest.approx(0.0)
+        assert tuning["seam_latch_intensity"] == pytest.approx(2.0)
+        assert tuning["scar_seam_length_frac"] == pytest.approx(1.0)
+        assert tuning["scar_seam_thickness_frac"] == pytest.approx(0.15)
+        assert tuning["scar_seam_focus_frac"] == pytest.approx(1.0)
+        assert tuning["scar_vertical_grip"] == pytest.approx(1.0)
+        assert tuning["scar_horizontal_grip"] == pytest.approx(0.6)
+        assert tuning["scar_axis_rotation"] == pytest.approx(0.0)
+        assert tuning["scar_mirrored_lip"] == pytest.approx(0.0)
 
     def test_seam_pucker_tuner_uses_dedicated_static_preview_when_overlay_hidden(
         self, mock_pyobjc, monkeypatch
@@ -689,7 +706,7 @@ class TestOpticalShellMaterialization:
         assert overlay._seam_pucker_tuning_started_preview is True
         overlay._apply_materialization_fill_state.assert_not_called()
         config = preview.update_shell_config.call_args.args[0]
-        assert config["warp_mode"] == pytest.approx(3.0)
+        assert config["warp_mode"] == pytest.approx(1.0)
         assert config["mip_blur_strength"] == pytest.approx(0.0)
         assert config["client_id"] == "assistant.seam_pucker_tuner"
         assert config["content_width_points"] > config["content_height_points"]
@@ -1173,7 +1190,12 @@ class TestOpticalShellMaterialization:
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         compositor = MagicMock()
+        seam_compositor = MagicMock()
         overlay._fullscreen_compositor = compositor
+        overlay._dismiss_seam_compositor = seam_compositor
+        overlay._ensure_dismiss_seam_compositor = MagicMock(
+            return_value=seam_compositor
+        )
         overlay._materialization_timer = MagicMock()
         shell_config = {
             "center_x": 640.0,
@@ -1195,10 +1217,17 @@ class TestOpticalShellMaterialization:
         overlay.materializationStep_(overlay._materialization_timer)
 
         config = compositor.update_shell_config.call_args.args[0]
-        assert config["warp_mode"] == pytest.approx(3.0)
-        assert config["mip_blur_strength"] == pytest.approx(0.0)
-        assert config["scar_amount"] > 0.0
         assert config["content_width_points"] < shell_config["content_width_points"]
+        assert "scar_amount" not in config
+        overlay._ensure_dismiss_seam_compositor.assert_called_once()
+        seam_config = seam_compositor.update_shell_config.call_args.args[0]
+        assert seam_config["content_width_points"] == pytest.approx(
+            shell_config["content_width_points"]
+        )
+        assert seam_config["content_height_points"] >= 96.0
+        assert seam_config["warp_mode"] == pytest.approx(1.0)
+        assert seam_config["mip_blur_strength"] == pytest.approx(0.0)
+        assert seam_config["scar_amount"] > 0.0
         overlay._start_dismiss_pucker_tail_animation.assert_not_called()
 
     def test_reverse_materialization_completion_starts_radial_pucker_tail(
