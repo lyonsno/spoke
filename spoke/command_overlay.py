@@ -104,6 +104,8 @@ _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = 0.15
 _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 0.34
 _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 0.20
 _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = 0.07
+_OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = 0.72
+_OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = 96.0
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
 _OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
@@ -608,6 +610,9 @@ def _materialized_optical_shell_config(
     base_w = max(float(config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
     base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
+    config["_materialization_base_width_points"] = base_w
+    config["_materialization_base_height_points"] = base_h
+    config["_materialization_base_corner_radius_points"] = base_radius
 
     spread_t = _clamp01(p / _OPTICAL_MATERIALIZATION_SPREAD_END) ** 3.0
     bloom_t = _smoothstep(
@@ -748,11 +753,36 @@ def _apply_dismiss_seam_latch_fields(
     p = _clamp01(progress)
     overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
     t = _clamp01((overlap_start - p) / overlap_start)
+    base_h = max(
+        float(
+            updated.get(
+                "_materialization_base_height_points",
+                updated.get("content_height_points", 1.0),
+            )
+        ),
+        1.0,
+    )
+    current_h = max(float(updated.get("content_height_points", 1.0)), 1.0)
+    seam_field_h = max(
+        current_h,
+        min(
+            base_h,
+            max(
+                _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS,
+                base_h * _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC,
+            ),
+        ),
+    )
     amount = _lerp(
         settings["seam_latch_start"],
         1.0,
         1.0 - (1.0 - t) ** 3.0,
     ) * settings["seam_latch_intensity"]
+    updated["content_height_points"] = seam_field_h
+    updated["corner_radius_points"] = min(
+        max(float(updated.get("corner_radius_points", 1.0)), 1.0),
+        seam_field_h * 0.5,
+    )
     updated["cleanup_blur_radius_points"] = 0.0
     updated["mip_blur_strength"] = 0.0
     updated["warp_mode"] = 1.0

@@ -7,6 +7,7 @@ All tests use mocked PyObjC — no GUI runtime required.
 
 import importlib
 import inspect
+import math
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -14,6 +15,30 @@ from unittest.mock import MagicMock
 import pytest
 
 from spoke.optical_shell_metrics import OpticalShellMetrics
+
+
+def _smoothstep(edge0, edge1, x):
+    t = max(min((x - edge0) / max(edge1 - edge0, 1e-6), 1.0), 0.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _seam_scar_vertical_displacement(config, y_offset):
+    extent_x = max(float(config["content_width_points"]) * 0.5, 1.0)
+    extent_y = max(float(config["content_height_points"]) * 0.5, 1.0)
+    x01 = 0.0
+    y01 = min(max(abs(float(y_offset)) / extent_y, 0.0), 1.0)
+    length_frac = min(max(float(config["scar_seam_length_frac"]), 0.05), 1.0)
+    thickness_frac = min(max(float(config["scar_seam_thickness_frac"]), 0.01), 1.5)
+    focus_frac = min(max(float(config["scar_seam_focus_frac"]), 0.01), 1.0)
+    x_falloff = 1.0 - _smoothstep(length_frac, 1.0, x01)
+    y_falloff = math.exp(-y01 / thickness_frac)
+    field = x_falloff * y_falloff
+    seam_focus = math.exp(-y01 / focus_frac)
+    vertical_grip = max(float(config["scar_vertical_grip"]), 0.0) * (
+        0.25 + 0.75 * seam_focus
+    )
+    amount = min(max(float(config["scar_amount"]), -2.0), 2.0)
+    return abs(-float(y_offset) * vertical_grip * amount * field)
 
 def _make_rect(x, y, width, height):
     return SimpleNamespace(
@@ -651,6 +676,19 @@ class TestOpticalShellMaterialization:
         assert config["mip_blur_strength"] == pytest.approx(0.0)
         assert config["content_width_points"] < final_config["content_width_points"]
         assert config["content_height_points"] < final_config["content_height_points"]
+        overlay.update_seam_pucker_tuning(
+            seam_latch_intensity=2.0,
+            scar_seam_thickness_frac=1.5,
+            scar_seam_focus_frac=1.0,
+            scar_vertical_grip=1.0,
+            scar_horizontal_grip=0.6,
+        )
+        config = compositor.update_shell_config.call_args.args[0]
+        assert config["content_height_points"] >= 96.0
+        assert max(
+            _seam_scar_vertical_displacement(config, offset)
+            for offset in (8.0, 16.0, 32.0, 48.0)
+        ) > 3.0
 
     def test_seam_pucker_tuner_reapplies_static_preview_on_slider_update(
         self, mock_pyobjc
