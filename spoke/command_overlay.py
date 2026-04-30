@@ -108,6 +108,7 @@ _OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION = 1.0
 _OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP = 1.0
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = 0.72
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = 96.0
+_SEAM_PUCKER_TUNING_CLIENT_ID = "assistant.seam_pucker_tuner"
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
 _OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
@@ -1295,7 +1296,8 @@ class CommandOverlay(NSObject):
         self._pucker_tail_shell_config: dict | None = None
         self._seam_pucker_tuning_overrides: dict[str, float] = {}
         self._seam_pucker_tuning_preview_active = False
-        self._seam_pucker_tuning_started_overlay = False
+        self._seam_pucker_tuning_started_preview = False
+        self._seam_pucker_tuning_compositor = None
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -1339,51 +1341,27 @@ class CommandOverlay(NSObject):
 
     def release_seam_pucker_tuning_preview(self) -> None:
         self._seam_pucker_tuning_preview_active = False
-        if getattr(self, "_seam_pucker_tuning_started_overlay", False):
-            self._seam_pucker_tuning_started_overlay = False
-            try:
-                self.hide()
-            except Exception:
-                logger.debug("Failed to hide summoned seam pucker preview", exc_info=True)
-            return
-        compositor = getattr(self, "_fullscreen_compositor", None)
-        final_config = self._display_local_optical_shell_config()
-        if compositor is not None and final_config is not None:
-            try:
-                compositor.update_shell_config(final_config)
-            except Exception:
-                logger.debug("Failed to release seam pucker preview", exc_info=True)
-        self._materialization_direction = 1
-        self._materialization_progress = 1.0
-        self._apply_materialization_fill_state(1.0)
+        self._stop_seam_pucker_tuning_compositor()
+        self._seam_pucker_tuning_started_preview = False
 
     def _ensure_seam_pucker_tuning_surface(self) -> bool:
         """Create/hold a visible static compositor surface for seam tuning."""
         if getattr(self, "_window", None) is None:
             return False
-        if not getattr(self, "_visible", False):
-            self._seam_pucker_tuning_started_overlay = True
-            self.show(
-                start_thinking_timer=False,
-                initial_response="Seam pucker tuning preview",
-            )
-            self._streaming = False
-        if getattr(self, "_fullscreen_compositor", None) is None:
-            self._start_fullscreen_compositor()
-        compositor = getattr(self, "_fullscreen_compositor", None)
+        compositor = getattr(self, "_seam_pucker_tuning_compositor", None)
         if compositor is None:
-            return False
+            compositor = self._start_seam_pucker_tuning_compositor()
+            if compositor is None:
+                return False
+            if getattr(self, "_seam_pucker_tuning_compositor", None) is None:
+                self._seam_pucker_tuning_compositor = compositor
+            self._seam_pucker_tuning_started_preview = True
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
         self._cancel_pulse()
         self._cancel_linger()
         self._cancel_visual_start()
         self._cancel_visual_ready_start()
-        try:
-            self._window.setAlphaValue_(1.0)
-            self._window.orderFrontRegardless()
-        except Exception:
-            logger.debug("Failed to front seam pucker tuning surface", exc_info=True)
         return True
 
     def _reapply_seam_pucker_tuning(self) -> None:
@@ -1391,27 +1369,103 @@ class CommandOverlay(NSObject):
             return
         if not self._ensure_seam_pucker_tuning_surface():
             return
-        compositor = getattr(self, "_fullscreen_compositor", None)
-        if compositor is None or not getattr(self, "_visible", False):
+        compositor = getattr(self, "_seam_pucker_tuning_compositor", None)
+        if compositor is None:
             return
-        final_config = self._display_local_optical_shell_config()
-        if final_config is None:
+        preview_config = self._seam_pucker_tuning_preview_config()
+        if preview_config is None:
             return
-        tuning = self.seam_pucker_tuning_snapshot()
-        progress = _clamp01(tuning.get("preview_progress", 0.2))
-        self._materialization_direction = 1
-        self._materialization_progress = progress
-        self._apply_materialization_fill_state(progress)
-        preview_config = _materialized_optical_shell_config(final_config, progress)
-        preview_config = _apply_dismiss_seam_latch_fields(
-            preview_config,
-            progress,
-            tuning,
-        )
         try:
             compositor.update_shell_config(preview_config)
         except Exception:
             logger.debug("Failed to apply seam pucker tuning preview", exc_info=True)
+
+    def _seam_pucker_tuning_base_shell_config(self) -> dict | None:
+        """Build a stable diagnostic shell centered on the display.
+
+        The tuner must not borrow the live assistant overlay body: doing so
+        makes slider motion and summon/dismiss keys race the conversation UI.
+        """
+        shell_config = _command_optical_shell_config()
+        if shell_config is None:
+            return None
+        screen_frame = self._screen.frame()
+        scale = (
+            self._screen.backingScaleFactor()
+            if hasattr(self._screen, "backingScaleFactor")
+            else 2.0
+        )
+        screen_width = getattr(getattr(screen_frame, "size", None), "width", 0.0)
+        screen_height = getattr(getattr(screen_frame, "size", None), "height", 0.0)
+        if not isinstance(screen_width, numbers.Real):
+            screen_width = 0.0
+        if not isinstance(screen_height, numbers.Real):
+            screen_height = 0.0
+        shell_config["client_id"] = _SEAM_PUCKER_TUNING_CLIENT_ID
+        shell_config["role"] = "diagnostic"
+        shell_config["center_x"] = screen_width * scale * 0.5
+        shell_config["center_y"] = screen_height * scale * 0.5
+        shell_config["initial_brightness"] = _clamp01(float(getattr(self, "_brightness", 0.0)))
+        shell_config["visible"] = True
+        for key in (
+            "content_width_points",
+            "content_height_points",
+            "corner_radius_points",
+            "band_width_points",
+            "tail_width_points",
+        ):
+            if key in shell_config:
+                shell_config[key] = float(shell_config[key]) * scale
+        return shell_config
+
+    def _seam_pucker_tuning_preview_config(self) -> dict | None:
+        base_config = self._seam_pucker_tuning_base_shell_config()
+        if base_config is None:
+            return None
+        tuning = self.seam_pucker_tuning_snapshot()
+        progress = _clamp01(tuning.get("preview_progress", 0.2))
+        preview_config = _apply_dismiss_seam_latch_fields(
+            base_config,
+            progress,
+            tuning,
+        )
+        preview_config["client_id"] = _SEAM_PUCKER_TUNING_CLIENT_ID
+        preview_config["role"] = "diagnostic"
+        preview_config["visible"] = True
+        return preview_config
+
+    def _start_seam_pucker_tuning_compositor(self):
+        config = self._seam_pucker_tuning_preview_config()
+        if config is None:
+            return None
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=_SEAM_PUCKER_TUNING_CLIENT_ID,
+                role="diagnostic",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start seam pucker tuning compositor", exc_info=True)
+            return None
+        if compositor is not None:
+            self._seam_pucker_tuning_compositor = compositor
+            self._seam_pucker_tuning_started_preview = True
+        return compositor
+
+    def _stop_seam_pucker_tuning_compositor(self) -> None:
+        compositor = getattr(self, "_seam_pucker_tuning_compositor", None)
+        self._seam_pucker_tuning_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop seam pucker tuning compositor", exc_info=True)
 
     def setup(self) -> None:
         """Create the command overlay window."""
