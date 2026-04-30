@@ -102,6 +102,8 @@ _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S = (
     * _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
 )
 _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY = 0.25
+_OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
+_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
 _OPTICAL_MATERIALIZATION_PUCKER_REBOUND = 0.55
 _OPTICAL_MATERIALIZATION_PUCKER_SECOND = 0.62
 _OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND = 0.34
@@ -732,12 +734,28 @@ def _dismiss_pucker_progress_for_reverse_progress(progress: float) -> float:
     return _clamp01(elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6))
 
 
+def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
+    """Diagnostic gain envelope: quick visibility peak, long elastic decay."""
+    p = _clamp01(progress)
+    peak_at = max(_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT, 1e-6)
+    if p <= peak_at:
+        t = p / peak_at
+        return _lerp(
+            1.0,
+            _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN,
+            1.0 - (1.0 - t) ** 3.0,
+        )
+    t = (p - peak_at) / max(1.0 - peak_at, 1e-6)
+    return _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN * math.exp(-5.0 * t)
+
+
 def _apply_dismiss_pucker_fields(config: dict, progress: float) -> dict:
     """Apply the crisp seam-tension scar without changing shell geometry."""
     updated = dict(config)
     amount = (
         _dismiss_pucker_amount(progress)
         * _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY
+        * _dismiss_pucker_amplitude_multiplier(progress)
     )
     updated["cleanup_blur_radius_points"] = 0.0
     updated["mip_blur_strength"] = 0.0
@@ -1610,6 +1628,8 @@ class CommandOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_all_timers()
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            self._stop_fullscreen_compositor()
         self._visible = True
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)

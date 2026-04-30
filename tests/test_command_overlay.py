@@ -593,7 +593,7 @@ class TestOpticalShellMaterialization:
         assert pinch["content_height_points"] > base["content_height_points"] * 0.50
         assert pinch["warp_mode"] == pytest.approx(1.0)
         assert pinch["scar_amount"] > 0.0
-        assert pinch["scar_amount"] == pytest.approx(0.25, rel=0.20)
+        assert pinch["scar_amount"] > 0.25 * 2.0
         assert rebound["scar_amount"] < 0.0
         assert abs(rebound["scar_amount"]) < abs(pinch["scar_amount"])
         assert rest["scar_amount"] == pytest.approx(0.0)
@@ -625,6 +625,21 @@ class TestOpticalShellMaterialization:
         assert long_tail < 0.0
         assert abs(long_tail) < abs(second_expand)
         assert rest == pytest.approx(0.0)
+
+    def test_dismiss_pucker_tail_amplitude_peaks_early_then_tapers(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        first = mod._dismiss_pucker_amplitude_multiplier(0.08 / 1.5)
+        peak = mod._dismiss_pucker_amplitude_multiplier(0.30)
+        taper = mod._dismiss_pucker_amplitude_multiplier(0.75)
+        rest = mod._dismiss_pucker_amplitude_multiplier(1.0)
+
+        assert first > 2.0
+        assert peak == pytest.approx(5.0)
+        assert taper < peak * 0.25
+        assert rest < taper
 
     def test_reverse_materialization_hides_local_layers_before_compositor_seed(
         self, mock_pyobjc
@@ -1299,6 +1314,19 @@ class TestWindowLayering:
         assert overlay._response_text == ""
         assert overlay._utterance_text == ""
         assert overlay._collapsed_text == ""
+
+    def test_show_stops_stale_compositor_before_ordering_front(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._stop_fullscreen_compositor = MagicMock(
+            side_effect=lambda: events.append("stop")
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append("front")
+
+        overlay.show()
+
+        assert events[:2] == ["stop", "front"]
 
     def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

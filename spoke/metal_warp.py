@@ -238,7 +238,7 @@ kernel void opticalShellWarp(
         float field = xFalloff * yFalloff;
         float seamFocus = 1.0f - smoothstep(0.0f, 0.34f, y01);
         float sideFocus = 1.0f - smoothstep(0.0f, 0.82f, x01);
-        float amount = clamp(params.scarAmount, -1.0f, 1.0f);
+        float amount = clamp(params.scarAmount, -2.0f, 2.0f);
         float verticalGrip = mix(0.055f, 0.20f, seamFocus);
         float horizontalGrip = mix(0.020f, 0.070f, sideFocus) * (0.35f + 0.65f * seamFocus);
         float2 displacement = p * float2(horizontalGrip, verticalGrip) * amount * field;
