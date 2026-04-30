@@ -99,7 +99,8 @@ _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.50
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.0
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 2.0
-_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 1.0
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 0.8
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC = 0.0
 _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = 0.15
 _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 1.0
 _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 1.0
@@ -808,6 +809,31 @@ def _apply_dismiss_seam_latch_fields(
     return updated
 
 
+def _dismiss_seam_tuning_for_close_progress(
+    close_progress: float,
+    tuning: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Map close progress onto the exact seam tuner coordinate path."""
+    settings = _seam_pucker_tuning_defaults()
+    if tuning:
+        for key, value in tuning.items():
+            if key in settings:
+                settings[key] = float(value)
+    overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    phase = _clamp01((overlap_start - _clamp01(close_progress)) / overlap_start)
+    settings["preview_progress"] = _lerp(
+        0.0,
+        _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS,
+        phase,
+    )
+    settings["scar_seam_length_frac"] = _lerp(
+        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
+        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC,
+        phase,
+    )
+    return settings
+
+
 def _dismiss_seam_latch_shell_config(
     final_shell_config: dict,
     progress: float,
@@ -819,7 +845,12 @@ def _dismiss_seam_latch_shell_config(
     config["role"] = "assistant"
     config["visible"] = True
     config["z_index"] = 10
-    return _apply_dismiss_seam_latch_fields(config, progress, tuning)
+    seam_tuning = _dismiss_seam_tuning_for_close_progress(progress, tuning)
+    return _apply_dismiss_seam_latch_fields(
+        config,
+        seam_tuning["preview_progress"],
+        seam_tuning,
+    )
 
 
 def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
@@ -1495,7 +1526,6 @@ class CommandOverlay(NSObject):
         config = _dismiss_seam_latch_shell_config(
             final_config,
             progress,
-            self.seam_pucker_tuning_snapshot(),
         )
         try:
             from spoke.fullscreen_compositor import start_overlay_compositor
@@ -1524,7 +1554,6 @@ class CommandOverlay(NSObject):
                 _dismiss_seam_latch_shell_config(
                     final_config,
                     progress,
-                    self.seam_pucker_tuning_snapshot(),
                 )
             )
         except Exception:

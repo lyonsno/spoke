@@ -616,22 +616,24 @@ class TestOpticalShellMaterialization:
         assert gathering["height_frac"] < 0.25
         assert snap["height_frac"] - gathering["height_frac"] > 0.55
 
-    def test_dismiss_seam_latch_grows_from_neutral_to_closure_pucker(
+    def test_dismiss_seam_latch_resolves_from_peak_to_closed_rest(
         self, mock_pyobjc
     ):
         mod = importlib.import_module("spoke.command_overlay")
 
         start = mod._dismiss_seam_latch_amount(
-            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+            0.0
         )
         midway = mod._dismiss_seam_latch_amount(
             mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45
         )
-        closed = mod._dismiss_seam_latch_amount(0.0)
+        closed = mod._dismiss_seam_latch_amount(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
 
-        assert start == pytest.approx(0.0)
-        assert midway > start
-        assert closed == pytest.approx(1.0)
+        assert start == pytest.approx(1.0)
+        assert midway < start
+        assert closed == pytest.approx(0.0)
 
     def test_dismiss_seam_latch_applies_tunable_horizontal_pucker_fields(
         self, mock_pyobjc
@@ -654,9 +656,7 @@ class TestOpticalShellMaterialization:
         assert tuned["warp_mode"] == pytest.approx(1.0)
         assert tuned["mip_blur_strength"] == pytest.approx(0.0)
         assert tuned["scar_amount"] > 0.0
-        assert tuned["scar_seam_length_frac"] == pytest.approx(
-            mod._OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
-        )
+        assert tuned["scar_seam_length_frac"] == pytest.approx(0.8)
         assert tuned["scar_seam_thickness_frac"] == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC
         )
@@ -681,7 +681,7 @@ class TestOpticalShellMaterialization:
 
         assert tuning["seam_latch_start"] == pytest.approx(0.0)
         assert tuning["seam_latch_intensity"] == pytest.approx(2.0)
-        assert tuning["scar_seam_length_frac"] == pytest.approx(1.0)
+        assert tuning["scar_seam_length_frac"] == pytest.approx(0.8)
         assert tuning["scar_seam_thickness_frac"] == pytest.approx(0.15)
         assert tuning["scar_seam_focus_frac"] == pytest.approx(1.0)
         assert tuning["scar_vertical_grip"] == pytest.approx(1.0)
@@ -1227,8 +1227,60 @@ class TestOpticalShellMaterialization:
         assert seam_config["content_height_points"] >= 96.0
         assert seam_config["warp_mode"] == pytest.approx(1.0)
         assert seam_config["mip_blur_strength"] == pytest.approx(0.0)
-        assert seam_config["scar_amount"] > 0.0
+        assert seam_config["scar_amount"] > 1.0
+        assert seam_config["scar_seam_length_frac"] < 0.8
         overlay._start_dismiss_pucker_tail_animation.assert_not_called()
+
+    def test_live_dismiss_seam_matches_tuner_coordinate_path(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        final_shell = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+
+        live_start = mod._dismiss_seam_latch_shell_config(
+            final_shell,
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS,
+        )
+        tuner_start = mod._apply_dismiss_seam_latch_fields(
+            {
+                **final_shell,
+                "client_id": "assistant.command.dismiss_seam",
+                "role": "assistant",
+                "visible": True,
+                "z_index": 10,
+            },
+            0.0,
+            {
+                **mod._seam_pucker_tuning_defaults(),
+                "preview_progress": 0.0,
+                "scar_seam_length_frac": 0.8,
+            },
+        )
+        live_closed = mod._dismiss_seam_latch_shell_config(final_shell, 0.0)
+
+        for key in (
+            "scar_amount",
+            "scar_seam_length_frac",
+            "scar_seam_thickness_frac",
+            "scar_seam_focus_frac",
+            "scar_vertical_grip",
+            "scar_horizontal_grip",
+            "scar_axis_rotation",
+            "scar_mirrored_lip",
+            "warp_mode",
+            "mip_blur_strength",
+        ):
+            assert live_start[key] == pytest.approx(tuner_start[key])
+
+        assert live_closed["scar_amount"] == pytest.approx(0.0)
+        assert live_closed["scar_seam_length_frac"] == pytest.approx(0.0)
 
     def test_reverse_materialization_completion_starts_radial_pucker_tail(
         self, mock_pyobjc, monkeypatch
