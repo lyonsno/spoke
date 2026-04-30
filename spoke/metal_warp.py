@@ -225,7 +225,21 @@ kernel void opticalShellWarp(
     float scaleX = 1.0f;
     float scaleY = 1.0f;
     float2 result = d;
-    if (params.warpMode > 0.5f) {{
+    if (params.warpMode > 1.5f) {{
+        // Radial scar: the post-close underdamped ringdown after the seam has
+        // vanished. This deliberately avoids the material-shell fisheye and
+        // mip blur path so the screen stays readable while the surface relaxes.
+        float radius = max(min(halfRect.x, halfRect.y), 1.0f);
+        float r01 = clamp(length(p) / radius, 0.0f, 1.0f);
+        float field = 1.0f - smoothstep(0.05f, 1.0f, r01);
+        float centerFocus = 1.0f - smoothstep(0.0f, 0.36f, r01);
+        float amount = clamp(params.scarAmount, -2.0f, 2.0f);
+        float grip = mix(0.050f, 0.18f, centerFocus);
+        float2 displacement = p * grip * amount * field;
+        result = d + displacement;
+        scaleX = 1.0f + grip * amount * field;
+        scaleY = scaleX;
+    }} else if (params.warpMode > 0.5f) {{
         // Seam-tension scar: a dismiss-only displacement field, not the
         // material-shell fisheye. Positive scarAmount makes content appear to
         // pinch toward the sealed horizontal seam; negative amount rebounds it

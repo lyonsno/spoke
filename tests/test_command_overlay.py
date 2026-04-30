@@ -454,14 +454,9 @@ class TestOpticalShellMaterialization:
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
         )
         assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(1.5)
-        overlap_s = (
-            mod._OPTICAL_MATERIALIZATION_DISMISS_S
-            * mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
-        )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
             + mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-            - overlap_s
         )
         assert scheduled[-1] == (
             pytest.approx(
@@ -570,61 +565,38 @@ class TestOpticalShellMaterialization:
         assert gathering["height_frac"] < 0.25
         assert snap["height_frac"] - gathering["height_frac"] > 0.55
 
-    def test_dismiss_pucker_tail_pinches_rebounds_then_releases_without_blur(
+    def test_dismiss_seam_latch_is_already_puckered_and_deepens_to_closure(
         self, mock_pyobjc
     ):
         mod = importlib.import_module("spoke.command_overlay")
-        base = {
-            "center_x": 640.0,
-            "center_y": 1160.0,
-            "content_width_points": 1200.0,
-            "content_height_points": 208.0,
-            "corner_radius_points": 32.0,
-            "ring_amplitude_points": 30.0,
-            "tail_amplitude_points": 8.0,
-            "cleanup_blur_radius_points": 0.75,
-        }
 
-        pinch = mod._dismiss_pucker_shell_config(base, 0.08 / 1.5)
-        rebound = mod._dismiss_pucker_shell_config(base, 0.17 / 1.5)
-        rest = mod._dismiss_pucker_shell_config(base, 1.0)
+        start = mod._dismiss_seam_latch_amount(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
+        midway = mod._dismiss_seam_latch_amount(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45
+        )
+        closed = mod._dismiss_seam_latch_amount(0.0)
 
-        assert pinch["content_width_points"] > base["content_width_points"]
-        assert pinch["content_height_points"] > base["content_height_points"] * 0.50
-        assert pinch["warp_mode"] == pytest.approx(1.0)
-        assert pinch["scar_amount"] > 0.0
-        assert pinch["scar_amount"] > 0.25 * 2.0
-        assert rebound["scar_amount"] < 0.0
-        assert abs(rebound["scar_amount"]) < abs(pinch["scar_amount"])
-        assert rest["scar_amount"] == pytest.approx(0.0)
-        assert pinch["x_squeeze"] == pytest.approx(1.0)
-        assert pinch["y_squeeze"] == pytest.approx(1.0)
-        assert rest["ring_amplitude_points"] == pytest.approx(0.0)
-        assert rest["tail_amplitude_points"] == pytest.approx(0.0)
-        assert pinch["cleanup_blur_radius_points"] == pytest.approx(0.0)
-        assert pinch["mip_blur_strength"] == pytest.approx(0.0)
+        assert start > 0.30
+        assert midway > start
+        assert closed == pytest.approx(1.0)
 
-    def test_dismiss_pucker_tail_double_tap_waveform(self, mock_pyobjc):
+    def test_dismiss_radial_tail_uses_underdamped_oscillator(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
 
         start = mod._dismiss_pucker_amount(0.0)
-        first_pinch = mod._dismiss_pucker_amount(0.08 / 1.5)
-        first_expand = mod._dismiss_pucker_amount(0.17 / 1.5)
-        second_pinch = mod._dismiss_pucker_amount(0.28 / 1.5)
-        second_expand = mod._dismiss_pucker_amount(0.35 / 1.5)
-        long_tail = mod._dismiss_pucker_amount(1.00 / 1.5)
+        rebound = mod._dismiss_pucker_amount(0.20)
+        aftershock = mod._dismiss_pucker_amount(0.40)
+        tail = mod._dismiss_pucker_amount(0.75)
         rest = mod._dismiss_pucker_amount(1.0)
 
-        assert start == pytest.approx(0.0)
-        assert first_pinch > 0.95
-        assert first_expand < 0.0
-        assert second_pinch > 0.0
-        assert second_pinch < first_pinch
-        assert second_expand < 0.0
-        assert abs(second_expand) < abs(first_expand)
-        assert long_tail < 0.0
-        assert abs(long_tail) < abs(second_expand)
-        assert rest == pytest.approx(0.0)
+        assert start == pytest.approx(1.0)
+        assert rebound < 0.0
+        assert aftershock > 0.0
+        assert abs(aftershock) < abs(rebound)
+        assert abs(tail) < abs(aftershock)
+        assert abs(rest) < 0.02
 
     def test_dismiss_pucker_tail_amplitude_peaks_early_then_tapers(
         self, mock_pyobjc
@@ -640,6 +612,36 @@ class TestOpticalShellMaterialization:
         assert peak == pytest.approx(5.0)
         assert taper < peak * 0.25
         assert rest < taper
+
+    def test_radial_pucker_tail_switches_to_circular_scar_without_blur(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "ring_amplitude_points": 30.0,
+            "tail_amplitude_points": 8.0,
+            "cleanup_blur_radius_points": 0.75,
+        }
+
+        start = mod._dismiss_pucker_shell_config(base, 0.0)
+        rebound = mod._dismiss_pucker_shell_config(base, 0.20)
+        rest = mod._dismiss_pucker_shell_config(base, 1.0)
+
+        assert start["warp_mode"] == pytest.approx(2.0)
+        assert start["content_width_points"] == pytest.approx(
+            start["content_height_points"]
+        )
+        assert start["scar_amount"] > 0.0
+        assert rebound["scar_amount"] < 0.0
+        assert abs(rebound["scar_amount"]) > abs(start["scar_amount"])
+        assert abs(rest["scar_amount"]) < 0.02
+        assert start["cleanup_blur_radius_points"] == pytest.approx(0.0)
+        assert start["mip_blur_strength"] == pytest.approx(0.0)
 
     def test_reverse_materialization_hides_local_layers_before_compositor_seed(
         self, mock_pyobjc
@@ -1007,7 +1009,7 @@ class TestOpticalShellMaterialization:
         assert config["content_width_points"] < shell_config["content_width_points"]
         overlay._start_dismiss_pucker_tail_animation.assert_not_called()
 
-    def test_reverse_materialization_completion_continues_overlapped_pucker_tail(
+    def test_reverse_materialization_completion_starts_radial_pucker_tail(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1032,12 +1034,8 @@ class TestOpticalShellMaterialization:
 
         overlay.materializationStep_(overlay._materialization_timer)
 
-        overlap_s = (
-            mod._OPTICAL_MATERIALIZATION_DISMISS_S
-            * mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
-        )
         overlay._start_dismiss_pucker_tail_animation.assert_called_once_with(
-            shell_config, elapsed_offset=pytest.approx(overlap_s)
+            shell_config
         )
 
     def test_dismiss_pucker_tail_hides_local_material_layers(

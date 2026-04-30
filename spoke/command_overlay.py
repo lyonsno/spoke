@@ -97,20 +97,16 @@ _OPTICAL_MATERIALIZATION_S = (
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
 _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.50
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
-_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S = (
-    _OPTICAL_MATERIALIZATION_DISMISS_S
-    * _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
-)
-_OPTICAL_MATERIALIZATION_PUCKER_INTENSITY = 0.25
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.36
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 0.44
+_OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
 _OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
-_OPTICAL_MATERIALIZATION_PUCKER_REBOUND = 0.55
-_OPTICAL_MATERIALIZATION_PUCKER_SECOND = 0.62
-_OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND = 0.34
+_OPTICAL_MATERIALIZATION_RADIAL_CYCLES = 2.35
+_OPTICAL_MATERIALIZATION_RADIAL_DAMPING = 4.4
 _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
     _OPTICAL_MATERIALIZATION_DISMISS_S
     + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-    - _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S
 )
 _OPTICAL_MATERIALIZATION_BODY_READY = 0.55
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
@@ -685,53 +681,23 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
 
 
 def _dismiss_pucker_amount(progress: float) -> float:
-    """Signed dismiss scar amount: pinch, overspread, second pinch, settle."""
+    """Signed radial ringdown: an underdamped pucker after the seam vanishes."""
     p = _clamp01(progress)
-    first_pinch_at = 0.08 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-    first_expand_at = 0.17 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-    second_pinch_at = 0.28 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-    second_expand_at = 0.35 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-    if p <= first_pinch_at:
-        # The first contraction should bite immediately, not luxuriate into it.
-        return p / first_pinch_at
-    if p <= first_expand_at:
-        t = (p - first_pinch_at) / max(first_expand_at - first_pinch_at, 1e-6)
-        return _lerp(
-            1.0,
-            -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND,
-            1.0 - (1.0 - t) ** 3.0,
-        )
-    if p <= second_pinch_at:
-        t = (p - first_expand_at) / max(second_pinch_at - first_expand_at, 1e-6)
-        return _lerp(
-            -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND,
-            _OPTICAL_MATERIALIZATION_PUCKER_SECOND,
-            t * t * t,
-        )
-    if p <= second_expand_at:
-        t = (p - second_pinch_at) / max(second_expand_at - second_pinch_at, 1e-6)
-        return _lerp(
-            _OPTICAL_MATERIALIZATION_PUCKER_SECOND,
-            -_OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND,
-            1.0 - (1.0 - t) ** 3.0,
-        )
-    t = (p - second_expand_at) / max(1.0 - second_expand_at, 1e-6)
-    return _lerp(
-        -_OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND,
-        0.0,
-        1.0 - (1.0 - t) ** 3.0,
+    return math.exp(-_OPTICAL_MATERIALIZATION_RADIAL_DAMPING * p) * math.cos(
+        2.0 * math.pi * _OPTICAL_MATERIALIZATION_RADIAL_CYCLES * p
     )
 
 
-def _dismiss_pucker_progress_for_reverse_progress(progress: float) -> float:
-    """Map closing-slit progress to the overlapping pucker-tail progress."""
+def _dismiss_seam_latch_amount(progress: float) -> float:
+    """Positive seam pucker already present at latch start, deeper at closure."""
     p = _clamp01(progress)
-    if p > _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
-        return 0.0
-    elapsed = (
-        _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS - p
-    ) * _OPTICAL_MATERIALIZATION_DISMISS_S
-    return _clamp01(elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6))
+    start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    t = _clamp01((start - p) / start)
+    return _lerp(
+        _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
+        1.0,
+        1.0 - (1.0 - t) ** 3.0,
+    )
 
 
 def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
@@ -749,13 +715,12 @@ def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
     return _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN * math.exp(-5.0 * t)
 
 
-def _apply_dismiss_pucker_fields(config: dict, progress: float) -> dict:
-    """Apply the crisp seam-tension scar without changing shell geometry."""
+def _apply_dismiss_seam_latch_fields(config: dict, progress: float) -> dict:
+    """Apply the crisp seam latch while the slit is still zipping closed."""
     updated = dict(config)
     amount = (
-        _dismiss_pucker_amount(progress)
-        * _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY
-        * _dismiss_pucker_amplitude_multiplier(progress)
+        _dismiss_seam_latch_amount(progress)
+        * _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY
     )
     updated["cleanup_blur_radius_points"] = 0.0
     updated["mip_blur_strength"] = 0.0
@@ -769,19 +734,37 @@ def _apply_dismiss_pucker_fields(config: dict, progress: float) -> dict:
     return updated
 
 
+def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
+    """Apply the post-close radial underdamped pucker without blur."""
+    updated = dict(config)
+    amount = (
+        _dismiss_pucker_amount(progress)
+        * _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY
+        * _dismiss_pucker_amplitude_multiplier(progress)
+    )
+    updated["cleanup_blur_radius_points"] = 0.0
+    updated["mip_blur_strength"] = 0.0
+    updated["warp_mode"] = 2.0
+    updated["scar_amount"] = amount
+    updated["x_squeeze"] = 1.0
+    updated["y_squeeze"] = 1.0
+    updated["ring_amplitude_points"] = 0.0
+    updated["tail_amplitude_points"] = 0.0
+    updated["continuous_present"] = True
+    return updated
+
+
 def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
-    """Return the tiny inverse-warp scar that releases after dismiss closes."""
+    """Return the radial underdamped scar that releases after dismiss closes."""
     base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
-    config["content_width_points"] = max(24.0, base_w * 1.18)
-    config["content_height_points"] = max(2.0, base_h * 0.62)
-    config["corner_radius_points"] = min(
-        max(float(shell_config.get("corner_radius_points", 1.0)), 1.0),
-        config["content_height_points"] * 0.5,
-    )
+    diameter = max(260.0, min(base_w * 0.34, base_h * 1.9))
+    config["content_width_points"] = diameter
+    config["content_height_points"] = diameter
+    config["corner_radius_points"] = diameter * 0.5
     config["core_magnification"] = 1.0
-    return _apply_dismiss_pucker_fields(config, progress)
+    return _apply_dismiss_radial_pucker_fields(config, progress)
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -3007,11 +2990,10 @@ class CommandOverlay(NSObject):
         try:
             shell_config = _materialized_optical_shell_config(final_config, progress)
             if getattr(self, "_materialization_direction", 1) < 0:
-                pucker_progress = _dismiss_pucker_progress_for_reverse_progress(progress)
-                if pucker_progress > 0.0:
-                    shell_config = _apply_dismiss_pucker_fields(
+                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+                    shell_config = _apply_dismiss_seam_latch_fields(
                         shell_config,
-                        pucker_progress,
+                        progress,
                     )
             compositor.update_shell_config(
                 shell_config
@@ -3033,33 +3015,22 @@ class CommandOverlay(NSObject):
             else:
                 self._materialization_progress = 0.0
                 self._apply_materialization_fill_state(0.0)
-                self._start_dismiss_pucker_tail_animation(
-                    final_config,
-                    elapsed_offset=_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S,
-                )
+                self._start_dismiss_pucker_tail_animation(final_config)
 
     def _start_dismiss_pucker_tail_animation(
         self,
         final_shell_config: dict,
-        *,
-        elapsed_offset: float = 0.0,
     ) -> None:
         """Run the post-close inverse pucker after the dismiss slit shuts."""
         self._cancel_dismiss_pucker_tail_animation()
         self._hide_local_shell_layers_for_pucker_tail()
         self._pucker_tail_shell_config = dict(final_shell_config)
-        offset = _clamp01(
-            elapsed_offset / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6)
-        ) * _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
-        self._pucker_tail_started_at = time.perf_counter() - offset
+        self._pucker_tail_started_at = time.perf_counter()
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             try:
                 compositor.update_shell_config(
-                    _dismiss_pucker_shell_config(
-                        self._pucker_tail_shell_config,
-                        offset / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6),
-                    )
+                    _dismiss_pucker_shell_config(self._pucker_tail_shell_config, 0.0)
                 )
             except Exception:
                 logger.debug("Failed to seed command dismiss pucker", exc_info=True)

@@ -97,6 +97,12 @@ def test_pack_warp_params_uses_shell_specific_scar_mode_controls():
     assert values[22] == pytest.approx(-0.25)
 
 
+def test_metal_shader_has_separate_radial_scar_mode():
+    source = metal_warp._metal_shader_source()
+    assert "params.warpMode > 1.5f" in source
+    assert "Radial scar" in source
+
+
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
     wide = metal_warp._warp_dispatch_box(
         1440.0,
