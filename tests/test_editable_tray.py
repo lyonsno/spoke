@@ -640,3 +640,179 @@ class TestGhostIndicatorRendering:
     def test_overlay_has_update_ghosts_method(self, main_module, monkeypatch):
         """The overlay class should have an update_ghosts method."""
         assert callable(getattr(main_module.TranscriptionOverlay, 'update_ghosts', None))
+
+
+class TestTrayEnterDispatch:
+    """Enter from tray: sticky route → send, no sticky → insert at cursor."""
+
+    def test_enter_from_tray_no_sticky_inserts(self, main_module, monkeypatch):
+        """Bare Enter from tray with no sticky route should insert at cursor."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("insert me")
+        d._sticky_route_keycode = None
+
+        with patch("spoke.__main__.inject_text") as mock_inject, \
+             patch("spoke.__main__.has_focused_text_input", return_value=True):
+            d._on_tray_enter()
+
+        # Tray should be dismissed (text was inserted)
+        assert d._tray_active is False
+        # inject_text was called (via _tray_insert_current's delayed path)
+
+    def test_enter_from_tray_sticky_sends_to_assistant(self, main_module, monkeypatch):
+        """Bare Enter from tray with sticky ] should send to assistant."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("send me")
+        d._sticky_route_keycode = 30  # ] key
+        d._send_text_as_command = MagicMock()
+
+        d._on_tray_enter()
+
+        d._send_text_as_command.assert_called_once_with("send me")
+        assert d._tray_active is False
+
+    def test_enter_from_tray_empty_is_noop(self, main_module, monkeypatch):
+        """Enter from tray with no entries should do nothing."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_active = False  # no tray
+        d._sticky_route_keycode = None
+
+        d._on_tray_enter()  # should not raise
+
+    def test_shift_enter_inserts_newline(self, main_module, monkeypatch):
+        """Shift+Enter from tray should insert a newline character."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("hello")
+
+        # Simulate Shift+Enter routed through _on_tray_key
+        d._on_tray_key(36, 0x00020000)  # keycode 36 = Return, shift flag
+
+        entry = d._get_tray_entry(d._tray_index)
+        assert entry.text == "hello\n"
+        assert d._tray_active is True  # tray stays active
+
+
+class TestEnterKeyEventTapTrayRouting:
+    """Enter key is intercepted by the event tap when tray is active."""
+
+    def test_enter_keydown_suppressed_when_tray_active(self, input_tap_module):
+        """Enter keyDown while tray active should be suppressed."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._state = mod._State.IDLE
+        det._forwarding = False
+        det._tap = MagicMock()
+        det.tray_active = True
+        det._enter_held = False
+        det._enter_observed = False
+        det._enter_last_down_monotonic = 0.0
+        det._idle_shift_down = False
+        det._idle_shift_interrupted = False
+        det._tray_shift_down = False
+        det._tray_space_between = False
+        det._pending_release_active = False
+        det._shift_latched = False
+        det.approval_active = False
+        det.command_overlay_active = False
+        det._suppress_enter_keyup = False
+        det._suppress_delete_keyup = False
+        det.cancel_spring_active = False
+        det._on_tray_enter = MagicMock()
+
+        mod._active_detector = det
+        event = MagicMock()
+        Quartz.CGEventGetIntegerValueField.return_value = 36  # Return key
+        Quartz.CGEventGetFlags.return_value = 0
+        Quartz.CGEventGetTimestamp.return_value = 0
+
+        result = mod._event_tap_callback(
+            None, Quartz.kCGEventKeyDown, event, None
+        )
+
+        # Enter keyDown should be suppressed
+        assert result is None
+        # Enter should be tracked as held (for send chord)
+        assert det._enter_held is True
+
+    def test_enter_keyup_fires_tray_enter(self, input_tap_module):
+        """Enter keyUp while tray active (no send chord) should fire _on_tray_enter."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._state = mod._State.IDLE
+        det._forwarding = False
+        det._tap = MagicMock()
+        det.tray_active = True
+        det._enter_held = True  # was held from keyDown
+        det._enter_observed = True
+        det._enter_last_down_monotonic = 0.0
+        det._idle_shift_down = False
+        det._idle_shift_interrupted = False
+        det._tray_shift_down = False
+        det._tray_space_between = False
+        det._pending_release_active = False
+        det._shift_latched = False
+        det.approval_active = False
+        det.command_overlay_active = False
+        det._suppress_enter_keyup = False
+        det._suppress_delete_keyup = False
+        det.cancel_spring_active = False
+        det._on_tray_enter = MagicMock()
+        det._on_tray_key = MagicMock()
+
+        mod._active_detector = det
+        event = MagicMock()
+        Quartz.CGEventGetIntegerValueField.return_value = 36  # Return key
+        Quartz.CGEventGetFlags.return_value = 0  # no shift
+        Quartz.CGEventGetTimestamp.return_value = 0
+
+        result = mod._event_tap_callback(
+            None, Quartz.kCGEventKeyUp, event, None
+        )
+
+        assert result is None
+        det._on_tray_enter.assert_called_once()
+
+    def test_shift_enter_keyup_inserts_newline(self, input_tap_module):
+        """Shift+Enter keyUp while tray active should route to _on_tray_key."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._state = mod._State.IDLE
+        det._forwarding = False
+        det._tap = MagicMock()
+        det.tray_active = True
+        det._enter_held = True
+        det._enter_observed = True
+        det._enter_last_down_monotonic = 0.0
+        det._idle_shift_down = False
+        det._idle_shift_interrupted = False
+        det._tray_shift_down = False
+        det._tray_space_between = False
+        det._pending_release_active = False
+        det._shift_latched = False
+        det.approval_active = False
+        det.command_overlay_active = False
+        det._suppress_enter_keyup = False
+        det._suppress_delete_keyup = False
+        det.cancel_spring_active = False
+        det._on_tray_enter = MagicMock()
+        det._on_tray_key = MagicMock()
+
+        mod._active_detector = det
+        event = MagicMock()
+        Quartz.CGEventGetIntegerValueField.return_value = 36
+        Quartz.CGEventGetFlags.return_value = 0x00020000  # shift held
+        Quartz.CGEventGetTimestamp.return_value = 0
+
+        result = mod._event_tap_callback(
+            None, Quartz.kCGEventKeyUp, event, None
+        )
+
+        assert result is None
+        det._on_tray_key.assert_called_once()
+        det._on_tray_enter.assert_not_called()

@@ -937,6 +937,13 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             det._enter_held = True
             det._enter_observed = True
             det._enter_last_down_monotonic = time.monotonic()
+            # Tray mode: suppress Enter keyDown so it doesn't reach the app.
+            # Enter state is still tracked for the send chord (Enter + route key).
+            # The action fires on keyUp (bare Enter = tray enter, Shift+Enter = newline).
+            # Do NOT set _suppress_enter_keyup — the keyUp handler needs to
+            # reach the tray-enter code in the fallthrough section.
+            if getattr(det, 'tray_active', False) and det._state == _State.IDLE:
+                return None
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=False)
                 return None
@@ -1093,6 +1100,19 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             det._enter_held = False
             det._enter_observed = False
             det._enter_last_down_monotonic = 0.0
+            # Tray mode: bare Enter release (no send chord fired) = tray enter action.
+            # Shift+Enter = insert newline in the tray.
+            if getattr(det, 'tray_active', False) and det._state == _State.IDLE:
+                shift_held = bool(flags & kCGEventFlagMaskShift)
+                if shift_held:
+                    on_tray_key = getattr(det, '_on_tray_key', None)
+                    if on_tray_key is not None:
+                        on_tray_key(keycode, flags)
+                else:
+                    cb = getattr(det, '_on_tray_enter', None)
+                    if cb is not None:
+                        cb()
+                return None
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:

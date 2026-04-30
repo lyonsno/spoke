@@ -1502,8 +1502,9 @@ class TestTrayAwareness:
         assert det._awaiting_space_release is False
         on_start.assert_called_once()
 
-    def test_enter_during_tray_does_not_fire_callback(self, input_tap_module):
-        """Tray visibility alone should not arm bare Enter as a Spoke command."""
+    def test_enter_during_tray_suppressed_but_tracked(self, input_tap_module):
+        """Enter keyDown during tray should be suppressed (tray owns keyboard)
+        but still tracked as held for the send chord (Enter + route key)."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -1517,8 +1518,8 @@ class TestTrayAwareness:
         result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
         on_enter.assert_not_called()
-        assert result is event
-        assert det._enter_held is True
+        assert result is None  # suppressed — tray owns the keyboard
+        assert det._enter_held is True  # tracked for send chord
 
     def test_enter_outside_tray_no_callback(self, input_tap_module):
         """Enter pressed outside tray should not fire on_enter_pressed."""
