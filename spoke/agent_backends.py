@@ -19,11 +19,14 @@ from .agent_thread_cards import (
 )
 
 
-_ALLOWED_PROVIDERS = {"codex", "claude-code"}
+_ALLOWED_PROVIDERS = {"codex", "claude-code", "gemini-cli"}
 _BILLING_CREDENTIAL_ENV = (
     "OPENAI_" + "API_KEY",
     "CODEX_" + "API_KEY",
     "ANTHROPIC_" + "API_KEY",
+    "GEMINI_" + "API_KEY",
+    "GOOGLE_" + "API_KEY",
+    "GOOGLE_GENAI_" + "API_KEY",
 )
 _CODEX_CANDIDATE_PATHS = (
     "/opt/homebrew/bin/codex",
@@ -34,6 +37,11 @@ _CLAUDE_CANDIDATE_PATHS = (
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     os.path.expanduser("~/.local/bin/claude"),
+)
+_GEMINI_CANDIDATE_PATHS = (
+    "/opt/homebrew/bin/gemini",
+    "/usr/local/bin/gemini",
+    os.path.expanduser("~/.local/bin/gemini"),
 )
 _CODEX_SESSION_LOG_SCAN_LIMIT = 250_000
 
@@ -150,6 +158,45 @@ def _resolve_claude_path(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
+def _resolve_gemini_path(env: dict[str, str] | None = None) -> str | None:
+    env = env or os.environ
+    override = env.get("SPOKE_GEMINI_CLI_PATH")
+    if isinstance(override, str) and override.strip():
+        candidate = override.strip()
+        if _executable_file(candidate):
+            return candidate
+
+    path_value = env.get("PATH")
+    found = (
+        shutil.which("gemini", path=path_value)
+        if isinstance(path_value, str) and path_value
+        else shutil.which("gemini")
+    )
+    if found:
+        return found
+
+    for candidate in _GEMINI_CANDIDATE_PATHS:
+        if _executable_file(candidate):
+            return candidate
+
+    try:
+        result = subprocess.run(
+            ["/bin/zsh", "-lc", "command -v gemini"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    candidate = (result.stdout or "").strip().splitlines()[0:1]
+    if candidate and _executable_file(candidate[0]):
+        return candidate[0]
+    return None
+
+
 def _codex_login_status(codex_path: str, env: dict[str, str]) -> str:
     try:
         result = subprocess.run(
@@ -244,6 +291,26 @@ def _claude_command(
         "--verbose",
         "--permission-mode",
         "dontAsk",
+    ]
+    if resume_id:
+        command.extend(["--resume", resume_id])
+    return command
+
+
+def _gemini_command(
+    *,
+    gemini_path: str,
+    prompt: str,
+    resume_id: str | None,
+) -> list[str]:
+    command = [
+        gemini_path,
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--approval-mode",
+        "yolo",
     ]
     if resume_id:
         command.extend(["--resume", resume_id])
@@ -449,6 +516,109 @@ def _events_from_claude_stream_event(event: dict[str, Any]) -> list[AgentBackend
             data["status"] = status
         if isinstance(info.get("isUsingOverage"), bool):
             data["is_using_overage"] = info["isUsingOverage"]
+        if data:
+            return [AgentBackendEvent(kind="usage_limits", data=data)]
+    return []
+
+
+def _events_from_gemini_stream_event(
+    event: dict[str, Any],
+    *,
+    cwd: str,
+) -> list[AgentBackendEvent]:
+    event_type = event.get("type")
+    if event_type == "init":
+        data: dict[str, Any] = {"cwd": cwd}
+        session_id = event.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            data["provider_session_id"] = session_id
+        model = event.get("model")
+        if isinstance(model, str) and model:
+            data["model"] = model
+        return [
+            AgentBackendEvent(
+                kind="session_metadata",
+                text=cwd,
+                data=data,
+            )
+        ]
+
+    if event_type == "message" and event.get("role") == "assistant":
+        content = event.get("content")
+        if not isinstance(content, str) or not content:
+            return []
+        return [
+            AgentBackendEvent(
+                kind="agent_message",
+                text=content,
+                data={
+                    "type": "agent_message",
+                    "text": content,
+                    "delta": bool(event.get("delta")),
+                },
+            )
+        ]
+
+    if event_type == "tool_use":
+        tool_name = event.get("tool_name")
+        tool_name = tool_name if isinstance(tool_name, str) else ""
+        parameters = event.get("parameters")
+        command = ""
+        if isinstance(parameters, dict):
+            raw_command = parameters.get("command")
+            if isinstance(raw_command, str):
+                command = raw_command
+        text = tool_name
+        if command:
+            text = f"{tool_name}: {command}" if tool_name else command
+        return [
+            AgentBackendEvent(
+                kind="tool_use",
+                text=text,
+                data={
+                    "tool_name": tool_name,
+                    "tool_id": event.get("tool_id", ""),
+                    "parameters": parameters if isinstance(parameters, dict) else {},
+                },
+            )
+        ]
+
+    if event_type == "tool_result":
+        status = event.get("status")
+        text = status if isinstance(status, str) else ""
+        return [
+            AgentBackendEvent(
+                kind="tool_result",
+                text=text,
+                data={
+                    "tool_id": event.get("tool_id", ""),
+                    "status": text,
+                },
+            )
+        ]
+
+    if event_type == "result":
+        stats = event.get("stats")
+        data: dict[str, Any] = {}
+        if isinstance(stats, dict):
+            for key in (
+                "duration_ms",
+                "tool_calls",
+                "total_tokens",
+                "input_tokens",
+                "output_tokens",
+                "cached",
+                "input",
+            ):
+                value = stats.get(key)
+                if isinstance(value, (int, float)):
+                    data[key] = value
+            models = stats.get("models")
+            if isinstance(models, dict):
+                data["models"] = models
+        status = event.get("status")
+        if isinstance(status, str) and status:
+            data["status"] = status
         if data:
             return [AgentBackendEvent(kind="usage_limits", data=data)]
     return []
@@ -852,6 +1022,115 @@ def _run_claude_cli(
     )
 
 
+def _run_gemini_cli(
+    *,
+    prompt: str,
+    cwd: str,
+    resume_id: str | None,
+    cancel_check: Callable[[], bool] | None,
+    event_sink: Callable[[AgentBackendEvent], None] | None = None,
+) -> AgentBackendRunResult:
+    env = _subscription_only_env()
+    gemini_path = _resolve_gemini_path(env)
+    if not gemini_path:
+        raise AgentBackendUnavailable("Gemini CLI is not installed or not on PATH")
+
+    command = _gemini_command(
+        gemini_path=gemini_path,
+        prompt=prompt,
+        resume_id=resume_id,
+    )
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        raise AgentBackendUnavailable(f"Gemini CLI failed to start: {exc}") from exc
+
+    provider_session_id = resume_id
+    final_response_parts: list[str] = []
+    events: list[AgentBackendEvent] = []
+    stream_error = ""
+    assert process.stdout is not None
+    try:
+        for line in process.stdout:
+            if cancel_check is not None and cancel_check():
+                process.terminate()
+                break
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                _append_event(
+                    events,
+                    AgentBackendEvent(kind="raw_output", text=stripped),
+                    event_sink,
+                )
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "init":
+                session_id = event.get("session_id")
+                if isinstance(session_id, str) and session_id:
+                    provider_session_id = session_id
+            elif event_type == "message" and event.get("role") == "assistant":
+                content = event.get("content")
+                if isinstance(content, str) and content:
+                    final_response_parts.append(content)
+            elif event_type == "result":
+                if event.get("status") not in {None, "success"}:
+                    stream_error = str(event.get("status") or "Gemini CLI returned an error")
+            for backend_event in _events_from_gemini_stream_event(event, cwd=cwd):
+                event_session_id = backend_event.data.get("provider_session_id")
+                if isinstance(event_session_id, str) and event_session_id:
+                    provider_session_id = event_session_id
+                _append_event(events, backend_event, event_sink)
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+    stderr = ""
+    if process.stderr is not None:
+        stderr = process.stderr.read()
+        process.stderr.close()
+    return_code = process.wait()
+    final_response = "".join(final_response_parts).strip()
+    if cancel_check is not None and cancel_check():
+        return AgentBackendRunResult(
+            provider="gemini-cli",
+            session_id=provider_session_id,
+            final_response=final_response,
+            events=tuple(events),
+        )
+    if return_code != 0 or stream_error:
+        detail = stream_error or stderr.strip() or f"exit status {return_code}"
+        raise RuntimeError(f"Gemini CLI failed: {detail}")
+    identity_event = _agent_shell_identity_event(
+        provider="gemini-cli",
+        provider_session_id=provider_session_id,
+        cwd=cwd,
+        final_response=final_response,
+        events=events,
+    )
+    if identity_event is not None:
+        _append_event(events, identity_event, event_sink)
+    return AgentBackendRunResult(
+        provider="gemini-cli",
+        session_id=provider_session_id,
+        final_response=final_response,
+        events=tuple(events),
+    )
+
+
 def run_agent_backend_session(
     provider: str,
     prompt: str,
@@ -871,6 +1150,14 @@ def run_agent_backend_session(
         )
     if provider == "claude-code":
         return _run_claude_cli(
+            prompt=prompt,
+            cwd=cwd,
+            resume_id=resume_id,
+            cancel_check=cancel_check,
+            event_sink=event_sink,
+        )
+    if provider == "gemini-cli":
+        return _run_gemini_cli(
             prompt=prompt,
             cwd=cwd,
             resume_id=resume_id,

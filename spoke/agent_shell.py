@@ -39,6 +39,8 @@ def _provider_switch(text: str) -> str | None:
     normalized = _normalized_text(text)
     if re.search(r"\b(?:switch|change|route|use)\s+(?:to\s+)?claude\s+code\b", normalized):
         return "claude-code"
+    if re.search(r"\b(?:switch|change|route|use)\s+(?:to\s+)?gemini(?:\s+cli)?\b", normalized):
+        return "gemini-cli"
     match = re.search(r"\b(?:switch|change|route|use)\s+(?:to\s+)?(codex)\b", normalized)
     if match:
         return match.group(1)
