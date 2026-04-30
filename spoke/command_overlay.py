@@ -95,13 +95,20 @@ _OPTICAL_MATERIALIZATION_S = (
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 )
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
-_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 0.50
+_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.50
+_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
+_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S = (
+    _OPTICAL_MATERIALIZATION_DISMISS_S
+    * _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+)
 _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_REBOUND = 0.55
 _OPTICAL_MATERIALIZATION_PUCKER_SECOND = 0.62
 _OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND = 0.34
 _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
-    _OPTICAL_MATERIALIZATION_DISMISS_S + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+    _OPTICAL_MATERIALIZATION_DISMISS_S
+    + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+    - _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S
 )
 _OPTICAL_MATERIALIZATION_BODY_READY = 0.55
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
@@ -678,10 +685,10 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
 def _dismiss_pucker_amount(progress: float) -> float:
     """Signed dismiss scar amount: pinch, overspread, second pinch, settle."""
     p = _clamp01(progress)
-    first_pinch_at = 0.16
-    first_expand_at = 0.34
-    second_pinch_at = 0.56
-    second_expand_at = 0.70
+    first_pinch_at = 0.08 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+    first_expand_at = 0.17 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+    second_pinch_at = 0.28 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+    second_expand_at = 0.35 / _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
     if p <= first_pinch_at:
         # The first contraction should bite immediately, not luxuriate into it.
         return p / first_pinch_at
@@ -714,9 +721,38 @@ def _dismiss_pucker_amount(progress: float) -> float:
     )
 
 
+def _dismiss_pucker_progress_for_reverse_progress(progress: float) -> float:
+    """Map closing-slit progress to the overlapping pucker-tail progress."""
+    p = _clamp01(progress)
+    if p > _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+        return 0.0
+    elapsed = (
+        _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS - p
+    ) * _OPTICAL_MATERIALIZATION_DISMISS_S
+    return _clamp01(elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6))
+
+
+def _apply_dismiss_pucker_fields(config: dict, progress: float) -> dict:
+    """Apply the crisp seam-tension scar without changing shell geometry."""
+    updated = dict(config)
+    amount = (
+        _dismiss_pucker_amount(progress)
+        * _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY
+    )
+    updated["cleanup_blur_radius_points"] = 0.0
+    updated["mip_blur_strength"] = 0.0
+    updated["warp_mode"] = 1.0
+    updated["scar_amount"] = amount
+    updated["x_squeeze"] = 1.0
+    updated["y_squeeze"] = 1.0
+    updated["ring_amplitude_points"] = 0.0
+    updated["tail_amplitude_points"] = 0.0
+    updated["continuous_present"] = True
+    return updated
+
+
 def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     """Return the tiny inverse-warp scar that releases after dismiss closes."""
-    amount = _dismiss_pucker_amount(progress) * _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY
     base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
@@ -727,18 +763,7 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
         config["content_height_points"] * 0.5,
     )
     config["core_magnification"] = 1.0
-    config["cleanup_blur_radius_points"] = 0.0
-    config["mip_blur_strength"] = 0.0
-    config["warp_mode"] = 1.0
-    config["scar_amount"] = amount
-    config["x_squeeze"] = 1.0
-    config["y_squeeze"] = 1.0
-    if "ring_amplitude_points" in config:
-        config["ring_amplitude_points"] = 0.0
-    if "tail_amplitude_points" in config:
-        config["tail_amplitude_points"] = 0.0
-    config["continuous_present"] = True
-    return config
+    return _apply_dismiss_pucker_fields(config, progress)
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -2960,8 +2985,16 @@ class CommandOverlay(NSObject):
         self._materialization_progress = progress
         self._apply_materialization_fill_state(progress)
         try:
+            shell_config = _materialized_optical_shell_config(final_config, progress)
+            if getattr(self, "_materialization_direction", 1) < 0:
+                pucker_progress = _dismiss_pucker_progress_for_reverse_progress(progress)
+                if pucker_progress > 0.0:
+                    shell_config = _apply_dismiss_pucker_fields(
+                        shell_config,
+                        pucker_progress,
+                    )
             compositor.update_shell_config(
-                _materialized_optical_shell_config(final_config, progress)
+                shell_config
             )
         except Exception:
             logger.debug("Failed to update command materialization shell", exc_info=True)
@@ -2980,19 +3013,33 @@ class CommandOverlay(NSObject):
             else:
                 self._materialization_progress = 0.0
                 self._apply_materialization_fill_state(0.0)
-                self._start_dismiss_pucker_tail_animation(final_config)
+                self._start_dismiss_pucker_tail_animation(
+                    final_config,
+                    elapsed_offset=_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_S,
+                )
 
-    def _start_dismiss_pucker_tail_animation(self, final_shell_config: dict) -> None:
+    def _start_dismiss_pucker_tail_animation(
+        self,
+        final_shell_config: dict,
+        *,
+        elapsed_offset: float = 0.0,
+    ) -> None:
         """Run the post-close inverse pucker after the dismiss slit shuts."""
         self._cancel_dismiss_pucker_tail_animation()
         self._hide_local_shell_layers_for_pucker_tail()
         self._pucker_tail_shell_config = dict(final_shell_config)
-        self._pucker_tail_started_at = time.perf_counter()
+        offset = _clamp01(
+            elapsed_offset / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6)
+        ) * _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+        self._pucker_tail_started_at = time.perf_counter() - offset
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             try:
                 compositor.update_shell_config(
-                    _dismiss_pucker_shell_config(self._pucker_tail_shell_config, 0.0)
+                    _dismiss_pucker_shell_config(
+                        self._pucker_tail_shell_config,
+                        offset / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6),
+                    )
                 )
             except Exception:
                 logger.debug("Failed to seed command dismiss pucker", exc_info=True)
