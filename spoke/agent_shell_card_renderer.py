@@ -116,8 +116,19 @@ def _frame_for_index(
     equal_width = (usable_width - total_gap) / max(1, count)
     width = max(min_width, min(_CARD_MAX_WIDTH_POINTS, preferred_width, equal_width))
     height = max(min_height, min(preferred_height, max(min_height, content_height * 0.42)))
-    x = _CARD_MARGIN_POINTS + index * (width + _CARD_GAP_POINTS)
-    y = max(_CARD_MARGIN_POINTS, content_height - _CARD_MARGIN_POINTS - height)
+    anchor = _string(_mapping(primitive.get("geometry")).get("anchor")) or "top"
+    if anchor == "bottom":
+        x = _CARD_MARGIN_POINTS + index * (width + _CARD_GAP_POINTS)
+        y = -height - _CARD_GAP_POINTS
+    elif anchor == "right":
+        x = content_width + _CARD_GAP_POINTS
+        y = max(_CARD_MARGIN_POINTS, min(content_height - height, content_height * 0.5 - height * 0.5))
+    elif anchor == "left":
+        x = -width - _CARD_GAP_POINTS
+        y = max(_CARD_MARGIN_POINTS, min(content_height - height, content_height * 0.5 - height * 0.5))
+    else:
+        x = _CARD_MARGIN_POINTS + index * (width + _CARD_GAP_POINTS)
+        y = max(_CARD_MARGIN_POINTS, content_height - _CARD_MARGIN_POINTS - height)
     return {
         "x": round(x, 3),
         "y": round(y, 3),
@@ -126,11 +137,21 @@ def _frame_for_index(
     }
 
 
-def _transcript_frame(cards: list[dict[str, Any]], content_width: float) -> dict[str, float]:
-    if not cards:
-        top = _CARD_MARGIN_POINTS
+def _transcript_frame(
+    cards: list[dict[str, Any]],
+    content_width: float,
+    content_height: float,
+) -> dict[str, float]:
+    interior_tops = [
+        float(card["frame"]["y"])
+        for card in cards
+        if 0.0 <= float(card["frame"]["x"]) < content_width
+        and 0.0 <= float(card["frame"]["y"]) <= content_height
+    ]
+    if not interior_tops:
+        top = content_height
     else:
-        top = min(float(card["frame"]["y"]) for card in cards)
+        top = min(interior_tops)
     height = max(0.0, top - _CARD_GAP_POINTS - _CARD_MARGIN_POINTS)
     return {
         "x": _CARD_MARGIN_POINTS,
@@ -285,7 +306,7 @@ def build_agent_shell_card_render_payload(
             "show_latest_response": show_latest_response,
             "text": _string((selected or {}).get("latest_response")) if show_latest_response else "",
         },
-        "transcript_frame": _transcript_frame(cards, content_width),
+        "transcript_frame": _transcript_frame(cards, content_width, content_height),
         "cards": cards,
     }
 

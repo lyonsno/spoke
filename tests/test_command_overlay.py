@@ -4010,12 +4010,15 @@ class TestGeometryCaps:
             "CGContextSetRGBFillColor",
             "CGContextFillRect",
             "CGContextSetBlendMode",
+            "CGContextClipToRect",
             "CGContextSaveGState",
             "CGContextRestoreGState",
             "CGContextTranslateCTM",
             "CGContextScaleCTM",
         ):
             monkeypatch.setattr(quartz, name, MagicMock(), raising=False)
+        clip = MagicMock()
+        monkeypatch.setattr(quartz, "CGContextClipToRect", clip, raising=False)
         monkeypatch.setattr(quartz, "kCGImageAlphaPremultipliedLast", 1, raising=False)
         monkeypatch.setattr(quartz, "kCGBlendModeDestinationOut", 1, raising=False)
         monkeypatch.setattr(sys.modules["Foundation"], "NSMakeRect", _make_rect, raising=False)
@@ -4041,6 +4044,9 @@ class TestGeometryCaps:
         expected_y = content_top + (244.0 - 52.0 - 140.0) + mod._TRANSCRIPT_TEXT_VERTICAL_INSET - 7.0
         assert rect.origin.x == pytest.approx(168.0)
         assert rect.origin.y == pytest.approx(expected_y)
+        assert clip.call_args_list
+        clip_rect = clip.call_args_list[0].args[1]
+        assert clip_rect == pytest.approx((168.0, content_top + (244.0 - 52.0 - 140.0), 544.0, 140.0))
 
     def test_punchthrough_makes_agent_shell_chrome_labels_transparent(
         self, mock_pyobjc
@@ -4127,6 +4133,7 @@ class TestGeometryCaps:
             "CGContextSetRGBFillColor",
             "CGContextFillRect",
             "CGContextSetBlendMode",
+            "CGContextClipToRect",
             "CGContextSaveGState",
             "CGContextRestoreGState",
             "CGContextTranslateCTM",

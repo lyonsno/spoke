@@ -5014,6 +5014,7 @@ class CommandOverlay(NSObject):
                 CGContextSetRGBFillColor,
                 CGContextFillRect,
                 CGContextSetBlendMode,
+                CGContextClipToRect,
                 CGContextSaveGState,
                 CGContextRestoreGState,
                 CGContextTranslateCTM,
@@ -5179,6 +5180,11 @@ class CommandOverlay(NSObject):
 
             text_w = _width(text_frame)
             text_h = _height(text_frame)
+            clip_x = cx + _origin_x(scroll_frame)
+            clip_y = scroll_top
+            clip_w = _width(scroll_frame)
+            clip_h = _height(scroll_frame)
+            CGContextClipToRect(ctx, CGRectMake(clip_x, clip_y, clip_w, clip_h))
             ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
             _draw_agent_shell_chrome_labels()
 
@@ -5216,6 +5222,10 @@ class CommandOverlay(NSObject):
                     CGContextSaveGState(boost_ctx)
                     CGContextTranslateCTM(boost_ctx, 0, fh)
                     CGContextScaleCTM(boost_ctx, 1.0, -1.0)
+                    CGContextClipToRect(
+                        boost_ctx,
+                        CGRectMake(clip_x, clip_y, clip_w, clip_h),
+                    )
                     ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
                     _draw_agent_shell_chrome_labels()
                     CGContextRestoreGState(boost_ctx)

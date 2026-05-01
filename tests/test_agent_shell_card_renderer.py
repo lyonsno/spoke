@@ -9,6 +9,7 @@ def _primitive(
     selected: bool = False,
     priority: int = 0,
     show_latest_response: bool = False,
+    anchor: str = "top",
 ) -> dict:
     return {
         "id": primitive_id,
@@ -28,7 +29,7 @@ def _primitive(
             "show_latest_response": show_latest_response,
         },
         "geometry": {
-            "anchor": "top",
+            "anchor": anchor,
             "priority": priority,
             "preferred_width": 156.0,
             "preferred_height": 48.0 if not selected else 64.0,
@@ -81,6 +82,26 @@ def test_card_renderer_consumes_primitives_without_reinterpreting_display_contra
     assert selected["selected"] is True
     assert selected["readiness"] == "working"
     assert selected["material"]["prominence"] == "selected"
+
+
+def test_card_renderer_places_bottom_and_right_anchors_outside_parent_surface():
+    from spoke.agent_shell_card_renderer import build_agent_shell_card_render_payload
+
+    payload = build_agent_shell_card_render_payload(
+        [
+            _primitive("inactive-bottom", priority=5, anchor="bottom"),
+            _primitive("selected-right", selected=True, anchor="right"),
+        ],
+        content_width_points=520.0,
+        content_height_points=220.0,
+    )
+
+    bottom = payload["cards"][0]["frame"]
+    right = payload["cards"][1]["frame"]
+    assert bottom["y"] + bottom["height"] <= 0.0
+    assert bottom["x"] >= 12.0
+    assert right["x"] >= 520.0
+    assert 0.0 <= right["y"] <= 220.0 - right["height"]
 
 
 def test_card_renderer_bounds_cards_above_transcript_without_overlap():

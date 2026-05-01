@@ -4413,6 +4413,11 @@ class SpokeAppDelegate(NSObject):
                     state = session.get("state")
                     if state == "completed":
                         response = session.get("result") or f"{label} session completed."
+                        self._remember_agent_shell_overlay_snapshot(
+                            provider,
+                            decision.text,
+                            str(response),
+                        )
                         for action in present_backend_idle():
                             self._apply_agent_backend_presentation_action(action, token)
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(

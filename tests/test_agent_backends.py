@@ -2427,6 +2427,27 @@ class TestAgentShellDelegateDispatch:
         assert calls[-1].args[0] == "commandComplete:"
         assert calls[-1].args[1]["response"] == "Patch looks good."
 
+    def test_agent_shell_completion_persists_latest_overlay_snapshot_before_main_callback(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_backend_manager = _FakeAgentBackendManager(
+            result="Latest Claude answer.",
+        )
+        delegate.commandComplete_ = MagicMock()
+
+        delegate._send_text_as_command("where were we?")
+
+        record = delegate._agent_shell_sessions["claude-code"]
+        assert record["provider_session_id"] == "claude-code-provider-session-1"
+        assert record["last_utterance"] == "where were we?"
+        assert record["last_response"] == "Latest Claude answer."
+        assert delegate._save_preference.call_args_list[-1].args[1]["claude-code"][
+            "last_response"
+        ] == "Latest Claude answer."
+
     def test_agent_shell_transcript_survives_deferred_utterance_overlay_setup(
         self, main_module, monkeypatch
     ):
