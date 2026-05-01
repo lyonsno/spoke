@@ -2192,6 +2192,55 @@ class TestGeometryCaps:
         assert config["agent_thread_hud"]["cards"][0]["thread_id"] == "codex-thread-1"
         assert config["agent_thread_hud"]["cards"][0]["show_latest_response"] is False
 
+    def test_current_optical_shell_config_consumes_agent_shell_primitives(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "title": "first thread",
+                "latest_response": "hidden inactive response",
+                "display": {
+                    "primary_text": "first thread",
+                    "secondary_text": "ready",
+                    "show_latest_response": False,
+                },
+                "geometry": {
+                    "anchor": "top",
+                    "priority": 0,
+                    "preferred_width": 144.0,
+                    "preferred_height": 44.0,
+                    "min_width": 92.0,
+                    "min_height": 40.0,
+                },
+                "material": {
+                    "style": "quiet_chip",
+                    "prominence": "inactive",
+                    "optical_displacement": 0.05,
+                    "corner_radius": 8.0,
+                },
+            }
+        ]
+
+        overlay.set_agent_shell_primitives(primitives)
+        config = overlay._current_optical_shell_config()
+
+        assert config["surface_kind"] == "agent_shell"
+        assert config["agent_shell_primitives"] == primitives
+        assert config["agent_shell_card_renderer"]["surface_kind"] == "agent_shell_card_primitives"
+        rendered = config["agent_shell_card_renderer"]["cards"][0]
+        assert rendered["primitive_id"] == "codex-thread-1"
+        assert rendered["latest_response"] == ""
+        assert rendered["frame"]["width"] == pytest.approx(144.0)
+
     def test_update_layout_resets_text_geometry_to_match_visible_area(
         self, mock_pyobjc, monkeypatch
     ):
