@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .agent_shell_placement import apply_initial_agent_shell_placement
 from .agent_thread_cards import card_display_contract
 
 _CARD_HEIGHT_POINTS = 44.0
@@ -102,7 +103,9 @@ def build_agent_thread_hud(
         display = card_display_contract(card, selected=selected)
         surfaces.append(
             {
+                "id": _thread_id(card),
                 "thread_id": _thread_id(card),
+                "provider_session_id": _thread_id(card),
                 "provider": _string(card.get("provider")),
                 "role": "selected_summary" if selected else "inactive_card",
                 "readiness": _string(display.get("readiness")),
@@ -114,6 +117,14 @@ def build_agent_thread_hud(
                 "frame": _frame_for_index(index, len(visible), width, height),
             }
         )
+        frame = surfaces[-1]["frame"]
+        surfaces[-1]["geometry"] = {
+            "preferred_width": frame["width"],
+            "preferred_height": frame["height"],
+            "min_width": _CARD_MIN_WIDTH_POINTS,
+            "min_height": _CARD_HEIGHT_POINTS,
+        }
+    surfaces = apply_initial_agent_shell_placement(surfaces)
 
     main_text = _string(selected_display.get("primary_text"))
     return {
