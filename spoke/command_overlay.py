@@ -5014,7 +5014,6 @@ class CommandOverlay(NSObject):
                 CGContextSetRGBFillColor,
                 CGContextFillRect,
                 CGContextSetBlendMode,
-                CGContextClipToRect,
                 CGContextSaveGState,
                 CGContextRestoreGState,
                 CGContextTranslateCTM,
@@ -5120,6 +5119,35 @@ class CommandOverlay(NSObject):
                         )
                     )
 
+            def _agent_shell_card_renderer_payload() -> dict:
+                config = self._current_optical_shell_config()
+                if not isinstance(config, dict):
+                    return {}
+                payload = config.get("agent_shell_card_renderer")
+                return payload if isinstance(payload, dict) else {}
+
+            def _draw_agent_shell_card_windows() -> None:
+                payload = _agent_shell_card_renderer_payload()
+                cards = payload.get("cards")
+                if not isinstance(cards, list):
+                    return
+                for card in cards:
+                    if not isinstance(card, dict):
+                        continue
+                    frame = card.get("frame")
+                    if not isinstance(frame, dict):
+                        continue
+                    try:
+                        card_x = cx + float(frame.get("x", 0.0))
+                        card_h = float(frame.get("height", 0.0))
+                        card_y = content_top + content_h - float(frame.get("y", 0.0)) - card_h
+                        card_w = float(frame.get("width", 0.0))
+                    except (TypeError, ValueError):
+                        continue
+                    if card_w <= 0.0 or card_h <= 0.0:
+                        continue
+                    CGContextFillRect(ctx, CGRectMake(card_x, card_y, card_w, card_h))
+
             # Content offset within the fill layer
             content_frame = content.frame()
             cx = _origin_x(content_frame)
@@ -5180,11 +5208,7 @@ class CommandOverlay(NSObject):
 
             text_w = _width(text_frame)
             text_h = _height(text_frame)
-            clip_x = cx + _origin_x(scroll_frame)
-            clip_y = scroll_top
-            clip_w = _width(scroll_frame)
-            clip_h = _height(scroll_frame)
-            CGContextClipToRect(ctx, CGRectMake(clip_x, clip_y, clip_w, clip_h))
+            _draw_agent_shell_card_windows()
             ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
             _draw_agent_shell_chrome_labels()
 
@@ -5222,10 +5246,6 @@ class CommandOverlay(NSObject):
                     CGContextSaveGState(boost_ctx)
                     CGContextTranslateCTM(boost_ctx, 0, fh)
                     CGContextScaleCTM(boost_ctx, 1.0, -1.0)
-                    CGContextClipToRect(
-                        boost_ctx,
-                        CGRectMake(clip_x, clip_y, clip_w, clip_h),
-                    )
                     ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
                     _draw_agent_shell_chrome_labels()
                     CGContextRestoreGState(boost_ctx)
@@ -5401,6 +5421,18 @@ class CommandOverlay(NSObject):
         if container is not None and hasattr(container, "setContainerSize_"):
             container.setContainerSize_((width, 1.0e7))
 
+    def _scroll_transcript_to_bottom(self, *, document_height: float, visible_height: float) -> None:
+        """Keep the hidden punch-through text viewport aligned with the latest lines."""
+        if self._scroll_view is None:
+            return
+        try:
+            clip_view = self._scroll_view.contentView()
+            offset_y = max(0.0, float(document_height) - float(visible_height))
+            if hasattr(clip_view, "setBoundsOrigin_"):
+                clip_view.setBoundsOrigin_((0.0, offset_y))
+        except Exception:
+            logger.debug("Command overlay scroll-to-bottom failed", exc_info=True)
+
     def _agent_shell_chrome_visible(self) -> bool:
         labels = (
             getattr(self, "_agent_shell_header_label", None),
@@ -5511,6 +5543,10 @@ class CommandOverlay(NSObject):
                    if hasattr(self._text_view.string(), 'length')
                    else len(self._response_text))
             self._text_view.scrollRangeToVisible_((end, 0))
+            self._scroll_transcript_to_bottom(
+                document_height=max(scroll_h, text_height),
+                visible_height=scroll_h,
+            )
         except Exception:
             logger.debug("Command overlay layout update failed", exc_info=True)
 

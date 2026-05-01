@@ -3944,6 +3944,29 @@ class TestGeometryCaps:
             <= header_frame.origin.y - 24.0
         )
 
+    def test_update_layout_directly_scrolls_hidden_punchthrough_viewport_to_bottom(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(900.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 80
+        overlay._text_view.string.return_value = string_obj
+        clip_view = overlay._scroll_view.contentView.return_value
+
+        overlay._update_layout()
+
+        scroll_frame = overlay._scroll_view.setFrame_.call_args[0][0]
+        document_frame = overlay._text_view.setFrame_.call_args[0][0]
+        clip_view.setBoundsOrigin_.assert_called_with(
+            (0.0, pytest.approx(document_frame.size.height - scroll_frame.size.height))
+        )
+
     def test_update_layout_does_not_hide_stale_fill_during_resized_geometry_rebuild(
         self, mock_pyobjc, monkeypatch
     ):
@@ -4010,15 +4033,12 @@ class TestGeometryCaps:
             "CGContextSetRGBFillColor",
             "CGContextFillRect",
             "CGContextSetBlendMode",
-            "CGContextClipToRect",
             "CGContextSaveGState",
             "CGContextRestoreGState",
             "CGContextTranslateCTM",
             "CGContextScaleCTM",
         ):
             monkeypatch.setattr(quartz, name, MagicMock(), raising=False)
-        clip = MagicMock()
-        monkeypatch.setattr(quartz, "CGContextClipToRect", clip, raising=False)
         monkeypatch.setattr(quartz, "kCGImageAlphaPremultipliedLast", 1, raising=False)
         monkeypatch.setattr(quartz, "kCGBlendModeDestinationOut", 1, raising=False)
         monkeypatch.setattr(sys.modules["Foundation"], "NSMakeRect", _make_rect, raising=False)
@@ -4044,9 +4064,77 @@ class TestGeometryCaps:
         expected_y = content_top + (244.0 - 52.0 - 140.0) + mod._TRANSCRIPT_TEXT_VERTICAL_INSET - 7.0
         assert rect.origin.x == pytest.approx(168.0)
         assert rect.origin.y == pytest.approx(expected_y)
-        assert clip.call_args_list
-        clip_rect = clip.call_args_list[0].args[1]
-        assert clip_rect == pytest.approx((168.0, content_top + (244.0 - 52.0 - 140.0), 544.0, 140.0))
+
+    def test_punchthrough_mask_cuts_agent_shell_card_windows(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._text_punchthrough = True
+        overlay._punchthrough_mask_dirty = True
+        overlay._content_view.frame.return_value = ((140.0, 140.0), (600.0, 244.0))
+        overlay._scroll_view.frame.return_value = _make_rect(28.0, 52.0, 544.0, 140.0)
+        overlay._scroll_view.contentView.return_value.bounds.return_value = _make_rect(0.0, 0.0, 544.0, 140.0)
+        overlay._text_view.frame.return_value = _make_rect(0.0, 0.0, 544.0, 156.0)
+        overlay._fill_layer.frame.return_value = ((0.0, 0.0), (880.0, 524.0))
+        overlay._fill_layer.mask.return_value = None
+        overlay._boost_layer.mask.return_value = None
+        overlay._current_optical_shell_config = MagicMock(
+            return_value={
+                "agent_shell_card_renderer": {
+                    "cards": [
+                        {"frame": {"x": 12.0, "y": 180.0, "width": 144.0, "height": 44.0}}
+                    ]
+                }
+            }
+        )
+
+        class _DrawableStorage:
+            def length(self):
+                return 12
+
+            def drawInRect_(self, _rect):
+                return None
+
+        overlay._text_view.textStorage.return_value = _DrawableStorage()
+
+        quartz = sys.modules["Quartz"]
+        fill_rect = MagicMock()
+        monkeypatch.setattr(quartz, "CGColorSpaceCreateDeviceRGB", lambda: "cs", raising=False)
+        monkeypatch.setattr(quartz, "CGBitmapContextCreate", lambda *args: "ctx", raising=False)
+        monkeypatch.setattr(quartz, "CGBitmapContextCreateImage", lambda _ctx: "image", raising=False)
+        monkeypatch.setattr(quartz, "CGRectMake", lambda *args: args, raising=False)
+        monkeypatch.setattr(quartz, "CGContextFillRect", fill_rect, raising=False)
+        for name in (
+            "CGContextSetRGBFillColor",
+            "CGContextSetBlendMode",
+            "CGContextSaveGState",
+            "CGContextRestoreGState",
+            "CGContextTranslateCTM",
+            "CGContextScaleCTM",
+        ):
+            monkeypatch.setattr(quartz, name, MagicMock(), raising=False)
+        monkeypatch.setattr(quartz, "kCGImageAlphaPremultipliedLast", 1, raising=False)
+        monkeypatch.setattr(quartz, "kCGBlendModeDestinationOut", 1, raising=False)
+        monkeypatch.setattr(sys.modules["Foundation"], "NSMakeRect", _make_rect, raising=False)
+        monkeypatch.setattr(
+            sys.modules["AppKit"],
+            "NSGraphicsContext",
+            SimpleNamespace(
+                graphicsContextWithCGContext_flipped_=MagicMock(return_value="nsctx"),
+                saveGraphicsState=MagicMock(),
+                setCurrentContext_=MagicMock(),
+                restoreGraphicsState=MagicMock(),
+            ),
+            raising=False,
+        )
+
+        overlay._update_punchthrough_mask()
+
+        assert len(fill_rect.call_args_list) >= 2
+        card_rect = fill_rect.call_args_list[1].args[1]
+        content_top = 524.0 - 140.0 - 244.0
+        assert card_rect == pytest.approx((152.0, content_top + 244.0 - 180.0 - 44.0, 144.0, 44.0))
 
     def test_punchthrough_makes_agent_shell_chrome_labels_transparent(
         self, mock_pyobjc
@@ -4133,7 +4221,6 @@ class TestGeometryCaps:
             "CGContextSetRGBFillColor",
             "CGContextFillRect",
             "CGContextSetBlendMode",
-            "CGContextClipToRect",
             "CGContextSaveGState",
             "CGContextRestoreGState",
             "CGContextTranslateCTM",
