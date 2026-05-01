@@ -390,6 +390,57 @@ def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
     assert compositor.updated_configs[0][1]["warp_mode"] == pytest.approx(1.0)
 
 
+def test_shell_config_preserves_agent_shell_primitive_render_payload(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    screen = object()
+    host = registry.host_for_screen(screen)
+    client = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(252),
+        content_view=object(),
+    )
+    primitives = [
+        {
+            "id": "codex-thread-1",
+            "kind": "thread_card",
+            "provider_session_id": "codex-thread-1",
+            "selected": False,
+        }
+    ]
+    renderer = {
+        "surface_kind": "agent_shell_card_primitives",
+        "cards": [
+            {
+                "primitive_id": "codex-thread-1",
+                "frame": {"x": 12.0, "y": 64.0, "width": 144.0, "height": 44.0},
+                "material": {"style": "quiet_chip", "prominence": "inactive"},
+            }
+        ],
+    }
+
+    assert client.update_shell_config(
+        {
+            "center_x": 10.0,
+            "center_y": 20.0,
+            "content_width_points": 300.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 8.0,
+            "tail_width_points": 12.0,
+            "initial_brightness": 0.4,
+            "agent_shell_primitives": primitives,
+            "agent_shell_card_renderer": renderer,
+            "surface_kind": "agent_shell",
+        }
+    )
+
+    config = _FakeFullScreenCompositor.instances[0].updated_configs[-1][0]
+    assert config["agent_shell_primitives"] == primitives
+    assert config["agent_shell_card_renderer"] == renderer
+    assert config["surface_kind"] == "agent_shell"
+
+
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

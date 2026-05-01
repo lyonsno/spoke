@@ -51,6 +51,7 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
+from .agent_shell_card_renderer import build_agent_shell_card_render_payload
 from .agent_thread_hud import build_agent_thread_hud
 from .optical_shell_metrics import OpticalShellMetrics
 
@@ -1432,6 +1433,7 @@ class CommandOverlay(NSObject):
         self._agent_shell_header_label = None
         self._agent_shell_footer_label = None
         self._agent_shell_cards = []
+        self._agent_shell_primitives = []
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -2154,6 +2156,18 @@ class CommandOverlay(NSObject):
         if config is None:
             return None
         cards = getattr(self, "_agent_shell_cards", None)
+        primitives = getattr(self, "_agent_shell_primitives", None)
+        if isinstance(primitives, list) and primitives:
+            config = dict(config)
+            config["surface_kind"] = "agent_shell"
+            config["agent_shell_primitives"] = [
+                dict(primitive) for primitive in primitives if isinstance(primitive, dict)
+            ]
+            config["agent_shell_card_renderer"] = build_agent_shell_card_render_payload(
+                config["agent_shell_primitives"],
+                content_width_points=float(config.get("content_width_points", 0.0)),
+                content_height_points=float(config.get("content_height_points", 0.0)),
+            )
         if isinstance(cards, list) and cards:
             config = dict(config)
             config["surface_kind"] = "agent_shell"
@@ -2607,6 +2621,7 @@ class CommandOverlay(NSObject):
         """Clear Agent Shell chrome when the visible transcript belongs to another mode."""
         self._clear_agent_shell_chrome()
         self.set_agent_shell_cards([])
+        self.set_agent_shell_primitives([])
         self._update_layout()
 
     def _set_agent_shell_chrome_texts(self, header: str = "", footer: str = "") -> None:
@@ -2624,6 +2639,17 @@ class CommandOverlay(NSObject):
         self._agent_shell_cards = [
             dict(card) for card in (cards or []) if isinstance(card, dict)
         ]
+        self._agent_shell_primitives = []
+        self._push_agent_shell_payload()
+
+    def set_agent_shell_primitives(self, primitives: list[dict] | None) -> None:
+        self._agent_shell_primitives = [
+            dict(primitive) for primitive in (primitives or []) if isinstance(primitive, dict)
+        ]
+        self._agent_shell_cards = []
+        self._push_agent_shell_payload()
+
+    def _push_agent_shell_payload(self) -> None:
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
             return

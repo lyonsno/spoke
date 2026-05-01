@@ -1338,7 +1338,13 @@ def _snapshot_from_shell_config(
     )
     payload = {
         key: config[key]
-        for key in ("agent_thread_cards", "agent_thread_hud", "surface_kind")
+        for key in (
+            "agent_thread_cards",
+            "agent_thread_hud",
+            "agent_shell_primitives",
+            "agent_shell_card_renderer",
+            "surface_kind",
+        )
         if key in config
     }
     optical_field = None
