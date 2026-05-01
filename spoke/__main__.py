@@ -2494,8 +2494,13 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = True
         self._transcribe_start = time.monotonic()
 
+        import sys
+        print(f"[SMOKE DISPATCH] enter_held={enter_held} shift_held={shift_held} wav_bytes={len(wav_bytes) if wav_bytes else 0}", file=sys.stderr, flush=True)
+        logger.info("[SMOKE DISPATCH] enter_held=%s shift_held=%s wav=%d", enter_held, shift_held, len(wav_bytes) if wav_bytes else 0)
+
         if enter_held:
             # SMOKE: Positioning pathway — enter held triggers repositioning
+            print("[SMOKE] ENTERING POSITIONING PATHWAY", file=sys.stderr, flush=True)
             if self._menubar is not None:
                 self._menubar.set_status_text("Repositioning…")
             from .positioning.smoke_hook import positioning_transcribe_worker
