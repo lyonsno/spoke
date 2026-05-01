@@ -4065,7 +4065,7 @@ class TestGeometryCaps:
         assert rect.origin.x == pytest.approx(168.0)
         assert rect.origin.y == pytest.approx(expected_y)
 
-    def test_punchthrough_mask_cuts_agent_shell_card_windows(
+    def test_punchthrough_mask_does_not_cut_agent_shell_card_windows(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, _mod = _make_overlay(mock_pyobjc)
@@ -4131,10 +4131,8 @@ class TestGeometryCaps:
 
         overlay._update_punchthrough_mask()
 
-        assert len(fill_rect.call_args_list) >= 2
-        card_rect = fill_rect.call_args_list[1].args[1]
-        content_top = 524.0 - 140.0 - 244.0
-        assert card_rect == pytest.approx((152.0, content_top + 244.0 - 180.0 - 44.0, 144.0, 44.0))
+        assert len(fill_rect.call_args_list) == 1
+        assert fill_rect.call_args_list[0].args[1] == (0, 0, 880, 524)
 
     def test_punchthrough_makes_agent_shell_chrome_labels_transparent(
         self, mock_pyobjc

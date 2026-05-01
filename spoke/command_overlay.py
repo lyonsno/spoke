@@ -5119,35 +5119,6 @@ class CommandOverlay(NSObject):
                         )
                     )
 
-            def _agent_shell_card_renderer_payload() -> dict:
-                config = self._current_optical_shell_config()
-                if not isinstance(config, dict):
-                    return {}
-                payload = config.get("agent_shell_card_renderer")
-                return payload if isinstance(payload, dict) else {}
-
-            def _draw_agent_shell_card_windows() -> None:
-                payload = _agent_shell_card_renderer_payload()
-                cards = payload.get("cards")
-                if not isinstance(cards, list):
-                    return
-                for card in cards:
-                    if not isinstance(card, dict):
-                        continue
-                    frame = card.get("frame")
-                    if not isinstance(frame, dict):
-                        continue
-                    try:
-                        card_x = cx + float(frame.get("x", 0.0))
-                        card_h = float(frame.get("height", 0.0))
-                        card_y = content_top + content_h - float(frame.get("y", 0.0)) - card_h
-                        card_w = float(frame.get("width", 0.0))
-                    except (TypeError, ValueError):
-                        continue
-                    if card_w <= 0.0 or card_h <= 0.0:
-                        continue
-                    CGContextFillRect(ctx, CGRectMake(card_x, card_y, card_w, card_h))
-
             # Content offset within the fill layer
             content_frame = content.frame()
             cx = _origin_x(content_frame)
@@ -5208,7 +5179,6 @@ class CommandOverlay(NSObject):
 
             text_w = _width(text_frame)
             text_h = _height(text_frame)
-            _draw_agent_shell_card_windows()
             ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
             _draw_agent_shell_chrome_labels()
 

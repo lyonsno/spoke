@@ -60,6 +60,17 @@ def _selected(primitive: dict[str, Any]) -> bool:
     return bool(primitive.get("selected"))
 
 
+def _anchor(primitive: dict[str, Any]) -> str:
+    geometry = _mapping(primitive.get("geometry"))
+    anchor = _string(geometry.get("anchor"))
+    if anchor == "semantic":
+        semantic = _mapping(geometry.get("semantic_placement"))
+        anchor = _string(semantic.get("fallback_anchor"))
+    if anchor in {"right", "bottom"}:
+        return anchor
+    return "right" if _selected(primitive) else "bottom"
+
+
 def _max_cards_for_width(width: float) -> int:
     usable = width - 2 * _CARD_MARGIN_POINTS
     if usable < _CARD_MIN_WIDTH_POINTS:
@@ -116,8 +127,13 @@ def _frame_for_index(
     equal_width = (usable_width - total_gap) / max(1, count)
     width = max(min_width, min(_CARD_MAX_WIDTH_POINTS, preferred_width, equal_width))
     height = max(min_height, min(preferred_height, max(min_height, content_height * 0.42)))
-    x = _CARD_MARGIN_POINTS + index * (width + _CARD_GAP_POINTS)
-    y = max(_CARD_MARGIN_POINTS, content_height - _CARD_MARGIN_POINTS - height)
+    anchor = _anchor(primitive)
+    if anchor == "right":
+        x = content_width + _CARD_MARGIN_POINTS
+        y = max(_CARD_MARGIN_POINTS, (content_height * 0.5) - (height * 0.5))
+    else:
+        x = _CARD_MARGIN_POINTS + index * (width + _CARD_GAP_POINTS)
+        y = -height - _CARD_MARGIN_POINTS
     return {
         "x": round(x, 3),
         "y": round(y, 3),
@@ -126,12 +142,8 @@ def _frame_for_index(
     }
 
 
-def _transcript_frame(cards: list[dict[str, Any]], content_width: float) -> dict[str, float]:
-    if not cards:
-        top = _CARD_MARGIN_POINTS
-    else:
-        top = min(float(card["frame"]["y"]) for card in cards)
-    height = max(0.0, top - _CARD_GAP_POINTS - _CARD_MARGIN_POINTS)
+def _transcript_frame(content_width: float, content_height: float) -> dict[str, float]:
+    height = max(0.0, content_height - 2 * _CARD_MARGIN_POINTS)
     return {
         "x": _CARD_MARGIN_POINTS,
         "y": _CARD_MARGIN_POINTS,
@@ -240,6 +252,8 @@ def _surface_for_primitive(
         ),
         "material": _material(primitive),
         "clip": True,
+        "movable": True,
+        "surface_attachment": "sibling",
     }
 
 
@@ -285,7 +299,7 @@ def build_agent_shell_card_render_payload(
             "show_latest_response": show_latest_response,
             "text": _string((selected or {}).get("latest_response")) if show_latest_response else "",
         },
-        "transcript_frame": _transcript_frame(cards, content_width),
+        "transcript_frame": _transcript_frame(content_width, content_height),
         "cards": cards,
     }
 

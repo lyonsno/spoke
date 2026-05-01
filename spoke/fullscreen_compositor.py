@@ -1304,6 +1304,8 @@ def _agent_shell_child_shell_configs(parent_config: dict) -> list[dict]:
         if not isinstance(child_config, dict):
             continue
         child = dict(child_config)
+        child["surface_attachment"] = "sibling"
+        child["movable"] = True
         try:
             parent_left = float(parent_config.get("center_x", 0.0)) - (
                 float(parent_config.get("content_width_points", 0.0)) * 0.5
