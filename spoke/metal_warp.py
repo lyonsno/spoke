@@ -527,6 +527,8 @@ class MetalWarpPipeline:
         self._output_texture_size = None
         self._mip_texture = None
         self._mip_texture_size = None
+        self._multipass_textures = [None, None]
+        self._multipass_texture_size = None
         self._accum_textures = [None, None]  # ping-pong accumulation buffers
         self._accum_texture_size = None
         self._accum_index = 0
@@ -676,6 +678,24 @@ class MetalWarpPipeline:
             logger.warning("Failed to create accumulation textures %dx%d", width, height)
             self._accum_textures = [None, None]
 
+    def _ensure_multipass_textures(self, width, height):
+        """Create full-frame ping-pong textures for layered shell composition."""
+        if getattr(self, "_multipass_texture_size", None) == (width, height):
+            return
+        import objc
+        desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            80, width, height, False,
+        )
+        desc.setUsage_(1 | 2)  # read | write
+        self._multipass_textures = [
+            self._device.newTextureWithDescriptor_(desc),
+            self._device.newTextureWithDescriptor_(desc),
+        ]
+        self._multipass_texture_size = (width, height)
+        if self._multipass_textures[0] is None or self._multipass_textures[1] is None:
+            logger.warning("Failed to create multipass textures %dx%d", width, height)
+            self._multipass_textures = [None, None]
+
     def reset_temporal_state(self):
         """Force next frame to fully replace the accumulator.
 
@@ -768,19 +788,52 @@ class MetalWarpPipeline:
 
         if len(shell_configs) > 1:
             # Shared fullscreen hosts can carry multiple overlays on the same
-            # screen. Apply each shell in sequence against the same captured
-            # input, but disable temporal blending for the multi-shell path so
-            # the per-pass accumulation buffer does not cross-contaminate
-            # overlays with different bounding boxes.
+            # screen. Apply each shell against the accumulated previous pass:
+            # a later seam/radial client must not paint raw captured pixels
+            # over the main shell's center while its own dispatch box says
+            # "outside my warp zone". Ping-ponging keeps pass-through pixels
+            # equal to the previous shell composition instead of the original
+            # screen capture.
             self._ensure_accum_textures(out_w, out_h)
+            self._ensure_multipass_textures(out_w, out_h)
             accum_read = self._accum_textures[0]
             accum_write = self._accum_textures[1]
-            for config in shell_configs:
+            multipass_a, multipass_b = self._multipass_textures
+            if multipass_a is None or multipass_b is None:
+                command_buffer.presentDrawable_(drawable)
+                command_buffer.commit()
+                return True
+            current_source = output_texture
+            for index, config in enumerate(shell_configs):
                 box_x0, box_y0, box_x1, box_y1 = _warp_dispatch_box(out_w, out_h, config)
                 box_w = box_x1 - box_x0
                 box_h = box_y1 - box_y0
                 if box_w <= 0 or box_h <= 0:
                     continue
+                pass_dest = (
+                    output_texture
+                    if index == len(shell_configs) - 1
+                    else (multipass_a if index % 2 == 0 else multipass_b)
+                )
+                if current_source is not pass_dest:
+                    blit = command_buffer.blitCommandEncoder()
+                    blit.copyFromTexture_toTexture_(current_source, pass_dest)
+                    if _shell_needs_mip_texture(config) and self._mip_texture is not None:
+                        origin = (0, 0, 0)
+                        size = (out_w, out_h, 1)
+                        try:
+                            blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+                                current_source, 0, 0, origin, size,
+                                self._mip_texture, 0, 0, origin,
+                            )
+                        except Exception:
+                            try:
+                                blit.copyFromTexture_toTexture_(current_source, self._mip_texture)
+                            except Exception:
+                                pass
+                        blit.generateMipmapsForTexture_(self._mip_texture)
+                        self._record_mip_generation(out_w, out_h)
+                    blit.endEncoding()
                 warp_config = dict(config)
                 warp_config["temporal_blend"] = 1.0
                 params_data = _pack_warp_params(
@@ -801,10 +854,10 @@ class MetalWarpPipeline:
                 warp_input = (
                     self._mip_texture
                     if _shell_needs_mip_texture(config) and self._mip_texture is not None
-                    else input_texture
+                    else current_source
                 )
                 encoder.setTexture_atIndex_(warp_input, 0)
-                encoder.setTexture_atIndex_(output_texture, 1)
+                encoder.setTexture_atIndex_(pass_dest, 1)
                 if accum_read is not None and accum_write is not None:
                     encoder.setTexture_atIndex_(accum_read, 2)
                     encoder.setTexture_atIndex_(accum_write, 3)
@@ -814,6 +867,7 @@ class MetalWarpPipeline:
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
                 self._record_warp_dispatch(box_w, box_h)
+                current_source = pass_dest
         else:
             # Pass 2: compute warp over capsule bounding box only
             active_config = shell_configs[0] if shell_configs else {}

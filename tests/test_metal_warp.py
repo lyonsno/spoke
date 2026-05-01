@@ -253,9 +253,10 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
             return bytes(self._raw.raw[: metal_warp._WARP_PARAMS_SIZE])
 
     class FakeTexture:
-        def __init__(self, width, height):
+        def __init__(self, width, height, label):
             self._width = width
             self._height = height
+            self.label = label
 
         def width(self):
             return self._width
@@ -282,22 +283,31 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     monkeypatch.setitem(sys.modules, "objc", fake_objc)
 
     class FakeDevice:
+        def __init__(self):
+            self.created_textures = 0
+
         def newTextureWithDescriptor_iosurface_plane_(self, desc, _surface, _plane):
-            return FakeTexture(desc.width, desc.height)
+            return FakeTexture(desc.width, desc.height, "input")
 
         def newTextureWithDescriptor_(self, desc):
-            return FakeTexture(desc.width, desc.height)
+            self.created_textures += 1
+            return FakeTexture(desc.width, desc.height, f"scratch-{self.created_textures}")
 
         def newBufferWithLength_options_(self, length, _options):
             return FakeBuffer(length)
 
     class FakeBlitEncoder:
-        def copyFromTexture_toTexture_(self, *_args):
+        def __init__(self):
+            self.copies = []
+
+        def copyFromTexture_toTexture_(self, src, dst):
+            self.copies.append((src.label, dst.label))
             return None
 
         def copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
-            self, *_args
+            self, src, _src_slice, _src_level, _origin, _size, dst, _dst_slice, _dst_level, _dst_origin
         ):
+            self.copies.append((src.label, dst.label))
             return None
 
         def generateMipmapsForTexture_(self, _texture):
@@ -309,11 +319,17 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     class FakeComputeEncoder:
         def __init__(self):
             self.params_buffer = None
+            self.source_texture = None
+            self.dest_texture = None
 
         def setComputePipelineState_(self, _pipeline):
             return None
 
-        def setTexture_atIndex_(self, _texture, _index):
+        def setTexture_atIndex_(self, texture, index):
+            if index == 0:
+                self.source_texture = texture
+            elif index == 1:
+                self.dest_texture = texture
             return None
 
         def setBuffer_offset_atIndex_(self, buffer, _offset, index):
@@ -329,9 +345,12 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     class FakeCommandBuffer:
         def __init__(self):
             self.encoders = []
+            self.blit_encoders = []
 
         def blitCommandEncoder(self):
-            return FakeBlitEncoder()
+            encoder = FakeBlitEncoder()
+            self.blit_encoders.append(encoder)
+            return encoder
 
         def computeCommandEncoder(self):
             encoder = FakeComputeEncoder()
@@ -355,7 +374,7 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
 
     class FakeDrawable:
         def texture(self):
-            return FakeTexture(100, 50)
+            return FakeTexture(100, 50, "drawable")
 
     monkeypatch.setattr(
         metal_warp,
@@ -388,12 +407,14 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
                 "center_y": 20.0,
                 "content_width_points": 20.0,
                 "content_height_points": 10.0,
+                "mip_blur_strength": 1.0,
             },
             {
                 "center_x": 75.0,
                 "center_y": 20.0,
                 "content_width_points": 20.0,
                 "content_height_points": 10.0,
+                "mip_blur_strength": 0.0,
             },
         ],
     )
@@ -403,6 +424,9 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
 
     assert len(params_buffers) == 2
     assert len({id(buffer) for buffer in params_buffers}) == 2
+    assert encoders[1].source_texture is encoders[0].dest_texture
+    assert encoders[1].source_texture.label != "input"
+    assert encoders[-1].dest_texture.label == "drawable"
     assert [
         metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, buffer.payload())[10]
         for buffer in params_buffers
