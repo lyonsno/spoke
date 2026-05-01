@@ -297,3 +297,43 @@ def test_content_map_must_be_complete():
     assert rect is not None
     assert rect["width"] == 0.25
     assert rect["height"] == 0.25
+
+
+# ── smoke_hook _finish_on_main cleanup tests ──
+
+def _run_finish_on_main(app, result):
+    """Call _finish_on_main with AppHelper.callAfter executing immediately."""
+    from PyObjCTools import AppHelper
+    from spoke.positioning.smoke_hook import _finish_on_main
+
+    with patch.object(AppHelper, "callAfter", side_effect=lambda fn: fn()):
+        _finish_on_main(app, result)
+
+
+def test_finish_on_main_clears_command_overlay_active():
+    """_finish_on_main must clear command_overlay_active on the detector so
+    subsequent enter taps during recording route as command gestures instead
+    of triggering the cancel spring."""
+    app = MagicMock()
+    app._detector = MagicMock()
+    app._detector.command_overlay_active = True
+    app._menubar = None
+    app._overlay = None
+
+    _run_finish_on_main(app, None)
+
+    assert app._detector.command_overlay_active is False
+
+
+def test_finish_on_main_clears_transcribing():
+    """_finish_on_main must clear _transcribing so the next hold doesn't
+    divert to the parallel insert pathway or cancel spring."""
+    app = MagicMock()
+    app._transcribing = True
+    app._detector = MagicMock()
+    app._menubar = None
+    app._overlay = None
+
+    _run_finish_on_main(app, {"x": 0.5, "y": 0.0, "width": 0.5, "height": 1.0})
+
+    assert app._transcribing is False
