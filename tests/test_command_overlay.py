@@ -2956,6 +2956,46 @@ class TestAdaptiveCompositing:
 
         assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
 
+    def test_fullscreen_compositor_samples_brightness_before_materialization(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._brightness = 0.07
+        overlay._brightness_target = 0.07
+        overlay._apply_surface_theme = MagicMock()
+        overlay._start_materialization_animation = MagicMock()
+        refresh_calls = []
+        updates = []
+
+        class SampledCompositor:
+            sampled_brightness = 0.91
+
+            def refresh_brightness(self):
+                refresh_calls.append(True)
+
+            def update_shell_config(self, shell_config):
+                updates.append(dict(shell_config))
+
+        compositor = SampledCompositor()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert refresh_calls == [True]
+        assert overlay._brightness == pytest.approx(0.91)
+        overlay._start_materialization_animation.assert_called_once()
+        materialized_config = overlay._start_materialization_animation.call_args.args[0]
+        assert materialized_config["initial_brightness"] == pytest.approx(0.91)
+        assert updates[-1]["initial_brightness"] == pytest.approx(0.91)
+
     def test_fullscreen_compositor_receives_display_local_shell_center(
         self, mock_pyobjc, monkeypatch
     ):

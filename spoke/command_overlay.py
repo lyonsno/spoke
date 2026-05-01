@@ -3896,6 +3896,29 @@ class CommandOverlay(NSObject):
         finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
 
+    def _seed_brightness_from_optical_compositor(self) -> float | None:
+        """Pull one compositor-side background sample before materialization."""
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return None
+        refresher = getattr(compositor, "refresh_brightness", None)
+        if callable(refresher):
+            try:
+                refresher()
+            except Exception:
+                logger.debug("Failed to refresh compositor brightness seed", exc_info=True)
+        try:
+            raw_brightness = getattr(compositor, "sampled_brightness", self._brightness)
+        except Exception:
+            return None
+        if not isinstance(raw_brightness, numbers.Number):
+            return None
+        brightness = _clamp01(float(raw_brightness))
+        self._brightness = brightness
+        self._brightness_target = brightness
+        self._brightness_sample_tick = 0
+        return brightness
+
     def _set_overlay_scale(self, scale: float) -> None:
         if self._wrapper_view is None:
             return
@@ -4618,16 +4641,22 @@ class CommandOverlay(NSObject):
                 self._materialization_progress = 0.0
                 self._deferred_materialization_shell_config = dict(final_shell_config)
                 self._suppress_stale_fill_until_ready = True
+                sampled_brightness = self._seed_brightness_from_optical_compositor()
+                if sampled_brightness is not None:
+                    final_shell_config["initial_brightness"] = sampled_brightness
+                    start_shell_config["initial_brightness"] = sampled_brightness
+                    self._deferred_materialization_shell_config[
+                        "initial_brightness"
+                    ] = sampled_brightness
+                try:
+                    compositor.update_shell_config(start_shell_config)
+                except Exception:
+                    logger.debug("Failed to seed command materialization slit", exc_info=True)
                 try:
                     self._apply_surface_theme()
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
                 self._start_deferred_materialization_if_ready()
-                if getattr(self, "_deferred_materialization_shell_config", None) is not None:
-                    try:
-                        compositor.update_shell_config(start_shell_config)
-                    except Exception:
-                        logger.debug("Failed to hold command materialization slit", exc_info=True)
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
