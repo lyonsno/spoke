@@ -382,11 +382,14 @@ class TestDismissAnimation:
         assert done is False
 
     def test_animation_completes_after_200ms(self, mock_pyobjc):
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        for _ in range(12):
+        frames_to_duration = math.ceil(
+            mod._DISMISS_DURATION_S * mod._DISMISS_ANIM_FPS
+        )
+        for _ in range(frames_to_duration):
             overlay._cancelAnimStep_(None)
 
         assert overlay._visible is False
@@ -411,6 +414,11 @@ class TestDismissAnimation:
 
 class TestOpticalShellMaterialization:
     """Assistant optical-shell materialization should be geometry-driven."""
+
+    def test_materialization_uses_high_refresh_smoke_clock(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        assert mod._DISMISS_ANIM_FPS == pytest.approx(144.0)
 
     def test_materialization_starts_as_pressure_slit_before_vertical_bloom(
         self, mock_pyobjc
