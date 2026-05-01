@@ -21,7 +21,8 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Literal
+from types import MappingProxyType
+from typing import Any, Literal, Mapping
 
 import objc
 
@@ -88,6 +89,7 @@ class OverlayRenderSnapshot:
     material: OpticalShellMaterialSnapshot
     excluded_window_ids: tuple[int, ...] = ()
     z_index: int = 0
+    optical_field: Mapping[str, Any] | None = None
 
 
 def _load_screencapturekit_bridge():
@@ -1279,6 +1281,8 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
             config[key] = value
     if snapshot.excluded_window_ids:
         config["excluded_window_ids"] = tuple(snapshot.excluded_window_ids)
+    if snapshot.optical_field is not None:
+        config["optical_field"] = dict(snapshot.optical_field)
     return config
 
 
@@ -1329,6 +1333,9 @@ def _snapshot_from_shell_config(
         debug_visualize=bool(config.get("debug_visualize", False)),
         debug_grid_spacing_points=float(config.get("debug_grid_spacing_points", 18.0)),
     )
+    optical_field = None
+    if isinstance(config.get("optical_field"), dict):
+        optical_field = MappingProxyType(dict(config["optical_field"]))
     return OverlayRenderSnapshot(
         identity=identity,
         generation=generation,
@@ -1337,6 +1344,7 @@ def _snapshot_from_shell_config(
         material=material,
         excluded_window_ids=tuple(int(v) for v in config.get("excluded_window_ids", excluded_window_ids)),
         z_index=int(config.get("z_index", 0)),
+        optical_field=optical_field,
     )
 
 
