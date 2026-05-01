@@ -430,8 +430,14 @@ class TestOpticalShellMaterialization:
         assert mod._FADE_IN_S == pytest.approx(0.16 * scale)
         assert mod._ENTRANCE_POP_S == pytest.approx(0.15 * scale)
         assert mod._OPTICAL_MATERIALIZATION_BASE_S == pytest.approx(1.36 * scale)
+        assert mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP == pytest.approx(2.0)
+        assert mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_S == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_BASE_S
+            * mod._OPTICAL_MATERIALIZATION_BASE_SPREAD_END
+            / mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
+        )
         assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
-            1.50 * scale
+            0.75 * scale
         )
         assert mod._FADE_OUT_S == pytest.approx(0.5 * scale)
         assert mod._DISMISS_DURATION_S == pytest.approx(0.2 * scale)
@@ -522,7 +528,11 @@ class TestOpticalShellMaterialization:
             shell_config,
             direction=-1,
         )
-        seam_open_s = mod._OPTICAL_MATERIALIZATION_BASE_S * 0.77
+        seam_open_s = (
+            mod._OPTICAL_MATERIALIZATION_BASE_S
+            * mod._OPTICAL_MATERIALIZATION_BASE_SPREAD_END
+            / mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
+        )
         assert mod._OPTICAL_MATERIALIZATION_SPREAD_END == pytest.approx(
             seam_open_s / mod._OPTICAL_MATERIALIZATION_S
         )
@@ -533,7 +543,7 @@ class TestOpticalShellMaterialization:
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
         )
         assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
-            1.5 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+            0.75 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
@@ -600,8 +610,15 @@ class TestOpticalShellMaterialization:
         mod = importlib.import_module("spoke.command_overlay")
 
         seed = mod._materialization_fill_state(0.0)
-        wide_warp = mod._materialization_fill_state(0.55)
-        early_slit = mod._materialization_fill_state(0.62)
+        wide_warp = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_START * 0.92
+        )
+        early_slit = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_START + 0.25 * (
+                mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+                - mod._OPTICAL_MATERIAL_FILL_START
+            )
+        )
         gathering = mod._materialization_fill_state(
             mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.25 * (
                 mod._OPTICAL_MATERIAL_FILL_FULL_AT
@@ -937,7 +954,11 @@ class TestOpticalShellMaterialization:
         assert start["content_width_points"] == pytest.approx(
             start["content_height_points"]
         )
-        assert start["content_width_points"] > base["content_height_points"] * 2.75
+        old_diameter = min(
+            base["content_width_points"] * 0.52,
+            base["content_height_points"] * 2.9,
+        )
+        assert start["content_width_points"] >= old_diameter * math.sqrt(10.0)
         assert start["scar_amount"] > 0.0
         assert rebound["scar_amount"] < 0.0
         assert abs(rebound["scar_amount"]) > abs(start["scar_amount"])
@@ -1369,7 +1390,10 @@ class TestOpticalShellMaterialization:
         assert main_config["content_width_points"] != pytest.approx(
             main_config["content_height_points"]
         )
-        assert main_config["content_width_points"] < shell_config["content_width_points"]
+        assert main_config["content_width_points"] == pytest.approx(
+            shell_config["content_width_points"]
+        )
+        assert main_config["content_height_points"] < shell_config["content_height_points"]
         radial_config = radial_compositor.update_shell_config.call_args.args[0]
         assert radial_config["warp_mode"] == pytest.approx(2.0)
         assert radial_config["content_width_points"] == pytest.approx(
