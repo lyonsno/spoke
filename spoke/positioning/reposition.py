@@ -27,14 +27,12 @@ POS_ROWS = 6
 POS_COLS = 6
 
 INTENT_SYSTEM = (
-    "You convert user requests about overlay positioning into structured intents.\n\n"
-    "The user wants to reposition an overlay on their screen. There are two modes:\n\n"
+    "Your only job is to classify overlay positioning requests.\n\n"
+    "The user wants to reposition an overlay on their screen. There are only two modes:\n\n"
     "1. AVOID mode: The user wants the overlay to avoid certain content.\n"
-    "   Output: AVOID: <content noun phrase>\n\n"
+    "   Output only: AVOID: <content noun phrase>\n\n"
     "2. TARGET mode: The user wants the overlay to go to a specific screen region.\n"
-    "   Output: TARGET: <region description>\n"
-    "   Valid regions: top-left, top, top-right, left, center, right, "
-    "bottom-left, bottom, bottom-right, top-half, bottom-half, left-half, right-half\n\n"
+    "   Output only: TARGET: <short region description>\n\n"
     "Examples:\n"
     "- 'stop blocking my code' → AVOID: code\n"
     "- 'move out of the way of the terminal text' → AVOID: terminal text\n"
@@ -42,13 +40,13 @@ INTENT_SYSTEM = (
     "- 'avoid the regions with blue or purple text' → AVOID: blue, purple, or lavender text\n"
     "- 'can you please move out of the way' → AVOID: important content\n"
     "- 'just move' → AVOID: important content\n"
-    "- 'go to the top right' → TARGET: top-right\n"
+    "- 'go to the top right' → TARGET: top right\n"
     "- 'occupy the middle of the screen' → TARGET: center\n"
     "- 'position yourself in the middle' → TARGET: center\n"
     "- 'move to the bottom' → TARGET: bottom\n"
-    "- 'can you go to the left side' → TARGET: left-half\n"
-    "- 'stay in the top half' → TARGET: top-half\n\n"
-    "Output ONLY the mode and value. Nothing else."
+    "- 'can you go to the left side' → TARGET: left side\n"
+    "- 'stay in the top half' → TARGET: top half\n\n"
+    "Output ONLY the mode prefix and value. Nothing else. No explanation."
 )
 
 TARGET_SYSTEM = (
