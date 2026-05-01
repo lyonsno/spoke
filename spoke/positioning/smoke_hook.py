@@ -279,8 +279,10 @@ def _flash_debug_grid(
     )
     from Quartz import CALayer, CATextLayer
 
-    rows, cols = 4, 4
-    row_labels = "ABCD"
+    from .reposition import POS_ROWS, POS_COLS
+    import string
+    rows, cols = POS_ROWS, POS_COLS
+    row_labels = string.ascii_uppercase[:rows]
     cell_w = sw / cols
     cell_h = sh / rows
 
