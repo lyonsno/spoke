@@ -1448,6 +1448,49 @@ class TestTrayAwareness:
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
+    def test_enter_held_across_stale_window_still_routes_as_command(
+        self, input_tap_module
+    ):
+        """Enter continuously held across a long operation (e.g. positioning
+        pipeline) should still route as enter_held on the next space gesture,
+        even though the Enter keyDown timestamp is older than the freshness
+        window.  Quartz confirms it is physically held; _enter_observed is
+        True; only the timestamp is stale."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        # Simulate Enter keyDown at t=10.0
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        with patch.object(mod.time, "monotonic", return_value=10.0):
+            mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert det._enter_held is True
+        assert det._enter_observed is True
+
+        # Time passes well beyond the 0.75s freshness window (positioning
+        # pipeline took ~2s).  Enter is still physically held — Quartz confirms.
+        Quartz.CGEventSourceKeyState.return_value = True
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+
+        with patch.object(mod.time, "monotonic", return_value=12.5):
+            result_down = mod._event_tap_callback(
+                None, Quartz.kCGEventKeyDown, event, None
+            )
+        assert result_down is None  # suppressed space
+        assert det._enter_held is True, (
+            "Quartz confirms Enter is physically held and _enter_observed is "
+            "True — stale timestamp alone must not clear the chord"
+        )
+
+        det.holdTimerFired_(None)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
     def test_stale_repeat_keydown_promotes_waiting_to_recording_immediately(
         self, input_tap_module
     ):

@@ -102,6 +102,13 @@ def _finish_on_main(app, result: dict | None) -> None:
         app._transcribing = False
         if app._menubar is not None:
             app._menubar.set_recording(False)
+        # Clear command_overlay_active so the next enter tap during recording
+        # routes as a command gesture instead of triggering the cancel spring.
+        # The positioning pathway leaves the overlay visible but it is not an
+        # active generation — the cancel spring should not intercept.
+        det = getattr(app, '_detector', None)
+        if det is not None:
+            det.command_overlay_active = False
         # Hide the user preview overlay so it doesn't sit there stale
         if getattr(app, '_overlay', None) is not None:
             app._overlay.hide()

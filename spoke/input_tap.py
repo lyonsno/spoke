@@ -815,11 +815,16 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 actual_enter_held = _current_enter_key_state()
                 if actual_enter_held is not None:
                     if actual_enter_held:
-                        if (
-                            getattr(det, '_enter_observed', False)
-                            and det._enter_observation_is_fresh()
-                        ):
+                        if getattr(det, '_enter_observed', False):
+                            # Quartz confirms Enter is physically down and we
+                            # saw the keyDown ourselves. Trust it regardless of
+                            # timestamp — a continuously held key across a long
+                            # operation (e.g. positioning pipeline) will have a
+                            # stale timestamp but is still genuinely held.
+                            # Refresh the timestamp so subsequent checks stay
+                            # fresh for this gesture.
                             det._enter_held = True
+                            det._enter_last_down_monotonic = time.monotonic()
                         else:
                             # A bare Quartz "Enter is down" probe can stay
                             # wedged true across a missed keyUp or relaunch.
