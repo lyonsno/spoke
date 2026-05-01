@@ -148,12 +148,130 @@ def _finish_on_main(app, result: dict | None) -> None:
         if target is not None:
             _move_overlay(target, x, mac_y, w, h)
 
+        # Flash the debug grid showing which cells the model marked YES/NO
+        content_map = result.get("content_map")
+        if content_map is not None:
+            _flash_debug_grid(sw, sh, content_map, content_desc)
+
         if app._menubar is not None:
             app._menubar.set_status_text(
                 f"Positioned: avoiding {content_desc} ({elapsed:.1f}s)"
             )
 
     AppHelper.callAfter(_do)
+
+
+def _flash_debug_grid(
+    sw: float, sh: float,
+    content_map: dict[str, bool],
+    content_desc: str,
+    duration: float = 3.0,
+) -> None:
+    """Flash a transparent 4×4 grid overlay on screen showing YES/NO cells.
+
+    YES cells (contain content to avoid) are red, NO cells (empty) are green.
+    Each cell shows its label and YES/NO. The content description is shown
+    at the top. The overlay auto-dismisses after `duration` seconds.
+    """
+    from AppKit import (
+        NSBackingStoreBuffered,
+        NSBorderlessWindowMask,
+        NSColor,
+        NSFont,
+        NSMakeRect,
+        NSMutableParagraphStyle,
+        NSScreen,
+        NSView,
+        NSWindow,
+    )
+    from Foundation import NSTimer
+    from Quartz import CALayer, CATextLayer
+
+    rows, cols = 4, 4
+    row_labels = "ABCD"
+    cell_w = sw / cols
+    cell_h = sh / rows
+
+    # Create a full-screen transparent window
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(0, 0, sw, sh),
+        NSBorderlessWindowMask,
+        NSBackingStoreBuffered,
+        False,
+    )
+    win.setLevel_(2147483647)  # above everything
+    win.setOpaque_(False)
+    win.setBackgroundColor_(NSColor.clearColor())
+    win.setIgnoresMouseEvents_(True)
+    win.setHasShadow_(False)
+
+    content = win.contentView()
+    content.setWantsLayer_(True)
+    root = content.layer()
+
+    for r_idx, row_letter in enumerate(row_labels):
+        for c_idx in range(cols):
+            cell_key = f"{row_letter}{c_idx + 1}"
+            has_content = content_map.get(cell_key, True)
+
+            # Cell background
+            cell = CALayer.alloc().init()
+            # macOS y: bottom-left origin. Row A is the top of the screen.
+            mac_y = sh - (r_idx + 1) * cell_h
+            cell.setFrame_(((c_idx * cell_w, mac_y), (cell_w, cell_h)))
+            if has_content:
+                cell.setBackgroundColor_(
+                    NSColor.colorWithRed_green_blue_alpha_(1.0, 0.2, 0.2, 0.25).CGColor()
+                )
+            else:
+                cell.setBackgroundColor_(
+                    NSColor.colorWithRed_green_blue_alpha_(0.2, 1.0, 0.2, 0.25).CGColor()
+                )
+            cell.setBorderWidth_(1.0)
+            cell.setBorderColor_(
+                NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.4).CGColor()
+            )
+            root.addSublayer_(cell)
+
+            # Cell label
+            label = CATextLayer.alloc().init()
+            label_h = 40
+            label.setFrame_(((c_idx * cell_w, mac_y + cell_h / 2 - label_h / 2),
+                             (cell_w, label_h)))
+            label.setString_(f"{cell_key}: {'YES' if has_content else 'NO'}")
+            label.setFontSize_(16)
+            label.setForegroundColor_(
+                NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.9).CGColor()
+            )
+            label.setAlignmentMode_("center")
+            label.setContentsScale_(2.0)
+            root.addSublayer_(label)
+
+    # Title bar showing what content was detected
+    title = CATextLayer.alloc().init()
+    title.setFrame_(((0, sh - 30), (sw, 30)))
+    title.setString_(f"Avoiding: {content_desc}")
+    title.setFontSize_(14)
+    title.setForegroundColor_(
+        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 0.5, 0.9).CGColor()
+    )
+    title.setBackgroundColor_(
+        NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.5).CGColor()
+    )
+    title.setAlignmentMode_("center")
+    title.setContentsScale_(2.0)
+    root.addSublayer_(title)
+
+    win.setAlphaValue_(1.0)
+    win.orderFront_(None)
+
+    # Auto-dismiss after duration
+    def _dismiss(timer):
+        win.orderOut_(None)
+
+    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        duration, win, "close", None, False
+    )
 
 
 def _get_main_screen_frame():
@@ -195,6 +313,13 @@ def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
     if spring_tint is not None:
         spring_tint.setFrame_(((0, 0), (w, h)))
 
+    # Resize backdrop layer to cover the new content area
+    backdrop = getattr(overlay, "_backdrop_layer", None)
+    if backdrop is not None:
+        overscan = getattr(overlay, "_backdrop_capture_overscan_points", 0)
+        backdrop.setFrame_(((-overscan, -overscan),
+                            (w + 2 * overscan, h + 2 * overscan)))
+
     # Resize scroll view and text container to fit the new content area
     scroll = getattr(overlay, "_scroll_view", None)
     if scroll is not None:
@@ -204,6 +329,9 @@ def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
         container = text_view.textContainer()
         if container is not None:
             container.setContainerSize_((w - 24, 1.0e7))
+        # Reset text view frame to match scroll view bounds
+        if scroll is not None:
+            text_view.setFrame_(scroll.bounds())
 
     # Regenerate the SDF fill image at the new dimensions so the
     # capsule shape matches the repositioned frame.
@@ -213,6 +341,23 @@ def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
             ridge_masks(w, h)
         except Exception:
             logger.warning("Failed to regenerate ridge masks at new size", exc_info=True)
+
+    # Update backdrop capture geometry for the new window position
+    # so the warp/blur samples from the correct screen region.
+    update_backdrop = getattr(overlay, "_update_backdrop_capture_geometry", None)
+    if update_backdrop is not None:
+        try:
+            update_backdrop()
+        except Exception:
+            logger.warning("Failed to update backdrop capture geometry", exc_info=True)
+
+    # Force a backdrop refresh so the warp renders at the new position
+    refresh_backdrop = getattr(overlay, "_refresh_backdrop_snapshot", None)
+    if refresh_backdrop is not None:
+        try:
+            refresh_backdrop()
+        except Exception:
+            logger.warning("Failed to refresh backdrop snapshot", exc_info=True)
 
     # Show if hidden
     if not overlay._window.isVisible():
