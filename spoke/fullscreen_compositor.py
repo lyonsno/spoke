@@ -1433,6 +1433,42 @@ class OverlayCompositorHost:
         )
         return self.publish(snapshot)
 
+    def update_client_configs(self, client_configs: dict[str, dict]) -> bool:
+        """Publish several client configs with one compositor-visible state swap."""
+        if not client_configs:
+            return True
+        updates: list[tuple[str, dict, OverlayRenderSnapshot]] = []
+        previous: dict[str, tuple[OverlayRenderSnapshot | None, int]] = {}
+        for client_id, shell_config in client_configs.items():
+            entry = self._clients.get(client_id)
+            if entry is None:
+                return False
+            generation = int(entry.get("generation", 0)) + 1
+            window_ids = self._window_ids_for_entry(entry)
+            snapshot = _snapshot_from_shell_config(
+                entry["identity"],
+                shell_config,
+                generation=generation,
+                excluded_window_ids=tuple(window_ids),
+            )
+            previous[client_id] = (entry.get("snapshot"), int(entry.get("generation", 0)))
+            updates.append((client_id, shell_config, snapshot))
+        for client_id, _shell_config, snapshot in updates:
+            entry = self._clients[client_id]
+            entry["identity"] = snapshot.identity
+            entry["snapshot"] = snapshot
+            entry["generation"] = max(int(entry.get("generation", 0)), snapshot.generation)
+        if not self._sync_host(start_if_needed=True):
+            for client_id, (snapshot, generation) in previous.items():
+                entry = self._clients.get(client_id)
+                if entry is not None:
+                    entry["snapshot"] = snapshot
+                    entry["generation"] = generation
+            if not any(client.get("snapshot") is not None for client in self._clients.values()):
+                _shared_overlay_hosts.pop(self._registry_key, None)
+            return False
+        return True
+
     def update_client_config_key(self, client_id: str, key: str, value) -> bool:
         entry = self._clients.get(client_id)
         if entry is None:

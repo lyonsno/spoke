@@ -290,6 +290,53 @@ def test_registry_reuses_one_host_per_display_for_distinct_clients(monkeypatch):
     ]
 
 
+def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    host = registry.host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(201),
+        content_view=object(),
+    )
+    seam = host.register_client(
+        _identity("assistant.command.dismiss_seam", host.display_id, "assistant"),
+        window=_FakeWindow(201),
+        content_view=object(),
+    )
+    assistant.update_shell_config(
+        {"center_x": 100.0, "center_y": 200.0, "content_width_points": 300.0}
+    )
+    compositor = _FakeFullScreenCompositor.instances[0]
+    compositor.updated_configs.clear()
+
+    assert host.update_client_configs(
+        {
+            "assistant.command": {
+                "center_x": 101.0,
+                "center_y": 200.0,
+                "content_width_points": 300.0,
+            },
+            "assistant.command.dismiss_seam": {
+                "center_x": 101.0,
+                "center_y": 200.0,
+                "content_width_points": 300.0,
+                "z_index": 10,
+                "warp_mode": 1.0,
+            },
+        }
+    )
+
+    assert seam is not assistant
+    assert len(compositor.updated_configs) == 1
+    assert [config["client_id"] for config in compositor.updated_configs[0]] == [
+        "assistant.command",
+        "assistant.command.dismiss_seam",
+    ]
+    assert compositor.updated_configs[0][0]["center_x"] == pytest.approx(101.0)
+    assert compositor.updated_configs[0][1]["warp_mode"] == pytest.approx(1.0)
+
+
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

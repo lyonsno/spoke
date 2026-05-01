@@ -169,6 +169,7 @@ _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS = (
 _OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS = (
     _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS
 )
+_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS = _OPTICAL_MATERIAL_FILL_SOLID_AT
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -865,14 +866,23 @@ def _dismiss_seam_tuning_for_close_progress(
     close_progress: float,
     tuning: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Map close progress onto the exact seam tuner coordinate path."""
+    """Map close progress onto the seam tuner path without firing peak too early."""
     settings = _seam_pucker_tuning_defaults()
     if tuning:
         for key, value in tuning.items():
             if key in settings:
                 settings[key] = float(value)
-    overlap_start = max(_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS, 1e-6)
-    phase = _clamp01((overlap_start - _clamp01(close_progress)) / overlap_start)
+    p = _clamp01(close_progress)
+    arm_start = max(_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS, 1e-6)
+    peak = max(_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS, 1e-6)
+    if p >= peak:
+        arm_phase = _smoothstep((arm_start - p) / max(arm_start - peak, 1e-6))
+        settings["preview_progress"] = 0.0
+        settings["seam_latch_intensity"] *= arm_phase
+        settings["scar_seam_length_frac"] = _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
+        return settings
+
+    phase = _clamp01((peak - p) / peak)
     settings["preview_progress"] = _lerp(
         0.0,
         _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS,
@@ -1673,6 +1683,40 @@ class CommandOverlay(NSObject):
             )
         except Exception:
             logger.debug("Failed to update command radial pucker compositor", exc_info=True)
+
+    def _publish_shared_compositor_configs(self, updates: list[tuple[object, dict]]) -> bool:
+        """Publish one coherent multi-shell frame when sidecars share a host."""
+        if not updates:
+            return True
+        host = getattr(updates[0][0], "_host", None)
+        updater = getattr(host, "update_client_configs", None)
+        if host is None or not callable(updater):
+            return False
+        configs: dict[str, dict] = {}
+        for client, config in updates:
+            if client is None or getattr(client, "_host", None) is not host:
+                return False
+            client_id = getattr(client, "_client_id", None)
+            if not client_id:
+                return False
+            configs[str(client_id)] = config
+        try:
+            return bool(updater(configs))
+        except Exception:
+            logger.debug("Failed to batch command compositor update", exc_info=True)
+            return False
+
+    def _publish_individual_compositor_configs(
+        self,
+        updates: list[tuple[object, dict]],
+    ) -> None:
+        for client, config in updates:
+            if client is None:
+                continue
+            try:
+                client.update_shell_config(config)
+            except Exception:
+                logger.debug("Failed to update command compositor client", exc_info=True)
 
     def _stop_dismiss_radial_pucker_compositor(self) -> None:
         compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
@@ -3447,6 +3491,7 @@ class CommandOverlay(NSObject):
         self._apply_materialization_fill_state(progress)
         try:
             shell_config = _materialized_optical_shell_config(final_config, progress)
+            compositor_updates: list[tuple[object, dict]] = []
             if getattr(self, "_materialization_direction", 1) < 0:
                 if progress <= _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS:
                     self._set_layer_hidden_without_actions(
@@ -3456,17 +3501,32 @@ class CommandOverlay(NSObject):
                     pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
                         progress
                     )
-                    self._update_dismiss_radial_pucker_compositor(
-                        final_config,
-                        pucker_progress,
-                    )
+                    self._pucker_tail_progress_offset = _clamp01(pucker_progress)
+                    radial_compositor = self._ensure_dismiss_radial_pucker_compositor()
+                    if radial_compositor is not None:
+                        compositor_updates.append(
+                            (
+                                radial_compositor,
+                                _dismiss_radial_pucker_shell_config(
+                                    final_config,
+                                    pucker_progress,
+                                ),
+                            )
+                        )
                 if progress <= _OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS:
-                    self._update_dismiss_seam_compositor(final_config, progress)
+                    seam_compositor = self._ensure_dismiss_seam_compositor()
+                    if seam_compositor is not None:
+                        compositor_updates.append(
+                            (
+                                seam_compositor,
+                                _dismiss_seam_latch_shell_config(final_config, progress),
+                            )
+                        )
                 else:
                     self._stop_dismiss_seam_compositor()
-            compositor.update_shell_config(
-                shell_config
-            )
+            compositor_updates.append((compositor, shell_config))
+            if not self._publish_shared_compositor_configs(compositor_updates):
+                self._publish_individual_compositor_configs(compositor_updates)
         except Exception:
             logger.debug("Failed to update command materialization shell", exc_info=True)
         if raw >= 1.0:
