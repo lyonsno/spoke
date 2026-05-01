@@ -47,34 +47,6 @@ def _provider_switch(text: str) -> str | None:
     return None
 
 
-def _cancel_active_run(text: str) -> bool:
-    tokens = re.findall(r"[a-z0-9]+", _normalized_text(text))
-    if not tokens:
-        return False
-    verbs = {"cancel", "stop", "interrupt", "kill"}
-    objects = {
-        ("agent",),
-        ("backend",),
-        ("run",),
-        ("session",),
-        ("generation",),
-        ("agent", "run"),
-        ("agent", "session"),
-        ("agent", "cli"),
-        ("agent", "cli", "run"),
-        ("agent", "cli", "session"),
-        ("backend", "run"),
-        ("backend", "session"),
-        ("cli", "run"),
-        ("cli", "session"),
-    }
-    fillers = {"the", "this", "active", "current", "running", "selected"}
-    if tokens[0] not in verbs:
-        return False
-    rest = [token for token in tokens[1:] if token not in fillers]
-    return tuple(rest) in objects
-
-
 def route_agent_shell_input(
     text: str,
     state: AgentShellState | None,
@@ -91,17 +63,6 @@ def route_agent_shell_input(
             text=stripped,
             provider=provider,
             control_action="switch_provider",
-        )
-
-    if _cancel_active_run(stripped):
-        return AgentShellRoutingDecision(
-            kind="mode_control",
-            text=stripped,
-            provider=state.provider,
-            spoke_session_id=state.spoke_session_id,
-            provider_session_id=state.provider_session_id,
-            cwd=state.cwd,
-            control_action="cancel_active_run",
         )
 
     return AgentShellRoutingDecision(

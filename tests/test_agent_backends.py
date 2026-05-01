@@ -1475,7 +1475,7 @@ class TestAgentShellRouting:
         assert decision.control_action == "switch_provider"
         assert decision.provider == "gemini-cli"
 
-    def test_active_agent_shell_routes_cancel_text_as_mode_control(self):
+    def test_active_agent_shell_cancel_text_stays_with_selected_provider(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
         decision = route_agent_shell_input(
@@ -1483,8 +1483,9 @@ class TestAgentShellRouting:
             AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
         )
 
-        assert decision.kind == "mode_control"
-        assert decision.control_action == "cancel_active_run"
+        assert decision.kind == "provider_message"
+        assert decision.control_action is None
+        assert decision.text == "cancel agent"
         assert decision.provider == "gemini-cli"
 
     def test_active_agent_shell_cancel_words_inside_message_do_not_trigger_control(self):
@@ -2230,7 +2231,7 @@ class TestAgentShellDelegateDispatch:
         assert calls[-1].args[0] == "commandComplete:"
         assert "Agent Shell switched to Codex" in calls[-1].args[1]["response"]
 
-    def test_agent_shell_cancel_text_cancels_active_provider_run(
+    def test_agent_shell_cancel_text_is_sent_as_replacement_message(
         self, main_module, monkeypatch
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
@@ -2251,10 +2252,14 @@ class TestAgentShellDelegateDispatch:
         assert delegate._agent_backend_manager.cancelled == [
             "agent-backend-gemini-cli-old"
         ]
-        assert delegate._agent_backend_manager.launched == []
-        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
-        assert calls[-1].args[0] == "commandComplete:"
-        assert "Cancelling Gemini CLI" in calls[-1].args[1]["response"]
+        assert delegate._agent_backend_manager.launched == [
+            {
+                "provider": "gemini-cli",
+                "prompt": "cancel this agent run",
+                "cwd": str(Path.cwd()),
+                "resume_id": "gemini-provider-old",
+            }
+        ]
 
     def test_agent_shell_new_message_preempts_active_provider_run(
         self, main_module, monkeypatch
