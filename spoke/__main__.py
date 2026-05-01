@@ -3717,6 +3717,7 @@ class SpokeAppDelegate(NSObject):
         provider: str,
         entry: dict,
         *,
+        selected_provider: str | None,
         selected_provider_session_id: str | None,
     ) -> dict:
         provider_session_id = entry.get("provider_session_id")
@@ -3748,29 +3749,131 @@ class SpokeAppDelegate(NSObject):
             "bearing": bearing,
             "activity_line": raw_card.get("activity_line") or "Ready to read",
             "latest_response": latest_response,
-            "selected": provider_session_id == selected_provider_session_id,
+            "selected": (
+                provider == selected_provider
+                and provider_session_id == selected_provider_session_id
+            ),
         }
         if "updated_sequence" in raw_card:
             card["updated_sequence"] = raw_card["updated_sequence"]
         card["display"] = card_display_contract(card, selected=card["selected"])
         return card
 
+    def _agent_shell_card_key(self, card: dict) -> tuple[str, str]:
+        provider = card.get("provider")
+        provider = provider if isinstance(provider, str) else ""
+        identifier = card.get("provider_session_id") or card.get("thread_id") or card.get("id")
+        identifier = identifier if isinstance(identifier, str) else ""
+        return provider, identifier
+
+    def _agent_shell_live_backend_cards_snapshot(
+        self,
+        *,
+        selected_provider: str | None,
+        selected_provider_session_id: str | None,
+    ) -> list[dict]:
+        manager = getattr(self, "_agent_backend_manager", None)
+        list_sessions = getattr(manager, "list_sessions", None)
+        if not callable(list_sessions):
+            return []
+        try:
+            sessions = list_sessions()
+        except Exception:
+            logger.exception("Failed to list Agent Shell backend sessions for cards")
+            return []
+        if not isinstance(sessions, list):
+            return []
+
+        cards: list[dict] = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            provider = session.get("provider")
+            if provider not in _AGENT_SHELL_PROVIDERS:
+                continue
+            session_id = session.get("id")
+            provider_session_id = session.get("provider_session_id")
+            if not isinstance(provider_session_id, str) or not provider_session_id:
+                provider_session_id = (
+                    session_id if isinstance(session_id, str) and session_id else ""
+                )
+            if not provider_session_id:
+                continue
+            entry = {"provider_session_id": provider_session_id}
+            prompt = session.get("prompt")
+            if isinstance(prompt, str) and prompt:
+                entry["last_utterance"] = prompt
+            result = session.get("result")
+            if isinstance(result, str) and result:
+                entry["last_response"] = result
+            thread_card = self._sanitize_agent_shell_thread_card(session.get("thread_card"))
+            if thread_card:
+                thread_card.setdefault("provider", provider)
+                thread_card.setdefault("provider_session_id", provider_session_id)
+                thread_card.setdefault("thread_id", provider_session_id)
+                entry["thread_card"] = thread_card
+            card = self._agent_shell_catalog_card(
+                provider,
+                entry,
+                selected_provider=selected_provider,
+                selected_provider_session_id=selected_provider_session_id,
+            )
+            if provider == selected_provider and not card["selected"]:
+                record = self._agent_shell_session_record(provider)
+                active_ids = {
+                    value
+                    for value in (
+                        record.get("active_spoke_session_id"),
+                        record.get("spoke_session_id"),
+                    )
+                    if isinstance(value, str) and value
+                }
+                if isinstance(session_id, str) and session_id in active_ids:
+                    card["selected"] = True
+                    card["display"] = card_display_contract(card, selected=True)
+            cards.append(card)
+        return cards
+
     def _agent_shell_thread_cards_snapshot(self, provider: str | None) -> list[dict]:
         if provider not in _AGENT_SHELL_PROVIDERS:
             return []
-        record = self._agent_shell_session_record(provider)
+        selected_provider = provider
+        record = self._agent_shell_session_record(selected_provider)
         selected_provider_session_id = record.get("provider_session_id")
         if not isinstance(selected_provider_session_id, str):
             selected_provider_session_id = None
-        catalog = self._sanitize_agent_shell_catalog(record.get("sessions"))
-        return [
-            self._agent_shell_catalog_card(
-                provider,
-                entry,
-                selected_provider_session_id=selected_provider_session_id,
-            )
-            for entry in catalog
-        ]
+        cards: list[dict] = []
+        index_by_key: dict[tuple[str, str], int] = {}
+        for catalog_provider in ("codex", "claude-code", "gemini-cli"):
+            catalog_record = self._agent_shell_session_record(catalog_provider)
+            catalog = self._sanitize_agent_shell_catalog(catalog_record.get("sessions"))
+            for entry in catalog:
+                card = self._agent_shell_catalog_card(
+                    catalog_provider,
+                    entry,
+                    selected_provider=selected_provider,
+                    selected_provider_session_id=selected_provider_session_id,
+                )
+                key = self._agent_shell_card_key(card)
+                if not key[1]:
+                    continue
+                index_by_key[key] = len(cards)
+                cards.append(card)
+
+        for card in self._agent_shell_live_backend_cards_snapshot(
+            selected_provider=selected_provider,
+            selected_provider_session_id=selected_provider_session_id,
+        ):
+            key = self._agent_shell_card_key(card)
+            if not key[1]:
+                continue
+            existing_index = index_by_key.get(key)
+            if existing_index is None:
+                index_by_key[key] = len(cards)
+                cards.append(card)
+            else:
+                cards[existing_index] = card
+        return cards
 
     def _agent_shell_current_catalog_entry(self, record: dict) -> dict[str, str] | None:
         provider_session_id = record.get("provider_session_id")
