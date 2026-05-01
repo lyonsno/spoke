@@ -436,13 +436,14 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 # Dark on dark, light on light — the overlay is a surface, not a glow.
 _COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
+_COMPOSITOR_LIGHT_FILL_ALPHA_BOOST = 1.50
 _PUNCHTHROUGH_BOOST_DARK = (0.0, 0.0, 0.0)
 _PUNCHTHROUGH_BOOST_LIGHT = (1.0, 1.0, 1.0)
 _PUNCHTHROUGH_BOOST_OPACITY_DARK = 0.42
 _PUNCHTHROUGH_BOOST_OPACITY_LIGHT = 0.75
 
 
-def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+def _compositor_fill_choice_for_brightness(brightness: float) -> float:
     # Steep sigmoid: commits to light or dark fill quickly, doesn't
     # linger in a bland mid-tone.  The transition is centered at 0.45
     # (biased slightly toward dark-fill) and covers ~0.15 of the
@@ -450,8 +451,22 @@ def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, flo
     t = _clamp01(brightness)
     # Remap to steep sigmoid: 6x gain centered at 0.45
     t = _clamp01((t - 0.45) * 6.0 + 0.5)
-    t = t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
+    return t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
+
+
+def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    t = _compositor_fill_choice_for_brightness(brightness)
     return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
+
+
+def _compositor_fill_alpha_multiplier_for_brightness(brightness: float) -> float:
+    # Only boost the light material used on dark backgrounds. The dark material
+    # on light backgrounds is already visually dense enough and should not drift.
+    return _lerp(
+        _COMPOSITOR_LIGHT_FILL_ALPHA_BOOST,
+        1.0,
+        _compositor_fill_choice_for_brightness(brightness),
+    )
 
 
 def _punchthrough_boost_style_for_brightness(
@@ -4220,6 +4235,11 @@ class CommandOverlay(NSObject):
                     interior = np.clip(
                         interior + edge_ridge * 0.50,
                         0.0, 1.0,
+                    ).astype(np.float32)
+                    interior = np.clip(
+                        interior * _compositor_fill_alpha_multiplier_for_brightness(_b),
+                        0.0,
+                        1.0,
                     ).astype(np.float32)
                     fill_alpha = np.where(inside_mask, interior, ext_exterior)
                     cached_fill_alpha = fill_alpha

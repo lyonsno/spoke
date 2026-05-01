@@ -3736,3 +3736,48 @@ class TestSDFCaching:
         assert dismiss_alpha[0, 0] == pytest.approx(0.0)
         assert dismiss_alpha[1, 1] > 0.0
         assert overlay._dismiss_fill_image == "image-2"
+
+    def test_assistant_light_fill_gets_alpha_boost_on_dark_background_only(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Dark-background light shell fill should be denser without dark-fill drift."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = MagicMock()
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        alphas = []
+
+        def fake_sdf(*_args):
+            return np.array(
+                [
+                    [2.0, 2.0, 2.0],
+                    [2.0, -100.0, 2.0],
+                    [2.0, 2.0, 2.0],
+                ],
+                dtype=np.float32,
+            )
+
+        def capture_image(alpha, *_rgb):
+            alphas.append(np.array(alpha, copy=True))
+            return f"image-{len(alphas)}", f"payload-{len(alphas)}".encode()
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", fake_sdf)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", capture_image)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._brightness = 0.0
+        overlay._apply_ridge_masks(600.0, 80.0)
+        dark_background_center = alphas[0][1, 1]
+
+        overlay._fill_image_signature = None
+        overlay._pending_fill_image_signature = None
+        overlay._brightness = 1.0
+        overlay._apply_ridge_masks(600.0, 80.0)
+        light_background_center = alphas[2][1, 1]
+
+        assert dark_background_center == pytest.approx(0.903, abs=0.01)
+        assert light_background_center == pytest.approx(0.851, abs=0.01)
