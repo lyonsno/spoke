@@ -3868,6 +3868,14 @@ class TestGeometryCaps:
         assert rendered["primitive_id"] == "codex-thread-1"
         assert rendered["latest_response"] == ""
         assert rendered["frame"]["width"] == pytest.approx(144.0)
+        assert (
+            config["agent_shell_card_optical_fields"]["surface_kind"]
+            == "agent_shell_card_optical_fields"
+        )
+        request = config["agent_shell_card_optical_fields"]["requests"][0]
+        assert request["caller_id"] == "agent.card.codex-thread-1"
+        assert request["profile"] == "quiet_chip"
+        assert request["compiled_shell_config"]["optical_field"]["profile"] == "quiet_chip"
 
     def test_update_layout_resets_text_geometry_to_match_visible_area(
         self, mock_pyobjc, monkeypatch

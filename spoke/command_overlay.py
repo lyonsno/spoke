@@ -51,7 +51,10 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
-from .agent_shell_card_renderer import build_agent_shell_card_render_payload
+from .agent_shell_card_renderer import (
+    build_agent_shell_card_optical_field_payload,
+    build_agent_shell_card_render_payload,
+)
 from .agent_thread_hud import build_agent_thread_hud
 from .optical_shell_metrics import OpticalShellMetrics
 
@@ -2168,6 +2171,11 @@ class CommandOverlay(NSObject):
                 content_width_points=float(config.get("content_width_points", 0.0)),
                 content_height_points=float(config.get("content_height_points", 0.0)),
             )
+            config["agent_shell_card_optical_fields"] = (
+                build_agent_shell_card_optical_field_payload(
+                    config["agent_shell_card_renderer"]
+                )
+            )
         if isinstance(cards, list) and cards:
             config = dict(config)
             config["surface_kind"] = "agent_shell"
@@ -2263,6 +2271,7 @@ class CommandOverlay(NSObject):
         agent_shell_header: str = "",
         agent_shell_footer: str = "",
         agent_shell_cards: list[dict] | None = None,
+        agent_shell_primitives: list[dict] | None = None,
     ) -> None:
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
@@ -2280,7 +2289,10 @@ class CommandOverlay(NSObject):
         self._utterance_text = ""
         self._collapsed_text = ""
         self._clear_agent_shell_chrome()
-        self.set_agent_shell_cards(agent_shell_cards or [])
+        if agent_shell_primitives:
+            self.set_agent_shell_primitives(agent_shell_primitives)
+        else:
+            self.set_agent_shell_cards(agent_shell_cards or [])
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -2669,13 +2681,17 @@ class CommandOverlay(NSObject):
         agent_shell_header: str = "",
         agent_shell_footer: str = "",
         agent_shell_cards: list[dict] | None = None,
+        agent_shell_primitives: list[dict] | None = None,
     ) -> None:
         """Replace recalled transcript and chrome with one layout pass."""
         self._utterance_text = utterance
         self._collapsed_text = ""
         self._response_text = ""
         self._set_agent_shell_chrome_texts(agent_shell_header, agent_shell_footer)
-        self.set_agent_shell_cards(agent_shell_cards or [])
+        if agent_shell_primitives:
+            self.set_agent_shell_primitives(agent_shell_primitives)
+        else:
+            self.set_agent_shell_cards(agent_shell_cards or [])
         if self._text_view is None or not self._visible:
             self._response_text = response
             return

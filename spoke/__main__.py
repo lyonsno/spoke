@@ -174,6 +174,7 @@ from .agent_backend_presenter import (
 )
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
+from .agent_shell_primitives import build_agent_shell_primitives
 from .agent_thread_cards import card_display_contract
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
@@ -4031,7 +4032,7 @@ class SpokeAppDelegate(NSObject):
         surface = dict(self._agent_shell_chrome_snapshot(provider))
         cards = self._agent_shell_thread_cards_snapshot(provider)
         if cards:
-            surface["agent_shell_cards"] = cards
+            surface["agent_shell_primitives"] = build_agent_shell_primitives(cards)
         return surface
 
     def _remember_agent_shell_chrome(
@@ -5713,8 +5714,11 @@ class SpokeAppDelegate(NSObject):
                     "agent_shell_header": chrome.get("agent_shell_header", ""),
                     "agent_shell_footer": chrome.get("agent_shell_footer", ""),
                 }
+                primitives = chrome.get("agent_shell_primitives")
                 cards = chrome.get("agent_shell_cards")
-                if cards:
+                if primitives:
+                    kwargs["agent_shell_primitives"] = primitives
+                elif cards:
                     kwargs["agent_shell_cards"] = cards
                 replace_transcript(**kwargs)
             else:
@@ -5726,8 +5730,12 @@ class SpokeAppDelegate(NSObject):
                     if callable(set_cards):
                         set_cards([])
                 else:
+                    set_primitives = getattr(overlay, "set_agent_shell_primitives", None)
                     set_cards = getattr(overlay, "set_agent_shell_cards", None)
-                    if callable(set_cards):
+                    primitives = chrome.get("agent_shell_primitives")
+                    if callable(set_primitives) and primitives:
+                        set_primitives(primitives)
+                    elif callable(set_cards):
                         set_cards(chrome.get("agent_shell_cards", []))
                 overlay.set_utterance(utterance)
                 overlay.set_response_text(_command_overlay_recall_preview(response))

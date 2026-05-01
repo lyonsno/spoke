@@ -111,3 +111,41 @@ def test_card_renderer_bounds_cards_above_transcript_without_overlap():
         assert surface["clip"] is True
         assert surface["material"]["style"] in {"thread_card", "quiet_chip"}
         assert transcript["y"] + transcript["height"] <= frame["y"]
+
+
+def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
+    from spoke.agent_shell_card_renderer import (
+        build_agent_shell_card_optical_field_payload,
+        build_agent_shell_card_render_payload,
+    )
+
+    primitives = [
+        _primitive("codex-inactive", priority=5),
+        _primitive("codex-selected", selected=True, show_latest_response=True),
+    ]
+    payload = build_agent_shell_card_render_payload(
+        primitives,
+        content_width_points=420.0,
+        content_height_points=160.0,
+    )
+
+    optical = build_agent_shell_card_optical_field_payload(payload)
+
+    assert optical["surface_kind"] == "agent_shell_card_optical_fields"
+    requests = optical["requests"]
+    assert [request["caller_id"] for request in requests] == [
+        "agent.card.codex-inactive",
+        "agent.card.codex-selected",
+    ]
+    inactive, selected = requests
+    assert inactive["profile"] == "agent_card"
+    assert inactive["role"] == "agent_card"
+    assert inactive["compiled_shell_config"]["optical_field"]["profile"] == "agent_card"
+    assert inactive["compiled_shell_config"]["center_x"] == inactive["bounds"]["x"] + inactive["bounds"]["width"] * 0.5
+    assert selected["profile"] == "agent_card"
+    assert selected["role"] == "selected_thread"
+    assert selected["z_index"] > inactive["z_index"]
+    assert selected["disturbances"][0]["kind"] == "readiness_pulse"
+    assert selected["compiled_shell_config"]["optical_field"]["disturbances"] == (
+        "readiness.codex-selected",
+    )

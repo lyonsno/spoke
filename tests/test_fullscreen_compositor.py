@@ -418,6 +418,15 @@ def test_shell_config_preserves_agent_shell_primitive_render_payload(monkeypatch
             }
         ],
     }
+    optical_fields = {
+        "surface_kind": "agent_shell_card_optical_fields",
+        "requests": [
+            {
+                "caller_id": "agent.card.codex-thread-1",
+                "profile": "agent_card",
+            }
+        ],
+    }
 
     assert client.update_shell_config(
         {
@@ -431,6 +440,7 @@ def test_shell_config_preserves_agent_shell_primitive_render_payload(monkeypatch
             "initial_brightness": 0.4,
             "agent_shell_primitives": primitives,
             "agent_shell_card_renderer": renderer,
+            "agent_shell_card_optical_fields": optical_fields,
             "surface_kind": "agent_shell",
         }
     )
@@ -438,7 +448,67 @@ def test_shell_config_preserves_agent_shell_primitive_render_payload(monkeypatch
     config = _FakeFullScreenCompositor.instances[0].updated_configs[-1][0]
     assert config["agent_shell_primitives"] == primitives
     assert config["agent_shell_card_renderer"] == renderer
+    assert config["agent_shell_card_optical_fields"] == optical_fields
     assert config["surface_kind"] == "agent_shell"
+
+
+def test_host_expands_agent_shell_card_optical_fields_into_visible_child_configs(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    screen = object()
+    host = registry.host_for_screen(screen)
+    client = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(253),
+        content_view=object(),
+    )
+
+    assert client.update_shell_config(
+        {
+            "center_x": 10.0,
+            "center_y": 20.0,
+            "content_width_points": 300.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 8.0,
+            "tail_width_points": 12.0,
+            "initial_brightness": 0.4,
+            "agent_shell_card_optical_fields": {
+                "surface_kind": "agent_shell_card_optical_fields",
+                "requests": [
+                    {
+                        "caller_id": "agent.card.codex-thread-1",
+                        "compiled_shell_config": {
+                            "client_id": "agent.card.codex-thread-1",
+                            "role": "agent_card",
+                            "center_x": 80.0,
+                            "center_y": 90.0,
+                            "content_width_points": 144.0,
+                            "content_height_points": 44.0,
+                            "corner_radius_points": 8.0,
+                            "band_width_points": 3.0,
+                            "tail_width_points": 2.0,
+                            "initial_brightness": 0.4,
+                            "z_index": 101,
+                            "optical_field": {
+                                "caller_id": "agent.card.codex-thread-1",
+                                "profile": "agent_card",
+                            },
+                        },
+                    }
+                ],
+            },
+            "surface_kind": "agent_shell",
+        }
+    )
+
+    configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    assert [config["client_id"] for config in configs] == [
+        "assistant.command",
+        "agent.card.codex-thread-1",
+    ]
+    assert configs[1]["role"] == "agent_card"
+    assert configs[1]["optical_field"]["profile"] == "agent_card"
 
 
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):

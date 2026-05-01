@@ -1289,6 +1289,35 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
     return config
 
 
+def _agent_shell_child_shell_configs(parent_config: dict) -> list[dict]:
+    optical_fields = parent_config.get("agent_shell_card_optical_fields")
+    if not isinstance(optical_fields, dict):
+        return []
+    requests = optical_fields.get("requests")
+    if not isinstance(requests, list):
+        return []
+    children: list[dict] = []
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        child_config = request.get("compiled_shell_config")
+        if not isinstance(child_config, dict):
+            continue
+        child = dict(child_config)
+        caller_id = request.get("caller_id")
+        if isinstance(caller_id, str) and caller_id:
+            child.setdefault("client_id", caller_id)
+        child.setdefault("parent_client_id", parent_config.get("client_id", ""))
+        child.setdefault("visible", True)
+        children.append(child)
+    return children
+
+
+def _snapshot_to_visible_shell_configs(snapshot: OverlayRenderSnapshot) -> list[dict]:
+    parent = _snapshot_to_shell_config(snapshot)
+    return [parent, *_agent_shell_child_shell_configs(parent)]
+
+
 def _snapshot_from_shell_config(
     identity: OverlayClientIdentity,
     shell_config: dict,
@@ -1343,6 +1372,7 @@ def _snapshot_from_shell_config(
             "agent_thread_hud",
             "agent_shell_primitives",
             "agent_shell_card_renderer",
+            "agent_shell_card_optical_fields",
             "surface_kind",
         )
         if key in config
@@ -1605,7 +1635,12 @@ class OverlayCompositorHost:
         for entry in self._clients.values():
             overlay_window_ids.extend(self._window_ids_for_entry(entry))
         snapshots = self.render_snapshots()
-        shell_configs = [_snapshot_to_shell_config(snapshot) for snapshot in snapshots if snapshot.visible]
+        shell_configs = [
+            config
+            for snapshot in snapshots
+            if snapshot.visible
+            for config in _snapshot_to_visible_shell_configs(snapshot)
+        ]
         set_excluded = getattr(self._compositor, "set_excluded_window_ids", None)
         if callable(set_excluded):
             set_excluded(overlay_window_ids)

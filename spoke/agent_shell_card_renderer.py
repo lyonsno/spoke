@@ -4,12 +4,26 @@ from __future__ import annotations
 
 from typing import Any
 
+from .optical_field import (
+    OpticalFieldBounds,
+    OpticalFieldDisturbance,
+    OpticalFieldProfileRef,
+    OpticalFieldRequest,
+    compile_placeholder_shell_config,
+)
+
 _CARD_MARGIN_POINTS = 12.0
 _CARD_GAP_POINTS = 8.0
 _CARD_MIN_WIDTH_POINTS = 92.0
 _CARD_MIN_HEIGHT_POINTS = 40.0
 _CARD_MAX_WIDTH_POINTS = 180.0
 _MAX_VISIBLE_CARDS = 4
+
+_MATERIAL_STYLE_TO_OPTICAL_PROFILE = {
+    "assistant_shell": "assistant_shell",
+    "thread_card": "agent_card",
+    "quiet_chip": "quiet_chip",
+}
 
 
 def _string(value: Any) -> str:
@@ -141,6 +155,61 @@ def _material(primitive: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _optical_profile_for_material(material: dict[str, Any]) -> str:
+    return _MATERIAL_STYLE_TO_OPTICAL_PROFILE.get(
+        _string(material.get("style")),
+        "agent_card",
+    )
+
+
+def _disturbances_for_card(card: dict[str, Any]) -> tuple[OpticalFieldDisturbance, ...]:
+    readiness = _string(card.get("readiness"))
+    if readiness not in {"working", "waiting", "failed"}:
+        return ()
+    primitive_id = _string(card.get("primitive_id"))
+    material = _mapping(card.get("material"))
+    strength = max(0.05, _number(material.get("optical_displacement"), 0.08))
+    kind = "blocked_shudder" if readiness == "failed" else "readiness_pulse"
+    return (
+        OpticalFieldDisturbance(
+            disturbance_id=f"readiness.{primitive_id}",
+            kind=kind,
+            mode="persistent",
+            strength=strength,
+            params={"readiness": readiness},
+        ),
+    )
+
+
+def _request_dict(request: OpticalFieldRequest) -> dict[str, Any]:
+    compiled = compile_placeholder_shell_config(request)
+    return {
+        "caller_id": request.caller_id,
+        "role": request.role,
+        "state": request.state,
+        "profile": request.profile.base,
+        "visible": request.visible,
+        "z_index": request.z_index,
+        "bounds": {
+            "x": request.bounds.x,
+            "y": request.bounds.y,
+            "width": request.bounds.width,
+            "height": request.bounds.height,
+        },
+        "disturbances": [
+            {
+                "disturbance_id": disturbance.disturbance_id,
+                "kind": disturbance.kind,
+                "mode": disturbance.mode,
+                "strength": disturbance.strength,
+                "params": dict(disturbance.params),
+            }
+            for disturbance in request.disturbances
+        ],
+        "compiled_shell_config": compiled,
+    }
+
+
 def _surface_for_primitive(
     primitive: dict[str, Any],
     *,
@@ -218,4 +287,46 @@ def build_agent_shell_card_render_payload(
         },
         "transcript_frame": _transcript_frame(cards, content_width),
         "cards": cards,
+    }
+
+
+def build_agent_shell_card_optical_field_payload(
+    render_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Build placeholder optical-field requests for rendered Agent Shell cards."""
+    cards = render_payload.get("cards") if isinstance(render_payload, dict) else None
+    requests: list[dict[str, Any]] = []
+    if not isinstance(cards, list):
+        cards = []
+    for index, card in enumerate(cards):
+        if not isinstance(card, dict):
+            continue
+        primitive_id = _string(card.get("primitive_id"))
+        frame = _mapping(card.get("frame"))
+        try:
+            bounds = OpticalFieldBounds(
+                x=_number(frame.get("x")),
+                y=_number(frame.get("y")),
+                width=_number(frame.get("width")),
+                height=_number(frame.get("height")),
+            )
+        except ValueError:
+            continue
+        material = _mapping(card.get("material"))
+        profile = _optical_profile_for_material(material)
+        selected = bool(card.get("selected"))
+        request = OpticalFieldRequest(
+            caller_id=f"agent.card.{primitive_id}",
+            bounds=bounds,
+            role="selected_thread" if selected else "agent_card",
+            state="rest",
+            profile=OpticalFieldProfileRef(base=profile),
+            disturbances=_disturbances_for_card(card),
+            visible=True,
+            z_index=(200 + index) if selected else (100 + index),
+        )
+        requests.append(_request_dict(request))
+    return {
+        "surface_kind": "agent_shell_card_optical_fields",
+        "requests": requests,
     }

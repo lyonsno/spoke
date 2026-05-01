@@ -2095,6 +2095,42 @@ class TestAgentShellMenuState:
         assert cards[1]["display"]["primary_text"] == "claude restart answer"
         assert cards[2]["display"]["display_state"] == "inactive"
 
+    def test_agent_shell_surface_snapshot_exposes_card_primitives(self, main_module):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "claude-code": {
+                "provider_session_id": "claude-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "claude question",
+                        "last_response": "claude answer",
+                    },
+                    {
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "other claude question",
+                        "last_response": "other claude answer",
+                    },
+                ],
+            }
+        }
+
+        surface = delegate._agent_shell_surface_snapshot("claude-code")
+
+        assert "agent_shell_cards" not in surface
+        assert [primitive["provider_session_id"] for primitive in surface["agent_shell_primitives"]] == [
+            "claude-thread-1",
+            "claude-thread-2",
+        ]
+        assert [primitive["kind"] for primitive in surface["agent_shell_primitives"]] == [
+            "selected_thread",
+            "thread_card",
+        ]
+        assert surface["agent_shell_primitives"][0]["display"]["show_latest_response"] is True
+
     def test_agent_shell_thread_cards_snapshot_merges_live_backend_public_sessions(
         self, main_module
     ):
