@@ -502,6 +502,18 @@ class TestAgentBackendManager:
             )
         ]
 
+    def test_claude_command_uses_bypass_permissions_fallback_contract(self):
+        from spoke.agent_backends import _claude_command
+
+        command = _claude_command(
+            claude_path="/usr/local/bin/claude",
+            resume_id=None,
+        )
+
+        assert "--permission-mode" in command
+        assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+        assert "dontAsk" not in command
+
     def test_gemini_stream_events_preserve_session_tool_and_stats_shape(self):
         from spoke.agent_backends import _events_from_gemini_stream_event
 

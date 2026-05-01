@@ -306,7 +306,7 @@ def _claude_command(
         "stream-json",
         "--verbose",
         "--permission-mode",
-        "dontAsk",
+        "bypassPermissions",
     ]
     if resume_id:
         command.extend(["--resume", resume_id])
