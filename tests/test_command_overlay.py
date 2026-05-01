@@ -1968,10 +1968,11 @@ class TestShowFinishHide:
         overlay.set_agent_shell_header.assert_called_once_with("Worktree: codex-spinal-tap")
         overlay.set_agent_shell_footer.assert_called_once_with("model gpt-5.5 | cwd /tmp/spoke")
 
-    def test_agent_shell_chrome_theme_uses_neutral_gray_not_glow_purple(
+    def test_agent_shell_chrome_theme_uses_adaptive_text_contrast_not_faint_gray(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._brightness = 0.0
         overlay._agent_shell_header_label = MagicMock()
         overlay._agent_shell_header_label.isHidden.return_value = False
         overlay._agent_shell_footer_label = MagicMock()
@@ -1984,10 +1985,8 @@ class TestShowFinishHide:
         assert len(calls) == 2
         for call in calls:
             red, green, blue, alpha = call.args
-            assert red == pytest.approx(green)
-            assert green == pytest.approx(blue)
-            assert red == pytest.approx(0.56)
-            assert alpha == pytest.approx(0.82)
+            assert (red, green, blue) == pytest.approx((0.12, 0.13, 0.16))
+            assert alpha == pytest.approx(0.92)
 
 
 class TestWindowLayering:

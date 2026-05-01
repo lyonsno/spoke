@@ -56,6 +56,8 @@ _ACP_NPX_PACKAGES = {
     "codex": "@zed-industries/codex-acp",
     "claude-code": "@zed-industries/claude-agent-acp",
 }
+_BACKEND_ERROR_DETAIL_MAX_LINES = 20
+_GENERIC_CLAUDE_STREAM_ERRORS = {"Claude Code returned an error"}
 _GEMINI_OPERATOR_PROMPT_PREFIX = """You are running inside Spoke's compact operator shell.
 Answer the user's latest instruction directly and concisely.
 Do not print an implementation plan, checklist, file-by-file itinerary, or "I will..." reconnaissance log unless the user explicitly asks for one.
@@ -87,6 +89,45 @@ class AgentBackendRunResult:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _middle_truncate_lines(text: str, max_lines: int = _BACKEND_ERROR_DETAIL_MAX_LINES) -> str:
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    head_count = max_lines // 2
+    tail_count = max_lines - head_count
+    omitted = len(lines) - head_count - tail_count
+    return "\n".join(
+        [
+            *lines[:head_count],
+            f"[... omitted {omitted} lines ...]",
+            *lines[-tail_count:],
+        ]
+    )
+
+
+def _backend_error_detail(
+    *,
+    stream_error: str,
+    stderr: str,
+    fallback: str,
+    generic_stream_errors: set[str] | None = None,
+) -> str:
+    stream_detail = stream_error.strip()
+    stderr_detail = stderr.strip()
+    generic_stream_errors = generic_stream_errors or set()
+    if stream_detail and stderr_detail:
+        if stream_detail in generic_stream_errors:
+            return _middle_truncate_lines(stderr_detail)
+        if stderr_detail in stream_detail:
+            return _middle_truncate_lines(stream_detail)
+        return _middle_truncate_lines(f"{stream_detail}\n{stderr_detail}")
+    if stream_detail:
+        return _middle_truncate_lines(stream_detail)
+    if stderr_detail:
+        return _middle_truncate_lines(stderr_detail)
+    return fallback
 
 
 def _subscription_only_env() -> dict[str, str]:
@@ -1361,7 +1402,12 @@ def _run_claude_cli(
             events=tuple(events),
         )
     if return_code != 0 or stream_error:
-        detail = stream_error or stderr.strip() or f"exit status {return_code}"
+        detail = _backend_error_detail(
+            stream_error=stream_error,
+            stderr=stderr,
+            fallback=f"exit status {return_code}",
+            generic_stream_errors=_GENERIC_CLAUDE_STREAM_ERRORS,
+        )
         raise RuntimeError(f"Claude Code CLI failed: {detail}")
     identity_event = _agent_shell_identity_event(
         provider="claude-code",

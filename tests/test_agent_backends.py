@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import signal
 import threading
@@ -1098,6 +1099,54 @@ class TestAgentBackendManager:
         assert result["provider_session_id"] == "claude-thread-123"
         assert result["thread_card"]["provider"] == "claude-code"
         assert result["thread_card"]["latest_response"] == "Claude plan complete."
+
+    def test_claude_cli_error_preserves_stderr_detail_when_stream_is_generic(
+        self, monkeypatch
+    ):
+        import spoke.agent_backends as agent_backends
+
+        stderr_lines = [f"stderr detail line {index:02d}" for index in range(1, 26)]
+
+        class _FakeClaudeProcess:
+            def __init__(self, *_args, **_kwargs):
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(
+                    json.dumps({"type": "result", "is_error": True}) + "\n"
+                )
+                self.stderr = io.StringIO("\n".join(stderr_lines))
+
+            def wait(self):
+                return 1
+
+        monkeypatch.setattr(agent_backends, "_resolve_claude_path", lambda _env: "/bin/claude")
+        monkeypatch.setattr(
+            agent_backends,
+            "_require_claude_subscription_login",
+            lambda _claude_path, _env: None,
+        )
+        monkeypatch.setattr(
+            agent_backends,
+            "_claude_command",
+            lambda *, claude_path, resume_id: [claude_path, "--print"],
+        )
+        monkeypatch.setattr(agent_backends.subprocess, "Popen", _FakeClaudeProcess)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            agent_backends._run_claude_cli(
+                prompt="continue",
+                cwd="/tmp/project",
+                resume_id="claude-thread-1",
+                cancel_check=None,
+            )
+
+        message = str(excinfo.value)
+        assert "Claude Code CLI failed:" in message
+        assert "stderr detail line 01" in message
+        assert "stderr detail line 10" in message
+        assert "omitted" in message
+        assert "stderr detail line 16" in message
+        assert "stderr detail line 25" in message
+        assert "stderr detail line 12" not in message
 
     def test_launch_accepts_gemini_cli_through_shared_session_contract(self, tmp_path):
         from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult

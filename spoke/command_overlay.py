@@ -247,8 +247,7 @@ _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _NARRATOR_OVERLAP_TEXT_HEIGHT = 48.0
-_AGENT_SHELL_CHROME_GRAY = 0.56
-_AGENT_SHELL_CHROME_ALPHA = 0.82
+_AGENT_SHELL_CHROME_ALPHA = 0.92
 _AGENT_SHELL_CHROME_FALLBACK_FONT_SIZE = 10.5
 _AGENT_SHELL_HEADER_HEIGHT = 18.0
 _AGENT_SHELL_FOOTER_HEIGHT = 16.0
@@ -2002,11 +2001,14 @@ class CommandOverlay(NSObject):
         self._agent_shell_header_label.setFont_(
             NSFont.systemFontOfSize_weight_(11.0, 0.0)
         )
+        chrome_r, chrome_g, chrome_b = _assistant_foreground_color_for_brightness(
+            self._brightness
+        )
         self._agent_shell_header_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(
-                _AGENT_SHELL_CHROME_GRAY,
-                _AGENT_SHELL_CHROME_GRAY,
-                _AGENT_SHELL_CHROME_GRAY,
+                chrome_r,
+                chrome_g,
+                chrome_b,
                 _AGENT_SHELL_CHROME_ALPHA,
             )
         )
@@ -2034,9 +2036,9 @@ class CommandOverlay(NSObject):
         )
         self._agent_shell_footer_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(
-                _AGENT_SHELL_CHROME_GRAY,
-                _AGENT_SHELL_CHROME_GRAY,
-                _AGENT_SHELL_CHROME_GRAY,
+                chrome_r,
+                chrome_g,
+                chrome_b,
                 _AGENT_SHELL_CHROME_ALPHA,
             )
         )
@@ -4280,14 +4282,15 @@ class CommandOverlay(NSObject):
             getattr(self, "_agent_shell_header_label", None),
             getattr(self, "_agent_shell_footer_label", None),
         )
+        fg_r, fg_g, fg_b = _assistant_foreground_color_for_brightness(self._brightness)
         for label in labels:
             if label is None or label.isHidden():
                 continue
             label.setTextColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    _AGENT_SHELL_CHROME_GRAY,
-                    _AGENT_SHELL_CHROME_GRAY,
-                    _AGENT_SHELL_CHROME_GRAY,
+                    fg_r,
+                    fg_g,
+                    fg_b,
                     _AGENT_SHELL_CHROME_ALPHA,
                 )
             )
