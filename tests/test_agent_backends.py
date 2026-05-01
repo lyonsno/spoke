@@ -514,6 +514,40 @@ class TestAgentBackendManager:
         assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
         assert "dontAsk" not in command
 
+    def test_claude_acp_resolver_uses_zed_npx_adapter_package(self, monkeypatch):
+        from spoke.agent_backends import _resolve_acp_command
+
+        monkeypatch.setattr(
+            "spoke.agent_backends.shutil.which",
+            lambda name, *args, **kwargs: "/usr/local/bin/npx" if name == "npx" else None,
+        )
+        monkeypatch.setattr("spoke.agent_backends._executable_file", lambda _path: False)
+
+        command = _resolve_acp_command("claude-code", {"PATH": "/usr/local/bin"})
+
+        assert command == (
+            "/usr/local/bin/npx",
+            "-y",
+            "@zed-industries/claude-agent-acp",
+        )
+
+    def test_codex_acp_resolver_uses_zed_npx_adapter_package(self, monkeypatch):
+        from spoke.agent_backends import _resolve_acp_command
+
+        monkeypatch.setattr(
+            "spoke.agent_backends.shutil.which",
+            lambda name, *args, **kwargs: "/usr/local/bin/npx" if name == "npx" else None,
+        )
+        monkeypatch.setattr("spoke.agent_backends._executable_file", lambda _path: False)
+
+        command = _resolve_acp_command("codex", {"PATH": "/usr/local/bin"})
+
+        assert command == (
+            "/usr/local/bin/npx",
+            "-y",
+            "@zed-industries/codex-acp",
+        )
+
     def test_gemini_stream_events_preserve_session_tool_and_stats_shape(self):
         from spoke.agent_backends import _events_from_gemini_stream_event
 

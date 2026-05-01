@@ -52,6 +52,10 @@ _GEMINI_CANDIDATE_PATHS = (
     "/usr/local/bin/gemini",
     os.path.expanduser("~/.local/bin/gemini"),
 )
+_ACP_NPX_PACKAGES = {
+    "codex": "@zed-industries/codex-acp",
+    "claude-code": "@zed-industries/claude-agent-acp",
+}
 _GEMINI_OPERATOR_PROMPT_PREFIX = """You are running inside Spoke's compact operator shell.
 Answer the user's latest instruction directly and concisely.
 Do not print an implementation plan, checklist, file-by-file itinerary, or "I will..." reconnaissance log unless the user explicitly asks for one.
@@ -840,6 +844,15 @@ def _resolve_acp_command(provider: str, env: dict[str, str]) -> tuple[str, ...] 
         return (found, *command[1:])
     if _executable_file(executable):
         return command
+    package = _ACP_NPX_PACKAGES.get(provider)
+    if package:
+        npx = (
+            shutil.which("npx", path=path_value)
+            if isinstance(path_value, str) and path_value
+            else shutil.which("npx")
+        )
+        if npx:
+            return (npx, "-y", package)
     return None
 
 
