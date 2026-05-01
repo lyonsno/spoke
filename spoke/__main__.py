@@ -5532,32 +5532,34 @@ class SpokeAppDelegate(NSObject):
         selected = getattr(self, "_agent_shell_provider", "off") or "off"
         if selected not in {"off", "codex", "claude-code", "gemini-cli"}:
             selected = "off"
-        codex_record = self._agent_shell_session_record("codex")
-        current_codex_session = codex_record.get("provider_session_id")
-        codex_sessions = self._sanitize_agent_shell_catalog(
-            codex_record.get("sessions")
-        )
         items = [
             ("off", "Off", selected == "off", True),
-            ("codex", "Codex", selected == "codex", True),
-            ("codex-new-session", "Codex: New Session", False, True),
-            ("claude-code", "Claude Code", selected == "claude-code", False),
-            ("gemini-cli", "Gemini CLI", selected == "gemini-cli", False),
         ]
-        for entry in codex_sessions:
-            provider_session_id = entry["provider_session_id"]
-            label_source = entry.get("last_utterance") or provider_session_id
-            label_source = label_source.strip().replace("\n", " ")
-            if len(label_source) > 48:
-                label_source = f"{label_source[:45]}..."
-            items.append(
-                (
-                    f"codex-session:{provider_session_id}",
-                    f"Codex: {label_source}",
-                    selected == "codex" and provider_session_id == current_codex_session,
-                    True,
+        for provider in ("codex", "claude-code", "gemini-cli"):
+            label = _agent_shell_provider_label(provider)
+            record = self._agent_shell_session_record(provider)
+            current_session = record.get("provider_session_id")
+            items.append((provider, label, selected == provider, True))
+            items.append((f"{provider}-new-session", f"{label}: New Session", False, True))
+            for entry in self._sanitize_agent_shell_catalog(record.get("sessions")):
+                provider_session_id = entry["provider_session_id"]
+                label_source = entry.get("last_utterance") or provider_session_id
+                label_source = label_source.strip().replace("\n", " ")
+                if len(label_source) > 48:
+                    label_source = f"{label_source[:45]}..."
+                legacy_id = (
+                    f"codex-session:{provider_session_id}"
+                    if provider == "codex"
+                    else f"{provider}-session:{provider_session_id}"
                 )
-            )
+                items.append(
+                    (
+                        legacy_id,
+                        f"{label}: {label_source}",
+                        selected == provider and provider_session_id == current_session,
+                        True,
+                    )
+                )
         return {
             "title": "Agent Shell",
             "items": items,
@@ -5622,26 +5624,43 @@ class SpokeAppDelegate(NSObject):
             logger.exception("Repaint command overlay after Agent Shell selection failed")
 
     def _apply_agent_shell_selection(self, provider: str) -> None:
+        new_session_provider = None
         if provider == "codex-new-session":
-            old_record = self._agent_shell_session_record("codex")
+            new_session_provider = "codex"
+        elif provider.endswith("-new-session"):
+            candidate = provider.removesuffix("-new-session")
+            if candidate in _AGENT_SHELL_PROVIDERS:
+                new_session_provider = candidate
+        if new_session_provider is not None:
+            label = _agent_shell_provider_label(new_session_provider)
+            old_record = self._agent_shell_session_record(new_session_provider)
             catalog = self._sanitize_agent_shell_catalog(old_record.get("sessions"))
             record = self._empty_agent_shell_session_record()
             record["sessions"] = catalog
-            self._agent_shell_sessions["codex"] = record
-            self._agent_shell_provider = "codex"
-            self._save_preference("agent_shell_provider", "codex")
+            self._agent_shell_sessions[new_session_provider] = record
+            self._agent_shell_provider = new_session_provider
+            self._save_preference("agent_shell_provider", new_session_provider)
             self._persist_agent_shell_sessions()
             if self._menubar is not None:
-                self._menubar.set_status_text("Agent Shell: Codex new session")
+                self._menubar.set_status_text(f"Agent Shell: {label} new session")
             self._repaint_visible_command_overlay_for_current_route()
             return
+        session_provider = None
+        provider_session_id = None
         if provider.startswith("codex-session:"):
+            session_provider = "codex"
             provider_session_id = provider.removeprefix("codex-session:")
-            record = self._agent_shell_session_record("codex")
+        elif "-session:" in provider:
+            candidate, provider_session_id = provider.split("-session:", 1)
+            if candidate in _AGENT_SHELL_PROVIDERS:
+                session_provider = candidate
+        if session_provider is not None and provider_session_id:
+            label = _agent_shell_provider_label(session_provider)
+            record = self._agent_shell_session_record(session_provider)
             for entry in self._sanitize_agent_shell_catalog(record.get("sessions")):
                 if entry.get("provider_session_id") != provider_session_id:
                     continue
-                self._agent_shell_provider = "codex"
+                self._agent_shell_provider = session_provider
                 record["spoke_session_id"] = None
                 record["provider_session_id"] = provider_session_id
                 record["last_utterance"] = entry.get("last_utterance")
@@ -5652,10 +5671,10 @@ class SpokeAppDelegate(NSObject):
                     entry.get("thread_card")
                 ) or None
                 self._upsert_agent_shell_catalog_entry(record)
-                self._save_preference("agent_shell_provider", "codex")
+                self._save_preference("agent_shell_provider", session_provider)
                 self._persist_agent_shell_sessions()
                 if self._menubar is not None:
-                    self._menubar.set_status_text("Agent Shell: Codex")
+                    self._menubar.set_status_text(f"Agent Shell: {label}")
                 self._repaint_visible_command_overlay_for_current_route()
                 return
         provider = provider if provider in {"off", "codex", "claude-code", "gemini-cli"} else "off"

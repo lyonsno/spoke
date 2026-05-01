@@ -1766,30 +1766,42 @@ class TestAgentShellMenuState:
                 ("off", "Off", False, True),
                 ("codex", "Codex", True, True),
                 ("codex-new-session", "Codex: New Session", False, True),
-                ("claude-code", "Claude Code", False, False),
-                ("gemini-cli", "Gemini CLI", False, False),
+                ("claude-code", "Claude Code", False, True),
+                ("claude-code-new-session", "Claude Code: New Session", False, True),
+                ("gemini-cli", "Gemini CLI", False, True),
+                ("gemini-cli-new-session", "Gemini CLI: New Session", False, True),
             ],
         }
 
-    def test_delegate_exposes_agent_shell_session_catalog_menu_items(
+    def test_delegate_exposes_agent_shell_session_catalog_menu_items_for_each_provider(
         self, monkeypatch, main_module
     ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-        delegate._agent_shell_provider = "codex"
+        delegate._agent_shell_provider = "claude-code"
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_shell_sessions = {
             "codex": {
-                "provider_session_id": "codex-thread-2",
+                "provider_session_id": "codex-thread-1",
                 "sessions": [
                     {
                         "provider_session_id": "codex-thread-1",
                         "last_utterance": "first codex question",
                         "last_response": "first codex answer",
                     },
+                ],
+            },
+            "claude-code": {
+                "provider_session_id": "claude-thread-2",
+                "sessions": [
                     {
-                        "provider_session_id": "codex-thread-2",
-                        "last_utterance": "second codex question",
-                        "last_response": "second codex answer",
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "first claude question",
+                        "last_response": "first claude answer",
+                    },
+                    {
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "second claude question",
+                        "last_response": "second claude answer",
                     },
                 ],
             }
@@ -1797,33 +1809,46 @@ class TestAgentShellMenuState:
 
         assert delegate._agent_shell_menu_state()["items"] == [
             ("off", "Off", False, True),
-            ("codex", "Codex", True, True),
+            ("codex", "Codex", False, True),
             ("codex-new-session", "Codex: New Session", False, True),
-            ("claude-code", "Claude Code", False, False),
-            ("gemini-cli", "Gemini CLI", False, False),
             ("codex-session:codex-thread-1", "Codex: first codex question", False, True),
-            ("codex-session:codex-thread-2", "Codex: second codex question", True, True),
+            ("claude-code", "Claude Code", True, True),
+            ("claude-code-new-session", "Claude Code: New Session", False, True),
+            (
+                "claude-code-session:claude-thread-1",
+                "Claude Code: first claude question",
+                False,
+                True,
+            ),
+            (
+                "claude-code-session:claude-thread-2",
+                "Claude Code: second claude question",
+                True,
+                True,
+            ),
+            ("gemini-cli", "Gemini CLI", False, True),
+            ("gemini-cli-new-session", "Gemini CLI: New Session", False, True),
         ]
 
-    def test_agent_shell_new_codex_session_clears_active_record_but_keeps_catalog(
+    def test_agent_shell_new_provider_session_clears_active_record_but_keeps_catalog(
         self, monkeypatch, main_module
     ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-        delegate._agent_shell_provider = "codex"
+        delegate._agent_shell_provider = "claude-code"
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_shell_sessions = {
-            "codex": {
+            "claude-code": {
                 "spoke_session_id": "spoke-old",
-                "provider_session_id": "codex-thread-2",
-                "last_utterance": "second codex question",
-                "last_response": "second codex answer",
+                "provider_session_id": "claude-thread-2",
+                "last_utterance": "second claude question",
+                "last_response": "second claude answer",
                 "last_header": "Worktree: old-tree",
                 "last_footer": "model gpt-5.5 | cwd /tmp/old",
                 "sessions": [
                     {
-                        "provider_session_id": "codex-thread-2",
-                        "last_utterance": "second codex question",
-                        "last_response": "second codex answer",
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "second claude question",
+                        "last_response": "second claude answer",
                         "last_header": "Worktree: old-tree",
                         "last_footer": "model gpt-5.5 | cwd /tmp/old",
                     }
@@ -1841,10 +1866,10 @@ class TestAgentShellMenuState:
         delegate._sync_command_overlay_brightness = MagicMock()
         delegate._detector = MagicMock()
 
-        delegate._apply_agent_shell_selection("codex-new-session")
+        delegate._apply_agent_shell_selection("claude-code-new-session")
 
-        record = delegate._agent_shell_sessions["codex"]
-        assert delegate._agent_shell_provider == "codex"
+        record = delegate._agent_shell_sessions["claude-code"]
+        assert delegate._agent_shell_provider == "claude-code"
         assert record["spoke_session_id"] is None
         assert record["provider_session_id"] is None
         assert record["last_utterance"] is None
@@ -1853,36 +1878,38 @@ class TestAgentShellMenuState:
         assert record["last_footer"] is None
         assert record["sessions"] == [
             {
-                "provider_session_id": "codex-thread-2",
-                "last_utterance": "second codex question",
-                "last_response": "second codex answer",
+                "provider_session_id": "claude-thread-2",
+                "last_utterance": "second claude question",
+                "last_response": "second claude answer",
                 "last_header": "Worktree: old-tree",
                 "last_footer": "model gpt-5.5 | cwd /tmp/old",
             }
         ]
-        delegate._menubar.set_status_text.assert_called_with("Agent Shell: Codex new session")
+        delegate._menubar.set_status_text.assert_called_with(
+            "Agent Shell: Claude Code new session"
+        )
 
-    def test_agent_shell_session_selection_restores_catalog_snapshot(
+    def test_agent_shell_provider_session_selection_restores_catalog_snapshot(
         self, monkeypatch, main_module
     ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._agent_shell_provider = "off"
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_shell_sessions = {
-            "codex": {
-                "provider_session_id": "codex-thread-2",
-                "last_utterance": "second codex question",
-                "last_response": "second codex answer",
+            "claude-code": {
+                "provider_session_id": "claude-thread-2",
+                "last_utterance": "second claude question",
+                "last_response": "second claude answer",
                 "sessions": [
                     {
-                        "provider_session_id": "codex-thread-1",
-                        "last_utterance": "first codex question",
-                        "last_response": "first codex answer",
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "first claude question",
+                        "last_response": "first claude answer",
                     },
                     {
-                        "provider_session_id": "codex-thread-2",
-                        "last_utterance": "second codex question",
-                        "last_response": "second codex answer",
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "second claude question",
+                        "last_response": "second claude answer",
                     },
                 ],
             }
@@ -1891,30 +1918,30 @@ class TestAgentShellMenuState:
         delegate._menubar = MagicMock()
         delegate._command_overlay = None
 
-        delegate._apply_agent_shell_selection("codex-session:codex-thread-1")
+        delegate._apply_agent_shell_selection("claude-code-session:claude-thread-1")
 
-        assert delegate._agent_shell_provider == "codex"
-        record = delegate._agent_shell_sessions["codex"]
-        assert record["provider_session_id"] == "codex-thread-1"
-        assert record["last_utterance"] == "first codex question"
-        assert record["last_response"] == "first codex answer"
+        assert delegate._agent_shell_provider == "claude-code"
+        record = delegate._agent_shell_sessions["claude-code"]
+        assert record["provider_session_id"] == "claude-thread-1"
+        assert record["last_utterance"] == "first claude question"
+        assert record["last_response"] == "first claude answer"
         assert delegate._save_preference.call_args_list[-1].args == (
             "agent_shell_overlay_snapshots",
             {
-                "codex": {
-                    "provider_session_id": "codex-thread-1",
-                    "last_utterance": "first codex question",
-                    "last_response": "first codex answer",
+                "claude-code": {
+                    "provider_session_id": "claude-thread-1",
+                    "last_utterance": "first claude question",
+                    "last_response": "first claude answer",
                     "sessions": [
                         {
-                            "provider_session_id": "codex-thread-1",
-                            "last_utterance": "first codex question",
-                            "last_response": "first codex answer",
+                            "provider_session_id": "claude-thread-1",
+                            "last_utterance": "first claude question",
+                            "last_response": "first claude answer",
                         },
                         {
-                            "provider_session_id": "codex-thread-2",
-                            "last_utterance": "second codex question",
-                            "last_response": "second codex answer",
+                            "provider_session_id": "claude-thread-2",
+                            "last_utterance": "second claude question",
+                            "last_response": "second claude answer",
                         },
                     ],
                 }
