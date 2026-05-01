@@ -13,7 +13,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PROTOCOL_VERSION = 1
@@ -70,6 +70,18 @@ def provider_command(provider: str) -> tuple[str, ...]:
         return ("codex-acp",)
     if normalized == "claude-code":
         return ("claude-agent-acp",)
+    raise ValueError(f"unknown ACP provider: {provider}")
+
+
+def provider_default_mode(provider: str) -> str:
+    """Return Spoke's default ACP permission mode for a provider."""
+    normalized = provider.strip().casefold()
+    if normalized == "codex":
+        return "full-access"
+    if normalized == "claude-code":
+        return "bypassPermissions"
+    if normalized == "gemini-cli":
+        return "default"
     raise ValueError(f"unknown ACP provider: {provider}")
 
 
@@ -173,9 +185,16 @@ def summarize_session_update(update: dict[str, Any]) -> dict[str, Any]:
 
 
 class AcpJsonRpcClient:
-    def __init__(self, command: tuple[str, ...], *, cwd: str | None = None) -> None:
+    def __init__(
+        self,
+        command: tuple[str, ...],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
         self.command = command
         self.cwd = cwd
+        self.env = env
         self.codec = JsonRpcLineCodec()
         self.process: subprocess.Popen[bytes] | None = None
         self._next_id = 1
@@ -192,6 +211,7 @@ class AcpJsonRpcClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            env=self.env,
         )
         self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
         self._reader_thread.start()
@@ -232,6 +252,8 @@ class AcpJsonRpcClient:
         params: dict[str, Any] | None = None,
         *,
         timeout: float = 30.0,
+        notification_sink: Callable[[dict[str, Any]], None] | None = None,
+        request_handler: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         request_id = self._next_id
         self._next_id += 1
@@ -259,7 +281,24 @@ class AcpJsonRpcClient:
                     raise AcpProbeError(f"{method} failed: {message['error']}")
                 result = message.get("result")
                 return (result if isinstance(result, dict) else {}, notifications)
+            if (
+                "id" in message
+                and isinstance(message.get("method"), str)
+                and request_handler is not None
+            ):
+                response = request_handler(message)
+                if response is not None:
+                    self._write(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "result": response,
+                        }
+                    )
+                continue
             notifications.append(message)
+            if notification_sink is not None:
+                notification_sink(message)
         raise AcpProbeError(f"timed out waiting for ACP response to {method}")
 
     def notify(self, method: str, params: dict[str, Any] | None = None) -> None:

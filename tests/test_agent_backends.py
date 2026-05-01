@@ -223,6 +223,120 @@ class _PreemptiveAgentBackendManager:
         return {"id": session_id, "state": "cancelling"}
 
 
+class _FakeAcpClient:
+    def __init__(self, *, provider: str):
+        self.provider = provider
+        self.requests: list[tuple[str, dict]] = []
+        self.notifications: list[tuple[str, dict]] = []
+        self.started = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+    def notify(self, method, params=None):
+        self.notifications.append((method, params or {}))
+
+    def request(
+        self,
+        method,
+        params=None,
+        *,
+        timeout=30.0,
+        notification_sink=None,
+        request_handler=None,
+    ):
+        params = params or {}
+        self.requests.append((method, params))
+        if method == "initialize":
+            return {"protocolVersion": 1, "agentCapabilities": {}}, []
+        if method in {"session/new", "session/load"}:
+            mode_map = {
+                "codex": "full-access",
+                "claude-code": "bypassPermissions",
+                "gemini-cli": "default",
+            }
+            mode_id = mode_map[self.provider]
+            return {
+                "sessionId": f"{self.provider}-session-1",
+                "modes": {
+                    "currentModeId": "default",
+                    "availableModes": [
+                        {"id": "default", "name": "Default"},
+                        {"id": mode_id, "name": mode_id},
+                    ],
+                },
+                "models": {"currentModelId": "test-model", "availableModels": []},
+            }, []
+        if method == "session/set_mode":
+            return {}, []
+        if method == "session/prompt":
+            if notification_sink is not None:
+                notification_sink(
+                    {
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": params["sessionId"],
+                            "update": {
+                                "sessionUpdate": "agent_thought_chunk",
+                                "content": {"type": "text", "text": "reading"},
+                            },
+                        },
+                    }
+                )
+                notification_sink(
+                    {
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": params["sessionId"],
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "done"},
+                            },
+                        },
+                    }
+                )
+            return {"stopReason": "end_turn"}, []
+        raise AssertionError(f"unexpected ACP request: {method}")
+
+
+class _BlockingAcpClient(_FakeAcpClient):
+    def __init__(self, *, provider: str):
+        super().__init__(provider=provider)
+        self.prompt_started = threading.Event()
+        self.cancel_seen = threading.Event()
+
+    def notify(self, method, params=None):
+        super().notify(method, params)
+        if method == "session/cancel":
+            self.cancel_seen.set()
+
+    def request(
+        self,
+        method,
+        params=None,
+        *,
+        timeout=30.0,
+        notification_sink=None,
+        request_handler=None,
+    ):
+        if method != "session/prompt":
+            return super().request(
+                method,
+                params,
+                timeout=timeout,
+                notification_sink=notification_sink,
+                request_handler=request_handler,
+            )
+        self.requests.append((method, params or {}))
+        self.prompt_started.set()
+        assert self.cancel_seen.wait(timeout=2)
+        return {"stopReason": "cancelled"}, []
+
+
 def _make_agent_shell_delegate(main_module):
     delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
     delegate._transcription_token = 0
@@ -464,6 +578,64 @@ class TestAgentBackendManager:
         assert "compact operator shell" in prompt
         assert "do not print an implementation plan" in prompt.lower()
         assert "Inspect the Agent Shell backend." in prompt
+        assert "--approval-mode" in command
+        assert command[command.index("--approval-mode") + 1] == "plan"
+        assert "yolo" not in command
+
+    @pytest.mark.parametrize(
+        ("provider", "mode_id"),
+        [
+            ("codex", "full-access"),
+            ("claude-code", "bypassPermissions"),
+            ("gemini-cli", "default"),
+        ],
+    )
+    def test_acp_backend_sets_provider_default_mode(self, provider, mode_id):
+        from spoke.agent_backends import _run_acp_session_with_client
+
+        client = _FakeAcpClient(provider=provider)
+        events = []
+
+        result = _run_acp_session_with_client(
+            provider=provider,
+            prompt="hello",
+            cwd="/tmp/spoke",
+            resume_id=None,
+            cancel_check=lambda: False,
+            event_sink=events.append,
+            client=client,
+            timeout=1,
+        )
+
+        assert result.session_id == f"{provider}-session-1"
+        assert result.final_response == "done"
+        assert ("session/set_mode", {"sessionId": f"{provider}-session-1", "modeId": mode_id}) in client.requests
+        assert any(event.kind == "reasoning" and event.text == "reading" for event in events)
+        assert any(
+            event.kind == "session_metadata"
+            and event.data["transport"] == "acp"
+            and event.data["mode"] == mode_id
+            for event in events
+        )
+
+    def test_acp_backend_cancel_uses_session_cancel_not_process_signal(self):
+        from spoke.agent_backends import _run_acp_session_with_client
+
+        client = _BlockingAcpClient(provider="codex")
+
+        result = _run_acp_session_with_client(
+            provider="codex",
+            prompt="stop this",
+            cwd="/tmp/spoke",
+            resume_id=None,
+            cancel_check=lambda: client.prompt_started.is_set(),
+            event_sink=None,
+            client=client,
+            timeout=1,
+        )
+
+        assert result.session_id == "codex-session-1"
+        assert ("session/cancel", {"sessionId": "codex-session-1"}) in client.notifications
 
     def test_codex_json_item_events_preserve_tool_loop_shape(self):
         from spoke.agent_backends import _event_from_codex_item

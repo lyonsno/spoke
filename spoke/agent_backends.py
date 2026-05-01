@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shlex
 import shutil
 import subprocess
 import threading
@@ -13,6 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .acp_probe import (
+    AcpJsonRpcClient,
+    AcpProbeError,
+    provider_command,
+    provider_default_mode,
+    summarize_session_update,
+)
 from .agent_shell_identity import AgentShellIdentity, resolve_agent_shell_identity
 from .agent_thread_cards import (
     build_agent_thread_card,
@@ -319,7 +327,7 @@ def _gemini_command(
         "--output-format",
         "stream-json",
         "--approval-mode",
-        "yolo",
+        "plan",
     ]
     if resume_id:
         command.extend(["--resume", resume_id])
@@ -798,6 +806,316 @@ def _agent_shell_identity_event(
     )
 
 
+def _provider_env_prefix(provider: str) -> str:
+    return provider.upper().replace("-", "_")
+
+
+def _acp_command_from_env(provider: str, env: dict[str, str]) -> tuple[str, ...] | None:
+    prefix = _provider_env_prefix(provider)
+    for name in (f"SPOKE_{prefix}_ACP_COMMAND", "SPOKE_AGENT_ACP_COMMAND"):
+        raw = env.get(name)
+        if isinstance(raw, str) and raw.strip():
+            return tuple(shlex.split(raw))
+    return None
+
+
+def _resolve_acp_command(provider: str, env: dict[str, str]) -> tuple[str, ...] | None:
+    override = _acp_command_from_env(provider, env)
+    if override:
+        return override
+    if provider == "gemini-cli":
+        gemini_path = _resolve_gemini_path(env)
+        if gemini_path:
+            return (gemini_path, "--acp")
+        return None
+    command = provider_command(provider)
+    executable = command[0]
+    path_value = env.get("PATH")
+    found = (
+        shutil.which(executable, path=path_value)
+        if isinstance(path_value, str) and path_value
+        else shutil.which(executable)
+    )
+    if found:
+        return (found, *command[1:])
+    if _executable_file(executable):
+        return command
+    return None
+
+
+def _available_mode_ids(session: dict[str, Any]) -> set[str]:
+    modes = session.get("modes")
+    if not isinstance(modes, dict):
+        return set()
+    available = modes.get("availableModes")
+    if not isinstance(available, list):
+        return set()
+    return {
+        mode["id"]
+        for mode in available
+        if isinstance(mode, dict) and isinstance(mode.get("id"), str)
+    }
+
+
+def _event_from_acp_update(update: dict[str, Any]) -> AgentBackendEvent | None:
+    summary = summarize_session_update(update)
+    kind = summary.get("kind")
+    if kind == "agent_message":
+        text = summary.get("text")
+        return AgentBackendEvent(
+            kind="agent_message",
+            text=text if isinstance(text, str) else "",
+            data={"type": "agent_message", **summary},
+        )
+    if kind == "thought":
+        text = summary.get("text")
+        return AgentBackendEvent(
+            kind="reasoning",
+            text=text if isinstance(text, str) else "",
+            data={"type": "reasoning", **summary},
+        )
+    if kind == "tool_call":
+        title = summary.get("title")
+        return AgentBackendEvent(
+            kind="tool_use",
+            text=title if isinstance(title, str) else "",
+            data=summary,
+        )
+    if kind == "tool_call_update":
+        status = summary.get("status")
+        return AgentBackendEvent(
+            kind="tool_result",
+            text=status if isinstance(status, str) else "",
+            data=summary,
+        )
+    if kind == "usage":
+        usage = summary.get("usage")
+        return AgentBackendEvent(
+            kind="usage_limits",
+            data=usage if isinstance(usage, dict) else {},
+        )
+    if kind == "mode":
+        return AgentBackendEvent(kind="session_metadata", data={"modes": summary.get("modes")})
+    if kind == "session_info":
+        data = {
+            key: value
+            for key, value in {
+                "title": summary.get("title"),
+                "updated_at": summary.get("updated_at"),
+            }.items()
+            if value
+        }
+        return AgentBackendEvent(kind="session_metadata", data=data)
+    if kind == "plan":
+        return AgentBackendEvent(kind="plan", data=summary)
+    return None
+
+
+def _deny_permission_response(request: dict[str, Any]) -> dict[str, Any]:
+    params = request.get("params")
+    options = params.get("options") if isinstance(params, dict) else None
+    if isinstance(options, list):
+        for option in options:
+            if isinstance(option, dict) and option.get("kind") in {
+                "reject_once",
+                "reject_always",
+            }:
+                option_id = option.get("optionId")
+                if isinstance(option_id, str) and option_id:
+                    return {"outcome": {"outcome": "selected", "optionId": option_id}}
+    return {"outcome": {"outcome": "cancelled"}}
+
+
+def _run_acp_session_with_client(
+    *,
+    provider: str,
+    prompt: str,
+    cwd: str,
+    resume_id: str | None,
+    cancel_check: Callable[[], bool] | None,
+    event_sink: Callable[[AgentBackendEvent], None] | None,
+    client: AcpJsonRpcClient,
+    timeout: float = 300.0,
+) -> AgentBackendRunResult:
+    events: list[AgentBackendEvent] = []
+    provider_session_id = resume_id
+    final_response_parts: list[str] = []
+    cancelled = False
+
+    def _append(event: AgentBackendEvent) -> None:
+        _append_event(events, event, event_sink)
+
+    def _handle_notification(message: dict[str, Any]) -> None:
+        if message.get("method") != "session/update":
+            return
+        params = message.get("params")
+        update = params.get("update") if isinstance(params, dict) else None
+        if not isinstance(update, dict):
+            return
+        event = _event_from_acp_update(update)
+        if event is None:
+            return
+        if event.kind == "agent_message" and event.text:
+            final_response_parts.append(event.text)
+        _append(event)
+
+    def _handle_client_request(message: dict[str, Any]) -> dict[str, Any] | None:
+        method = message.get("method")
+        if method == "session/request_permission":
+            params = message.get("params")
+            tool_call = params.get("toolCall") if isinstance(params, dict) else None
+            title = tool_call.get("title") if isinstance(tool_call, dict) else ""
+            _append(
+                AgentBackendEvent(
+                    kind="permission_request",
+                    text=title if isinstance(title, str) else "",
+                    data=params if isinstance(params, dict) else {},
+                )
+            )
+            return _deny_permission_response(message)
+        return {}
+
+    client.start()
+    try:
+        client.request(
+            "initialize",
+            {
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": {"readTextFile": False, "writeTextFile": False},
+                    "_meta": {"terminal_output": True},
+                },
+            },
+            timeout=30.0,
+            notification_sink=_handle_notification,
+            request_handler=_handle_client_request,
+        )
+        session_method = "session/load" if resume_id else "session/new"
+        session_params = (
+            {"sessionId": resume_id}
+            if resume_id
+            else {"cwd": str(Path(cwd).resolve()), "mcpServers": []}
+        )
+        session, _ = client.request(
+            session_method,
+            session_params,
+            timeout=30.0,
+            notification_sink=_handle_notification,
+            request_handler=_handle_client_request,
+        )
+        session_id = session.get("sessionId")
+        if isinstance(session_id, str) and session_id:
+            provider_session_id = session_id
+        if provider_session_id is None:
+            raise AcpProbeError(f"{session_method} did not return a sessionId")
+        mode_id = provider_default_mode(provider)
+        available_modes = _available_mode_ids(session)
+        if mode_id in available_modes:
+            client.request(
+                "session/set_mode",
+                {"sessionId": provider_session_id, "modeId": mode_id},
+                timeout=30.0,
+                notification_sink=_handle_notification,
+                request_handler=_handle_client_request,
+            )
+        metadata = {
+            "provider_session_id": provider_session_id,
+            "cwd": cwd,
+            "transport": "acp",
+            "mode": mode_id if mode_id in available_modes else session.get("modes", {}).get("currentModeId"),
+        }
+        models = session.get("models")
+        if isinstance(models, dict) and isinstance(models.get("currentModelId"), str):
+            metadata["model"] = models["currentModelId"]
+        _append(AgentBackendEvent(kind="session_metadata", text=cwd, data=metadata))
+
+        holder: dict[str, Any] = {}
+
+        def _prompt_request() -> None:
+            try:
+                result, _ = client.request(
+                    "session/prompt",
+                    {
+                        "sessionId": provider_session_id,
+                        "prompt": [{"type": "text", "text": prompt}],
+                        "messageId": str(os.urandom(16).hex()),
+                    },
+                    timeout=timeout,
+                    notification_sink=_handle_notification,
+                    request_handler=_handle_client_request,
+                )
+                holder["result"] = result
+            except BaseException as exc:  # noqa: BLE001 - backend should report failure.
+                holder["error"] = exc
+
+        thread = threading.Thread(target=_prompt_request, daemon=True)
+        thread.start()
+        sent_cancel = False
+        while thread.is_alive():
+            if cancel_check is not None and cancel_check() and not sent_cancel:
+                client.notify("session/cancel", {"sessionId": provider_session_id})
+                sent_cancel = True
+                cancelled = True
+            thread.join(0.05)
+        if "error" in holder:
+            raise holder["error"]
+        result = holder.get("result")
+        if isinstance(result, dict) and result.get("stopReason") == "cancelled":
+            cancelled = True
+    finally:
+        client.close()
+
+    final_response = "".join(final_response_parts).strip()
+    if not cancelled:
+        identity_event = _agent_shell_identity_event(
+            provider=provider,
+            provider_session_id=provider_session_id,
+            cwd=cwd,
+            final_response=final_response,
+            events=events,
+        )
+        if identity_event is not None:
+            _append(identity_event)
+    return AgentBackendRunResult(
+        provider=provider,
+        session_id=provider_session_id,
+        final_response=final_response,
+        events=tuple(events),
+    )
+
+
+def _run_acp_backend_session(
+    *,
+    provider: str,
+    prompt: str,
+    cwd: str,
+    resume_id: str | None,
+    cancel_check: Callable[[], bool] | None,
+    event_sink: Callable[[AgentBackendEvent], None] | None = None,
+) -> AgentBackendRunResult:
+    env = _subscription_only_env()
+    command = _resolve_acp_command(provider, env)
+    if command is None:
+        raise AgentBackendUnavailable(f"{provider} ACP adapter is not installed or not on PATH")
+    client = AcpJsonRpcClient(command, cwd=cwd, env=env)
+    return _run_acp_session_with_client(
+        provider=provider,
+        prompt=prompt,
+        cwd=cwd,
+        resume_id=resume_id,
+        cancel_check=cancel_check,
+        event_sink=event_sink,
+        client=client,
+    )
+
+
+def _agent_transport_preference(provider: str) -> str:
+    env_name = f"SPOKE_{_provider_env_prefix(provider)}_TRANSPORT"
+    raw = os.environ.get(env_name, os.environ.get("SPOKE_AGENT_BACKEND_TRANSPORT", "auto"))
+    value = raw.strip().lower() if isinstance(raw, str) else "auto"
+    return value if value in {"auto", "acp", "cli"} else "auto"
+
+
 def _run_codex_cli(
     *,
     prompt: str,
@@ -1169,6 +1487,20 @@ def run_agent_backend_session(
     event_sink: Callable[[AgentBackendEvent], None] | None = None,
 ) -> AgentBackendRunResult:
     provider = provider.strip().lower()
+    transport = _agent_transport_preference(provider)
+    if provider in _ALLOWED_PROVIDERS and transport in {"auto", "acp"}:
+        try:
+            return _run_acp_backend_session(
+                provider=provider,
+                prompt=prompt,
+                cwd=cwd,
+                resume_id=resume_id,
+                cancel_check=cancel_check,
+                event_sink=event_sink,
+            )
+        except AgentBackendUnavailable:
+            if transport == "acp":
+                raise
     if provider == "codex":
         return _run_codex_cli(
             prompt=prompt,

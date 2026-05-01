@@ -6,6 +6,7 @@ from spoke.acp_probe import (
     AcpSessionSupport,
     JsonRpcLineCodec,
     classify_session_support,
+    provider_default_mode,
     provider_command,
     summarize_session_update,
 )
@@ -95,3 +96,9 @@ def test_provider_command_prefers_known_acp_transports():
     assert provider_command("gemini-cli") == ("gemini", "--acp")
     assert provider_command("codex") == ("codex-acp",)
     assert provider_command("claude-code") == ("claude-agent-acp",)
+
+
+def test_provider_default_modes_fence_gemini_git_mutation():
+    assert provider_default_mode("codex") == "full-access"
+    assert provider_default_mode("claude-code") == "bypassPermissions"
+    assert provider_default_mode("gemini-cli") == "default"
