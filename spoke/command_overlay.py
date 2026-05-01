@@ -3751,6 +3751,11 @@ class CommandOverlay(NSObject):
                 total_h=total_h,
                 height_frac=state["height_frac"],
             )
+        if getattr(self, "_materialization_direction", 1) < 0:
+            for layer_name in ("_boost_layer", "_spring_tint_layer"):
+                layer = getattr(self, layer_name, None)
+                self._set_layer_opacity_without_actions(layer, 0.0)
+                self._set_layer_hidden_without_actions(layer, True)
         fill = getattr(self, "_fill_layer", None)
         if getattr(self, "_materialization_direction", 1) < 0:
             self._set_layer_contents_without_actions(

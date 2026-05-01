@@ -1237,6 +1237,21 @@ class TestOpticalShellMaterialization:
             "transform.scale.y",
         )
 
+    def test_reverse_materialization_suppresses_companion_material_layers_immediately(
+        self, mock_pyobjc
+    ):
+        overlay, _mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+
+        overlay._apply_materialization_fill_state(1.0)
+
+        overlay._boost_layer.setOpacity_.assert_called_with(0.0)
+        overlay._boost_layer.setHidden_.assert_called_with(True)
+        overlay._spring_tint_layer.setOpacity_.assert_called_with(0.0)
+        overlay._spring_tint_layer.setHidden_.assert_called_with(True)
+
     def test_reverse_materialization_uses_hard_body_dismiss_fill(
         self, mock_pyobjc
     ):
