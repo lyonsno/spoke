@@ -150,12 +150,20 @@ def _finish_on_main(app, result: dict | None) -> None:
 
         # Flash the debug grid showing which cells the model marked YES/NO
         content_map = result.get("content_map")
+        utterance = result.get("utterance", "")
         if content_map is not None:
-            _flash_debug_grid(sw, sh, content_map, content_desc)
+            _flash_debug_grid(sw, sh, content_map, content_desc,
+                              utterance=utterance)
+        elif content_desc.startswith("targeting:"):
+            # Target mode — no content map, just show the target region
+            if app._menubar is not None:
+                app._menubar.set_status_text(
+                    f"{content_desc} ({elapsed:.1f}s)"
+                )
 
         if app._menubar is not None:
             app._menubar.set_status_text(
-                f"Positioned: avoiding {content_desc} ({elapsed:.1f}s)"
+                f"Positioned: {content_desc} ({elapsed:.1f}s)"
             )
 
     AppHelper.callAfter(_do)
@@ -169,6 +177,7 @@ def _flash_debug_grid(
     content_map: dict[str, bool],
     content_desc: str,
     duration: float = 3.0,
+    utterance: str = "",
 ) -> None:
     """Flash a transparent 4×4 grid overlay on screen showing YES/NO cells.
 
@@ -245,11 +254,14 @@ def _flash_debug_grid(
             label.setContentsScale_(2.0)
             root.addSublayer_(label)
 
-    # Title bar showing what content was detected
+    # Title bar showing utterance and resolved content description
+    title_text = f"Avoiding: {content_desc}"
+    if utterance:
+        title_text = f"\"{utterance}\" → {title_text}"
     title = CATextLayer.alloc().init()
     title.setFrame_(((0, sh - 30), (sw, 30)))
-    title.setString_(f"Avoiding: {content_desc}")
-    title.setFontSize_(14)
+    title.setString_(title_text)
+    title.setFontSize_(13)
     title.setForegroundColor_(
         NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 0.5, 0.9).CGColor()
     )
