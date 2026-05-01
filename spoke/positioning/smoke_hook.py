@@ -76,10 +76,22 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
 
     # Step 3: Run positioning pipeline
     from .reposition import reposition
-    result = reposition(text, screenshot)
+    try:
+        result = reposition(text, screenshot)
+    except Exception as e:
+        logger.exception("Positioning pipeline failed")
+        import traceback
+        _flash_error_on_main(f"Pipeline error: {e}\n{traceback.format_exc()[-500:]}")
+        _finish_on_main(app, None)
+        return
 
     if result is None:
         logger.info("Positioning: no viable position found")
+        raw_debug = getattr(reposition, '_last_debug', None)
+        debug_lines = [f"Utterance: {text!r}", "Result: None (no viable rectangle)"]
+        if raw_debug:
+            debug_lines.extend(raw_debug)
+        _flash_error_on_main("\n".join(debug_lines))
         _finish_on_main(app, None)
         return
 
@@ -144,7 +156,13 @@ def _finish_on_main(app, result: dict | None) -> None:
             x, mac_y, w, h, content_desc, elapsed,
         )
 
-        target = getattr(app, '_command_overlay', None) or getattr(app, '_overlay', None)
+        command_overlay = getattr(app, '_command_overlay', None)
+        preview_overlay = getattr(app, '_overlay', None)
+        target = command_overlay or preview_overlay
+        which = "command" if target is command_overlay else "preview" if target is preview_overlay else "none"
+        logger.info("Positioning target: %s overlay (%s)", which, type(target).__name__ if target else "None")
+        import sys
+        print(f"[POSITIONING] Moving {which} overlay", file=sys.stderr, flush=True)
         if target is not None:
             _move_overlay(target, x, mac_y, w, h)
 
@@ -165,6 +183,77 @@ def _finish_on_main(app, result: dict | None) -> None:
 
 
 _debug_grid_window = None  # prevent GC from collecting the window
+_debug_error_window = None  # prevent GC from collecting error window
+
+
+def _flash_error_on_main(text: str, duration: float = 5.0) -> None:
+    """Flash a debug error message on screen when positioning fails."""
+    from PyObjCTools import AppHelper
+
+    def _do():
+        from AppKit import (
+            NSBackingStoreBuffered,
+            NSBorderlessWindowMask,
+            NSColor,
+            NSMakeRect,
+            NSWindow,
+        )
+        from Quartz import CATextLayer
+
+        global _debug_error_window
+        if _debug_error_window is not None:
+            _debug_error_window.orderOut_(None)
+
+        # Get screen size
+        from AppKit import NSScreen
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return
+        sf = screen.frame()
+        sw, sh = sf.size.width, sf.size.height
+
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(50, sh - 350, sw - 100, 300),
+            NSBorderlessWindowMask,
+            NSBackingStoreBuffered,
+            False,
+        )
+        win.setLevel_(2147483647)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.75)
+        )
+        win.setIgnoresMouseEvents_(True)
+        win.setHasShadow_(False)
+
+        content = win.contentView()
+        content.setWantsLayer_(True)
+
+        label = CATextLayer.alloc().init()
+        label.setFrame_(((10, 10), (sw - 120, 280)))
+        label.setString_(text)
+        label.setFontSize_(12)
+        label.setForegroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(1.0, 0.4, 0.4, 1.0).CGColor()
+        )
+        label.setWrapped_(True)
+        label.setContentsScale_(2.0)
+        content.layer().addSublayer_(label)
+
+        win.setAlphaValue_(1.0)
+        win.orderFront_(None)
+        _debug_error_window = win
+
+        def _dismiss():
+            def _do_dismiss():
+                global _debug_error_window
+                if _debug_error_window is not None:
+                    _debug_error_window.orderOut_(None)
+                    _debug_error_window = None
+            AppHelper.callAfter(_do_dismiss)
+        threading.Timer(duration, _dismiss).start()
+
+    AppHelper.callAfter(_do)
 
 
 def _flash_debug_grid(
