@@ -48,15 +48,31 @@ def _provider_switch(text: str) -> str | None:
 
 
 def _cancel_active_run(text: str) -> bool:
-    normalized = _normalized_text(text)
-    return bool(
-        re.search(
-            r"\b(?:cancel|stop|interrupt|kill)\b"
-            r"(?:\s+(?:this|the|active|current|agent|agent\s+cli|backend|run|session))*\b",
-            normalized,
-        )
-        and re.search(r"\b(?:agent|backend|run|session|generation|cli)\b", normalized)
-    )
+    tokens = re.findall(r"[a-z0-9]+", _normalized_text(text))
+    if not tokens:
+        return False
+    verbs = {"cancel", "stop", "interrupt", "kill"}
+    objects = {
+        ("agent",),
+        ("backend",),
+        ("run",),
+        ("session",),
+        ("generation",),
+        ("agent", "run"),
+        ("agent", "session"),
+        ("agent", "cli"),
+        ("agent", "cli", "run"),
+        ("agent", "cli", "session"),
+        ("backend", "run"),
+        ("backend", "session"),
+        ("cli", "run"),
+        ("cli", "session"),
+    }
+    fillers = {"the", "this", "active", "current", "running", "selected"}
+    if tokens[0] not in verbs:
+        return False
+    rest = [token for token in tokens[1:] if token not in fillers]
+    return tuple(rest) in objects
 
 
 def route_agent_shell_input(

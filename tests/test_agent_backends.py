@@ -1479,13 +1479,24 @@ class TestAgentShellRouting:
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
         decision = route_agent_shell_input(
-            "cancel this agent run",
+            "cancel agent",
             AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
         )
 
         assert decision.kind == "mode_control"
         assert decision.control_action == "cancel_active_run"
         assert decision.provider == "gemini-cli"
+
+    def test_active_agent_shell_cancel_words_inside_message_do_not_trigger_control(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        decision = route_agent_shell_input(
+            "stop using backend jargon and explain the run loop plainly",
+            AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
+        )
+
+        assert decision.kind == "provider_message"
+        assert decision.text == "stop using backend jargon and explain the run loop plainly"
 
     def test_inactive_agent_shell_leaves_input_for_normal_assistant(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
