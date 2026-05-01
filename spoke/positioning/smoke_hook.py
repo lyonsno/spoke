@@ -27,7 +27,7 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
     # Step 1: Transcribe
     text = app._transcribe_segments_and_tail(wav_bytes)
     if text is None:
-        text = app._transcribe_full(wav_bytes)
+        text = app._transcribe_full_buffer(wav_bytes)
 
     if not text or app._transcribe_token != token:
         logger.info("Positioning: no text or stale token")
