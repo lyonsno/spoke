@@ -357,12 +357,14 @@ class TestDismissAnimation:
         assert overlay._streaming is False
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
-    def test_grow_phase_expands_overlay_for_first_60ms(self, mock_pyobjc):
+    def test_grow_phase_expands_overlay_during_grow_window(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        phase, scale, alpha, done = mod._dismiss_animation_state(0.05)
+        phase, scale, alpha, done = mod._dismiss_animation_state(
+            mod._DISMISS_GROW_S * 0.5
+        )
 
         assert phase == "grow"
         assert scale > 1.0
@@ -426,7 +428,7 @@ class TestOpticalShellMaterialization:
         mod = importlib.import_module("spoke.command_overlay")
 
         scale = mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
-        assert scale == pytest.approx(2.0)
+        assert scale == pytest.approx(2.0 / 3.0)
         assert mod._FADE_IN_S == pytest.approx(0.16 * scale)
         assert mod._ENTRANCE_POP_S == pytest.approx(0.15 * scale)
         assert mod._OPTICAL_MATERIALIZATION_BASE_S == pytest.approx(1.36 * scale)

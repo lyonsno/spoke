@@ -77,9 +77,9 @@ _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
 _FONT_SIZE = 15.5
 _APPROVAL_HEADER_TEXT = "Approval needed"
 _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
-# Branch-local smoke aid: slow every command-overlay materialization/dismiss
-# timeline together so the pressure-slit ownership handoff is inspectable.
-_PRESSURE_SLIT_SMOKE_TIME_SCALE = 2.0
+# Branch-local smoke aid: keep every command-overlay materialization/dismiss
+# timeline coupled while tuning toward the final pressure-slit cadence.
+_PRESSURE_SLIT_SMOKE_TIME_SCALE = 2.0 / 3.0
 _FADE_IN_S = 0.16 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
