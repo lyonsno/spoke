@@ -24,13 +24,22 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
     from AppKit import NSScreen
     from PIL import Image
 
+    import sys
+    print(f"[POSITIONING] Step 1: transcribing (token={token})", file=sys.stderr, flush=True)
+    logger.info("Positioning step 1: transcribing (token=%d)", token)
+
     # Step 1: Transcribe
     text = app._transcribe_segments_and_tail(wav_bytes)
     if text is None:
         text = app._transcribe_full_buffer(wav_bytes)
 
-    if not text or app._transcription_token != token:
-        logger.info("Positioning: no text or stale token")
+    current_token = getattr(app, '_transcription_token', None)
+    print(f"[POSITIONING] Transcribed: {text[:80] if text else 'None'!r} (token={token}, current={current_token})", file=sys.stderr, flush=True)
+    logger.info("Positioning: transcribed %r (token=%d, current=%s)", text[:80] if text else None, token, current_token)
+
+    if not text or current_token != token:
+        logger.info("Positioning: no text or stale token (token=%d, current=%s)", token, current_token)
+        print(f"[POSITIONING] BAIL: no text or stale token", file=sys.stderr, flush=True)
         _finish_on_main(app, None)
         return
 
