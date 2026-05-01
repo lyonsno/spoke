@@ -93,6 +93,9 @@ def _finish_on_main(app, result: dict | None) -> None:
         app._transcribing = False
         if app._menubar is not None:
             app._menubar.set_recording(False)
+        # Hide the user preview overlay so it doesn't sit there stale
+        if getattr(app, '_overlay', None) is not None:
+            app._overlay.hide()
 
         if result is None:
             if app._menubar is not None:
@@ -125,8 +128,9 @@ def _finish_on_main(app, result: dict | None) -> None:
             x, mac_y, w, h, content_desc, elapsed,
         )
 
-        if app._overlay is not None:
-            _move_overlay(app._overlay, x, mac_y, w, h)
+        target = getattr(app, '_command_overlay', None) or getattr(app, '_overlay', None)
+        if target is not None:
+            _move_overlay(target, x, mac_y, w, h)
 
         if app._menubar is not None:
             app._menubar.set_status_text(
