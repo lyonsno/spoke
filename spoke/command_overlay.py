@@ -3135,7 +3135,7 @@ class CommandOverlay(NSObject):
                         _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
                     )
                     try:
-                        # Bulk span path: 3 coarse spans (edges, mid, center)
+                        # Bulk span path: 3 coarse spans (edge, center, edge)
                         # instead of per-character iteration. The gradient
                         # approximation is sufficient for the 2-5s breathing
                         # animation on this fallback rendering path.
@@ -3168,13 +3168,13 @@ class CommandOverlay(NSObject):
                                 _SH_pulse, shadow, (resp_start, resp_len)
                             )
                         else:
-                            # Three spans: edge (0..e), mid (e..m), center (m..end)
+                            # Three spans: edge (0..e), center (e..m), edge (m..end)
                             edge = max(1, resp_len // 4)
                             mid = max(edge + 1, resp_len * 3 // 4)
                             spans = [
-                                (resp_start,        edge,           0.0),   # edges: main color
-                                (resp_start + edge, mid - edge,     0.5),   # mid: blend
-                                (resp_start + mid,  resp_len - mid, 1.0),   # center: alt color
+                                (resp_start,        edge,           0.0),   # edge: main color
+                                (resp_start + edge, mid - edge,     1.0),   # center: alt color
+                                (resp_start + mid,  resp_len - mid, 0.0),   # edge: main color
                             ]
                             for span_start, span_len, weight in spans:
                                 if span_len <= 0:
