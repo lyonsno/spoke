@@ -508,6 +508,8 @@ def test_host_expands_agent_shell_card_optical_fields_into_visible_child_configs
         "agent.card.codex-thread-1",
     ]
     assert configs[1]["role"] == "agent_card"
+    assert configs[1]["center_x"] == 10.0 - 150.0 + 80.0
+    assert configs[1]["center_y"] == 20.0 - 60.0 + 90.0
     assert configs[1]["optical_field"]["profile"] == "agent_card"
 
 

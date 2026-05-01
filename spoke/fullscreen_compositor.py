@@ -1304,6 +1304,17 @@ def _agent_shell_child_shell_configs(parent_config: dict) -> list[dict]:
         if not isinstance(child_config, dict):
             continue
         child = dict(child_config)
+        try:
+            parent_left = float(parent_config.get("center_x", 0.0)) - (
+                float(parent_config.get("content_width_points", 0.0)) * 0.5
+            )
+            parent_bottom = float(parent_config.get("center_y", 0.0)) - (
+                float(parent_config.get("content_height_points", 0.0)) * 0.5
+            )
+            child["center_x"] = parent_left + float(child.get("center_x", 0.0))
+            child["center_y"] = parent_bottom + float(child.get("center_y", 0.0))
+        except (TypeError, ValueError):
+            pass
         caller_id = request.get("caller_id")
         if isinstance(caller_id, str) and caller_id:
             child.setdefault("client_id", caller_id)
