@@ -212,7 +212,8 @@ def _finish_on_main(app, result: dict | None) -> None:
         positive_mode = content_desc.startswith("targeting:") or content_desc.startswith("finding:")
         if content_map is not None:
             _flash_debug_grid(sw, sh, content_map, content_desc,
-                              utterance=utterance, target_mode=positive_mode)
+                              utterance=utterance, target_mode=positive_mode,
+                              elapsed_s=elapsed)
 
         if app._menubar is not None:
             app._menubar.set_status_text(
@@ -303,6 +304,7 @@ def _flash_debug_grid(
     duration: float = 3.0,
     utterance: str = "",
     target_mode: bool = False,
+    elapsed_s: float = 0.0,
 ) -> None:
     """Flash a transparent 4×4 grid overlay on screen showing YES/NO cells.
 
@@ -393,6 +395,8 @@ def _flash_debug_grid(
         title_text = f"Avoiding: {content_desc}"
     if utterance:
         title_text = f"\"{utterance}\" → {title_text}"
+    if elapsed_s > 0:
+        title_text = f"{title_text}  ({elapsed_s:.1f}s)"
     title = CATextLayer.alloc().init()
     title.setFrame_(((0, sh - 30), (sw, 30)))
     title.setString_(title_text)
