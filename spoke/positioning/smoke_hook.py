@@ -161,6 +161,9 @@ def _finish_on_main(app, result: dict | None) -> None:
     AppHelper.callAfter(_do)
 
 
+_debug_grid_window = None  # prevent GC from collecting the window
+
+
 def _flash_debug_grid(
     sw: float, sh: float,
     content_map: dict[str, bool],
@@ -177,14 +180,9 @@ def _flash_debug_grid(
         NSBackingStoreBuffered,
         NSBorderlessWindowMask,
         NSColor,
-        NSFont,
         NSMakeRect,
-        NSMutableParagraphStyle,
-        NSScreen,
-        NSView,
         NSWindow,
     )
-    from Foundation import NSTimer
     from Quartz import CALayer, CATextLayer
 
     rows, cols = 4, 4
@@ -265,13 +263,22 @@ def _flash_debug_grid(
     win.setAlphaValue_(1.0)
     win.orderFront_(None)
 
-    # Auto-dismiss after duration
-    def _dismiss(timer):
-        win.orderOut_(None)
+    # Hold a strong reference so GC doesn't collect the window before
+    # the delayed dismiss fires.
+    global _debug_grid_window
+    _debug_grid_window = win
 
-    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-        duration, win, "close", None, False
-    )
+    # Auto-dismiss after duration via a background thread that
+    # schedules the orderOut on the main thread.
+    def _dismiss():
+        from PyObjCTools import AppHelper
+        def _do_dismiss():
+            global _debug_grid_window
+            if _debug_grid_window is not None:
+                _debug_grid_window.orderOut_(None)
+                _debug_grid_window = None
+        AppHelper.callAfter(_do_dismiss)
+    threading.Timer(duration, _dismiss).start()
 
 
 def _get_main_screen_frame():
@@ -351,13 +358,9 @@ def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
         except Exception:
             logger.warning("Failed to update backdrop capture geometry", exc_info=True)
 
-    # Force a backdrop refresh so the warp renders at the new position
-    refresh_backdrop = getattr(overlay, "_refresh_backdrop_snapshot", None)
-    if refresh_backdrop is not None:
-        try:
-            refresh_backdrop()
-        except Exception:
-            logger.warning("Failed to refresh backdrop snapshot", exc_info=True)
+    # Don't force _refresh_backdrop_snapshot here — the Metal pipeline
+    # may not be ready for the new dimensions yet. The backdrop will
+    # refresh on its own during the next frame callback.
 
     # Show if hidden
     if not overlay._window.isVisible():
