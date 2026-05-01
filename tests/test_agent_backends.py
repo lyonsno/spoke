@@ -2036,6 +2036,160 @@ class TestAgentShellMenuState:
         assert cards[1]["display"]["show_latest_response"] is True
         assert cards[1]["display"]["primary_text"] == "second codex answer"
 
+    def test_agent_shell_thread_cards_snapshot_aggregates_persisted_provider_catalogs_after_restart(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "codex restart question",
+                        "last_response": "codex restart answer",
+                    },
+                ],
+            },
+            "claude-code": {
+                "provider_session_id": "claude-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "claude restart question",
+                        "last_response": "claude restart answer",
+                    },
+                ],
+            },
+            "gemini-cli": {
+                "provider_session_id": "gemini-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "gemini-thread-1",
+                        "last_utterance": "gemini restart question",
+                        "last_response": "gemini restart answer",
+                    },
+                ],
+            },
+        }
+
+        cards = delegate._agent_shell_thread_cards_snapshot("claude-code")
+
+        assert [card["provider"] for card in cards] == [
+            "codex",
+            "claude-code",
+            "gemini-cli",
+        ]
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "claude-thread-1",
+            "gemini-thread-1",
+        ]
+        assert [card["selected"] for card in cards] == [False, True, False]
+        assert cards[0]["display"]["display_state"] == "inactive"
+        assert cards[0]["display"]["show_latest_response"] is False
+        assert cards[1]["display"]["display_state"] == "selected_resting"
+        assert cards[1]["display"]["primary_text"] == "claude restart answer"
+        assert cards[2]["display"]["display_state"] == "inactive"
+
+    def test_agent_shell_thread_cards_snapshot_merges_live_backend_public_sessions(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "persisted codex",
+                        "last_response": "persisted codex answer",
+                    },
+                ],
+            }
+        }
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = [
+            {
+                "id": "agent-backend-gemini-cli-1",
+                "provider": "gemini-cli",
+                "state": "running",
+                "provider_session_id": "gemini-thread-live",
+                "thread_card": {
+                    "thread_id": "agent-backend-gemini-cli-1",
+                    "provider": "gemini-cli",
+                    "provider_session_id": "gemini-thread-live",
+                    "title": "live gemini work",
+                    "readiness": "working",
+                    "bearing": "Session: live backend work",
+                    "activity_line": "Running focused tests",
+                    "latest_response": "",
+                    "updated_sequence": 4,
+                },
+            }
+        ]
+
+        cards = delegate._agent_shell_thread_cards_snapshot("codex")
+
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "gemini-thread-live",
+        ]
+        assert cards[0]["selected"] is True
+        assert cards[1]["provider"] == "gemini-cli"
+        assert cards[1]["selected"] is False
+        assert cards[1]["readiness"] == "working"
+        assert cards[1]["display"]["display_state"] == "inactive"
+        assert cards[1]["display"]["show_latest_response"] is False
+
+    def test_switching_provider_session_keeps_inactive_catalog_cards_visible(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "codex question",
+                        "last_response": "codex answer",
+                    },
+                ],
+            },
+            "gemini-cli": {
+                "provider_session_id": "gemini-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "gemini-thread-1",
+                        "last_utterance": "gemini question",
+                        "last_response": "gemini answer",
+                    },
+                ],
+            },
+        }
+        delegate._command_overlay = None
+        delegate._save_preference = MagicMock()
+        delegate._menubar = MagicMock()
+
+        delegate._apply_agent_shell_selection("gemini-cli-session:gemini-thread-1")
+        cards = delegate._agent_shell_thread_cards_snapshot("gemini-cli")
+
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "gemini-thread-1",
+        ]
+        assert [card["selected"] for card in cards] == [False, True]
+        assert cards[0]["display"]["display_state"] == "inactive"
+        assert cards[1]["display"]["display_state"] == "selected_resting"
+
     def test_agent_shell_chrome_events_persist_to_provider_record(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._transcription_token = 7
