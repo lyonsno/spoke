@@ -182,15 +182,9 @@ def _usage_actions(
 
 
 def _identity_header_label(name: str, source: str, confidence: str) -> str:
-    if source == "epistaxis-session-id":
+    if source in {"epistaxis-session-id", "epistaxis-topos-update"} and confidence != "weak":
         return f"Topos: {name}"
-    if source == "epistaxis-worktree":
-        return f"Worktree: {name}"
-    if source == "epistaxis-archive-metadata":
-        return f"Likely lane: {name}"
-    if confidence == "weak":
-        return f"Mentioned topos: {name}"
-    return f"Context: {name}"
+    return ""
 
 
 def _topos_actions(
@@ -204,6 +198,9 @@ def _topos_actions(
     confidence = confidence.strip()
     if not name:
         return []
+    label = _identity_header_label(name, source, confidence)
+    if not label:
+        return []
     if name == state.topos_name and source == state.topos_source:
         return []
     state.topos_name = name
@@ -211,7 +208,7 @@ def _topos_actions(
     return [
         AgentBackendPresentation(
             kind="metadata_header",
-            text=_identity_header_label(name, source, confidence),
+            text=label,
         )
     ]
 

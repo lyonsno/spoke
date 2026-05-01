@@ -3919,8 +3919,9 @@ class TestGeometryCaps:
         header_frame = overlay._agent_shell_header_label.setFrame_.call_args[0][0]
         footer_frame = overlay._agent_shell_footer_label.setFrame_.call_args[0][0]
 
-        assert content_frame.size.height == pytest.approx(244.0)
-        assert footer_frame.origin.y >= 8.0
+        assert content_frame.size.height == pytest.approx(254.0)
+        assert footer_frame.origin.y >= 12.0
+        assert footer_frame.size.height >= 20.0
         assert (
             header_frame.origin.y + header_frame.size.height
             <= content_frame.size.height - 8.0

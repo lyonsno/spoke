@@ -1530,7 +1530,7 @@ class TestAgentBackendPresentation:
             for action in actions
         )
 
-    def test_presenter_labels_worktree_identity_as_worktree_context(self):
+    def test_presenter_suppresses_worktree_identity_as_non_authoritative_header(self):
         from spoke.agent_backend_presenter import (
             AgentBackendPresentationState,
             present_backend_events,
@@ -1552,12 +1552,7 @@ class TestAgentBackendPresentation:
             AgentBackendPresentationState(),
         )
 
-        assert [(action.kind, action.text) for action in actions] == [
-            (
-                "metadata_header",
-                "Worktree: codex-agent-sdk-partyline-spinal-tap-0428",
-            )
-        ]
+        assert all(action.kind != "metadata_header" for action in actions)
 
     def test_presenter_refreshes_identity_when_same_name_gets_stronger_source(self):
         from spoke.agent_backend_presenter import (
@@ -1591,7 +1586,7 @@ class TestAgentBackendPresentation:
             state,
         )
 
-        assert first[-1].text == "Worktree: codex-agent-sdk-partyline-spinal-tap-0428"
+        assert all(action.kind != "metadata_header" for action in first)
         assert second[-1].text == "Topos: codex-agent-sdk-partyline-spinal-tap-0428"
 
     def test_presenter_does_not_infer_topos_from_tool_output_without_identity_event(self):
@@ -2611,9 +2606,57 @@ class TestAgentShellDelegateDispatch:
             and "7d 18%" in call.args[1]["text"]
             for call in calls
         )
+        assert not any(call.args[0] == "agentShellHeader:" for call in calls)
+
+    def test_backend_authoritative_topos_event_drives_agent_shell_header(
+        self, main_module, monkeypatch
+    ):
+        class _ToposBackendManager(_StreamingFakeAgentBackendManager):
+            def get_session(self, session_id):
+                self.poll_count += 1
+                if self.poll_count == 1:
+                    return {
+                        "id": session_id,
+                        "provider": "codex",
+                        "state": "running",
+                        "provider_session_id": "codex-thread-1",
+                        "backend_events": [
+                            {
+                                "sequence": 1,
+                                "kind": "topos_identity",
+                                "text": "codex-spoke-spinal-tap",
+                                "data": {
+                                    "name": "codex-spoke-spinal-tap",
+                                    "source": "epistaxis-session-id",
+                                    "confidence": "exact",
+                                },
+                            },
+                        ],
+                        "result": None,
+                        "error": None,
+                    }
+                return {
+                    "id": session_id,
+                    "provider": "codex",
+                    "state": "completed",
+                    "provider_session_id": "codex-thread-1",
+                    "backend_events": [],
+                    "result": "done",
+                    "error": None,
+                }
+
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _ToposBackendManager()
+
+        delegate._send_text_as_command("create your topos")
+
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         assert any(
             call.args[0] == "agentShellHeader:"
-            and call.args[1]["text"] == "Worktree: codex-spoke-spinal-tap"
+            and call.args[1]["text"] == "Topos: codex-spoke-spinal-tap"
             for call in calls
         )
         assert calls[-1].args[0] == "commandComplete:"
