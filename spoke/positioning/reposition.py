@@ -23,8 +23,8 @@ from PIL import Image, ImageDraw
 from .grid_overlay import draw_grid, ROW_LABELS, COLS, ROWS
 
 # Default grid for positioning
-POS_ROWS = 4
-POS_COLS = 4
+POS_ROWS = 6
+POS_COLS = 6
 
 INTENT_SYSTEM = (
     "You convert user requests about overlay positioning into structured intents.\n\n"
@@ -53,30 +53,32 @@ INTENT_SYSTEM = (
 
 TARGET_SYSTEM = (
     "You are a screen layout system.\n\n"
-    "The screen is divided into a 4×4 grid:\n"
-    "  Rows: A (top) to D (bottom)\n"
-    "  Columns: 1 (left) to 4 (right)\n\n"
-    "  A1 A2 A3 A4   ← top of screen\n"
-    "  B1 B2 B3 B4\n"
-    "  C1 C2 C3 C4\n"
-    "  D1 D2 D3 D4   ← bottom of screen\n\n"
+    "The screen is divided into a 6×6 grid:\n"
+    "  Rows: A (top) to F (bottom)\n"
+    "  Columns: 1 (left) to 6 (right)\n\n"
+    "  A1 A2 A3 A4 A5 A6   ← top of screen\n"
+    "  B1 B2 B3 B4 B5 B6\n"
+    "  C1 C2 C3 C4 C5 C6\n"
+    "  D1 D2 D3 D4 D5 D6\n"
+    "  E1 E2 E3 E4 E5 E6\n"
+    "  F1 F2 F3 F4 F5 F6   ← bottom of screen\n\n"
     "You will receive a description of where an overlay should be placed. "
     "Mark each cell YES if the overlay should occupy it, NO if not.\n\n"
-    "Output exactly 16 lines:\n"
-    "A1: YES or NO\nA2: YES or NO\n...\nD4: YES or NO\n\n"
+    "Output exactly 36 lines:\n"
+    "A1: YES or NO\nA2: YES or NO\n...\nF6: YES or NO\n\n"
     "Examples:\n"
-    "- 'center' → B2:YES B3:YES C2:YES C3:YES, rest NO\n"
-    "- 'top right' → A3:YES A4:YES, rest NO\n"
-    "- 'bottom half' → C1-C4:YES D1-D4:YES, rest NO\n"
-    "- 'left side' → A1:YES B1:YES C1:YES D1:YES A2:YES B2:YES C2:YES D2:YES, rest NO\n"
-    "- 'avoid the top row' → B1-D4:YES A1-A4:NO\n\n"
-    "You MUST output all 16 cells."
+    "- 'center' → C3:YES C4:YES D3:YES D4:YES, rest NO\n"
+    "- 'top right corner' → A5:YES A6:YES B5:YES B6:YES, rest NO\n"
+    "- 'bottom third' → E1-E6:YES F1-F6:YES, rest NO\n"
+    "- 'middle third horizontally' → all rows columns 3-4 YES, rest NO\n"
+    "- 'left side' → columns 1-3 YES for all rows, rest NO\n\n"
+    "You MUST output all 36 cells."
 )
 
 DETECT_SYSTEM = (
     "You are a content detection system.\n\n"
-    "You will be shown an image of a screen divided into a 4x4 grid "
-    "(rows A-D, columns 1-4).\n\n"
+    "You will be shown an image of a screen divided into a 6x6 grid "
+    "(rows A-F, columns 1-6).\n\n"
     "IMPORTANT: The yellow text labels (A1, A2, B1, etc.) and yellow grid lines "
     "are reference markers drawn ON TOP of the screen image. They are NOT part of "
     "the screen content. Ignore them completely when deciding YES or NO. Only look "
@@ -84,14 +86,14 @@ DETECT_SYSTEM = (
     "You will also receive a description of a type of content. For each cell "
     "in the grid, determine whether the UNDERLYING screen content (not the yellow "
     "labels) contains that type of content.\n\n"
-    "Output exactly 16 lines, one per cell, in order:\n"
+    "Output exactly 36 lines, one per cell, in order:\n"
     "A1: YES or NO\n"
     "A2: YES or NO\n"
     "...\n"
-    "D4: YES or NO\n\n"
+    "F6: YES or NO\n\n"
     "YES = this cell contains that type of content\n"
     "NO = this cell does not\n\n"
-    "You MUST output all 16 cells."
+    "You MUST output all 36 cells."
 )
 
 
@@ -220,7 +222,7 @@ def target_cells(target_desc: str) -> dict[str, bool]:
                 {"role": "user", "content": target_desc},
             ],
             "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 256,
+            "max_tokens": 512,
             "chat_template_kwargs": {"enable_thinking": False},
         },
         timeout=30,

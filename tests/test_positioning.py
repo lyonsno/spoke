@@ -68,7 +68,7 @@ def test_largest_rectangle_full_empty():
     """All cells empty → full grid rectangle."""
     from spoke.positioning.reposition import largest_rectangle
 
-    content_map = {f"{r}{c}": False for r in "ABCD" for c in "1234"}
+    content_map = {f"{r}{c}": False for r in "ABCDEF" for c in "123456"}
     rect = largest_rectangle(content_map)
     assert rect is not None
     assert rect["x"] == 0.0
@@ -81,40 +81,40 @@ def test_largest_rectangle_all_content():
     """All cells have content → no rectangle."""
     from spoke.positioning.reposition import largest_rectangle
 
-    content_map = {f"{r}{c}": True for r in "ABCD" for c in "1234"}
+    content_map = {f"{r}{c}": True for r in "ABCDEF" for c in "123456"}
     rect = largest_rectangle(content_map)
     assert rect is None
 
 
 def test_largest_rectangle_right_column_empty():
-    """Only column 4 is empty → tall narrow rectangle on the right."""
+    """Only column 6 is empty → tall narrow rectangle on the right."""
     from spoke.positioning.reposition import largest_rectangle
 
     content_map = {}
-    for r in "ABCD":
-        for c in "1234":
-            content_map[f"{r}{c}"] = (c != "4")
+    for r in "ABCDEF":
+        for c in "123456":
+            content_map[f"{r}{c}"] = (c != "6")
 
     rect = largest_rectangle(content_map)
     assert rect is not None
-    assert rect["x"] == 0.75  # column 4 starts at 3/4
-    assert rect["width"] == 0.25  # one column wide
+    assert rect["x"] == pytest.approx(5 / 6)  # column 6 starts at 5/6
+    assert rect["width"] == pytest.approx(1 / 6)  # one column wide
     assert rect["height"] == 1.0  # full height
 
 
 def test_largest_rectangle_top_two_rows_empty():
-    """Rows A-B empty, C-D content → wide rectangle on top."""
+    """Rows A-B empty, C-F content → wide rectangle on top."""
     from spoke.positioning.reposition import largest_rectangle
 
     content_map = {}
-    for r in "ABCD":
-        for c in "1234":
-            content_map[f"{r}{c}"] = (r in "CD")
+    for r in "ABCDEF":
+        for c in "123456":
+            content_map[f"{r}{c}"] = (r in "CDEF")
 
     rect = largest_rectangle(content_map)
     assert rect is not None
     assert rect["y"] == 0.0
-    assert rect["height"] == 0.5
+    assert rect["height"] == pytest.approx(2 / 6)
     assert rect["width"] == 1.0
 
 
@@ -122,38 +122,38 @@ def test_largest_rectangle_corner_block():
     """2x2 block in top-right is empty."""
     from spoke.positioning.reposition import largest_rectangle
 
-    content_map = {f"{r}{c}": True for r in "ABCD" for c in "1234"}
-    content_map["A3"] = False
-    content_map["A4"] = False
-    content_map["B3"] = False
-    content_map["B4"] = False
+    content_map = {f"{r}{c}": True for r in "ABCDEF" for c in "123456"}
+    content_map["A5"] = False
+    content_map["A6"] = False
+    content_map["B5"] = False
+    content_map["B6"] = False
 
     rect = largest_rectangle(content_map)
     assert rect is not None
-    assert rect["x"] == 0.5
+    assert rect["x"] == pytest.approx(4 / 6)
     assert rect["y"] == 0.0
-    assert rect["width"] == 0.5
-    assert rect["height"] == 0.5
+    assert rect["width"] == pytest.approx(2 / 6)
+    assert rect["height"] == pytest.approx(2 / 6)
 
 
 def test_largest_rectangle_l_shape_picks_best():
     """L-shaped empty region → largest inscribed rectangle, not the whole L."""
     from spoke.positioning.reposition import largest_rectangle
 
-    # All content except column 4 (full height) and row A (full width)
+    # All content except column 6 (full height) and row A (full width)
     content_map = {}
-    for r in "ABCD":
-        for c in "1234":
-            if r == "A" or c == "4":
+    for r in "ABCDEF":
+        for c in "123456":
+            if r == "A" or c == "6":
                 content_map[f"{r}{c}"] = False
             else:
                 content_map[f"{r}{c}"] = True
 
     rect = largest_rectangle(content_map)
     assert rect is not None
-    # Should pick either the full top row (4x1 = 4 cells) or
-    # the full right column (1x4 = 4 cells) — both are 4 cells
-    assert rect["width"] * rect["height"] == pytest.approx(0.25)  # 4/16
+    # Should pick the full top row (6×1 = 6 cells, area=1.0*1/6)
+    # or the full right column (1×6 = 6 cells, area=1/6*1.0)
+    assert rect["width"] * rect["height"] == pytest.approx(1 / 6)  # 6/36
 
 
 # ── intent resolution mock tests ──
@@ -182,18 +182,18 @@ def test_largest_rectangle_target_picks_yes_cells():
     """largest_rectangle_target finds rect in YES (occupy) cells."""
     from spoke.positioning.reposition import largest_rectangle_target
 
-    # Center 2×2 block
+    # Center 2×2 block (C3-C4, D3-D4 in a 6×6 grid)
     target_map = {}
-    for r in "ABCD":
-        for c in "1234":
-            target_map[f"{r}{c}"] = (r in "BC" and c in "23")
+    for r in "ABCDEF":
+        for c in "123456":
+            target_map[f"{r}{c}"] = (r in "CD" and c in "34")
 
     rect = largest_rectangle_target(target_map)
     assert rect is not None
-    assert rect["x"] == 0.25
-    assert rect["y"] == 0.25
-    assert rect["width"] == 0.5
-    assert rect["height"] == 0.5
+    assert rect["x"] == pytest.approx(2 / 6)
+    assert rect["y"] == pytest.approx(2 / 6)
+    assert rect["width"] == pytest.approx(2 / 6)
+    assert rect["height"] == pytest.approx(2 / 6)
 
 
 # ── content detection parsing tests ──
@@ -301,9 +301,9 @@ def test_reposition_returns_correct_shape():
 
     # Simulate a content map where right half is empty
     content_map = {}
-    for r in "ABCD":
-        for c in "1234":
-            content_map[f"{r}{c}"] = (c in "12")
+    for r in "ABCDEF":
+        for c in "123456":
+            content_map[f"{r}{c}"] = (c in "123")
 
     rect = largest_rectangle(content_map)
     assert rect is not None
@@ -316,16 +316,16 @@ def test_reposition_returns_correct_shape():
 
 
 def test_content_map_must_be_complete():
-    """largest_rectangle requires all 16 cells — missing cells are treated as occupied."""
+    """largest_rectangle requires all 36 cells — missing cells are treated as occupied."""
     from spoke.positioning.reposition import largest_rectangle
 
-    # Only 2 cells specified — the other 14 are missing and treated as occupied
+    # Only 2 cells specified — the other 34 are missing and treated as occupied
     content_map = {"A1": True, "B2": False}
     rect = largest_rectangle(content_map)
     # Only B2 is available — a 1x1 rectangle
     assert rect is not None
-    assert rect["width"] == 0.25
-    assert rect["height"] == 0.25
+    assert rect["width"] == pytest.approx(1 / 6)
+    assert rect["height"] == pytest.approx(1 / 6)
 
 
 # ── smoke_hook _finish_on_main cleanup tests ──
