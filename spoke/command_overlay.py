@@ -709,6 +709,21 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
     }
 
 
+def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
+    """Keep the visible shell body alive until the seam sidecar owns dismissal."""
+    p = _clamp01(progress)
+    if p <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+        return {
+            "opacity": 0.0,
+            "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+        }
+    state = _materialization_fill_state(p)
+    return {
+        "opacity": 1.0,
+        "height_frac": state["height_frac"],
+    }
+
+
 def _dismiss_pucker_amount(progress: float) -> float:
     """Signed radial ringdown: an underdamped pucker after the seam vanishes."""
     p = _clamp01(progress)
@@ -3611,14 +3626,11 @@ class CommandOverlay(NSObject):
         state = _materialization_fill_state(progress)
         hide_material_layers = False
         if getattr(self, "_materialization_direction", 1) < 0:
-            # On dismiss, the local material body should vanish before the
-            # compositor slit closes. Otherwise the shrinking compositor shell
-            # can expose this layer as a dark backing plate.
-            state = {
-                "opacity": 0.0,
-                "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
-            }
-            hide_material_layers = True
+            # The compositor owns displacement; the CA/SDF fill owns the
+            # visible material body until the seam sidecar takes over. Hiding
+            # earlier amputates the center while leaving warped end-caps alive.
+            state = _dismiss_materialization_fill_state(progress)
+            hide_material_layers = state["opacity"] <= 0.0
         try:
             content_frame = content.frame()
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER

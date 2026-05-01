@@ -1159,7 +1159,7 @@ class TestOpticalShellMaterialization:
         overlay._start_materialization_animation.assert_called_once_with(shell_config)
         assert overlay._deferred_materialization_shell_config is None
 
-    def test_reverse_materialization_hides_fill_before_warp_slit_closes(
+    def test_reverse_materialization_hides_fill_at_seam_handoff(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1167,7 +1167,9 @@ class TestOpticalShellMaterialization:
         overlay._materialization_timer = MagicMock()
         overlay._materialization_direction = -1
 
-        overlay._apply_materialization_fill_state(0.90)
+        overlay._apply_materialization_fill_state(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
 
         overlay._fill_layer.setOpacity_.assert_called_with(0.0)
         overlay._boost_layer.setOpacity_.assert_called_with(0.0)
@@ -1177,7 +1179,27 @@ class TestOpticalShellMaterialization:
             "transform.scale.y",
         )
 
-    def test_reverse_materialization_start_never_presents_full_fill_box(
+    def test_reverse_materialization_keeps_fill_body_alive_until_seam_handoff(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        progress = mod._OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS
+
+        overlay._apply_materialization_fill_state(progress)
+
+        expected = mod._materialization_fill_state(progress)
+        assert expected["opacity"] > 0.0
+        assert expected["height_frac"] > mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC
+        overlay._fill_layer.setOpacity_.assert_called_with(expected["opacity"])
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            expected["height_frac"],
+            "transform.scale.y",
+        )
+
+    def test_reverse_materialization_start_preserves_full_fill_body(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1187,9 +1209,9 @@ class TestOpticalShellMaterialization:
 
         overlay._apply_materialization_fill_state(1.0)
 
-        overlay._fill_layer.setOpacity_.assert_called_with(0.0)
+        overlay._fill_layer.setOpacity_.assert_called_with(1.0)
         overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
-            mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+            1.0,
             "transform.scale.y",
         )
 
