@@ -15,14 +15,15 @@ COLS = 30  # 1-30
 ROW_LABELS = list(string.ascii_uppercase)
 COL_LABELS = [str(i) for i in range(1, COLS + 1)]
 
-# Visual params
-GRID_COLOR = (255, 255, 0, 80)  # yellow, semi-transparent
-LABEL_COLOR = (255, 255, 0, 200)
+# Visual params — neutral gray so the VLM doesn't classify the grid labels
+# as colored content (yellow labels caused "avoid yellow text" to mark every cell YES)
+GRID_COLOR = (160, 160, 160, 80)  # gray, semi-transparent
+LABEL_COLOR = (180, 180, 180, 200)
 LABEL_BG = (0, 0, 0, 140)
 
 # Flood-fill style: big labels filling each cell, semi-transparent
-FLOOD_LABEL_COLOR = (255, 255, 0)  # yellow, alpha applied separately
-FLOOD_LABEL_ALPHA = 140  # ~55% opacity — must survive scale-down while disrupting text
+FLOOD_LABEL_COLOR = (170, 170, 170)  # gray, alpha applied separately
+FLOOD_LABEL_ALPHA = 140  # ~55% opacity — must survive scale-down while remaining neutral
 
 
 def draw_grid(
