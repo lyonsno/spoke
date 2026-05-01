@@ -313,16 +313,24 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
 
     Returns dict with x, y, width, height as fractions of screen (0-1),
     or None if no viable position found.
+
+    Sets reposition._last_debug with raw model outputs for fail-loud diagnostics.
     """
+    reposition._last_debug = []
     t0 = time.time()
 
     # Layer 1: resolve intent
     intent = resolve_intent(utterance)
+    reposition._last_debug.append(f"Intent: {intent}")
 
     if intent["mode"] == "target":
         # Target mode — model picks which cells the overlay should occupy
         target_desc = intent["target_desc"]
         target_map = target_cells(target_desc)
+        yes_cells = [k for k, v in target_map.items() if v]
+        no_cells = [k for k, v in target_map.items() if not v]
+        reposition._last_debug.append(f"Target cells YES: {yes_cells}")
+        reposition._last_debug.append(f"Target cells NO: {no_cells}")
         rect = largest_rectangle_target(target_map)
         elapsed = round(time.time() - t0, 2)
         if rect:
@@ -330,13 +338,20 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
             rect["content_map"] = target_map
             rect["utterance"] = utterance
             rect["elapsed_s"] = elapsed
+        else:
+            reposition._last_debug.append("No YES cells → no viable rectangle")
         return rect
 
     # Avoid mode — detect content and find empty space
     content_desc = intent["content_desc"]
+    reposition._last_debug.append(f"Content desc: {content_desc}")
 
     # Layer 2: detect content
     content_map = detect_content(screenshot, content_desc)
+    yes_cells = [k for k, v in content_map.items() if v]
+    no_cells = [k for k, v in content_map.items() if not v]
+    reposition._last_debug.append(f"Detect YES: {yes_cells}")
+    reposition._last_debug.append(f"Detect NO: {no_cells}")
 
     # Layer 3: find largest empty rectangle
     rect = largest_rectangle(content_map)
@@ -348,5 +363,7 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
         rect["content_map"] = content_map
         rect["utterance"] = utterance
         rect["elapsed_s"] = elapsed
+    else:
+        reposition._last_debug.append("All cells YES → no empty space for overlay")
 
     return rect
