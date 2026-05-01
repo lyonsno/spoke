@@ -1341,6 +1341,8 @@ def _snapshot_from_shell_config(
         for key in (
             "agent_thread_cards",
             "agent_thread_hud",
+            "agent_shell_primitives",
+            "agent_shell_card_renderer",
             "surface_kind",
         )
         if key in config
