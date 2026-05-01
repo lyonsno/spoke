@@ -14,6 +14,7 @@ dependencies = [
     "openwakeword",
     "pyobjc-framework-vision>=12.1",
     "pvporcupine>=3.0",
+    "pillow>=12.2.0",
 ]
 
 [project.scripts]

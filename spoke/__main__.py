@@ -1285,6 +1285,14 @@ class SpokeAppDelegate(NSObject):
         self._setup_event_tap()
         self._request_mic_permission()
 
+        # SMOKE: Install positioning hook — enter-held recordings reposition
+        # the overlay instead of sending to the assistant.
+        try:
+            from .positioning.smoke_hook import install_positioning_hook
+            install_positioning_hook(self)
+        except Exception:
+            logger.warning("Positioning smoke hook failed to install", exc_info=True)
+
     def _request_mic_permission(self) -> None:
         """Check mic permission via AVCaptureDevice (no PortAudio allocation).
 
