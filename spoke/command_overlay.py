@@ -3660,6 +3660,24 @@ class CommandOverlay(NSObject):
                 except Exception:
                     logger.debug("Failed to commit command materialization opacity transaction", exc_info=True)
 
+    def _set_layer_contents_without_actions(self, layer, contents) -> None:
+        if layer is None or contents is None or not hasattr(layer, "setContents_"):
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            layer.setContents_(contents)
+        except Exception:
+            logger.debug("Failed to update command materialization layer contents", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization contents transaction", exc_info=True)
+
     def _set_layer_hidden_without_actions(self, layer, hidden: bool) -> None:
         if layer is None or not hasattr(layer, "setHidden_"):
             return
@@ -3719,6 +3737,16 @@ class CommandOverlay(NSObject):
                 height_frac=state["height_frac"],
             )
         fill = getattr(self, "_fill_layer", None)
+        if getattr(self, "_materialization_direction", 1) < 0:
+            self._set_layer_contents_without_actions(
+                fill,
+                getattr(self, "_dismiss_fill_image", None),
+            )
+        else:
+            self._set_layer_contents_without_actions(
+                fill,
+                getattr(self, "_fill_image", None),
+            )
         self._set_layer_opacity_without_actions(fill, state["opacity"])
         if hide_material_layers:
             for layer_name in ("_boost_layer", "_spring_tint_layer"):
@@ -4225,6 +4253,14 @@ class CommandOverlay(NSObject):
                     )
                     result["image"] = fill_image
                     result["payload"] = payload
+                    if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
+                        dismiss_fill_alpha = np.where(inside_mask, interior, 0.0).astype(np.float32)
+                        dismiss_image, dismiss_payload = _fill_field_to_image(
+                            dismiss_fill_alpha,
+                            int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+                        )
+                        result["dismiss_image"] = dismiss_image
+                        result["dismiss_payload"] = dismiss_payload
                 except Exception as exc:
                     result["error"] = repr(exc)
             except Exception as exc:
@@ -4258,12 +4294,15 @@ class CommandOverlay(NSObject):
             self._unhide_fill_if_ready(signature)
             return
         self._fill_payload = payload.get("payload")
+        self._dismiss_fill_payload = payload.get("dismiss_payload")
         self._fill_image_signature = signature
 
         total_w = payload["total_w"]
         total_h = payload["total_h"]
         scale = payload.get("scale", getattr(self, "_ridge_scale", 2.0))
         fill_image = payload.get("image")
+        self._fill_image = fill_image
+        self._dismiss_fill_image = payload.get("dismiss_image")
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))

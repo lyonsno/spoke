@@ -1237,6 +1237,20 @@ class TestOpticalShellMaterialization:
             "transform.scale.y",
         )
 
+    def test_reverse_materialization_uses_hard_body_dismiss_fill(
+        self, mock_pyobjc
+    ):
+        overlay, _mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._fill_image = "glow-bearing-fill"
+        overlay._dismiss_fill_image = "hard-body-fill"
+
+        overlay._apply_materialization_fill_state(1.0)
+
+        overlay._fill_layer.setContents_.assert_called_with("hard-body-fill")
+
     def test_reverse_materialization_prearms_radial_pucker_before_slit_closes(
         self, mock_pyobjc, monkeypatch
     ):
@@ -3681,3 +3695,44 @@ class TestSDFCaching:
             + mod._COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII
             * mod._optical_shell_body_corner_radius(80.0)
         )
+
+    def test_assistant_dismiss_fill_drops_exterior_sdf_glow(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Dismiss materialization must not shrink the glow image's bounding slab."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = MagicMock()
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        alphas = []
+
+        def fake_sdf(*_args):
+            return np.array(
+                [
+                    [2.0, 2.0, 2.0],
+                    [2.0, -2.0, 2.0],
+                    [2.0, 2.0, 2.0],
+                ],
+                dtype=np.float32,
+            )
+
+        def capture_image(alpha, *_rgb):
+            alphas.append(np.array(alpha, copy=True))
+            return f"image-{len(alphas)}", f"payload-{len(alphas)}".encode()
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", fake_sdf)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", capture_image)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert len(alphas) == 2
+        normal_alpha, dismiss_alpha = alphas
+        assert normal_alpha[0, 0] > 0.0
+        assert dismiss_alpha[0, 0] == pytest.approx(0.0)
+        assert dismiss_alpha[1, 1] > 0.0
+        assert overlay._dismiss_fill_image == "image-2"
