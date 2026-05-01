@@ -169,10 +169,11 @@ def _finish_on_main(app, result: dict | None) -> None:
         # Flash the debug grid showing which cells the model marked YES/NO
         content_map = result.get("content_map")
         utterance = result.get("utterance", "")
-        is_target = content_desc.startswith("targeting:")
+        # target_mode inverts colors: YES=green (go here) vs YES=red (content to avoid)
+        positive_mode = content_desc.startswith("targeting:") or content_desc.startswith("finding:")
         if content_map is not None:
             _flash_debug_grid(sw, sh, content_map, content_desc,
-                              utterance=utterance, target_mode=is_target)
+                              utterance=utterance, target_mode=positive_mode)
 
         if app._menubar is not None:
             app._menubar.set_status_text(
@@ -345,8 +346,10 @@ def _flash_debug_grid(
             root.addSublayer_(label)
 
     # Title bar showing utterance and resolved content description
-    if target_mode:
+    if content_desc.startswith("targeting:"):
         title_text = f"Targeting: {content_desc.removeprefix('targeting: ')}"
+    elif content_desc.startswith("finding:"):
+        title_text = f"Finding: {content_desc.removeprefix('finding: ')}"
     else:
         title_text = f"Avoiding: {content_desc}"
     if utterance:
