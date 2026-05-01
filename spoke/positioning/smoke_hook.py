@@ -215,6 +215,11 @@ def _finish_on_main(app, result: dict | None) -> None:
                               utterance=utterance, target_mode=positive_mode,
                               elapsed_s=elapsed)
 
+        # Persistent diagnostic overlay in upper right — survives grid dismiss
+        from .reposition import reposition as _reposition_fn
+        debug_steps = getattr(_reposition_fn, '_last_debug', None)
+        _show_diagnostic_overlay(result, debug_steps)
+
         if app._menubar is not None:
             app._menubar.set_status_text(
                 f"Positioned: {content_desc} ({elapsed:.1f}s)"
@@ -225,6 +230,7 @@ def _finish_on_main(app, result: dict | None) -> None:
 
 _debug_grid_window = None  # prevent GC from collecting the window
 _debug_error_window = None  # prevent GC from collecting error window
+_debug_diag_window = None  # persistent diagnostic overlay
 
 
 def _flash_error_on_main(text: str, duration: float = 5.0) -> None:
@@ -293,6 +299,98 @@ def _flash_error_on_main(text: str, duration: float = 5.0) -> None:
                     _debug_error_window = None
             AppHelper.callAfter(_do_dismiss)
         threading.Timer(duration, _dismiss).start()
+
+    AppHelper.callAfter(_do)
+
+
+def _show_diagnostic_overlay(result: dict, debug_steps: list[str] | None) -> None:
+    """Show a persistent small diagnostic overlay in the upper right.
+
+    Displays: utterance, pipeline steps, elapsed time. Persists until
+    the next positioning run replaces it.
+    """
+    from PyObjCTools import AppHelper
+
+    def _do():
+        from AppKit import (
+            NSBackingStoreBuffered,
+            NSBorderlessWindowMask,
+            NSColor,
+            NSFont,
+            NSMakeRect,
+            NSScreen,
+            NSWindow,
+        )
+        from Quartz import CATextLayer
+
+        global _debug_diag_window
+        if _debug_diag_window is not None:
+            _debug_diag_window.orderOut_(None)
+
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return
+        sf = screen.frame()
+        sw, sh = sf.size.width, sf.size.height
+
+        # Build diagnostic text
+        lines = []
+        utterance = result.get("utterance", "")
+        if utterance:
+            lines.append(f'"{utterance}"')
+
+        if debug_steps:
+            for step in debug_steps:
+                lines.append(f"  {step}")
+
+        elapsed = result.get("elapsed_s", 0)
+        content_desc = result.get("content_desc", "?")
+        lines.append(f"→ {content_desc}")
+        lines.append(f"  {elapsed:.1f}s total")
+
+        rect = f"x={result['x']:.2f} y={result['y']:.2f} w={result['width']:.2f} h={result['height']:.2f}"
+        lines.append(f"  {rect}")
+
+        text = "\n".join(lines)
+
+        # Small overlay in upper right
+        win_w = 380
+        win_h = min(20 + len(lines) * 16, 300)
+        win_x = sw - win_w - 12
+        win_y = sh - win_h - 40  # below menu bar
+
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(win_x, win_y, win_w, win_h),
+            NSBorderlessWindowMask,
+            NSBackingStoreBuffered,
+            False,
+        )
+        win.setLevel_(2147483647)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.65)
+        )
+        win.setIgnoresMouseEvents_(True)
+        win.setHasShadow_(False)
+
+        content = win.contentView()
+        content.setWantsLayer_(True)
+
+        label = CATextLayer.alloc().init()
+        label.setFrame_(((8, 4), (win_w - 16, win_h - 8)))
+        label.setString_(text)
+        label.setFont_(NSFont.fontWithName_size_("Menlo", 11))
+        label.setFontSize_(11)
+        label.setForegroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.8, 1.0, 0.8, 0.9).CGColor()
+        )
+        label.setWrapped_(True)
+        label.setContentsScale_(2.0)
+        content.layer().addSublayer_(label)
+
+        win.setAlphaValue_(1.0)
+        win.orderFront_(None)
+        _debug_diag_window = win
 
     AppHelper.callAfter(_do)
 
