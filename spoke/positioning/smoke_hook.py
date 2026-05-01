@@ -170,6 +170,10 @@ def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
     """Move and resize the overlay window."""
     from AppKit import NSMakeRect
 
+    # Suppress _update_layout so text-driven auto-sizing doesn't
+    # override the externally computed frame.
+    overlay._positioning_override = True
+
     # Get the fringe width from the overlay
     f = getattr(overlay, "_fringe_width", 8.0)
 
@@ -179,6 +183,36 @@ def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
     # Update content view to match
     content_frame = NSMakeRect(f, f, w, h)
     overlay._content_view.setFrame_(content_frame)
+
+    # Resize SDF fill and boost layers to match the new content area
+    fill = getattr(overlay, "_fill_layer", None)
+    if fill is not None:
+        fill.setFrame_(((0, 0), (w, h)))
+    boost = getattr(overlay, "_boost_layer", None)
+    if boost is not None:
+        boost.setFrame_(((0, 0), (w, h)))
+    spring_tint = getattr(overlay, "_spring_tint_layer", None)
+    if spring_tint is not None:
+        spring_tint.setFrame_(((0, 0), (w, h)))
+
+    # Resize scroll view and text container to fit the new content area
+    scroll = getattr(overlay, "_scroll_view", None)
+    if scroll is not None:
+        scroll.setFrame_(NSMakeRect(12, 8, w - 24, h - 16))
+    text_view = getattr(overlay, "_text_view", None)
+    if text_view is not None:
+        container = text_view.textContainer()
+        if container is not None:
+            container.setContainerSize_((w - 24, 1.0e7))
+
+    # Regenerate the SDF fill image at the new dimensions so the
+    # capsule shape matches the repositioned frame.
+    ridge_masks = getattr(overlay, "_apply_ridge_masks", None)
+    if ridge_masks is not None:
+        try:
+            ridge_masks(w, h)
+        except Exception:
+            logger.warning("Failed to regenerate ridge masks at new size", exc_info=True)
 
     # Show if hidden
     if not overlay._window.isVisible():

@@ -1350,6 +1350,8 @@ class CommandOverlay(NSObject):
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
             return
+        # Clear any external positioning override so normal layout resumes.
+        self._positioning_override = False
         self._cancel_all_timers()
         self._visible = True
         self._streaming = True
@@ -3714,6 +3716,11 @@ class CommandOverlay(NSObject):
 
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
+        # When the overlay has been externally positioned (e.g. by the
+        # positioning pipeline), skip layout recalculation so the
+        # computed frame is not overridden by text-driven auto-sizing.
+        if getattr(self, "_positioning_override", False):
+            return
         try:
             layout = self._text_view.layoutManager()
             container = self._text_view.textContainer()
