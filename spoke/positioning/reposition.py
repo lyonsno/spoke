@@ -28,11 +28,16 @@ POS_COLS = 6
 
 INTENT_SYSTEM = (
     "Your only job is to classify overlay positioning requests.\n\n"
-    "The user wants to reposition an overlay on their screen. There are only two modes:\n\n"
-    "1. AVOID mode: The user wants the overlay to avoid certain content.\n"
+    "The user wants to reposition an overlay on their screen. There are only three modes:\n\n"
+    "1. AVOID mode: The user wants the overlay to move AWAY from certain content.\n"
     "   Output only: AVOID: <content noun phrase>\n\n"
-    "2. TARGET mode: The user wants the overlay to go to a specific screen region.\n"
+    "2. TARGET mode: The user wants the overlay to go to a specific SPATIAL region\n"
+    "   (no screen content needs to be identified — just a direction or area).\n"
     "   Output only: TARGET: <short region description>\n\n"
+    "3. FIND mode: The user wants the overlay to go TO where certain content IS.\n"
+    "   The content must be identified on screen visually.\n"
+    "   Output only: FIND: <content noun phrase>\n\n"
+    "AVOID = move away from content. FIND = move toward content. TARGET = go to a region.\n\n"
     "Examples:\n"
     "- 'stop blocking my code' → AVOID: code\n"
     "- 'move out of the way of the terminal text' → AVOID: terminal text\n"
@@ -45,7 +50,12 @@ INTENT_SYSTEM = (
     "- 'position yourself in the middle' → TARGET: center\n"
     "- 'move to the bottom' → TARGET: bottom\n"
     "- 'can you go to the left side' → TARGET: left side\n"
-    "- 'stay in the top half' → TARGET: top half\n\n"
+    "- 'stay in the top half' → TARGET: top half\n"
+    "- 'go where the code is' → FIND: code\n"
+    "- 'position yourself over the terminal' → FIND: terminal\n"
+    "- 'move onto the graph' → FIND: graph\n"
+    "- 'cover the sidebar' → FIND: sidebar\n"
+    "- 'sit on top of the dark pane' → FIND: dark pane\n\n"
     "Output ONLY the mode prefix and value. Nothing else. No explanation."
 )
 
@@ -141,6 +151,9 @@ def resolve_intent(utterance: str) -> dict:
     if raw.upper().startswith("TARGET:"):
         target_desc = raw.split(":", 1)[1].strip()
         return {"mode": "target", "target_desc": target_desc}
+    if raw.upper().startswith("FIND:"):
+        content_desc = raw.split(":", 1)[1].strip()
+        return {"mode": "find", "content_desc": content_desc}
     if raw.upper().startswith("AVOID:"):
         content_desc = raw.split(":", 1)[1].strip()
         return {"mode": "avoid", "content_desc": content_desc}
@@ -340,28 +353,38 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
             reposition._last_debug.append("No YES cells → no viable rectangle")
         return rect
 
-    # Avoid mode — detect content and find empty space
+    # AVOID or FIND mode — both need VLM content detection
+    is_find = intent["mode"] == "find"
     content_desc = intent["content_desc"]
-    reposition._last_debug.append(f"Content desc: {content_desc}")
+    reposition._last_debug.append(f"{'FIND' if is_find else 'AVOID'} content: {content_desc}")
 
-    # Layer 2: detect content
+    # Layer 2: detect content on screen
     content_map = detect_content(screenshot, content_desc)
     yes_cells = [k for k, v in content_map.items() if v]
     no_cells = [k for k, v in content_map.items() if not v]
     reposition._last_debug.append(f"Detect YES: {yes_cells}")
     reposition._last_debug.append(f"Detect NO: {no_cells}")
 
-    # Layer 3: find largest empty rectangle
-    rect = largest_rectangle(content_map)
+    # Layer 3: find rectangle
+    # AVOID → largest rect in NO cells (empty space)
+    # FIND  → largest rect in YES cells (where content is)
+    if is_find:
+        rect = largest_rectangle_target(content_map)
+    else:
+        rect = largest_rectangle(content_map)
 
     elapsed = round(time.time() - t0, 2)
 
     if rect:
-        rect["content_desc"] = content_desc
+        prefix = "finding" if is_find else "avoiding"
+        rect["content_desc"] = f"{prefix}: {content_desc}"
         rect["content_map"] = content_map
         rect["utterance"] = utterance
         rect["elapsed_s"] = elapsed
     else:
-        reposition._last_debug.append("All cells YES → no empty space for overlay")
+        if is_find:
+            reposition._last_debug.append("No YES cells → content not found on screen")
+        else:
+            reposition._last_debug.append("All cells YES → no empty space for overlay")
 
     return rect
