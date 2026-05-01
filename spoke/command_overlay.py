@@ -111,6 +111,7 @@ _OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP = 0.0
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = 0.72
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = 96.0
 _DISMISS_SEAM_CLIENT_ID = "assistant.command.dismiss_seam"
+_DISMISS_RADIAL_PUCKER_CLIENT_ID = "assistant.command.dismiss_radial_pucker"
 _SEAM_PUCKER_TUNING_CLIENT_ID = "assistant.seam_pucker_tuner"
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
@@ -910,6 +911,16 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     return _apply_dismiss_radial_pucker_fields(config, progress)
 
 
+def _dismiss_radial_pucker_shell_config(shell_config: dict, progress: float) -> dict:
+    """Return the radial scar as an independent compositor client."""
+    config = _dismiss_pucker_shell_config(shell_config, progress)
+    config["client_id"] = _DISMISS_RADIAL_PUCKER_CLIENT_ID
+    config["role"] = "assistant"
+    config["visible"] = True
+    config["z_index"] = 9
+    return config
+
+
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
     from .overlay import _fill_compositing_filter_for_brightness as _preview_fill_compositing_filter_for_brightness
 
@@ -1370,6 +1381,7 @@ class CommandOverlay(NSObject):
         self._seam_pucker_tuning_started_preview = False
         self._seam_pucker_tuning_compositor = None
         self._dismiss_seam_compositor = None
+        self._dismiss_radial_pucker_compositor = None
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -1592,6 +1604,57 @@ class CommandOverlay(NSObject):
                 compositor.stop()
             except Exception:
                 logger.debug("Failed to stop command dismiss seam compositor", exc_info=True)
+
+    def _ensure_dismiss_radial_pucker_compositor(self):
+        """Register the radial release as a sidecar so the main shell can keep closing."""
+        compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
+        if compositor is not None:
+            return compositor
+        final_config = getattr(self, "_materialization_final_shell_config", None)
+        if final_config is None:
+            return None
+        progress = getattr(self, "_pucker_tail_progress_offset", 0.0)
+        config = _dismiss_radial_pucker_shell_config(final_config, progress)
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=_DISMISS_RADIAL_PUCKER_CLIENT_ID,
+                role="assistant",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start command radial pucker compositor", exc_info=True)
+            return None
+        self._dismiss_radial_pucker_compositor = compositor
+        return compositor
+
+    def _update_dismiss_radial_pucker_compositor(
+        self, final_config: dict, progress: float
+    ) -> None:
+        self._pucker_tail_progress_offset = _clamp01(progress)
+        compositor = self._ensure_dismiss_radial_pucker_compositor()
+        if compositor is None:
+            return
+        try:
+            compositor.update_shell_config(
+                _dismiss_radial_pucker_shell_config(final_config, progress)
+            )
+        except Exception:
+            logger.debug("Failed to update command radial pucker compositor", exc_info=True)
+
+    def _stop_dismiss_radial_pucker_compositor(self) -> None:
+        compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
+        self._dismiss_radial_pucker_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop command radial pucker compositor", exc_info=True)
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -3243,6 +3306,7 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._materialization_timer = None
         self._stop_dismiss_seam_compositor()
+        self._stop_dismiss_radial_pucker_compositor()
 
     def _cancel_dismiss_pucker_tail_animation(self) -> None:
         timer = getattr(self, "_pucker_tail_timer", None)
@@ -3250,6 +3314,7 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._pucker_tail_timer = None
         self._pucker_tail_progress_offset = 0.0
+        self._stop_dismiss_radial_pucker_compositor()
 
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
@@ -3357,11 +3422,14 @@ class CommandOverlay(NSObject):
             shell_config = _materialized_optical_shell_config(final_config, progress)
             if getattr(self, "_materialization_direction", 1) < 0:
                 if progress <= _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS:
-                    self._hide_local_shell_layers_for_pucker_tail()
+                    self._set_layer_hidden_without_actions(
+                        getattr(self, "_backdrop_layer", None),
+                        True,
+                    )
                     pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
                         progress
                     )
-                    shell_config = _dismiss_pucker_shell_config(
+                    self._update_dismiss_radial_pucker_compositor(
                         final_config,
                         pucker_progress,
                     )

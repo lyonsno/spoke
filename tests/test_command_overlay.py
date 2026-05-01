@@ -1199,10 +1199,15 @@ class TestOpticalShellMaterialization:
         overlay, mod = _make_overlay(mock_pyobjc)
         compositor = MagicMock()
         seam_compositor = MagicMock()
+        radial_compositor = MagicMock()
         overlay._fullscreen_compositor = compositor
         overlay._dismiss_seam_compositor = seam_compositor
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
         overlay._ensure_dismiss_seam_compositor = MagicMock(
             return_value=seam_compositor
+        )
+        overlay._ensure_dismiss_radial_pucker_compositor = MagicMock(
+            return_value=radial_compositor
         )
         overlay._materialization_timer = MagicMock()
         shell_config = {
@@ -1224,13 +1229,19 @@ class TestOpticalShellMaterialization:
 
         overlay.materializationStep_(overlay._materialization_timer)
 
-        config = compositor.update_shell_config.call_args.args[0]
-        assert config["warp_mode"] == pytest.approx(2.0)
-        assert config["content_width_points"] == pytest.approx(
-            config["content_height_points"]
+        main_config = compositor.update_shell_config.call_args.args[0]
+        assert main_config["content_width_points"] != pytest.approx(
+            main_config["content_height_points"]
         )
-        assert config["scar_amount"] != pytest.approx(0.0)
-        assert config["mip_blur_strength"] == pytest.approx(0.0)
+        assert main_config["content_width_points"] < shell_config["content_width_points"]
+        radial_config = radial_compositor.update_shell_config.call_args.args[0]
+        assert radial_config["warp_mode"] == pytest.approx(2.0)
+        assert radial_config["content_width_points"] == pytest.approx(
+            radial_config["content_height_points"]
+        )
+        assert radial_config["scar_amount"] != pytest.approx(0.0)
+        assert radial_config["mip_blur_strength"] == pytest.approx(0.0)
+        overlay._ensure_dismiss_radial_pucker_compositor.assert_called_once()
         overlay._ensure_dismiss_seam_compositor.assert_called_once()
         seam_config = seam_compositor.update_shell_config.call_args.args[0]
         assert seam_config["content_width_points"] == pytest.approx(
@@ -1248,7 +1259,12 @@ class TestOpticalShellMaterialization:
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         compositor = MagicMock()
+        radial_compositor = MagicMock()
         overlay._fullscreen_compositor = compositor
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
+        overlay._ensure_dismiss_radial_pucker_compositor = MagicMock(
+            return_value=radial_compositor
+        )
         overlay._materialization_timer = MagicMock()
         shell_config = {
             "center_x": 640.0,
@@ -1283,10 +1299,14 @@ class TestOpticalShellMaterialization:
         overlay.materializationStep_(overlay._materialization_timer)
 
         fill_state = mod._materialization_fill_state(overlay._materialization_progress)
-        config = compositor.update_shell_config.call_args.args[0]
+        main_config = compositor.update_shell_config.call_args.args[0]
+        radial_config = radial_compositor.update_shell_config.call_args.args[0]
         assert fill_state["height_frac"] == pytest.approx(1.0 / 3.0)
-        assert config["warp_mode"] == pytest.approx(2.0)
-        assert config["scar_amount"] != pytest.approx(0.0)
+        assert main_config["content_width_points"] != pytest.approx(
+            main_config["content_height_points"]
+        )
+        assert radial_config["warp_mode"] == pytest.approx(2.0)
+        assert radial_config["scar_amount"] != pytest.approx(0.0)
 
     def test_reverse_materialization_hides_backdrop_at_radial_prearm_point(
         self, mock_pyobjc, monkeypatch
