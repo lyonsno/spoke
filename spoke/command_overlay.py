@@ -97,6 +97,7 @@ _OPTICAL_MATERIALIZATION_S = (
 _OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
 _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.50
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
+_OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS = 0.12
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.0
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 2.0
 _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 0.8
@@ -700,6 +701,17 @@ def _dismiss_pucker_amount(progress: float) -> float:
     p = _clamp01(progress)
     return math.exp(-_OPTICAL_MATERIALIZATION_RADIAL_DAMPING * p) * math.cos(
         2.0 * math.pi * _OPTICAL_MATERIALIZATION_RADIAL_CYCLES * p
+    )
+
+
+def _dismiss_pucker_tail_progress_for_close_progress(close_progress: float) -> float:
+    """Advance the radial tail while the slit is still finishing its close."""
+    start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    phase = _clamp01((start - _clamp01(close_progress)) / start)
+    return _lerp(
+        0.0,
+        _OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS,
+        phase,
     )
 
 
@@ -1339,6 +1351,7 @@ class CommandOverlay(NSObject):
         self._deferred_materialization_shell_config: dict | None = None
         self._pucker_tail_timer: NSTimer | None = None
         self._pucker_tail_started_at = 0.0
+        self._pucker_tail_progress_offset = 0.0
         self._pucker_tail_shell_config: dict | None = None
         self._seam_pucker_tuning_overrides: dict[str, float] = {}
         self._seam_pucker_tuning_preview_active = False
@@ -3224,6 +3237,7 @@ class CommandOverlay(NSObject):
         if timer is not None:
             timer.invalidate()
             self._pucker_tail_timer = None
+        self._pucker_tail_progress_offset = 0.0
 
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
@@ -3331,6 +3345,13 @@ class CommandOverlay(NSObject):
             shell_config = _materialized_optical_shell_config(final_config, progress)
             if getattr(self, "_materialization_direction", 1) < 0:
                 if progress <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+                    pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
+                        progress
+                    )
+                    shell_config = _dismiss_pucker_shell_config(
+                        final_config,
+                        pucker_progress,
+                    )
                     self._update_dismiss_seam_compositor(final_config, progress)
                 else:
                     self._stop_dismiss_seam_compositor()
@@ -3354,23 +3375,34 @@ class CommandOverlay(NSObject):
             else:
                 self._materialization_progress = 0.0
                 self._apply_materialization_fill_state(0.0)
-                self._start_dismiss_pucker_tail_animation(final_config)
+                self._start_dismiss_pucker_tail_animation(
+                    final_config,
+                    initial_progress=_dismiss_pucker_tail_progress_for_close_progress(
+                        0.0
+                    ),
+                )
 
     def _start_dismiss_pucker_tail_animation(
         self,
         final_shell_config: dict,
+        *,
+        initial_progress: float = 0.0,
     ) -> None:
         """Run the post-close inverse pucker after the dismiss slit shuts."""
         self._cancel_dismiss_pucker_tail_animation()
         self._stop_dismiss_seam_compositor()
         self._hide_local_shell_layers_for_pucker_tail()
         self._pucker_tail_shell_config = dict(final_shell_config)
+        self._pucker_tail_progress_offset = _clamp01(initial_progress)
         self._pucker_tail_started_at = time.perf_counter()
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             try:
                 compositor.update_shell_config(
-                    _dismiss_pucker_shell_config(self._pucker_tail_shell_config, 0.0)
+                    _dismiss_pucker_shell_config(
+                        self._pucker_tail_shell_config,
+                        self._pucker_tail_progress_offset,
+                    )
                 )
             except Exception:
                 logger.debug("Failed to seed command dismiss pucker", exc_info=True)
@@ -3392,7 +3424,10 @@ class CommandOverlay(NSObject):
             self._cancel_dismiss_pucker_tail_animation()
             return
         elapsed = max(time.perf_counter() - getattr(self, "_pucker_tail_started_at", 0.0), 0.0)
-        progress = _clamp01(elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6))
+        progress = _clamp01(
+            getattr(self, "_pucker_tail_progress_offset", 0.0)
+            + elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6)
+        )
         try:
             compositor.update_shell_config(
                 _dismiss_pucker_shell_config(shell_config, progress)

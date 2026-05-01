@@ -1193,7 +1193,7 @@ class TestOpticalShellMaterialization:
             "transform.scale.y",
         )
 
-    def test_reverse_materialization_overlaps_pucker_before_slit_closes(
+    def test_reverse_materialization_prearms_radial_pucker_before_slit_closes(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -1225,8 +1225,12 @@ class TestOpticalShellMaterialization:
         overlay.materializationStep_(overlay._materialization_timer)
 
         config = compositor.update_shell_config.call_args.args[0]
-        assert config["content_width_points"] < shell_config["content_width_points"]
-        assert "scar_amount" not in config
+        assert config["warp_mode"] == pytest.approx(2.0)
+        assert config["content_width_points"] == pytest.approx(
+            config["content_height_points"]
+        )
+        assert config["scar_amount"] != pytest.approx(0.0)
+        assert config["mip_blur_strength"] == pytest.approx(0.0)
         overlay._ensure_dismiss_seam_compositor.assert_called_once()
         seam_config = seam_compositor.update_shell_config.call_args.args[0]
         assert seam_config["content_width_points"] == pytest.approx(
@@ -1316,7 +1320,10 @@ class TestOpticalShellMaterialization:
         overlay.materializationStep_(overlay._materialization_timer)
 
         overlay._start_dismiss_pucker_tail_animation.assert_called_once_with(
-            shell_config
+            shell_config,
+            initial_progress=pytest.approx(
+                mod._OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS
+            ),
         )
 
     def test_dismiss_pucker_tail_hides_local_material_layers(
@@ -1338,6 +1345,40 @@ class TestOpticalShellMaterialization:
         overlay._fill_layer.setHidden_.assert_called_with(True)
         overlay._boost_layer.setHidden_.assert_called_with(True)
         overlay._spring_tint_layer.setHidden_.assert_called_with(True)
+
+    def test_dismiss_pucker_tail_can_continue_from_prearmed_phase(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        now = {"value": 10.0}
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: now["value"])
+
+        overlay._start_dismiss_pucker_tail_animation(
+            shell_config,
+            initial_progress=0.12,
+        )
+
+        seed_config = compositor.update_shell_config.call_args.args[0]
+        assert seed_config["scar_amount"] == pytest.approx(
+            mod._dismiss_pucker_shell_config(shell_config, 0.12)["scar_amount"]
+        )
+
+        now["value"] = 10.15
+        overlay.dismissPuckerTailStep_(overlay._pucker_tail_timer)
+
+        step_config = compositor.update_shell_config.call_args.args[0]
+        assert step_config["scar_amount"] == pytest.approx(
+            mod._dismiss_pucker_shell_config(shell_config, 0.22)["scar_amount"]
+        )
 
 
 class TestShowFinishHide:
