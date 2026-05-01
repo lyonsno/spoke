@@ -51,6 +51,28 @@ INTENT_SYSTEM = (
     "Output ONLY the mode and value. Nothing else."
 )
 
+TARGET_SYSTEM = (
+    "You are a screen layout system.\n\n"
+    "The screen is divided into a 4×4 grid:\n"
+    "  Rows: A (top) to D (bottom)\n"
+    "  Columns: 1 (left) to 4 (right)\n\n"
+    "  A1 A2 A3 A4   ← top of screen\n"
+    "  B1 B2 B3 B4\n"
+    "  C1 C2 C3 C4\n"
+    "  D1 D2 D3 D4   ← bottom of screen\n\n"
+    "You will receive a description of where an overlay should be placed. "
+    "Mark each cell YES if the overlay should occupy it, NO if not.\n\n"
+    "Output exactly 16 lines:\n"
+    "A1: YES or NO\nA2: YES or NO\n...\nD4: YES or NO\n\n"
+    "Examples:\n"
+    "- 'center' → B2:YES B3:YES C2:YES C3:YES, rest NO\n"
+    "- 'top right' → A3:YES A4:YES, rest NO\n"
+    "- 'bottom half' → C1-C4:YES D1-D4:YES, rest NO\n"
+    "- 'left side' → A1:YES B1:YES C1:YES D1:YES A2:YES B2:YES C2:YES D2:YES, rest NO\n"
+    "- 'avoid the top row' → B1-D4:YES A1-A4:NO\n\n"
+    "You MUST output all 16 cells."
+)
+
 DETECT_SYSTEM = (
     "You are a content detection system.\n\n"
     "You will be shown an image of a screen divided into a 4x4 grid "
@@ -92,74 +114,6 @@ def _encode_image(img: Image.Image, scale: float = 0.5) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-_TARGET_REGIONS = {
-    "top-left":     {"x": 0.0,  "y": 0.0,  "width": 0.5,  "height": 0.5},
-    "top":          {"x": 0.25, "y": 0.0,  "width": 0.5,  "height": 0.5},
-    "top-right":    {"x": 0.5,  "y": 0.0,  "width": 0.5,  "height": 0.5},
-    "left":         {"x": 0.0,  "y": 0.25, "width": 0.5,  "height": 0.5},
-    "center":       {"x": 0.25, "y": 0.25, "width": 0.5,  "height": 0.5},
-    "right":        {"x": 0.5,  "y": 0.25, "width": 0.5,  "height": 0.5},
-    "bottom-left":  {"x": 0.0,  "y": 0.5,  "width": 0.5,  "height": 0.5},
-    "bottom":       {"x": 0.25, "y": 0.5,  "width": 0.5,  "height": 0.5},
-    "bottom-right": {"x": 0.5,  "y": 0.5,  "width": 0.5,  "height": 0.5},
-    "top-half":     {"x": 0.0,  "y": 0.0,  "width": 1.0,  "height": 0.5},
-    "bottom-half":  {"x": 0.0,  "y": 0.5,  "width": 1.0,  "height": 0.5},
-    "left-half":    {"x": 0.0,  "y": 0.0,  "width": 0.5,  "height": 1.0},
-    "right-half":   {"x": 0.5,  "y": 0.0,  "width": 0.5,  "height": 1.0},
-}
-
-
-_TARGET_ALIASES = {
-    "middle": "center",
-    "centre": "center",
-    "upper-left": "top-left",
-    "upper-right": "top-right",
-    "upper left": "top-left",
-    "upper right": "top-right",
-    "lower-left": "bottom-left",
-    "lower-right": "bottom-right",
-    "lower left": "bottom-left",
-    "lower right": "bottom-right",
-    "top left": "top-left",
-    "top right": "top-right",
-    "bottom left": "bottom-left",
-    "bottom right": "bottom-right",
-    "top-center": "top",
-    "bottom-center": "bottom",
-    "center-left": "left",
-    "center-right": "right",
-    "upper-half": "top-half",
-    "lower-half": "bottom-half",
-    "upper half": "top-half",
-    "lower half": "bottom-half",
-    "top half": "top-half",
-    "bottom half": "bottom-half",
-    "left half": "left-half",
-    "right half": "right-half",
-    "left side": "left-half",
-    "right side": "right-half",
-}
-
-
-def _resolve_target_region(region: str) -> dict | None:
-    """Resolve a target region string to a rect, with alias support."""
-    region = region.strip().lower().rstrip(".")
-    # Direct match
-    rect = _TARGET_REGIONS.get(region)
-    if rect is not None:
-        return rect
-    # Alias match
-    canonical = _TARGET_ALIASES.get(region)
-    if canonical is not None:
-        return _TARGET_REGIONS.get(canonical)
-    # Substring match — prefer longest canonical key contained in input
-    best_key, best_rect = None, None
-    for key, rect in _TARGET_REGIONS.items():
-        if key in region and (best_key is None or len(key) > len(best_key)):
-            best_key, best_rect = key, rect
-    return best_rect
-
-
 def resolve_intent(utterance: str) -> dict:
     """Layer 1: Convert user utterance to structured positioning intent.
 
@@ -185,10 +139,8 @@ def resolve_intent(utterance: str) -> dict:
     raw = resp.json()["choices"][0]["message"]["content"].strip().strip("\"'")
 
     if raw.upper().startswith("TARGET:"):
-        region = raw.split(":", 1)[1].strip().lower()
-        rect = _resolve_target_region(region)
-        if rect is not None:
-            return {"mode": "target", "region": region, "rect": dict(rect)}
+        target_desc = raw.split(":", 1)[1].strip()
+        return {"mode": "target", "target_desc": target_desc}
     if raw.upper().startswith("AVOID:"):
         content_desc = raw.split(":", 1)[1].strip()
         return {"mode": "avoid", "content_desc": content_desc}
@@ -249,6 +201,52 @@ def detect_content(screenshot: Image.Image, content_desc: str) -> dict[str, bool
             match = re.search(rf"{cell}\s*:\s*(YES|NO)", raw.upper())
             result[cell] = match.group(1) == "YES" if match else False
     return result
+
+
+def target_cells(target_desc: str) -> dict[str, bool]:
+    """Layer 2b: For TARGET mode — model outputs which cells the overlay should occupy.
+
+    Same YES/NO contract as detect_content, but text-only (no image).
+    YES = overlay should occupy this cell.
+    Returns dict mapping cell name to bool.
+    """
+    resp = requests.post(
+        _get_api_url(),
+        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": TARGET_SYSTEM},
+                {"role": "user", "content": target_desc},
+            ],
+            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": 256,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+
+    result = {}
+    for row in range(POS_ROWS):
+        for col in range(POS_COLS):
+            cell = f"{ROW_LABELS[row]}{col + 1}"
+            match = re.search(rf"{cell}\s*:\s*(YES|NO)", raw.upper())
+            result[cell] = match.group(1) == "YES" if match else False
+    return result
+
+
+def largest_rectangle_target(target_map: dict[str, bool]) -> dict | None:
+    """Find the largest rectangle in cells marked YES (overlay should occupy).
+
+    largest_rectangle treats NO (False) cells as available space.
+    For targeting, YES (True) cells are where we want to be.
+    Invert so YES→False (="no content here, available") and the
+    rectangle finder picks them.
+    """
+    inverted = {k: not v for k, v in target_map.items()}
+    return largest_rectangle(inverted)
 
 
 def largest_rectangle(content_map: dict[str, bool]) -> dict | None:
@@ -320,11 +318,16 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
     intent = resolve_intent(utterance)
 
     if intent["mode"] == "target":
-        # Direct targeting — no content detection needed
-        rect = dict(intent["rect"])
-        rect["content_desc"] = f"targeting: {intent['region']}"
-        rect["utterance"] = utterance
-        rect["elapsed_s"] = round(time.time() - t0, 2)
+        # Target mode — model picks which cells the overlay should occupy
+        target_desc = intent["target_desc"]
+        target_map = target_cells(target_desc)
+        rect = largest_rectangle_target(target_map)
+        elapsed = round(time.time() - t0, 2)
+        if rect:
+            rect["content_desc"] = f"targeting: {target_desc}"
+            rect["content_map"] = target_map
+            rect["utterance"] = utterance
+            rect["elapsed_s"] = elapsed
         return rect
 
     # Avoid mode — detect content and find empty space
