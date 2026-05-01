@@ -816,3 +816,64 @@ class TestEnterKeyEventTapTrayRouting:
         assert result is None
         det._on_tray_key.assert_called_once()
         det._on_tray_enter.assert_not_called()
+
+
+class TestTapThenHoldInsertAtCursor:
+    """Tap space then hold space from tray = insert tray entry at cursor."""
+
+    def test_tap_then_hold_fires_insert(self, main_module, monkeypatch):
+        """Space tap followed by space hold within 300ms should insert at cursor."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("insert me")
+
+        # Simulate: first tap inserted a space (sets timestamp)
+        d._tray_last_space_tap = time.monotonic()
+
+        # Now a hold starts within the window — should be insert mode
+        with patch("spoke.__main__.inject_text") as mock_inject, \
+             patch("spoke.__main__.has_focused_text_input", return_value=True):
+            d._on_tray_insert_at_cursor()
+
+        assert d._tray_active is False
+
+    def test_old_tap_does_not_trigger_insert(self, main_module, monkeypatch):
+        """A space tap that happened > 300ms ago should not trigger insert mode."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("hello")
+        d._tray_insert_hold_active = False
+
+        # Tap happened 500ms ago — outside the 300ms window
+        d._tray_last_space_tap = time.monotonic() - 0.5
+
+        # The tap-then-hold check should not fire
+        last_tap = d._tray_last_space_tap
+        assert (time.monotonic() - last_tap) >= 0.3  # outside window
+        assert d._tray_insert_hold_active is False
+
+
+class TestEnterFromTrayAlwaysSends:
+    """Enter from tray always sends to active destination, never inserts."""
+
+    def test_enter_no_sticky_sends_to_assistant(self, main_module, monkeypatch):
+        """Enter from tray with no sticky route should send to assistant."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("send me")
+        d._sticky_route_keycode = None
+        d._send_text_as_command = MagicMock()
+
+        d._on_tray_enter()
+
+        d._send_text_as_command.assert_called_once_with("send me")
+        assert d._tray_active is False
+
+    def test_enter_sticky_sends_to_sticky_dest(self, main_module, monkeypatch):
+        """Enter from tray with sticky route should send to that destination."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("send me")
+        d._sticky_route_keycode = 30  # ]
+        d._send_text_as_command = MagicMock()
+
+        d._on_tray_enter()
+
+        d._send_text_as_command.assert_called_once_with("send me")
+        assert d._tray_active is False

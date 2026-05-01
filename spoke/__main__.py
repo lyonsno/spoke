@@ -1231,6 +1231,8 @@ class SpokeAppDelegate(NSObject):
         self._tray_cursor_pos: int = 0
         self._tray_selection: tuple[int, int] | None = None
         self._recording_from_tray: bool = False
+        self._tray_insert_hold_active: bool = False
+        self._tray_last_space_tap: float = 0.0
         self._tray_tool_result: dict | None = None
 
         # Route key state — active per-recording selection and sticky persistence
@@ -1994,6 +1996,19 @@ class SpokeAppDelegate(NSObject):
                 self._recovery_hold_active = True
                 logger.info("Hold started during tray with shift — waiting for release (navigate)")
                 return
+            # Tap-then-hold detection: if a space tap just happened within 300ms,
+            # this hold is the insert-at-cursor gesture, not a new recording.
+            last_tap = getattr(self, '_tray_last_space_tap', 0.0)
+            if last_tap and (time.monotonic() - last_tap) < 0.3:
+                logger.info("Tap-then-hold from tray — entering insert-at-cursor wind-up")
+                self._tray_insert_hold_active = True
+                self._tray_last_space_tap = 0.0
+                # Show visual wind-up on the overlay
+                if self._overlay is not None and hasattr(self._overlay, 'show_insert_windup'):
+                    self._overlay.show_insert_windup()
+                if self._glow is not None:
+                    self._glow.show()
+                return
             # Plain spacebar hold during tray = record-from-tray. Tray stays
             # active; transcription will append at the cursor position.
             logger.info("Hold started during tray — recording from tray (cursor=%d)", getattr(self, '_tray_cursor_pos', 0))
@@ -2423,6 +2438,16 @@ class SpokeAppDelegate(NSObject):
                 self._approve_pending_command()
             return
 
+        # ── Tap-then-hold insert intercept ──
+        if getattr(self, '_tray_insert_hold_active', False):
+            self._tray_insert_hold_active = False
+            self._release_command_overlay_recording_load_shed()
+            if self._glow is not None:
+                self._glow.hide()
+            logger.info("Tap-then-hold release — inserting tray entry at cursor")
+            self._on_tray_insert_at_cursor()
+            return
+
         # ── Tray intercept ──
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)
@@ -2441,6 +2466,7 @@ class SpokeAppDelegate(NSObject):
                 # Spacebar tap from tray = type a space character into the tray
                 logger.info("Spacebar during tray — inserting space character")
                 self._tray_insert_char(" ")
+                self._tray_last_space_tap = time.monotonic()
             else:
                 # Spacebar from recovery (non-tray) = retry insert
                 logger.info("Spacebar during recovery — retrying Insert")
@@ -3545,45 +3571,53 @@ class SpokeAppDelegate(NSObject):
             inject_text(text)
 
     def _on_tray_enter(self) -> None:
-        """Bare Enter from tray: dispatch to sticky route or insert at cursor.
+        """Bare Enter from tray: always send to the active destination.
 
-        If sticky routing is active, send tray text to the sticky destination.
-        Otherwise, insert tray text at the cursor in the frontmost app.
+        Enter = send. Always. The active destination is the assistant by
+        default, or whatever sticky route is set. Insert-at-cursor is a
+        separate gesture (tap-then-hold spacebar).
         """
         if not self._tray_active or not self._tray_stack:
             return
+        # Determine destination: sticky route if set, assistant otherwise
         sticky = getattr(self, '_sticky_route_keycode', None)
         if sticky is not None:
-            # Sticky routing active — send to that destination
             from spoke.route_keys import default_bindings
             bindings = default_bindings()
             binding = bindings.get(sticky)
             dest = binding["destination"] if binding else "assistant"
-            logger.info("Tray enter with sticky route: dest=%s", dest)
-            entry = self._get_tray_entry(self._tray_index)
-            text = entry.text
-            del self._tray_stack[self._tray_index]
-            if self._tray_index >= len(self._tray_stack) and self._tray_stack:
-                self._tray_index = len(self._tray_stack) - 1
-            self._tray_active = False
-            self._detector.tray_active = False
-            if self._glow is not None:
-                self._glow.hide()
-            self._cancel_recovery()
-            if self._overlay is not None:
-                self._overlay.hide()
-            if dest == "assistant" and self._command_client is not None:
-                self._send_text_as_command(text)
-            elif self._command_client is not None:
-                self._send_text_as_command(text)
-            else:
-                logger.warning("Tray enter — no command client for dest=%s", dest)
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
         else:
-            # No sticky routing — insert at cursor
-            logger.info("Tray enter — inserting at cursor")
-            self._tray_insert_current()
+            dest = "assistant"
+        logger.info("Tray enter — sending to dest=%s", dest)
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
+        del self._tray_stack[self._tray_index]
+        if self._tray_index >= len(self._tray_stack) and self._tray_stack:
+            self._tray_index = len(self._tray_stack) - 1
+        self._tray_active = False
+        self._detector.tray_active = False
+        if self._glow is not None:
+            self._glow.hide()
+        self._cancel_recovery()
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._command_client is not None:
+            self._send_text_as_command(text)
+        else:
+            logger.warning("Tray enter — no command client for dest=%s", dest)
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _on_tray_insert_at_cursor(self) -> None:
+        """Insert the current tray entry at the cursor in the frontmost app.
+
+        Triggered by tap-then-hold spacebar from tray. Dismisses the tray
+        and injects the text.
+        """
+        if not self._tray_active or not self._tray_stack:
+            return
+        logger.info("Tray insert at cursor")
+        self._tray_insert_current()
 
     def _on_tray_shift_tap(self) -> None:
         """Shift tap (no spacebar) during tray = dismiss."""
