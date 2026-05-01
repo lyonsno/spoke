@@ -3654,6 +3654,7 @@ class SpokeAppDelegate(NSObject):
             "last_response": None,
             "last_header": None,
             "last_footer": None,
+            "cwd": None,
             "thread_card": None,
             "sessions": [],
         }
@@ -3673,7 +3674,13 @@ class SpokeAppDelegate(NSObject):
                 continue
             seen.add(provider_session_id)
             sanitized = {"provider_session_id": provider_session_id}
-            for key in ("last_utterance", "last_response", "last_header", "last_footer"):
+            for key in (
+                "last_utterance",
+                "last_response",
+                "last_header",
+                "last_footer",
+                "cwd",
+            ):
                 value = entry.get(key)
                 if isinstance(value, str) and value:
                     sanitized[key] = value
@@ -3698,6 +3705,7 @@ class SpokeAppDelegate(NSObject):
             "bearing",
             "activity_line",
             "latest_response",
+            "cwd",
         ):
             value = raw.get(key)
             if isinstance(value, str) and value:
@@ -3881,7 +3889,7 @@ class SpokeAppDelegate(NSObject):
         if not isinstance(provider_session_id, str) or not provider_session_id:
             return None
         entry = {"provider_session_id": provider_session_id}
-        for key in ("last_utterance", "last_response", "last_header", "last_footer"):
+        for key in ("cwd", "last_utterance", "last_response", "last_header", "last_footer"):
             value = record.get(key)
             if isinstance(value, str) and value:
                 entry[key] = value
@@ -3915,6 +3923,7 @@ class SpokeAppDelegate(NSObject):
             sanitized = self._empty_agent_shell_session_record()
             for key in (
                 "provider_session_id",
+                "cwd",
                 "last_utterance",
                 "last_response",
                 "last_header",
@@ -3948,6 +3957,7 @@ class SpokeAppDelegate(NSObject):
             stored: dict[str, str] = {}
             for key in (
                 "provider_session_id",
+                "cwd",
                 "last_utterance",
                 "last_response",
                 "last_header",
@@ -4069,8 +4079,22 @@ class SpokeAppDelegate(NSObject):
             provider_session_id=(
                 provider_session_id if isinstance(provider_session_id, str) else None
             ),
-            cwd=os.getcwd(),
+            cwd=self._agent_shell_record_cwd(record),
         )
+
+    def _agent_shell_record_cwd(self, record: dict) -> str:
+        cwd = record.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            return cwd
+        footer = record.get("last_footer")
+        if isinstance(footer, str):
+            for part in footer.split("|"):
+                part = part.strip()
+                if part.startswith("cwd "):
+                    parsed = part.removeprefix("cwd ").strip()
+                    if parsed:
+                        return parsed
+        return os.getcwd()
 
     def _remember_agent_shell_session(self, provider: str, session: dict) -> None:
         session_id = session.get("id")
@@ -4084,6 +4108,9 @@ class SpokeAppDelegate(NSObject):
                 record["active_spoke_session_id"] = session_id
             elif record.get("active_spoke_session_id") == session_id:
                 record["active_spoke_session_id"] = None
+        cwd = session.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            record["cwd"] = cwd
         if isinstance(provider_session_id, str) and provider_session_id:
             if record.get("provider_session_id") != provider_session_id:
                 record["last_utterance"] = None
@@ -4096,6 +4123,8 @@ class SpokeAppDelegate(NSObject):
                 thread_card["provider_session_id"] = provider_session_id
                 thread_card.setdefault("thread_id", provider_session_id)
                 thread_card.setdefault("provider", provider)
+                if isinstance(cwd, str) and cwd:
+                    thread_card.setdefault("cwd", cwd)
                 record["thread_card"] = thread_card
             self._upsert_agent_shell_catalog_entry(record)
             self._persist_agent_shell_sessions()
@@ -5793,6 +5822,7 @@ class SpokeAppDelegate(NSObject):
                 self._agent_shell_provider = session_provider
                 record["spoke_session_id"] = None
                 record["provider_session_id"] = provider_session_id
+                record["cwd"] = entry.get("cwd")
                 record["last_utterance"] = entry.get("last_utterance")
                 record["last_response"] = entry.get("last_response")
                 record["last_header"] = entry.get("last_header")

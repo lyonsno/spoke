@@ -249,6 +249,7 @@ _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _NARRATOR_OVERLAP_TEXT_HEIGHT = 48.0
 _AGENT_SHELL_CHROME_GRAY = 0.56
 _AGENT_SHELL_CHROME_ALPHA = 0.82
+_AGENT_SHELL_CHROME_FALLBACK_FONT_SIZE = 10.5
 _AGENT_SHELL_HEADER_HEIGHT = 18.0
 _AGENT_SHELL_FOOTER_HEIGHT = 16.0
 _AGENT_SHELL_CHROME_X = 28.0
@@ -2628,6 +2629,8 @@ class CommandOverlay(NSObject):
             if label is not None:
                 label.setStringValue_("")
                 label.setHidden_(True)
+                if hasattr(label, "setAlphaValue_"):
+                    label.setAlphaValue_(1.0)
 
     def clear_agent_shell_chrome(self) -> None:
         """Clear Agent Shell chrome when the visible transcript belongs to another mode."""
@@ -2646,6 +2649,8 @@ class CommandOverlay(NSObject):
             footer_label.setStringValue_(footer)
             footer_label.setHidden_(not bool(footer))
         self._apply_agent_shell_chrome_theme()
+        self._sync_agent_shell_chrome_punchthrough_visibility()
+        self._refresh_punchthrough_mask_if_needed()
 
     def set_agent_shell_cards(self, cards: list[dict] | None) -> None:
         self._agent_shell_cards = [
@@ -2711,6 +2716,8 @@ class CommandOverlay(NSObject):
             label.setStringValue_(text)
             label.setHidden_(not bool(text))
             self._apply_agent_shell_chrome_theme()
+            self._sync_agent_shell_chrome_punchthrough_visibility()
+            self._refresh_punchthrough_mask_if_needed()
             self._update_layout()
 
     def set_agent_shell_footer(self, text: str) -> None:
@@ -2720,6 +2727,8 @@ class CommandOverlay(NSObject):
             label.setStringValue_(text)
             label.setHidden_(not bool(text))
             self._apply_agent_shell_chrome_theme()
+            self._sync_agent_shell_chrome_punchthrough_visibility()
+            self._refresh_punchthrough_mask_if_needed()
             self._update_layout()
 
     def _make_collapsed_attributed(self, text: str):
@@ -4943,9 +4952,25 @@ class CommandOverlay(NSObject):
                 boost.setHidden_(True)
                 boost.setOpacity_(0.0)
                 boost.setMask_(None)
-                self._boost_mask_layer = None
+            self._boost_mask_layer = None
             if scroll is not None:
                 scroll.setHidden_(False)
+        self._sync_agent_shell_chrome_punchthrough_visibility()
+
+    def _sync_agent_shell_chrome_punchthrough_visibility(self) -> None:
+        """Hide live chrome fields when punch-through owns text rendering."""
+        punchthrough = bool(getattr(self, "_text_punchthrough", False))
+        for label in (
+            getattr(self, "_agent_shell_header_label", None),
+            getattr(self, "_agent_shell_footer_label", None),
+        ):
+            if label is None or not hasattr(label, "setAlphaValue_"):
+                continue
+            try:
+                hidden = bool(label.isHidden())
+            except Exception:
+                hidden = False
+            label.setAlphaValue_(0.0 if punchthrough and not hidden else 1.0)
 
     def _update_punchthrough_mask(self) -> None:
         """Render text into an inverted mask for the fill layer.
@@ -5023,6 +5048,74 @@ class CommandOverlay(NSObject):
                 except (AttributeError, TypeError):
                     return float(frame[1][1])
 
+            def _label_text(label) -> str:
+                try:
+                    value = label.stringValue()
+                except Exception:
+                    value = ""
+                return value if isinstance(value, str) else ""
+
+            def _label_font(label):
+                try:
+                    font = label.font()
+                except Exception:
+                    font = None
+                if font is not None:
+                    return font
+                return NSFont.systemFontOfSize_weight_(
+                    _AGENT_SHELL_CHROME_FALLBACK_FONT_SIZE,
+                    -0.2,
+                )
+
+            def _draw_agent_shell_chrome_labels() -> None:
+                from AppKit import (
+                    NSMutableAttributedString,
+                    NSFontAttributeName,
+                    NSForegroundColorAttributeName,
+                )
+
+                for label in (
+                    getattr(self, "_agent_shell_header_label", None),
+                    getattr(self, "_agent_shell_footer_label", None),
+                ):
+                    if label is None:
+                        continue
+                    try:
+                        if label.isHidden():
+                            continue
+                    except Exception:
+                        pass
+                    text = _label_text(label)
+                    if not text:
+                        continue
+                    label_frame = label.frame()
+                    label_x = cx + _origin_x(label_frame)
+                    label_y = (
+                        content_top
+                        + content_h
+                        - _origin_y(label_frame)
+                        - _height(label_frame)
+                    )
+                    attr = NSMutableAttributedString.alloc().initWithString_(text)
+                    attr.addAttribute_value_range_(
+                        NSForegroundColorAttributeName,
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(0.0, 0.0, 0.0, 1.0),
+                        (0, len(text)),
+                    )
+                    attr.addAttribute_value_range_(
+                        NSFontAttributeName,
+                        _label_font(label),
+                        (0, len(text)),
+                    )
+                    attr.drawInRect_(
+                        NSMakeRect(
+                            label_x,
+                            label_y,
+                            _width(label_frame),
+                            _height(label_frame),
+                        )
+                    )
+
             # Content offset within the fill layer
             content_frame = content.frame()
             cx = _origin_x(content_frame)
@@ -5084,6 +5177,7 @@ class CommandOverlay(NSObject):
             text_w = _width(text_frame)
             text_h = _height(text_frame)
             ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
+            _draw_agent_shell_chrome_labels()
 
             CGContextRestoreGState(ctx)
             NSGraphicsContext.restoreGraphicsState()
@@ -5120,6 +5214,7 @@ class CommandOverlay(NSObject):
                     CGContextTranslateCTM(boost_ctx, 0, fh)
                     CGContextScaleCTM(boost_ctx, 1.0, -1.0)
                     ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
+                    _draw_agent_shell_chrome_labels()
                     CGContextRestoreGState(boost_ctx)
                     NSGraphicsContext.restoreGraphicsState()
 

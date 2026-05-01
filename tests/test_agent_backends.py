@@ -1797,11 +1797,13 @@ class TestAgentShellMenuState:
                         "provider_session_id": "claude-thread-1",
                         "last_utterance": "first claude question",
                         "last_response": "first claude answer",
+                        "cwd": "/tmp/first-claude-worktree",
                     },
                     {
                         "provider_session_id": "claude-thread-2",
                         "last_utterance": "second claude question",
                         "last_response": "second claude answer",
+                        "cwd": "/tmp/second-claude-worktree",
                     },
                 ],
             }
@@ -1905,11 +1907,13 @@ class TestAgentShellMenuState:
                         "provider_session_id": "claude-thread-1",
                         "last_utterance": "first claude question",
                         "last_response": "first claude answer",
+                        "cwd": "/tmp/first-claude-worktree",
                     },
                     {
                         "provider_session_id": "claude-thread-2",
                         "last_utterance": "second claude question",
                         "last_response": "second claude answer",
+                        "cwd": "/tmp/second-claude-worktree",
                     },
                 ],
             }
@@ -1925,6 +1929,8 @@ class TestAgentShellMenuState:
         assert record["provider_session_id"] == "claude-thread-1"
         assert record["last_utterance"] == "first claude question"
         assert record["last_response"] == "first claude answer"
+        assert record["cwd"] == "/tmp/first-claude-worktree"
+        assert delegate._agent_shell_state("claude-code").cwd == "/tmp/first-claude-worktree"
         assert delegate._save_preference.call_args_list[-1].args == (
             "agent_shell_overlay_snapshots",
             {
@@ -1932,21 +1938,40 @@ class TestAgentShellMenuState:
                     "provider_session_id": "claude-thread-1",
                     "last_utterance": "first claude question",
                     "last_response": "first claude answer",
+                    "cwd": "/tmp/first-claude-worktree",
                     "sessions": [
                         {
                             "provider_session_id": "claude-thread-1",
                             "last_utterance": "first claude question",
                             "last_response": "first claude answer",
+                            "cwd": "/tmp/first-claude-worktree",
                         },
                         {
                             "provider_session_id": "claude-thread-2",
                             "last_utterance": "second claude question",
                             "last_response": "second claude answer",
+                            "cwd": "/tmp/second-claude-worktree",
                         },
                     ],
                 }
             },
         )
+
+    def test_agent_shell_state_recovers_cwd_from_legacy_footer_snapshot(
+        self, monkeypatch, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "claude-code": {
+                "provider_session_id": "claude-thread-1",
+                "last_footer": "model opus | cwd /tmp/legacy-claude-worktree | pro",
+                "sessions": [],
+            }
+        }
+
+        assert delegate._agent_shell_state("claude-code").cwd == "/tmp/legacy-claude-worktree"
 
     def test_agent_shell_session_selection_detaches_stale_spoke_run_identity(
         self, main_module
