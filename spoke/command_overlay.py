@@ -150,6 +150,18 @@ _OPTICAL_MATERIAL_FILL_FULL_AT = (
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 ) / _OPTICAL_MATERIALIZATION_S
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
+_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS = (
+    _OPTICAL_MATERIAL_FILL_SOLID_AT
+    + (
+        _OPTICAL_MATERIAL_FILL_FULL_AT
+        - _OPTICAL_MATERIAL_FILL_SOLID_AT
+    )
+    * (
+        (1.0 / 3.0 - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+        / (1.0 - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+    )
+    ** (1.0 / 3.0)
+)
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -705,8 +717,8 @@ def _dismiss_pucker_amount(progress: float) -> float:
 
 
 def _dismiss_pucker_tail_progress_for_close_progress(close_progress: float) -> float:
-    """Advance the radial tail while the slit is still finishing its close."""
-    start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    """Advance the radial tail while the shell is visually shrinking away."""
+    start = max(_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS, 1e-6)
     phase = _clamp01((start - _clamp01(close_progress)) / start)
     return _lerp(
         0.0,
@@ -3344,7 +3356,7 @@ class CommandOverlay(NSObject):
         try:
             shell_config = _materialized_optical_shell_config(final_config, progress)
             if getattr(self, "_materialization_direction", 1) < 0:
-                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS:
                     pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
                         progress
                     )
@@ -3352,6 +3364,7 @@ class CommandOverlay(NSObject):
                         final_config,
                         pucker_progress,
                     )
+                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
                     self._update_dismiss_seam_compositor(final_config, progress)
                 else:
                     self._stop_dismiss_seam_compositor()
