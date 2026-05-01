@@ -2502,13 +2502,14 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = True
         self._transcribe_start = time.monotonic()
 
-        if enter_held and self._command_client is not None:
-            # Command pathway (enter held): transcribe then send to OMLX
+        if enter_held:
+            # SMOKE: Positioning pathway — enter held triggers repositioning
             if self._menubar is not None:
-                self._menubar.set_status_text("Transcribing command…")
+                self._menubar.set_status_text("Repositioning…")
+            from .positioning.smoke_hook import positioning_transcribe_worker
             thread = threading.Thread(
-                target=self._command_transcribe_worker,
-                args=(wav_bytes, token),
+                target=positioning_transcribe_worker,
+                args=(self, wav_bytes, token),
                 daemon=True,
             )
         elif shift_held:
