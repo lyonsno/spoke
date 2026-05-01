@@ -88,6 +88,7 @@ class OverlayRenderSnapshot:
     material: OpticalShellMaterialSnapshot
     excluded_window_ids: tuple[int, ...] = ()
     z_index: int = 0
+    payload: dict | None = None
 
 
 def _load_screencapturekit_bridge():
@@ -1279,6 +1280,8 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
             config[key] = value
     if snapshot.excluded_window_ids:
         config["excluded_window_ids"] = tuple(snapshot.excluded_window_ids)
+    if isinstance(snapshot.payload, dict):
+        config.update(snapshot.payload)
     return config
 
 
@@ -1329,6 +1332,11 @@ def _snapshot_from_shell_config(
         debug_visualize=bool(config.get("debug_visualize", False)),
         debug_grid_spacing_points=float(config.get("debug_grid_spacing_points", 18.0)),
     )
+    payload = {
+        key: config[key]
+        for key in ("agent_thread_cards", "agent_thread_hud", "surface_kind")
+        if key in config
+    }
     return OverlayRenderSnapshot(
         identity=identity,
         generation=generation,
@@ -1337,6 +1345,7 @@ def _snapshot_from_shell_config(
         material=material,
         excluded_window_ids=tuple(int(v) for v in config.get("excluded_window_ids", excluded_window_ids)),
         z_index=int(config.get("z_index", 0)),
+        payload=payload,
     )
 
 

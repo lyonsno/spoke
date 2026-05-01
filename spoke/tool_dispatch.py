@@ -1960,7 +1960,6 @@ def _execute_cancel_subagent(
     return subagent_manager.cancel(subagent_id)
 
 
-
 def execute_tool(
     name: str,
     arguments: dict,
@@ -1972,6 +1971,7 @@ def execute_tool(
     tool_output_mode: str = "text",
     approval_granted: bool = False,
     subagent_manager: Any | None = None,
+    agent_backend_manager: Any | None = None,
     history_compactor: Callable[[dict], str] | None = None,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.
