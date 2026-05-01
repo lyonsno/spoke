@@ -27,22 +27,28 @@ POS_ROWS = 4
 POS_COLS = 4
 
 INTENT_SYSTEM = (
-    "You convert user requests about overlay positioning into content descriptions.\n\n"
-    "The user wants to reposition an overlay on their screen. They will describe "
-    "what they want to keep visible, or what they don't want blocked, or where "
-    "they want the overlay to go.\n\n"
-    "Extract the type of content they want to keep visible and output it as a "
-    "short noun phrase. If the user does not specify any particular content, "
-    "output 'important content' as the default.\n\n"
+    "You convert user requests about overlay positioning into structured intents.\n\n"
+    "The user wants to reposition an overlay on their screen. There are two modes:\n\n"
+    "1. AVOID mode: The user wants the overlay to avoid certain content.\n"
+    "   Output: AVOID: <content noun phrase>\n\n"
+    "2. TARGET mode: The user wants the overlay to go to a specific screen region.\n"
+    "   Output: TARGET: <region description>\n"
+    "   Valid regions: top-left, top, top-right, left, center, right, "
+    "bottom-left, bottom, bottom-right, top-half, bottom-half, left-half, right-half\n\n"
     "Examples:\n"
-    "- 'stop blocking my code' → 'code'\n"
-    "- 'move out of the way of the terminal text' → 'terminal text'\n"
-    "- 'get off the graph' → 'graph'\n"
-    "- 'can you occupy the top without covering the article' → 'article text'\n"
-    "- 'move so I can see the contributor stats' → 'contributor statistics'\n"
-    "- 'can you please move out of the way' → 'important content'\n"
-    "- 'just move' → 'important content'\n\n"
-    "Output ONLY the noun phrase. Nothing else."
+    "- 'stop blocking my code' → AVOID: code\n"
+    "- 'move out of the way of the terminal text' → AVOID: terminal text\n"
+    "- 'get off the graph' → AVOID: graph\n"
+    "- 'avoid the regions with blue or purple text' → AVOID: blue, purple, or lavender text\n"
+    "- 'can you please move out of the way' → AVOID: important content\n"
+    "- 'just move' → AVOID: important content\n"
+    "- 'go to the top right' → TARGET: top-right\n"
+    "- 'occupy the middle of the screen' → TARGET: center\n"
+    "- 'position yourself in the middle' → TARGET: center\n"
+    "- 'move to the bottom' → TARGET: bottom\n"
+    "- 'can you go to the left side' → TARGET: left-half\n"
+    "- 'stay in the top half' → TARGET: top-half\n\n"
+    "Output ONLY the mode and value. Nothing else."
 )
 
 DETECT_SYSTEM = (
@@ -86,8 +92,80 @@ def _encode_image(img: Image.Image, scale: float = 0.5) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def resolve_intent(utterance: str) -> str:
-    """Layer 1: Convert user utterance to content description noun phrase."""
+_TARGET_REGIONS = {
+    "top-left":     {"x": 0.0,  "y": 0.0,  "width": 0.5,  "height": 0.5},
+    "top":          {"x": 0.25, "y": 0.0,  "width": 0.5,  "height": 0.5},
+    "top-right":    {"x": 0.5,  "y": 0.0,  "width": 0.5,  "height": 0.5},
+    "left":         {"x": 0.0,  "y": 0.25, "width": 0.5,  "height": 0.5},
+    "center":       {"x": 0.25, "y": 0.25, "width": 0.5,  "height": 0.5},
+    "right":        {"x": 0.5,  "y": 0.25, "width": 0.5,  "height": 0.5},
+    "bottom-left":  {"x": 0.0,  "y": 0.5,  "width": 0.5,  "height": 0.5},
+    "bottom":       {"x": 0.25, "y": 0.5,  "width": 0.5,  "height": 0.5},
+    "bottom-right": {"x": 0.5,  "y": 0.5,  "width": 0.5,  "height": 0.5},
+    "top-half":     {"x": 0.0,  "y": 0.0,  "width": 1.0,  "height": 0.5},
+    "bottom-half":  {"x": 0.0,  "y": 0.5,  "width": 1.0,  "height": 0.5},
+    "left-half":    {"x": 0.0,  "y": 0.0,  "width": 0.5,  "height": 1.0},
+    "right-half":   {"x": 0.5,  "y": 0.0,  "width": 0.5,  "height": 1.0},
+}
+
+
+_TARGET_ALIASES = {
+    "middle": "center",
+    "centre": "center",
+    "upper-left": "top-left",
+    "upper-right": "top-right",
+    "upper left": "top-left",
+    "upper right": "top-right",
+    "lower-left": "bottom-left",
+    "lower-right": "bottom-right",
+    "lower left": "bottom-left",
+    "lower right": "bottom-right",
+    "top left": "top-left",
+    "top right": "top-right",
+    "bottom left": "bottom-left",
+    "bottom right": "bottom-right",
+    "top-center": "top",
+    "bottom-center": "bottom",
+    "center-left": "left",
+    "center-right": "right",
+    "upper-half": "top-half",
+    "lower-half": "bottom-half",
+    "upper half": "top-half",
+    "lower half": "bottom-half",
+    "top half": "top-half",
+    "bottom half": "bottom-half",
+    "left half": "left-half",
+    "right half": "right-half",
+    "left side": "left-half",
+    "right side": "right-half",
+}
+
+
+def _resolve_target_region(region: str) -> dict | None:
+    """Resolve a target region string to a rect, with alias support."""
+    region = region.strip().lower().rstrip(".")
+    # Direct match
+    rect = _TARGET_REGIONS.get(region)
+    if rect is not None:
+        return rect
+    # Alias match
+    canonical = _TARGET_ALIASES.get(region)
+    if canonical is not None:
+        return _TARGET_REGIONS.get(canonical)
+    # Substring match — prefer longest canonical key contained in input
+    best_key, best_rect = None, None
+    for key, rect in _TARGET_REGIONS.items():
+        if key in region and (best_key is None or len(key) > len(best_key)):
+            best_key, best_rect = key, rect
+    return best_rect
+
+
+def resolve_intent(utterance: str) -> dict:
+    """Layer 1: Convert user utterance to structured positioning intent.
+
+    Returns {"mode": "avoid", "content_desc": "..."} or
+            {"mode": "target", "region": "...", "rect": {...}}.
+    """
     resp = requests.post(
         _get_api_url(),
         headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
@@ -104,8 +182,19 @@ def resolve_intent(utterance: str) -> str:
         timeout=30,
     )
     resp.raise_for_status()
-    content_desc = resp.json()["choices"][0]["message"]["content"].strip().strip("\"'")
-    return content_desc
+    raw = resp.json()["choices"][0]["message"]["content"].strip().strip("\"'")
+
+    if raw.upper().startswith("TARGET:"):
+        region = raw.split(":", 1)[1].strip().lower()
+        rect = _resolve_target_region(region)
+        if rect is not None:
+            return {"mode": "target", "region": region, "rect": dict(rect)}
+    if raw.upper().startswith("AVOID:"):
+        content_desc = raw.split(":", 1)[1].strip()
+        return {"mode": "avoid", "content_desc": content_desc}
+
+    # Legacy format (bare noun phrase) — treat as avoid
+    return {"mode": "avoid", "content_desc": raw}
 
 
 def detect_content(screenshot: Image.Image, content_desc: str) -> dict[str, bool]:
@@ -228,7 +317,18 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
     t0 = time.time()
 
     # Layer 1: resolve intent
-    content_desc = resolve_intent(utterance)
+    intent = resolve_intent(utterance)
+
+    if intent["mode"] == "target":
+        # Direct targeting — no content detection needed
+        rect = dict(intent["rect"])
+        rect["content_desc"] = f"targeting: {intent['region']}"
+        rect["utterance"] = utterance
+        rect["elapsed_s"] = round(time.time() - t0, 2)
+        return rect
+
+    # Avoid mode — detect content and find empty space
+    content_desc = intent["content_desc"]
 
     # Layer 2: detect content
     content_map = detect_content(screenshot, content_desc)
@@ -241,6 +341,7 @@ def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
     if rect:
         rect["content_desc"] = content_desc
         rect["content_map"] = content_map
+        rect["utterance"] = utterance
         rect["elapsed_s"] = elapsed
 
     return rect

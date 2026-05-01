@@ -158,13 +158,39 @@ def test_largest_rectangle_l_shape_picks_best():
 
 # ── intent resolution mock tests ──
 
-def test_resolve_intent_extracts_noun_phrase():
-    """Intent resolver converts imperative to noun phrase."""
+def test_resolve_intent_prompt_has_both_modes():
+    """Intent system prompt covers both AVOID and TARGET modes."""
     from spoke.positioning.reposition import INTENT_SYSTEM
 
-    # Verify the system prompt contains the right examples
-    assert "'stop blocking my code' → 'code'" in INTENT_SYSTEM
-    assert "'just move' → 'important content'" in INTENT_SYSTEM
+    assert "AVOID:" in INTENT_SYSTEM
+    assert "TARGET:" in INTENT_SYSTEM
+    assert "stop blocking my code" in INTENT_SYSTEM
+    assert "center" in INTENT_SYSTEM
+
+
+def test_target_region_resolution():
+    """Target region resolver handles exact keys and aliases."""
+    from spoke.positioning.reposition import _resolve_target_region
+
+    # Exact match
+    rect = _resolve_target_region("center")
+    assert rect is not None
+    assert rect["x"] == 0.25
+    assert rect["width"] == 0.5
+
+    # Alias
+    rect = _resolve_target_region("middle")
+    assert rect is not None
+    assert rect["x"] == 0.25
+
+    # Substring
+    rect = _resolve_target_region("the top-right area")
+    assert rect is not None
+    assert rect["x"] == 0.5
+    assert rect["y"] == 0.0
+
+    # Unknown
+    assert _resolve_target_region("narnia") is None
 
 
 # ── content detection parsing tests ──
