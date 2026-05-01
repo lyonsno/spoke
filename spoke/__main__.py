@@ -3937,7 +3937,7 @@ class SpokeAppDelegate(NSObject):
 
     def _agent_shell_state(self, provider: str) -> AgentShellState:
         record = self._agent_shell_session_record(provider)
-        spoke_session_id = record.get("spoke_session_id")
+        spoke_session_id = record.get("active_spoke_session_id") or record.get("spoke_session_id")
         provider_session_id = record.get("provider_session_id")
         return AgentShellState(
             active=True,
@@ -3956,6 +3956,11 @@ class SpokeAppDelegate(NSObject):
         record = self._agent_shell_session_record(provider)
         if isinstance(session_id, str) and session_id:
             record["spoke_session_id"] = session_id
+            state = session.get("state")
+            if state in {"queued", "running", "cancelling"}:
+                record["active_spoke_session_id"] = session_id
+            elif record.get("active_spoke_session_id") == session_id:
+                record["active_spoke_session_id"] = None
         if isinstance(provider_session_id, str) and provider_session_id:
             if record.get("provider_session_id") != provider_session_id:
                 record["last_utterance"] = None
@@ -4090,6 +4095,9 @@ class SpokeAppDelegate(NSObject):
         if decision.kind == "mode_control" and decision.control_action == "switch_provider":
             self._complete_agent_shell_mode_control(decision.provider, token)
             return True
+        if decision.kind == "mode_control" and decision.control_action == "cancel_active_run":
+            self._complete_agent_shell_cancel_control(decision.provider, token)
+            return True
         return False
 
     def _complete_agent_shell_mode_control(self, provider: str | None, token: int) -> None:
@@ -4119,6 +4127,75 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
+    def _agent_shell_active_session_id(self, provider: str | None) -> str | None:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return None
+        record = self._agent_shell_session_record(provider)
+        manager = getattr(self, "_agent_backend_manager", None)
+        if manager is None:
+            return None
+        for candidate in (
+            record.get("active_spoke_session_id"),
+            record.get("spoke_session_id"),
+        ):
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            latest = manager.get_session(candidate)
+            if isinstance(latest, dict) and latest.get("state") in {
+                "queued",
+                "running",
+                "cancelling",
+            }:
+                return candidate
+        return None
+
+    def _clear_agent_shell_active_session(
+        self,
+        provider: str | None,
+        session_id: str | None,
+    ) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS or not session_id:
+            return
+        record = self._agent_shell_session_record(provider)
+        if record.get("active_spoke_session_id") == session_id:
+            record["active_spoke_session_id"] = None
+
+    def _cancel_active_agent_shell_run(self, provider: str | None) -> str | None:
+        session_id = self._agent_shell_active_session_id(provider)
+        if session_id is None:
+            return None
+        manager = getattr(self, "_agent_backend_manager", None)
+        if manager is None:
+            return None
+        manager.cancel(session_id)
+        self._clear_agent_shell_active_session(provider, session_id)
+        return session_id
+
+    def _complete_agent_shell_cancel_control(
+        self,
+        provider: str | None,
+        token: int,
+    ) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:",
+                {"token": token, "error": "No Agent Shell backend is selected"},
+                False,
+            )
+            return
+        label = _agent_shell_provider_label(provider)
+        cancelled = self._cancel_active_agent_shell_run(provider)
+        response = (
+            f"Cancelling {label} run."
+            if cancelled is not None
+            else f"No active {label} run to cancel."
+        )
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "commandComplete:",
+            {"token": token, "response": response},
+            False,
+        )
+
     def _start_agent_shell_provider_turn(
         self,
         decision,
@@ -4133,6 +4210,7 @@ class SpokeAppDelegate(NSObject):
                 False,
             )
             return
+        self._cancel_active_agent_shell_run(provider)
         self._command_turn_route = "agent_shell"
         self._command_turn_provider = provider
         self._command_turn_token = token

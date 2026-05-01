@@ -182,6 +182,47 @@ class _QuietRunningAgentBackendManager:
         return {"state": "cancelled"}
 
 
+class _PreemptiveAgentBackendManager:
+    def __init__(self):
+        self.launched: list[dict] = []
+        self.cancelled: list[str] = []
+
+    def launch(self, **kwargs):
+        self.launched.append(kwargs)
+        provider = kwargs["provider"]
+        return {
+            "id": f"agent-backend-{provider}-new",
+            "provider": provider,
+            "state": "completed",
+            "provider_session_id": f"{provider}-provider-new",
+            "result": "replacement complete",
+            "error": None,
+        }
+
+    def get_session(self, session_id):
+        if session_id.endswith("-old"):
+            return {
+                "id": session_id,
+                "provider": "gemini-cli",
+                "state": "running",
+                "provider_session_id": "gemini-provider-old",
+                "result": None,
+                "error": None,
+            }
+        return {
+            "id": session_id,
+            "provider": "gemini-cli",
+            "state": "completed",
+            "provider_session_id": "gemini-provider-new",
+            "result": "replacement complete",
+            "error": None,
+        }
+
+    def cancel(self, session_id):
+        self.cancelled.append(session_id)
+        return {"id": session_id, "state": "cancelling"}
+
+
 def _make_agent_shell_delegate(main_module):
     delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
     delegate._transcription_token = 0
@@ -1434,6 +1475,18 @@ class TestAgentShellRouting:
         assert decision.control_action == "switch_provider"
         assert decision.provider == "gemini-cli"
 
+    def test_active_agent_shell_routes_cancel_text_as_mode_control(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        decision = route_agent_shell_input(
+            "cancel this agent run",
+            AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
+        )
+
+        assert decision.kind == "mode_control"
+        assert decision.control_action == "cancel_active_run"
+        assert decision.provider == "gemini-cli"
+
     def test_inactive_agent_shell_leaves_input_for_normal_assistant(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
@@ -2165,3 +2218,59 @@ class TestAgentShellDelegateDispatch:
         calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         assert calls[-1].args[0] == "commandComplete:"
         assert "Agent Shell switched to Codex" in calls[-1].args[1]["response"]
+
+    def test_agent_shell_cancel_text_cancels_active_provider_run(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "gemini-cli"
+        delegate._agent_backend_manager = _PreemptiveAgentBackendManager()
+        delegate._agent_shell_sessions = {
+            "gemini-cli": {
+                "spoke_session_id": "agent-backend-gemini-cli-old",
+                "active_spoke_session_id": "agent-backend-gemini-cli-old",
+                "provider_session_id": "gemini-provider-old",
+                "sessions": [],
+            }
+        }
+
+        delegate._send_text_as_command("cancel this agent run")
+
+        assert delegate._agent_backend_manager.cancelled == [
+            "agent-backend-gemini-cli-old"
+        ]
+        assert delegate._agent_backend_manager.launched == []
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        assert calls[-1].args[0] == "commandComplete:"
+        assert "Cancelling Gemini CLI" in calls[-1].args[1]["response"]
+
+    def test_agent_shell_new_message_preempts_active_provider_run(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "gemini-cli"
+        delegate._agent_backend_manager = _PreemptiveAgentBackendManager()
+        delegate._agent_shell_sessions = {
+            "gemini-cli": {
+                "spoke_session_id": "agent-backend-gemini-cli-old",
+                "active_spoke_session_id": "agent-backend-gemini-cli-old",
+                "provider_session_id": "gemini-provider-old",
+                "sessions": [],
+            }
+        }
+
+        delegate._send_text_as_command("look at the next file")
+
+        assert delegate._agent_backend_manager.cancelled == [
+            "agent-backend-gemini-cli-old"
+        ]
+        assert delegate._agent_backend_manager.launched == [
+            {
+                "provider": "gemini-cli",
+                "prompt": "look at the next file",
+                "cwd": str(Path.cwd()),
+                "resume_id": "gemini-provider-old",
+            }
+        ]

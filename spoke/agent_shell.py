@@ -47,6 +47,18 @@ def _provider_switch(text: str) -> str | None:
     return None
 
 
+def _cancel_active_run(text: str) -> bool:
+    normalized = _normalized_text(text)
+    return bool(
+        re.search(
+            r"\b(?:cancel|stop|interrupt|kill)\b"
+            r"(?:\s+(?:this|the|active|current|agent|agent\s+cli|backend|run|session))*\b",
+            normalized,
+        )
+        and re.search(r"\b(?:agent|backend|run|session|generation|cli)\b", normalized)
+    )
+
+
 def route_agent_shell_input(
     text: str,
     state: AgentShellState | None,
@@ -63,6 +75,17 @@ def route_agent_shell_input(
             text=stripped,
             provider=provider,
             control_action="switch_provider",
+        )
+
+    if _cancel_active_run(stripped):
+        return AgentShellRoutingDecision(
+            kind="mode_control",
+            text=stripped,
+            provider=state.provider,
+            spoke_session_id=state.spoke_session_id,
+            provider_session_id=state.provider_session_id,
+            cwd=state.cwd,
+            control_action="cancel_active_run",
         )
 
     return AgentShellRoutingDecision(
