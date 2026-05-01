@@ -420,6 +420,24 @@ class TestOpticalShellMaterialization:
 
         assert mod._DISMISS_ANIM_FPS == pytest.approx(144.0)
 
+    def test_pressure_slit_smoke_scale_slows_all_visual_timelines(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        scale = mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+        assert scale == pytest.approx(2.0)
+        assert mod._FADE_IN_S == pytest.approx(0.16 * scale)
+        assert mod._ENTRANCE_POP_S == pytest.approx(0.15 * scale)
+        assert mod._OPTICAL_MATERIALIZATION_BASE_S == pytest.approx(1.36 * scale)
+        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
+            1.50 * scale
+        )
+        assert mod._FADE_OUT_S == pytest.approx(0.5 * scale)
+        assert mod._DISMISS_DURATION_S == pytest.approx(0.2 * scale)
+        assert mod._DISMISS_GROW_S == pytest.approx(0.06 * scale)
+        assert mod._COMMAND_VISUAL_START_DELAY_S == pytest.approx(
+            mod._FADE_IN_S + 0.15 * scale
+        )
+
     def test_materialization_starts_as_pressure_slit_before_vertical_bloom(
         self, mock_pyobjc
     ):
@@ -512,7 +530,9 @@ class TestOpticalShellMaterialization:
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S > (
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
         )
-        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(1.5)
+        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
+            1.5 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+        )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
             + mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
@@ -1488,9 +1508,12 @@ class TestOpticalShellMaterialization:
         now["value"] = 10.15
         overlay.dismissPuckerTailStep_(overlay._pucker_tail_timer)
 
+        expected_progress = 0.12 + 0.15 / mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
         step_config = compositor.update_shell_config.call_args.args[0]
         assert step_config["scar_amount"] == pytest.approx(
-            mod._dismiss_pucker_shell_config(shell_config, 0.22)["scar_amount"]
+            mod._dismiss_pucker_shell_config(shell_config, expected_progress)[
+                "scar_amount"
+            ]
         )
 
 
@@ -1596,10 +1619,12 @@ class TestShowFinishHide:
 
         assert overlay._pulse_timer is not None
 
-    def test_show_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
+    def test_show_fade_in_respects_pressure_slit_smoke_scale(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
 
-        assert mod._FADE_IN_S <= 0.17
+        assert mod._FADE_IN_S == pytest.approx(
+            0.16 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+        )
 
     def test_visual_start_waits_until_after_entrance_fade(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
