@@ -166,6 +166,9 @@ _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS = (
     )
     ** (1.0 / 3.0)
 )
+_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS = (
+    _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS
+)
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -868,7 +871,7 @@ def _dismiss_seam_tuning_for_close_progress(
         for key, value in tuning.items():
             if key in settings:
                 settings[key] = float(value)
-    overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    overlap_start = max(_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS, 1e-6)
     phase = _clamp01((overlap_start - _clamp01(close_progress)) / overlap_start)
     settings["preview_progress"] = _lerp(
         0.0,
@@ -3457,7 +3460,7 @@ class CommandOverlay(NSObject):
                         final_config,
                         pucker_progress,
                     )
-                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+                if progress <= _OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS:
                     self._update_dismiss_seam_compositor(final_config, progress)
                 else:
                     self._stop_dismiss_seam_compositor()
