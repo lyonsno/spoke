@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,28 @@ def _load_converge_embed_lib():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _is_turn_carver_background_thread(thread: threading.Thread) -> bool:
+    target = getattr(thread, "_target", None)
+    if getattr(target, "__name__", None) != "_background_loop":
+        return False
+    owner = getattr(target, "__self__", None)
+    return (
+        owner is not None
+        and owner.__class__.__module__ == "spoke.converge"
+        and owner.__class__.__name__ == "TurnCarver"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _drain_turn_carver_background_threads():
+    yield
+    for thread in list(threading.enumerate()):
+        if not _is_turn_carver_background_thread(thread):
+            continue
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "TurnCarver background thread leaked past test teardown"
 
 
 class _FakeCommandClient:

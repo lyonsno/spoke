@@ -36,6 +36,10 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
+try:
+    from Quartz import CATransaction
+except ImportError:  # pragma: no cover - unavailable in lightweight test fakes
+    CATransaction = None
 
 from .backdrop_stream import (
     _apply_optical_shell_warp_ci_image,
@@ -76,23 +80,119 @@ _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
 _FONT_SIZE = 15.5
 _APPROVAL_HEADER_TEXT = "Approval needed"
 _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
-_FADE_IN_S = 0.16
+# Branch-local smoke aid: keep every command-overlay materialization/dismiss
+# timeline coupled while tuning toward the final pressure-slit cadence.
+_PRESSURE_SLIT_SMOKE_TIME_SCALE = 2.0 / 3.0
+_FADE_IN_S = 0.16 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
-_ENTRANCE_POP_S = 0.15
+_ENTRANCE_POP_S = 0.15 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
+_OPTICAL_MATERIALIZATION_BASE_S = 1.36 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
+_OPTICAL_MATERIALIZATION_BASE_SPREAD_END = 0.77
+_OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP = 2.0
+_OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE = 2.0
+_OPTICAL_MATERIALIZATION_SEAM_OPEN_S = (
+    _OPTICAL_MATERIALIZATION_BASE_S * _OPTICAL_MATERIALIZATION_BASE_SPREAD_END
+    / _OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
+)
+_OPTICAL_MATERIALIZATION_S = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    + (
+        _OPTICAL_MATERIALIZATION_BASE_S
+        - _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    )
+    * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+)
+_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
+_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 0.75 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
+_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
+_OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS = 0.12
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.0
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = 2.0
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = 0.8
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC = 0.0
+_OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = 0.15
+_OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 1.0
+_OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 1.0
+_OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = 0.60
+_OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION = 0.0
+_OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP = 0.0
+_OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = 0.72
+_OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = 96.0
+_DISMISS_SEAM_CLIENT_ID = "assistant.command.dismiss_seam"
+_DISMISS_RADIAL_PUCKER_CLIENT_ID = "assistant.command.dismiss_radial_pucker"
+_SEAM_PUCKER_TUNING_CLIENT_ID = "assistant.seam_pucker_tuner"
+_OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
+_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER = 10.0
+_OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
+_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
+_OPTICAL_MATERIALIZATION_RADIAL_CYCLES = 2.35
+_OPTICAL_MATERIALIZATION_RADIAL_DAMPING = 4.4
+_OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
+    _OPTICAL_MATERIALIZATION_DISMISS_S
+    + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+)
+_OPTICAL_MATERIALIZATION_BODY_READY = 0.55
+_OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
+_OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.028
+_OPTICAL_MATERIALIZATION_SPREAD_END = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S / _OPTICAL_MATERIALIZATION_S
+)
+_OPTICAL_MATERIALIZATION_BLOOM_START = _OPTICAL_MATERIALIZATION_SPREAD_END
+_OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = 0.04
+_OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
+_OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
+_OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
+_OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
+_OPTICAL_MATERIAL_FILL_SOLID_AT = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    + (
+        _OPTICAL_MATERIALIZATION_BASE_S * 0.84
+        - _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    )
+    * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+) / _OPTICAL_MATERIALIZATION_S
+_OPTICAL_MATERIAL_FILL_FULL_AT = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    + (
+        _OPTICAL_MATERIALIZATION_BASE_S * 0.96
+        - _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    )
+    * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+) / _OPTICAL_MATERIALIZATION_S
+_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
+_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS = (
+    _OPTICAL_MATERIAL_FILL_SOLID_AT
+    + (
+        _OPTICAL_MATERIAL_FILL_FULL_AT
+        - _OPTICAL_MATERIAL_FILL_SOLID_AT
+    )
+    * (
+        (1.0 / 3.0 - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+        / (1.0 - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+    )
+    ** (1.0 / 3.0)
+)
+_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS = (
+    _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS
+)
+_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS = _OPTICAL_MATERIAL_FILL_SOLID_AT
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
 )
 _OPTICAL_ENTRANCE_READY_TIMEOUT_S = max(
     _OPTICAL_ENTRANCE_READY_POLL_S,
-    _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_TIMEOUT_S", 0.2),
+    _env(
+        "SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_TIMEOUT_S",
+        0.2 * _PRESSURE_SLIT_SMOKE_TIME_SCALE,
+    ),
 )
-_FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
+_FADE_OUT_S = 0.5 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _FADE_STEPS = 15
-_DISMISS_DURATION_S = 0.2
-_DISMISS_GROW_S = 0.06
+_DISMISS_DURATION_S = 0.2 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
+_DISMISS_GROW_S = 0.06 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _DISMISS_SHRINK_S = _DISMISS_DURATION_S - _DISMISS_GROW_S
-_DISMISS_ANIM_FPS = 60.0
+_DISMISS_ANIM_FPS = 144.0
 _DISMISS_GROW_SCALE = 1.018
 _DISMISS_END_SCALE = 0.94
 
@@ -191,6 +291,9 @@ _BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS = max(
 )
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0
 _POINTS_PER_CM = 72.0 / 2.54
+_COMMAND_MATERIAL_FILL_OVERSCAN_POINTS = (
+    _env("SPOKE_COMMAND_MATERIAL_FILL_OVERSCAN_MM", 1.5) / 10.0 * _POINTS_PER_CM
+)
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
 _COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 9.0)
 _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
@@ -286,7 +389,10 @@ _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS", 18.0
 )
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
-_COMMAND_VISUAL_START_DELAY_S = _env("SPOKE_COMMAND_VISUAL_START_DELAY_S", _FADE_IN_S + 0.15)
+_COMMAND_VISUAL_START_DELAY_S = _env(
+    "SPOKE_COMMAND_VISUAL_START_DELAY_S",
+    _FADE_IN_S + 0.15 * _PRESSURE_SLIT_SMOKE_TIME_SCALE,
+)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
@@ -332,6 +438,16 @@ def _lerp(start: float, end: float, t: float) -> float:
     return start + (end - start) * t
 
 
+def _smoothstep(progress: float) -> float:
+    t = _clamp01(progress)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _snap_ease_in(progress: float) -> float:
+    t = _clamp01(progress)
+    return t * t * t
+
+
 def _lerp_color(
     start: tuple[float, float, float],
     end: tuple[float, float, float],
@@ -351,13 +467,14 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 # Dark on dark, light on light — the overlay is a surface, not a glow.
 _COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
+_COMPOSITOR_LIGHT_FILL_ALPHA_BOOST = 1.50
 _PUNCHTHROUGH_BOOST_DARK = (0.0, 0.0, 0.0)
 _PUNCHTHROUGH_BOOST_LIGHT = (1.0, 1.0, 1.0)
 _PUNCHTHROUGH_BOOST_OPACITY_DARK = 0.42
 _PUNCHTHROUGH_BOOST_OPACITY_LIGHT = 0.75
 
 
-def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+def _compositor_fill_choice_for_brightness(brightness: float) -> float:
     # Steep sigmoid: commits to light or dark fill quickly, doesn't
     # linger in a bland mid-tone.  The transition is centered at 0.45
     # (biased slightly toward dark-fill) and covers ~0.15 of the
@@ -365,8 +482,22 @@ def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, flo
     t = _clamp01(brightness)
     # Remap to steep sigmoid: 6x gain centered at 0.45
     t = _clamp01((t - 0.45) * 6.0 + 0.5)
-    t = t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
+    return t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
+
+
+def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    t = _compositor_fill_choice_for_brightness(brightness)
     return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
+
+
+def _compositor_fill_alpha_multiplier_for_brightness(brightness: float) -> float:
+    # Only boost the light material used on dark backgrounds. The dark material
+    # on light backgrounds is already visually dense enough and should not drift.
+    return _lerp(
+        _COMPOSITOR_LIGHT_FILL_ALPHA_BOOST,
+        1.0,
+        _compositor_fill_choice_for_brightness(brightness),
+    )
 
 
 def _punchthrough_boost_style_for_brightness(
@@ -537,6 +668,345 @@ def _command_optical_shell_config(
         "debug_grid_spacing_points": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS,
         "cleanup_blur_radius_points": _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
     }
+
+
+def _materialized_optical_shell_config(
+    shell_config: dict,
+    progress: float,
+) -> dict:
+    """Return a transient shell config for fluid entrance/dismissal.
+
+    The materialization path only changes the compositor warp envelope. It does
+    not touch the SDF fill geometry, which keeps entrance animation from
+    rebuilding expensive masks every visible frame.
+    """
+    config = dict(shell_config)
+    p = _clamp01(progress)
+    if p >= 1.0:
+        return config
+
+    base_w = max(float(config.get("content_width_points", 1.0)), 1.0)
+    base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
+    base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
+    config["_materialization_base_width_points"] = base_w
+    config["_materialization_base_height_points"] = base_h
+    config["_materialization_base_corner_radius_points"] = base_radius
+
+    spread_t = _snap_ease_in(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
+    bloom_t = _snap_ease_in(
+        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
+        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
+    )
+    seed_w = max(24.0, min(base_w * _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
+    seed_h = max(2.5, min(base_h * _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC, 7.0))
+    width = _lerp(seed_w, base_w, spread_t)
+    height = _lerp(seed_h, base_h, bloom_t)
+
+    config["content_width_points"] = width
+    config["content_height_points"] = height
+    config["corner_radius_points"] = min(base_radius, height * 0.5)
+    if "core_magnification" in config:
+        base_mag = max(float(config.get("core_magnification", 1.0)), 0.0)
+        seed_mag = base_mag * _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC
+        if p <= _OPTICAL_MATERIALIZATION_MAG_ACCEL_END:
+            t = _clamp01(p / _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
+            config["core_magnification"] = _lerp(
+                seed_mag,
+                base_mag * 0.82,
+                _snap_ease_in(t),
+            )
+        elif p <= _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT:
+            t = _clamp01(
+                (p - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
+                / (
+                    _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+                    - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+                )
+            )
+            config["core_magnification"] = _lerp(
+                base_mag * 0.82,
+                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
+                _snap_ease_in(t),
+            )
+        else:
+            t = _clamp01(
+                (p - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT)
+                / max(1.0 - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT, 1e-6)
+            )
+            config["core_magnification"] = _lerp(
+                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
+                base_mag,
+                _snap_ease_in(t),
+            )
+    for key in ("band_width_points", "tail_width_points"):
+        if key in config:
+            config[key] = max(1.0, float(config[key]) * _lerp(0.25, 1.0, p))
+    for key in ("ring_amplitude_points", "tail_amplitude_points"):
+        if key in config:
+            config[key] = float(config[key]) * _lerp(0.35, 1.0, p)
+    config["continuous_present"] = True
+    return config
+
+
+def _materialization_fill_state(progress: float) -> dict[str, float]:
+    p = _clamp01(progress)
+    if p <= _OPTICAL_MATERIAL_FILL_START:
+        opacity = 0.0
+    else:
+        opacity = _smoothstep(
+            (p - _OPTICAL_MATERIAL_FILL_START)
+            / max(_OPTICAL_MATERIAL_FILL_SOLID_AT - _OPTICAL_MATERIAL_FILL_START, 1e-6)
+        )
+    height = _lerp(
+        _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+        1.0,
+        _clamp01(
+            (p - _OPTICAL_MATERIAL_FILL_SOLID_AT)
+            / max(_OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
+        )
+        ** 3.0,
+    )
+    return {
+        "opacity": _clamp01(opacity),
+        "height_frac": _clamp01(height),
+    }
+
+
+def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
+    """Keep the visible shell body alive until the seam sidecar owns dismissal."""
+    p = _clamp01(progress)
+    if p <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
+        return {
+            "opacity": 0.0,
+            "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+        }
+    state = _materialization_fill_state(p)
+    return {
+        "opacity": 1.0,
+        "height_frac": state["height_frac"],
+    }
+
+
+def _dismiss_pucker_amount(progress: float) -> float:
+    """Signed radial ringdown: an underdamped pucker after the seam vanishes."""
+    p = _clamp01(progress)
+    return math.exp(-_OPTICAL_MATERIALIZATION_RADIAL_DAMPING * p) * math.cos(
+        2.0 * math.pi * _OPTICAL_MATERIALIZATION_RADIAL_CYCLES * p
+    )
+
+
+def _dismiss_pucker_tail_progress_for_close_progress(close_progress: float) -> float:
+    """Advance the radial tail while the shell is visually shrinking away."""
+    start = max(_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS, 1e-6)
+    phase = _clamp01((start - _clamp01(close_progress)) / start)
+    return _lerp(
+        0.0,
+        _OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS,
+        phase,
+    )
+
+
+def _dismiss_seam_latch_amount(progress: float) -> float:
+    """Positive seam pucker already present at latch start, deeper at closure."""
+    p = _clamp01(progress)
+    start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    t = _clamp01((start - p) / start)
+    return _lerp(
+        _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
+        1.0,
+        1.0 - (1.0 - t) ** 3.0,
+    )
+
+
+def _seam_pucker_tuning_defaults() -> dict[str, float]:
+    return {
+        "preview_progress": _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45,
+        "seam_latch_start": _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
+        "seam_latch_intensity": _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY,
+        "scar_seam_length_frac": _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
+        "scar_seam_thickness_frac": _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC,
+        "scar_seam_focus_frac": _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC,
+        "scar_vertical_grip": _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP,
+        "scar_horizontal_grip": _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP,
+        "scar_axis_rotation": _OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION,
+        "scar_mirrored_lip": _OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP,
+    }
+
+
+def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
+    """Diagnostic gain envelope: quick visibility peak, long elastic decay."""
+    p = _clamp01(progress)
+    peak_at = max(_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT, 1e-6)
+    if p <= peak_at:
+        t = p / peak_at
+        return _lerp(
+            1.0,
+            _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN,
+            1.0 - (1.0 - t) ** 3.0,
+        )
+    t = (p - peak_at) / max(1.0 - peak_at, 1e-6)
+    return _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN * math.exp(-5.0 * t)
+
+
+def _apply_dismiss_seam_latch_fields(
+    config: dict,
+    progress: float,
+    tuning: dict[str, float] | None = None,
+) -> dict:
+    """Apply the crisp seam latch while the slit is still zipping closed."""
+    updated = dict(config)
+    settings = _seam_pucker_tuning_defaults()
+    if tuning:
+        for key, value in tuning.items():
+            if key in settings:
+                settings[key] = float(value)
+    p = _clamp01(progress)
+    overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
+    t = _clamp01((overlap_start - p) / overlap_start)
+    base_h = max(
+        float(
+            updated.get(
+                "_materialization_base_height_points",
+                updated.get("content_height_points", 1.0),
+            )
+        ),
+        1.0,
+    )
+    current_h = max(float(updated.get("content_height_points", 1.0)), 1.0)
+    seam_field_h = max(
+        current_h,
+        min(
+            base_h,
+            max(
+                _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS,
+                base_h * _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC,
+            ),
+        ),
+    )
+    amount = _lerp(
+        settings["seam_latch_start"],
+        1.0,
+        1.0 - (1.0 - t) ** 3.0,
+    ) * settings["seam_latch_intensity"]
+    updated["content_height_points"] = seam_field_h
+    updated["corner_radius_points"] = min(
+        max(float(updated.get("corner_radius_points", 1.0)), 1.0),
+        seam_field_h * 0.5,
+    )
+    updated["cleanup_blur_radius_points"] = 0.0
+    updated["mip_blur_strength"] = 0.0
+    updated["warp_mode"] = 3.0 if settings["scar_mirrored_lip"] >= 0.5 else 1.0
+    updated["scar_amount"] = amount
+    updated["scar_seam_length_frac"] = settings["scar_seam_length_frac"]
+    updated["scar_seam_thickness_frac"] = settings["scar_seam_thickness_frac"]
+    updated["scar_seam_focus_frac"] = settings["scar_seam_focus_frac"]
+    updated["scar_vertical_grip"] = settings["scar_vertical_grip"]
+    updated["scar_horizontal_grip"] = settings["scar_horizontal_grip"]
+    updated["scar_axis_rotation"] = settings["scar_axis_rotation"]
+    updated["scar_mirrored_lip"] = settings["scar_mirrored_lip"]
+    updated["x_squeeze"] = 1.0
+    updated["y_squeeze"] = 1.0
+    updated["ring_amplitude_points"] = 0.0
+    updated["tail_amplitude_points"] = 0.0
+    updated["continuous_present"] = True
+    return updated
+
+
+def _dismiss_seam_tuning_for_close_progress(
+    close_progress: float,
+    tuning: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Map close progress onto the seam tuner path without firing peak too early."""
+    settings = _seam_pucker_tuning_defaults()
+    if tuning:
+        for key, value in tuning.items():
+            if key in settings:
+                settings[key] = float(value)
+    p = _clamp01(close_progress)
+    arm_start = max(_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS, 1e-6)
+    peak = max(_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS, 1e-6)
+    if p >= peak:
+        arm_phase = _smoothstep((arm_start - p) / max(arm_start - peak, 1e-6))
+        settings["preview_progress"] = 0.0
+        settings["seam_latch_intensity"] *= arm_phase
+        settings["scar_seam_length_frac"] = _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
+        return settings
+
+    phase = _clamp01((peak - p) / peak)
+    settings["preview_progress"] = _lerp(
+        0.0,
+        _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS,
+        phase,
+    )
+    settings["scar_seam_length_frac"] = _lerp(
+        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
+        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC,
+        phase,
+    )
+    return settings
+
+
+def _dismiss_seam_latch_shell_config(
+    final_shell_config: dict,
+    progress: float,
+    tuning: dict[str, float] | None = None,
+) -> dict:
+    """Return the full-width seam field layered over the close animation."""
+    config = dict(final_shell_config)
+    config["client_id"] = _DISMISS_SEAM_CLIENT_ID
+    config["role"] = "assistant"
+    config["visible"] = True
+    config["z_index"] = 10
+    seam_tuning = _dismiss_seam_tuning_for_close_progress(progress, tuning)
+    return _apply_dismiss_seam_latch_fields(
+        config,
+        seam_tuning["preview_progress"],
+        seam_tuning,
+    )
+
+
+def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
+    """Apply the post-close radial underdamped pucker without blur."""
+    updated = dict(config)
+    amount = (
+        _dismiss_pucker_amount(progress)
+        * _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY
+        * _dismiss_pucker_amplitude_multiplier(progress)
+    )
+    updated["cleanup_blur_radius_points"] = 0.0
+    updated["mip_blur_strength"] = 0.0
+    updated["warp_mode"] = 2.0
+    updated["scar_amount"] = amount
+    updated["x_squeeze"] = 1.0
+    updated["y_squeeze"] = 1.0
+    updated["ring_amplitude_points"] = 0.0
+    updated["tail_amplitude_points"] = 0.0
+    updated["continuous_present"] = True
+    return updated
+
+
+def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
+    """Return the radial underdamped scar that releases after dismiss closes."""
+    base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
+    base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
+    config = _materialized_optical_shell_config(shell_config, 0.0)
+    base_diameter = max(560.0, min(base_w * 0.52, base_h * 2.9))
+    diameter = base_diameter * math.sqrt(_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER)
+    config["content_width_points"] = diameter
+    config["content_height_points"] = diameter
+    config["corner_radius_points"] = diameter * 0.5
+    config["core_magnification"] = 1.0
+    return _apply_dismiss_radial_pucker_fields(config, progress)
+
+
+def _dismiss_radial_pucker_shell_config(shell_config: dict, progress: float) -> dict:
+    """Return the radial scar as an independent compositor client."""
+    config = _dismiss_pucker_shell_config(shell_config, progress)
+    config["client_id"] = _DISMISS_RADIAL_PUCKER_CLIENT_ID
+    config["role"] = "assistant"
+    config["visible"] = True
+    config["z_index"] = 9
+    return config
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -987,10 +1457,329 @@ class CommandOverlay(NSObject):
         self._visual_ready_timer: NSTimer | None = None
         self._visual_ready_wait_started_at = 0.0
         self._visual_ready_brightness_synced = False
+        self._materialization_timer: NSTimer | None = None
+        self._materialization_started_at = 0.0
+        self._materialization_progress = 1.0
+        self._materialization_direction = 1
+        self._materialization_final_shell_config: dict | None = None
+        self._deferred_materialization_shell_config: dict | None = None
+        self._pucker_tail_timer: NSTimer | None = None
+        self._pucker_tail_started_at = 0.0
+        self._pucker_tail_progress_offset = 0.0
+        self._pucker_tail_shell_config: dict | None = None
+        self._seam_pucker_tuning_overrides: dict[str, float] = {}
+        self._seam_pucker_tuning_preview_active = False
+        self._seam_pucker_tuning_started_preview = False
+        self._seam_pucker_tuning_compositor = None
+        self._dismiss_seam_compositor = None
+        self._dismiss_radial_pucker_compositor = None
+        self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
 
         return self
+
+    def set_compositor_registry(self, registry) -> None:
+        self._compositor_registry = registry
+
+    def seam_pucker_tuning_snapshot(self) -> dict[str, float]:
+        tuning = _seam_pucker_tuning_defaults()
+        tuning.update(getattr(self, "_seam_pucker_tuning_overrides", {}))
+        return tuning
+
+    def set_seam_pucker_tuning_value(self, key: str, value: float) -> None:
+        self.update_seam_pucker_tuning(**{key: value})
+
+    def update_seam_pucker_tuning(self, **updates: float) -> None:
+        defaults = _seam_pucker_tuning_defaults()
+        overrides = dict(getattr(self, "_seam_pucker_tuning_overrides", {}))
+        for key, value in updates.items():
+            if key not in defaults:
+                continue
+            numeric = float(value)
+            if abs(numeric - defaults[key]) <= 1e-6:
+                overrides.pop(key, None)
+            else:
+                overrides[key] = numeric
+        self._seam_pucker_tuning_overrides = overrides
+        self._reapply_seam_pucker_tuning()
+
+    def reset_seam_pucker_tuning(self) -> None:
+        self._seam_pucker_tuning_overrides = {}
+        self._reapply_seam_pucker_tuning()
+
+    def preview_seam_pucker_tuning(self) -> None:
+        self._seam_pucker_tuning_preview_active = True
+        if not self._ensure_seam_pucker_tuning_surface():
+            return
+        self._reapply_seam_pucker_tuning()
+
+    def release_seam_pucker_tuning_preview(self) -> None:
+        self._seam_pucker_tuning_preview_active = False
+        self._stop_seam_pucker_tuning_compositor()
+        self._seam_pucker_tuning_started_preview = False
+
+    def _ensure_seam_pucker_tuning_surface(self) -> bool:
+        """Create/hold a visible static compositor surface for seam tuning."""
+        if getattr(self, "_window", None) is None:
+            return False
+        compositor = getattr(self, "_seam_pucker_tuning_compositor", None)
+        if compositor is None:
+            compositor = self._start_seam_pucker_tuning_compositor()
+            if compositor is None:
+                return False
+            if getattr(self, "_seam_pucker_tuning_compositor", None) is None:
+                self._seam_pucker_tuning_compositor = compositor
+            self._seam_pucker_tuning_started_preview = True
+        self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
+        self._cancel_pulse()
+        self._cancel_linger()
+        self._cancel_visual_start()
+        self._cancel_visual_ready_start()
+        return True
+
+    def _reapply_seam_pucker_tuning(self) -> None:
+        if not getattr(self, "_seam_pucker_tuning_preview_active", False):
+            return
+        if not self._ensure_seam_pucker_tuning_surface():
+            return
+        compositor = getattr(self, "_seam_pucker_tuning_compositor", None)
+        if compositor is None:
+            return
+        preview_config = self._seam_pucker_tuning_preview_config()
+        if preview_config is None:
+            return
+        try:
+            compositor.update_shell_config(preview_config)
+        except Exception:
+            logger.debug("Failed to apply seam pucker tuning preview", exc_info=True)
+
+    def _seam_pucker_tuning_base_shell_config(self) -> dict | None:
+        """Build a stable diagnostic shell centered on the display.
+
+        The tuner must not borrow the live assistant overlay body: doing so
+        makes slider motion and summon/dismiss keys race the conversation UI.
+        """
+        shell_config = _command_optical_shell_config()
+        if shell_config is None:
+            return None
+        screen_frame = self._screen.frame()
+        scale = (
+            self._screen.backingScaleFactor()
+            if hasattr(self._screen, "backingScaleFactor")
+            else 2.0
+        )
+        screen_width = getattr(getattr(screen_frame, "size", None), "width", 0.0)
+        screen_height = getattr(getattr(screen_frame, "size", None), "height", 0.0)
+        if not isinstance(screen_width, numbers.Real):
+            screen_width = 0.0
+        if not isinstance(screen_height, numbers.Real):
+            screen_height = 0.0
+        shell_config["client_id"] = _SEAM_PUCKER_TUNING_CLIENT_ID
+        shell_config["role"] = "diagnostic"
+        shell_config["center_x"] = screen_width * scale * 0.5
+        shell_config["center_y"] = screen_height * scale * 0.5
+        shell_config["initial_brightness"] = _clamp01(float(getattr(self, "_brightness", 0.0)))
+        shell_config["visible"] = True
+        for key in (
+            "content_width_points",
+            "content_height_points",
+            "corner_radius_points",
+            "band_width_points",
+            "tail_width_points",
+        ):
+            if key in shell_config:
+                shell_config[key] = float(shell_config[key]) * scale
+        return shell_config
+
+    def _seam_pucker_tuning_preview_config(self) -> dict | None:
+        base_config = self._seam_pucker_tuning_base_shell_config()
+        if base_config is None:
+            return None
+        tuning = self.seam_pucker_tuning_snapshot()
+        progress = _clamp01(tuning.get("preview_progress", 0.2))
+        preview_config = _apply_dismiss_seam_latch_fields(
+            base_config,
+            progress,
+            tuning,
+        )
+        preview_config["client_id"] = _SEAM_PUCKER_TUNING_CLIENT_ID
+        preview_config["role"] = "diagnostic"
+        preview_config["visible"] = True
+        return preview_config
+
+    def _start_seam_pucker_tuning_compositor(self):
+        config = self._seam_pucker_tuning_preview_config()
+        if config is None:
+            return None
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=_SEAM_PUCKER_TUNING_CLIENT_ID,
+                role="diagnostic",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start seam pucker tuning compositor", exc_info=True)
+            return None
+        if compositor is not None:
+            self._seam_pucker_tuning_compositor = compositor
+            self._seam_pucker_tuning_started_preview = True
+        return compositor
+
+    def _stop_seam_pucker_tuning_compositor(self) -> None:
+        compositor = getattr(self, "_seam_pucker_tuning_compositor", None)
+        self._seam_pucker_tuning_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop seam pucker tuning compositor", exc_info=True)
+
+    def _ensure_dismiss_seam_compositor(self):
+        """Register the transient seam layer without disturbing the main shell."""
+        compositor = getattr(self, "_dismiss_seam_compositor", None)
+        if compositor is not None:
+            return compositor
+        final_config = getattr(self, "_materialization_final_shell_config", None)
+        if final_config is None:
+            return None
+        progress = getattr(self, "_materialization_progress", 0.0)
+        config = _dismiss_seam_latch_shell_config(
+            final_config,
+            progress,
+        )
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=_DISMISS_SEAM_CLIENT_ID,
+                role="assistant",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start command dismiss seam compositor", exc_info=True)
+            return None
+        self._dismiss_seam_compositor = compositor
+        return compositor
+
+    def _update_dismiss_seam_compositor(self, final_config: dict, progress: float) -> None:
+        compositor = self._ensure_dismiss_seam_compositor()
+        if compositor is None:
+            return
+        try:
+            compositor.update_shell_config(
+                _dismiss_seam_latch_shell_config(
+                    final_config,
+                    progress,
+                )
+            )
+        except Exception:
+            logger.debug("Failed to update command dismiss seam compositor", exc_info=True)
+
+    def _stop_dismiss_seam_compositor(self) -> None:
+        compositor = getattr(self, "_dismiss_seam_compositor", None)
+        self._dismiss_seam_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop command dismiss seam compositor", exc_info=True)
+
+    def _ensure_dismiss_radial_pucker_compositor(self):
+        """Register the radial release as a sidecar so the main shell can keep closing."""
+        compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
+        if compositor is not None:
+            return compositor
+        final_config = getattr(self, "_materialization_final_shell_config", None)
+        if final_config is None:
+            return None
+        progress = getattr(self, "_pucker_tail_progress_offset", 0.0)
+        config = _dismiss_radial_pucker_shell_config(final_config, progress)
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=_DISMISS_RADIAL_PUCKER_CLIENT_ID,
+                role="assistant",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start command radial pucker compositor", exc_info=True)
+            return None
+        self._dismiss_radial_pucker_compositor = compositor
+        return compositor
+
+    def _update_dismiss_radial_pucker_compositor(
+        self, final_config: dict, progress: float
+    ) -> None:
+        self._pucker_tail_progress_offset = _clamp01(progress)
+        compositor = self._ensure_dismiss_radial_pucker_compositor()
+        if compositor is None:
+            return
+        try:
+            compositor.update_shell_config(
+                _dismiss_radial_pucker_shell_config(final_config, progress)
+            )
+        except Exception:
+            logger.debug("Failed to update command radial pucker compositor", exc_info=True)
+
+    def _publish_shared_compositor_configs(self, updates: list[tuple[object, dict]]) -> bool:
+        """Publish one coherent multi-shell frame when sidecars share a host."""
+        if not updates:
+            return True
+        host = getattr(updates[0][0], "_host", None)
+        updater = getattr(host, "update_client_configs", None)
+        if host is None or not callable(updater):
+            return False
+        configs: dict[str, dict] = {}
+        for client, config in updates:
+            if client is None or getattr(client, "_host", None) is not host:
+                return False
+            client_id = getattr(client, "_client_id", None)
+            if not client_id:
+                return False
+            configs[str(client_id)] = config
+        try:
+            return bool(updater(configs))
+        except Exception:
+            logger.debug("Failed to batch command compositor update", exc_info=True)
+            return False
+
+    def _publish_individual_compositor_configs(
+        self,
+        updates: list[tuple[object, dict]],
+    ) -> None:
+        for client, config in updates:
+            if client is None:
+                continue
+            try:
+                client.update_shell_config(config)
+            except Exception:
+                logger.debug("Failed to update command compositor client", exc_info=True)
+
+    def _stop_dismiss_radial_pucker_compositor(self) -> None:
+        compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
+        self._dismiss_radial_pucker_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop command radial pucker compositor", exc_info=True)
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -1465,6 +2254,8 @@ class CommandOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_all_timers()
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            self._stop_fullscreen_compositor()
         self._visible = True
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)
@@ -1669,6 +2460,12 @@ class CommandOverlay(NSObject):
             return
         self._cancel_all_timers()
         self._streaming = False
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            self._visible = False
+            self._window.setAlphaValue_(1.0)
+            self._set_overlay_scale(1.0)
+            self._start_fade_out()
+            return
         self._visible = True  # keep visible for the animation
 
         self._cancel_elapsed = 0.0
@@ -2223,11 +3020,17 @@ class CommandOverlay(NSObject):
         progress = self._fade_step / _FADE_STEPS
 
         if self._fade_direction == 1:
-            eased = progress * progress
-            alpha = eased
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                alpha = 1.0
+            else:
+                eased = progress * progress
+                alpha = eased
         else:
-            eased = progress * progress
-            alpha = self._fade_from * (1.0 - eased)
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                alpha = self._fade_from
+            else:
+                eased = progress * progress
+                alpha = self._fade_from * (1.0 - eased)
 
             # Fade utterance at double rate
             if self._text_view is not None and self._utterance_text:
@@ -2250,7 +3053,10 @@ class CommandOverlay(NSObject):
         if self._fade_step >= _FADE_STEPS:
             self._cancel_fade()
             if self._fade_direction == 1:
-                if not getattr(self, "_recording_load_shed", False):
+                if (
+                    not getattr(self, "_recording_load_shed", False)
+                    and not self._materialization_owns_fill_layers()
+                ):
                     self._start_pulse_timer()
             elif self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
@@ -2279,6 +3085,22 @@ class CommandOverlay(NSObject):
             metrics = getattr(self, "_metrics", None)
             if metrics is not None:
                 metrics.record_display_tick(now=time.perf_counter())
+
+    def _materialization_owns_fill_layers(self) -> bool:
+        """Return True while slit materialization owns shell-body geometry."""
+        return getattr(self, "_materialization_timer", None) is not None
+
+    def _clear_punchthrough_mask_for_materialization(self) -> None:
+        """Let the shell body materialize before text punch-through owns a mask."""
+        fill = getattr(self, "_fill_layer", None)
+        if fill is not None and hasattr(fill, "setMask_"):
+            fill.setMask_(None)
+        self._punchthrough_mask_layer = None
+        boost = getattr(self, "_boost_layer", None)
+        if boost is not None and hasattr(boost, "setMask_"):
+            boost.setMask_(None)
+        self._boost_mask_layer = None
+        self._punchthrough_mask_dirty = True
 
     def _pulseStepInner(self):
         if self._text_view is None:
@@ -2493,7 +3315,7 @@ class CommandOverlay(NSObject):
                         _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
                     )
                     try:
-                        # Bulk span path: 3 coarse spans (edges, mid, center)
+                        # Bulk span path: 3 coarse spans (edge, center, edge)
                         # instead of per-character iteration. The gradient
                         # approximation is sufficient for the 2-5s breathing
                         # animation on this fallback rendering path.
@@ -2526,13 +3348,13 @@ class CommandOverlay(NSObject):
                                 _SH_pulse, shadow, (resp_start, resp_len)
                             )
                         else:
-                            # Three spans: edge (0..e), mid (e..m), center (m..end)
+                            # Three spans: edge (0..e), center (e..m), edge (m..end)
                             edge = max(1, resp_len // 4)
                             mid = max(edge + 1, resp_len * 3 // 4)
                             spans = [
-                                (resp_start,        edge,           0.0),   # edges: main color
-                                (resp_start + edge, mid - edge,     0.5),   # mid: blend
-                                (resp_start + mid,  resp_len - mid, 1.0),   # center: alt color
+                                (resp_start,        edge,           0.0),   # edge: main color
+                                (resp_start + edge, mid - edge,     1.0),   # center: alt color
+                                (resp_start + mid,  resp_len - mid, 0.0),   # edge: main color
                             ]
                             for span_start, span_len, weight in spans:
                                 if span_len <= 0:
@@ -2569,7 +3391,12 @@ class CommandOverlay(NSObject):
         # its presence from a much more assertive fill ramp than the command
         # overlay previously used, so mirror that shape here while preserving
         # the pulse-driven rhythm.
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+        materialization_owns_fill = self._materialization_owns_fill_layers()
+        if (
+            hasattr(self, '_fill_layer')
+            and self._fill_layer is not None
+            and not materialization_owns_fill
+        ):
             fill_drive = _lerp(breath, breath * breath, t)
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
                 fill_min = _lerp(
@@ -2620,7 +3447,10 @@ class CommandOverlay(NSObject):
                 self._last_min_brightness = 0.0
         # Boost layer: glyph-shaped lift/drop behind punch-through text.
         boost_layer = getattr(self, "_boost_layer", None)
-        if boost_layer is not None and getattr(self, "_text_punchthrough", False):
+        if boost_layer is not None and materialization_owns_fill:
+            boost_layer.setHidden_(True)
+            boost_layer.setOpacity_(0.0)
+        elif boost_layer is not None and getattr(self, "_text_punchthrough", False):
             boost_rgb, boost_opacity = _punchthrough_boost_style_for_brightness(t)
             try:
                 from Quartz import CGColorCreateSRGB
@@ -2644,15 +3474,19 @@ class CommandOverlay(NSObject):
         elif boost_layer is not None:
             boost_layer.setHidden_(True)
         # Update text punch-through mask (if active)
-        if getattr(self, "_text_punchthrough", False):
+        if getattr(self, "_text_punchthrough", False) and not materialization_owns_fill:
             self._update_punchthrough_mask()
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
-            if spring > 0.01:
+            if materialization_owns_fill:
+                self._spring_tint_layer.setOpacity_(0.0)
+            elif spring > 0.01:
                 from Quartz import CGColorCreateSRGB
                 # Warm golden-amber tint — visible, thermal, not alarming
                 cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
                 self._spring_tint_layer.setBackgroundColor_(cg_color)
+                if hasattr(self._spring_tint_layer, "setHidden_"):
+                    self._spring_tint_layer.setHidden_(False)
                 spring_scale = (
                     _COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE
                     if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
@@ -2663,6 +3497,8 @@ class CommandOverlay(NSObject):
                 self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
+                if hasattr(self._spring_tint_layer, "setHidden_"):
+                    self._spring_tint_layer.setHidden_(True)
         metrics = getattr(self, "_metrics", None)
         if metrics is not None:
             present_end = time.perf_counter()
@@ -2681,10 +3517,20 @@ class CommandOverlay(NSObject):
 
     def _start_fade_out(self) -> None:
         self._cancel_fade()
+        self._cancel_pulse()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        shell_config = self._display_local_optical_shell_config()
+        fade_duration = _FADE_OUT_S
+        if compositor is not None and shell_config is not None:
+            try:
+                self._start_materialization_animation(shell_config, direction=-1)
+                fade_duration = _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S
+            except Exception:
+                logger.debug("Failed to start command materialization dismissal", exc_info=True)
         self._fade_step = 0
         self._fade_from = self._window.alphaValue() if self._window else 1.0
         self._fade_direction = -1
-        interval = _FADE_OUT_S / _FADE_STEPS
+        interval = fade_duration / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -2733,6 +3579,22 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._visual_ready_timer = None
 
+    def _cancel_materialization_animation(self) -> None:
+        timer = getattr(self, "_materialization_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._materialization_timer = None
+        self._stop_dismiss_seam_compositor()
+        self._stop_dismiss_radial_pucker_compositor()
+
+    def _cancel_dismiss_pucker_tail_animation(self) -> None:
+        timer = getattr(self, "_pucker_tail_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._pucker_tail_timer = None
+        self._pucker_tail_progress_offset = 0.0
+        self._stop_dismiss_radial_pucker_compositor()
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -2753,6 +3615,9 @@ class CommandOverlay(NSObject):
         self._cancel_backdrop_refresh()
         self._cancel_visual_start()
         self._cancel_visual_ready_start()
+        self._cancel_materialization_animation()
+        self._stop_dismiss_seam_compositor()
+        self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
 
     def _start_entrance_animation(self) -> None:
@@ -2778,6 +3643,330 @@ class CommandOverlay(NSObject):
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
+
+    def _start_materialization_animation(self, final_shell_config: dict, *, direction: int = 1) -> None:
+        """Animate the compositor geometry from/to a pressure slit."""
+        self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
+        self._deferred_materialization_shell_config = None
+        self._materialization_final_shell_config = dict(final_shell_config)
+        self._materialization_direction = 1 if direction >= 0 else -1
+        self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
+        self._materialization_started_at = time.perf_counter()
+        self._clear_punchthrough_mask_for_materialization()
+        if self._materialization_direction < 0:
+            self._apply_materialization_fill_state(self._materialization_progress)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            try:
+                compositor.update_shell_config(
+                    _materialized_optical_shell_config(
+                        self._materialization_final_shell_config,
+                        self._materialization_progress,
+                    )
+                )
+            except Exception:
+                logger.debug("Failed to seed command materialization shell", exc_info=True)
+        if self._materialization_direction > 0:
+            self._apply_materialization_fill_state(self._materialization_progress)
+        self._materialization_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _DISMISS_ANIM_FPS,
+            self,
+            "materializationStep:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._materialization_timer)
+
+    def materializationStep_(self, timer) -> None:
+        if getattr(self, "_materialization_timer", None) is not timer:
+            return
+        final_config = getattr(self, "_materialization_final_shell_config", None)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if final_config is None or compositor is None:
+            self._cancel_materialization_animation()
+            self._materialization_progress = 1.0
+            return
+        elapsed = max(time.perf_counter() - getattr(self, "_materialization_started_at", 0.0), 0.0)
+        duration = (
+            _OPTICAL_MATERIALIZATION_S
+            if getattr(self, "_materialization_direction", 1) > 0
+            else _OPTICAL_MATERIALIZATION_DISMISS_S
+        )
+        raw = _clamp01(elapsed / duration)
+        progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
+        self._materialization_progress = progress
+        self._apply_materialization_fill_state(progress)
+        try:
+            shell_config = _materialized_optical_shell_config(final_config, progress)
+            compositor_updates: list[tuple[object, dict]] = []
+            if getattr(self, "_materialization_direction", 1) < 0:
+                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS:
+                    self._set_layer_hidden_without_actions(
+                        getattr(self, "_backdrop_layer", None),
+                        True,
+                    )
+                    pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
+                        progress
+                    )
+                    self._pucker_tail_progress_offset = _clamp01(pucker_progress)
+                    radial_compositor = self._ensure_dismiss_radial_pucker_compositor()
+                    if radial_compositor is not None:
+                        compositor_updates.append(
+                            (
+                                radial_compositor,
+                                _dismiss_radial_pucker_shell_config(
+                                    final_config,
+                                    pucker_progress,
+                                ),
+                            )
+                        )
+                if progress <= _OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS:
+                    seam_compositor = self._ensure_dismiss_seam_compositor()
+                    if seam_compositor is not None:
+                        compositor_updates.append(
+                            (
+                                seam_compositor,
+                                _dismiss_seam_latch_shell_config(final_config, progress),
+                            )
+                        )
+                else:
+                    self._stop_dismiss_seam_compositor()
+            compositor_updates.append((compositor, shell_config))
+            if not self._publish_shared_compositor_configs(compositor_updates):
+                self._publish_individual_compositor_configs(compositor_updates)
+        except Exception:
+            logger.debug("Failed to update command materialization shell", exc_info=True)
+        if raw >= 1.0:
+            self._cancel_materialization_animation()
+            if getattr(self, "_materialization_direction", 1) > 0:
+                self._materialization_progress = 1.0
+                self._apply_materialization_fill_state(1.0)
+                if getattr(self, "_text_punchthrough", False):
+                    self._refresh_punchthrough_mask_if_needed()
+                if (
+                    getattr(self, "_visible", False)
+                    and not getattr(self, "_recording_load_shed", False)
+                ):
+                    self._start_pulse_timer()
+            else:
+                self._materialization_progress = 0.0
+                self._apply_materialization_fill_state(0.0)
+                self._start_dismiss_pucker_tail_animation(
+                    final_config,
+                    initial_progress=_dismiss_pucker_tail_progress_for_close_progress(
+                        0.0
+                    ),
+                )
+
+    def _start_dismiss_pucker_tail_animation(
+        self,
+        final_shell_config: dict,
+        *,
+        initial_progress: float = 0.0,
+    ) -> None:
+        """Run the post-close inverse pucker after the dismiss slit shuts."""
+        self._cancel_dismiss_pucker_tail_animation()
+        self._stop_dismiss_seam_compositor()
+        self._hide_local_shell_layers_for_pucker_tail()
+        self._pucker_tail_shell_config = dict(final_shell_config)
+        self._pucker_tail_progress_offset = _clamp01(initial_progress)
+        self._pucker_tail_started_at = time.perf_counter()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            try:
+                compositor.update_shell_config(
+                    _dismiss_pucker_shell_config(
+                        self._pucker_tail_shell_config,
+                        self._pucker_tail_progress_offset,
+                    )
+                )
+            except Exception:
+                logger.debug("Failed to seed command dismiss pucker", exc_info=True)
+        self._pucker_tail_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _DISMISS_ANIM_FPS,
+            self,
+            "dismissPuckerTailStep:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._pucker_tail_timer)
+
+    def dismissPuckerTailStep_(self, timer) -> None:
+        if getattr(self, "_pucker_tail_timer", None) is not timer:
+            return
+        shell_config = getattr(self, "_pucker_tail_shell_config", None)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if shell_config is None or compositor is None:
+            self._cancel_dismiss_pucker_tail_animation()
+            return
+        elapsed = max(time.perf_counter() - getattr(self, "_pucker_tail_started_at", 0.0), 0.0)
+        progress = _clamp01(
+            getattr(self, "_pucker_tail_progress_offset", 0.0)
+            + elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6)
+        )
+        try:
+            compositor.update_shell_config(
+                _dismiss_pucker_shell_config(shell_config, progress)
+            )
+        except Exception:
+            logger.debug("Failed to update command dismiss pucker", exc_info=True)
+        if progress >= 1.0:
+            self._cancel_dismiss_pucker_tail_animation()
+
+    def _set_materialization_layer_scale(
+        self,
+        layer,
+        *,
+        total_w: float,
+        total_h: float,
+        height_frac: float,
+    ) -> None:
+        """Scale shell body layers from their center without moving frames."""
+        if layer is None:
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            if hasattr(layer, "setAnchorPoint_"):
+                layer.setAnchorPoint_((0.5, 0.5))
+            if hasattr(layer, "setBounds_"):
+                layer.setBounds_(((0, 0), (total_w, total_h)))
+            if hasattr(layer, "setPosition_"):
+                layer.setPosition_((total_w * 0.5, total_h * 0.5))
+            if hasattr(layer, "setValue_forKeyPath_"):
+                layer.setValue_forKeyPath_(
+                    max(_clamp01(height_frac), 0.001),
+                    "transform.scale.y",
+                )
+        except Exception:
+            logger.debug("Failed to update command materialization layer scale", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization transaction", exc_info=True)
+
+    def _set_layer_opacity_without_actions(self, layer, opacity: float) -> None:
+        if layer is None or not hasattr(layer, "setOpacity_"):
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            layer.setOpacity_(opacity)
+        except Exception:
+            logger.debug("Failed to update command materialization layer opacity", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization opacity transaction", exc_info=True)
+
+    def _set_layer_contents_without_actions(self, layer, contents) -> None:
+        if layer is None or contents is None or not hasattr(layer, "setContents_"):
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            layer.setContents_(contents)
+        except Exception:
+            logger.debug("Failed to update command materialization layer contents", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization contents transaction", exc_info=True)
+
+    def _set_layer_hidden_without_actions(self, layer, hidden: bool) -> None:
+        if layer is None or not hasattr(layer, "setHidden_"):
+            return
+        transaction = CATransaction
+        try:
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            layer.setHidden_(hidden)
+        except Exception:
+            logger.debug("Failed to update command materialization hidden state", exc_info=True)
+        finally:
+            if transaction is not None:
+                try:
+                    transaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit command materialization hidden transaction", exc_info=True)
+
+    def _hide_local_shell_layers_for_pucker_tail(self) -> None:
+        """Keep old rectangular CA layers out of the compositor-only scar."""
+        for layer_name in (
+            "_backdrop_layer",
+            "_fill_layer",
+            "_boost_layer",
+            "_spring_tint_layer",
+        ):
+            layer = getattr(self, layer_name, None)
+            if layer_name != "_backdrop_layer":
+                self._set_layer_opacity_without_actions(layer, 0.0)
+            self._set_layer_hidden_without_actions(layer, True)
+
+    def _apply_materialization_fill_state(self, progress: float) -> None:
+        content = getattr(self, "_content_view", None)
+        if content is None:
+            return
+        state = _materialization_fill_state(progress)
+        hide_material_layers = False
+        if getattr(self, "_materialization_direction", 1) < 0:
+            # The compositor owns displacement; the CA/SDF fill owns the
+            # visible material body until the seam sidecar takes over. Hiding
+            # earlier amputates the center while leaving warped end-caps alive.
+            state = _dismiss_materialization_fill_state(progress)
+            hide_material_layers = state["opacity"] <= 0.0
+        try:
+            content_frame = content.frame()
+            f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+            total_w = float(content_frame.size.width) + 2 * f
+            total_h = float(content_frame.size.height) + 2 * f
+        except Exception:
+            return
+        for layer_name in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
+            layer = getattr(self, layer_name, None)
+            self._set_materialization_layer_scale(
+                layer,
+                total_w=total_w,
+                total_h=total_h,
+                height_frac=state["height_frac"],
+            )
+        if getattr(self, "_materialization_direction", 1) < 0:
+            for layer_name in ("_boost_layer", "_spring_tint_layer"):
+                layer = getattr(self, layer_name, None)
+                self._set_layer_opacity_without_actions(layer, 0.0)
+                self._set_layer_hidden_without_actions(layer, True)
+        fill = getattr(self, "_fill_layer", None)
+        if getattr(self, "_materialization_direction", 1) < 0:
+            self._set_layer_contents_without_actions(
+                fill,
+                getattr(self, "_dismiss_fill_image", None),
+            )
+        else:
+            self._set_layer_contents_without_actions(
+                fill,
+                getattr(self, "_fill_image", None),
+            )
+        self._set_layer_opacity_without_actions(fill, state["opacity"])
+        if hide_material_layers:
+            for layer_name in ("_boost_layer", "_spring_tint_layer"):
+                self._set_layer_opacity_without_actions(
+                    getattr(self, layer_name, None),
+                    0.0,
+                )
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
@@ -2811,7 +4000,7 @@ class CommandOverlay(NSObject):
         if self._optical_compositor_has_presented():
             self._sync_optical_compositor_brightness(hide_stale_fill=True)
             self._visual_ready_brightness_synced = True
-            if self._optical_fill_ready():
+            if self._optical_entrance_ready():
                 self._start_entrance_animation()
                 return
         self._visual_ready_wait_started_at = time.perf_counter()
@@ -2841,13 +4030,18 @@ class CommandOverlay(NSObject):
             self._visual_ready_brightness_synced = True
         if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
             return
-        if not self._optical_fill_ready():
+        if not self._optical_entrance_ready():
             return
         self._cancel_visual_ready_start()
         self._start_entrance_animation()
 
     def _optical_entrance_ready(self) -> bool:
-        return self._optical_compositor_has_presented() and self._optical_fill_ready()
+        return (
+            self._optical_compositor_has_presented()
+            and self._optical_fill_ready()
+            and getattr(self, "_materialization_progress", 1.0)
+            >= _OPTICAL_MATERIALIZATION_BODY_READY
+        )
 
     def _optical_compositor_has_presented(self) -> bool:
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -2894,6 +4088,29 @@ class CommandOverlay(NSObject):
             self._apply_surface_theme()
         finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
+
+    def _seed_brightness_from_optical_compositor(self) -> float | None:
+        """Pull one compositor-side background sample before materialization."""
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return None
+        refresher = getattr(compositor, "refresh_brightness", None)
+        if callable(refresher):
+            try:
+                refresher()
+            except Exception:
+                logger.debug("Failed to refresh compositor brightness seed", exc_info=True)
+        try:
+            raw_brightness = getattr(compositor, "sampled_brightness", self._brightness)
+        except Exception:
+            return None
+        if not isinstance(raw_brightness, numbers.Number):
+            return None
+        brightness = _clamp01(float(raw_brightness))
+        self._brightness = brightness
+        self._brightness_target = brightness
+        self._brightness_sample_tick = 0
+        return brightness
 
     def _set_overlay_scale(self, scale: float) -> None:
         if self._wrapper_view is None:
@@ -3081,6 +4298,22 @@ class CommandOverlay(NSObject):
         if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
             fill_layer.setHidden_(False)
         self._fill_hidden_until_signature = None
+        self._start_deferred_materialization_if_ready()
+
+    def _start_deferred_materialization_if_ready(self) -> None:
+        if not self._optical_fill_ready():
+            return
+        if getattr(self, "_pending_fill_image_signature", None) is not None:
+            return
+        if getattr(self, "_materialization_timer", None) is not None:
+            return
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            return
+        shell_config = getattr(self, "_deferred_materialization_shell_config", None)
+        if shell_config is None:
+            return
+        self._deferred_materialization_shell_config = None
+        self._start_materialization_animation(dict(shell_config))
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge mask + build fill image.
@@ -3098,11 +4331,25 @@ class CommandOverlay(NSObject):
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
+        fill_overscan = (
+            _COMMAND_MATERIAL_FILL_OVERSCAN_POINTS
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else 0.0
+        )
+        fill_body_w = width + 2 * fill_overscan
+        fill_body_h = height + 2 * fill_overscan
 
         _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         _b = getattr(self, '_brightness', 0.0)
         _b_rounded = round(_b * 50) / 50  # 0.02 steps
-        geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
+        geom_key = (
+            width,
+            height,
+            fill_body_w,
+            fill_body_h,
+            scale,
+            _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED,
+        )
         appearance_key = (
             round(float(total_w), 3),
             round(float(total_h), 3),
@@ -3130,6 +4377,10 @@ class CommandOverlay(NSObject):
                 self._fill_layer.setContentsScale_(scale)
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
+        if self._materialization_owns_fill_layers():
+            self._apply_materialization_fill_state(
+                getattr(self, "_materialization_progress", 1.0)
+            )
 
         pending = getattr(self, "_pending_fill_image_signature", None)
         if pending is not None:
@@ -3187,9 +4438,9 @@ class CommandOverlay(NSObject):
                     sdf = _stadium_signed_distance_field(
                         total_w,
                         total_h,
-                        width,
-                        height,
-                        _optical_shell_body_corner_radius(height),
+                        fill_body_w,
+                        fill_body_h,
+                        _optical_shell_body_corner_radius(height) + fill_overscan,
                         scale,
                     )
                     inside_d = np.maximum(-sdf, 0.0)
@@ -3208,7 +4459,7 @@ class CommandOverlay(NSObject):
                 elif not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and fallback_alpha is None:
                     raw_interior = edge_ridge = inside_mask = ext_exterior = None
                     sdf = _overlay_rounded_rect_sdf(
-                        total_w, total_h, width, height,
+                        total_w, total_h, fill_body_w, fill_body_h,
                         _OVERLAY_CORNER_RADIUS, scale,
                     )
                     fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
@@ -3223,6 +4474,11 @@ class CommandOverlay(NSObject):
                     interior = np.clip(
                         interior + edge_ridge * 0.50,
                         0.0, 1.0,
+                    ).astype(np.float32)
+                    interior = np.clip(
+                        interior * _compositor_fill_alpha_multiplier_for_brightness(_b),
+                        0.0,
+                        1.0,
                     ).astype(np.float32)
                     fill_alpha = np.where(inside_mask, interior, ext_exterior)
                     cached_fill_alpha = fill_alpha
@@ -3256,6 +4512,14 @@ class CommandOverlay(NSObject):
                     )
                     result["image"] = fill_image
                     result["payload"] = payload
+                    if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
+                        dismiss_fill_alpha = np.where(inside_mask, interior, 0.0).astype(np.float32)
+                        dismiss_image, dismiss_payload = _fill_field_to_image(
+                            dismiss_fill_alpha,
+                            int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+                        )
+                        result["dismiss_image"] = dismiss_image
+                        result["dismiss_payload"] = dismiss_payload
                 except Exception as exc:
                     result["error"] = repr(exc)
             except Exception as exc:
@@ -3289,12 +4553,15 @@ class CommandOverlay(NSObject):
             self._unhide_fill_if_ready(signature)
             return
         self._fill_payload = payload.get("payload")
+        self._dismiss_fill_payload = payload.get("dismiss_payload")
         self._fill_image_signature = signature
 
         total_w = payload["total_w"]
         total_h = payload["total_h"]
         scale = payload.get("scale", getattr(self, "_ridge_scale", 2.0))
         fill_image = payload.get("image")
+        self._fill_image = fill_image
+        self._dismiss_fill_image = payload.get("dismiss_image")
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
@@ -3316,6 +4583,11 @@ class CommandOverlay(NSObject):
             mask.setContentsGravity_("resize")
             self._spring_tint_layer.setMask_(mask)
             self._spring_tint_mask_signature = signature
+
+        if self._materialization_owns_fill_layers():
+            self._apply_materialization_fill_state(
+                getattr(self, "_materialization_progress", 1.0)
+            )
 
         queued = getattr(self, "_queued_fill_request", None)
         if queued is not None:
@@ -3523,40 +4795,26 @@ class CommandOverlay(NSObject):
         self._stop_fullscreen_compositor()
         try:
             from spoke.fullscreen_compositor import start_overlay_compositor
-            shell_config = self._current_optical_shell_config()
-            if shell_config is None:
+            final_shell_config = self._display_local_optical_shell_config()
+            if final_shell_config is None:
                 return
-            # Add capsule center position in pixel coordinates
-            scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-            screen_frame = self._screen.frame()
-            win_frame = self._window.frame()
-            content_frame = self._content_view.frame()
-            center_x, center_y = _display_local_capsule_center_pixels(
-                screen_frame, win_frame, content_frame, scale
+            start_shell_config = _materialized_optical_shell_config(
+                final_shell_config,
+                0.0,
             )
-            shell_config["center_x"] = center_x
-            shell_config["center_y"] = center_y
-            shell_config["initial_brightness"] = _clamp01(
-                float(getattr(self, "_brightness", 0.0))
-            )
-            # Scale content dimensions to pixel space
-            for k in ("content_width_points", "content_height_points",
-                      "corner_radius_points", "band_width_points",
-                      "tail_width_points"):
-                if k in shell_config:
-                    shell_config[k] = float(shell_config[k]) * scale
             compositor = start_overlay_compositor(
                 screen=self._screen,
                 window=self._window,
                 content_view=self._content_view,
-                shell_config=shell_config,
+                shell_config=start_shell_config,
                 client_id="assistant.command",
                 role="assistant",
+                registry=getattr(self, "_compositor_registry", None),
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor
                 self._cancel_brightness_sampling()
-                self._brightness_target = shell_config["initial_brightness"]
+                self._brightness_target = final_shell_config["initial_brightness"]
                 self._brightness_sample_tick = (
                     -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
                 )
@@ -3591,11 +4849,25 @@ class CommandOverlay(NSObject):
                     "_suppress_stale_fill_until_ready",
                     False,
                 )
+                self._materialization_progress = 0.0
+                self._deferred_materialization_shell_config = dict(final_shell_config)
                 self._suppress_stale_fill_until_ready = True
+                sampled_brightness = self._seed_brightness_from_optical_compositor()
+                if sampled_brightness is not None:
+                    final_shell_config["initial_brightness"] = sampled_brightness
+                    start_shell_config["initial_brightness"] = sampled_brightness
+                    self._deferred_materialization_shell_config[
+                        "initial_brightness"
+                    ] = sampled_brightness
+                try:
+                    compositor.update_shell_config(start_shell_config)
+                except Exception:
+                    logger.debug("Failed to seed command materialization slit", exc_info=True)
                 try:
                     self._apply_surface_theme()
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
+                self._start_deferred_materialization_if_ready()
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
@@ -3828,6 +5100,8 @@ class CommandOverlay(NSObject):
             logger.debug("Failed to update punch-through mask", exc_info=True)
 
     def _stop_fullscreen_compositor(self):
+        self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)
@@ -3928,6 +5202,33 @@ class CommandOverlay(NSObject):
         return image
 
     # ── layout ──────────────────────────────────────────────
+
+    def _display_local_optical_shell_config(self) -> dict | None:
+        shell_config = self._current_optical_shell_config()
+        if shell_config is None:
+            return None
+        scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+        screen_frame = self._screen.frame()
+        win_frame = self._window.frame()
+        content_frame = self._content_view.frame()
+        center_x, center_y = _display_local_capsule_center_pixels(
+            screen_frame, win_frame, content_frame, scale
+        )
+        shell_config["center_x"] = center_x
+        shell_config["center_y"] = center_y
+        shell_config["initial_brightness"] = _clamp01(
+            float(getattr(self, "_brightness", 0.0))
+        )
+        for key in (
+            "content_width_points",
+            "content_height_points",
+            "corner_radius_points",
+            "band_width_points",
+            "tail_width_points",
+        ):
+            if key in shell_config:
+                shell_config[key] = float(shell_config[key]) * scale
+        return shell_config
 
     def _reset_text_geometry(
         self,
@@ -4043,22 +5344,15 @@ class CommandOverlay(NSObject):
                 if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
                     self._backdrop_renderer.set_live_optical_shell_config(shell_config)
                 compositor = getattr(self, "_fullscreen_compositor", None)
-                if compositor is not None and shell_config is not None:
-                    scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-                    screen_frame = self._screen.frame()
-                    win_frame = self._window.frame()
-                    content_frame = self._content_view.frame()
-                    center_x, center_y = _display_local_capsule_center_pixels(
-                        screen_frame, win_frame, content_frame, scale
-                    )
-                    shell_config["center_x"] = center_x
-                    shell_config["center_y"] = center_y
-                    for k in ("content_width_points", "content_height_points",
-                              "corner_radius_points", "band_width_points",
-                              "tail_width_points"):
-                        if k in shell_config:
-                            shell_config[k] = float(shell_config[k]) * scale
-                    compositor.update_shell_config(shell_config)
+                display_shell_config = self._display_local_optical_shell_config()
+                if compositor is not None and display_shell_config is not None:
+                    self._materialization_final_shell_config = dict(display_shell_config)
+                    if getattr(self, "_materialization_timer", None) is not None:
+                        display_shell_config = _materialized_optical_shell_config(
+                            display_shell_config,
+                            getattr(self, "_materialization_progress", 1.0),
+                        )
+                    compositor.update_shell_config(display_shell_config)
                 if self._visible:
                     self._refresh_backdrop_snapshot()
 

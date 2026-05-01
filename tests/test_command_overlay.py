@@ -7,6 +7,7 @@ All tests use mocked PyObjC — no GUI runtime required.
 
 import importlib
 import inspect
+import math
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -14,6 +15,56 @@ from unittest.mock import MagicMock
 import pytest
 
 from spoke.optical_shell_metrics import OpticalShellMetrics
+
+
+def _smoothstep(edge0, edge1, x):
+    t = max(min((x - edge0) / max(edge1 - edge0, 1e-6), 1.0), 0.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _seam_scar_displacement(config, x_offset, y_offset):
+    def component(px, py, extent_x, extent_y):
+        x01 = min(max(abs(float(px)) / extent_x, 0.0), 1.0)
+        y01 = min(max(abs(float(py)) / extent_y, 0.0), 1.0)
+        length_frac = min(max(float(config["scar_seam_length_frac"]), 0.05), 1.0)
+        thickness_frac = min(max(float(config["scar_seam_thickness_frac"]), 0.01), 1.5)
+        focus_frac = min(max(float(config["scar_seam_focus_frac"]), 0.01), 1.0)
+        x_falloff = 1.0 - _smoothstep(length_frac, 1.0, x01)
+        y_falloff = math.exp(-y01 / thickness_frac)
+        field = x_falloff * y_falloff
+        seam_focus = math.exp(-y01 / focus_frac)
+        side_focus = 1.0 - _smoothstep(0.0, min(length_frac + 0.12, 1.0), x01)
+        vertical_grip = max(float(config["scar_vertical_grip"]), 0.0) * (
+            0.25 + 0.75 * seam_focus
+        )
+        horizontal_grip = max(float(config["scar_horizontal_grip"]), 0.0) * side_focus * (
+            0.25 + 0.75 * seam_focus
+        )
+        amount = min(max(float(config["scar_amount"]), -2.0), 2.0)
+        return (
+            -float(px) * horizontal_grip * amount * field,
+            -float(py) * vertical_grip * amount * field,
+        )
+
+    extent_x = max(float(config["content_width_points"]) * 0.5, 1.0)
+    extent_y = max(float(config["content_height_points"]) * 0.5, 1.0)
+    if float(config.get("scar_mirrored_lip", 0.0)) >= 0.5:
+        side = -1.0 if y_offset < 0.0 else 1.0
+        rotated_dx, rotated_dy = component(abs(y_offset), x_offset, extent_y, extent_x)
+        folded_x, folded_y = rotated_dy, rotated_dx
+        return folded_x, side * folded_y
+    normal_x, normal_y = component(x_offset, y_offset, extent_x, extent_y)
+    rotated_qx, rotated_qy = component(y_offset, x_offset, extent_y, extent_x)
+    rotation = min(max(float(config.get("scar_axis_rotation", 0.0)), 0.0), 1.0)
+    rotated_x, rotated_y = rotated_qy, rotated_qx
+    return (
+        normal_x * (1.0 - rotation) + rotated_x * rotation,
+        normal_y * (1.0 - rotation) + rotated_y * rotation,
+    )
+
+
+def _seam_scar_vertical_displacement(config, y_offset):
+    return abs(_seam_scar_displacement(config, 0.0, y_offset)[1])
 
 def _make_rect(x, y, width, height):
     return SimpleNamespace(
@@ -23,6 +74,22 @@ def _make_rect(x, y, width, height):
 
 def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
+    # Mixed compositor/overlay runs can leave real PyObjC packages restored
+    # between tests. Re-seat the exact fakes this helper was handed before
+    # importing command_overlay so a real Quartz package cannot leak in.
+    for name in list(sys.modules):
+        if any(
+            name == prefix or name.startswith(f"{prefix}.")
+            for prefix in ("objc", "Quartz", "Foundation", "AppKit", "PyObjCTools")
+        ):
+            sys.modules.pop(name, None)
+    sys.modules.update(mock_pyobjc)
+    sys.modules["Quartz.CoreGraphics"] = mock_pyobjc["Quartz"]
+    assert sys.modules["Quartz"] is mock_pyobjc["Quartz"]
+    assert not hasattr(sys.modules["Quartz"], "__path__")
+    assert hasattr(sys.modules["Quartz"], "CALayer")
+    assert hasattr(sys.modules["Quartz"], "CAShapeLayer")
+    assert hasattr(sys.modules["Quartz"], "CGPathCreateWithRoundedRect")
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
     mod._start_overlay_fill_worker = lambda work: work()
@@ -294,24 +361,28 @@ class TestDismissAnimation:
         assert overlay._streaming is False
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
-    def test_grow_phase_expands_overlay_for_first_60ms(self, mock_pyobjc):
+    def test_grow_phase_expands_overlay_during_grow_window(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        phase, scale, alpha, done = mod._dismiss_animation_state(0.05)
+        phase, scale, alpha, done = mod._dismiss_animation_state(
+            mod._DISMISS_GROW_S * 0.5
+        )
 
         assert phase == "grow"
         assert scale > 1.0
         assert alpha == pytest.approx(1.0)
         assert done is False
 
-    def test_shrink_phase_starts_after_60ms(self, mock_pyobjc):
+    def test_shrink_phase_starts_after_grow_duration(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        phase, scale, alpha, done = mod._dismiss_animation_state(0.12)
+        phase, scale, alpha, done = mod._dismiss_animation_state(
+            mod._DISMISS_GROW_S + 0.02
+        )
 
         assert phase == "shrink"
         assert scale < mod._DISMISS_GROW_SCALE
@@ -319,11 +390,14 @@ class TestDismissAnimation:
         assert done is False
 
     def test_animation_completes_after_200ms(self, mock_pyobjc):
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        for _ in range(12):
+        frames_to_duration = math.ceil(
+            mod._DISMISS_DURATION_S * mod._DISMISS_ANIM_FPS
+        )
+        for _ in range(frames_to_duration):
             overlay._cancelAnimStep_(None)
 
         assert overlay._visible is False
@@ -344,6 +418,1380 @@ class TestDismissAnimation:
         overlay._cancel_all_timers()
 
         assert overlay._cancel_timer_anim is None
+
+
+class TestOpticalShellMaterialization:
+    """Assistant optical-shell materialization should be geometry-driven."""
+
+    def test_materialization_uses_high_refresh_smoke_clock(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        assert mod._DISMISS_ANIM_FPS == pytest.approx(144.0)
+
+    def test_pressure_slit_smoke_scale_slows_all_visual_timelines(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        scale = mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+        assert scale == pytest.approx(2.0 / 3.0)
+        assert mod._FADE_IN_S == pytest.approx(0.16 * scale)
+        assert mod._ENTRANCE_POP_S == pytest.approx(0.15 * scale)
+        assert mod._OPTICAL_MATERIALIZATION_BASE_S == pytest.approx(1.36 * scale)
+        assert mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP == pytest.approx(2.0)
+        assert mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_S == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_BASE_S
+            * mod._OPTICAL_MATERIALIZATION_BASE_SPREAD_END
+            / mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
+        )
+        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
+            0.75 * scale
+        )
+        assert mod._FADE_OUT_S == pytest.approx(0.5 * scale)
+        assert mod._DISMISS_DURATION_S == pytest.approx(0.2 * scale)
+        assert mod._DISMISS_GROW_S == pytest.approx(0.06 * scale)
+        assert mod._COMMAND_VISUAL_START_DELAY_S == pytest.approx(
+            mod._FADE_IN_S + 0.15 * scale
+        )
+
+    def test_materialization_starts_as_pressure_slit_before_vertical_bloom(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "band_width_points": 20.0,
+            "tail_width_points": 12.0,
+            "ring_amplitude_points": 30.0,
+            "tail_amplitude_points": 8.0,
+        }
+
+        seed = mod._materialized_optical_shell_config(base, 0.0)
+        gathering = mod._materialized_optical_shell_config(
+            base, mod._OPTICAL_MATERIALIZATION_SPREAD_END * 0.68
+        )
+        spread = mod._materialized_optical_shell_config(
+            base, mod._OPTICAL_MATERIALIZATION_SPREAD_END
+        )
+        final = mod._materialized_optical_shell_config(base, 1.0)
+
+        assert seed["center_x"] == pytest.approx(base["center_x"])
+        assert seed["center_y"] == pytest.approx(base["center_y"])
+        assert seed["content_width_points"] < base["content_width_points"] * 0.20
+        assert seed["content_height_points"] < base["content_height_points"] * 0.035
+        assert gathering["content_width_points"] < base["content_width_points"] * 0.40
+        assert gathering["content_height_points"] < base["content_height_points"] * 0.45
+        assert spread["content_width_points"] > base["content_width_points"] * 0.80
+        assert spread["content_height_points"] < base["content_height_points"] * 0.45
+        assert final == pytest.approx(base)
+        assert base["content_width_points"] == pytest.approx(1200.0)
+
+    def test_optical_entrance_waits_for_body_materialization_before_fade(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+        overlay._fill_hidden_until_signature = None
+        overlay._materialization_progress = 0.10
+
+        assert overlay._optical_entrance_ready() is False
+
+        overlay._materialization_progress = 0.75
+
+        assert overlay._optical_entrance_ready() is True
+
+    def test_optical_dismiss_uses_stretched_faster_reverse_timeline(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        scheduled = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock()
+
+        def _schedule(interval, _target, selector, _userinfo, _repeats):
+            scheduled.append((interval, selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        overlay._start_fade_out()
+
+        overlay._start_materialization_animation.assert_called_once_with(
+            shell_config,
+            direction=-1,
+        )
+        seam_open_s = (
+            mod._OPTICAL_MATERIALIZATION_BASE_S
+            * mod._OPTICAL_MATERIALIZATION_BASE_SPREAD_END
+            / mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
+        )
+        assert mod._OPTICAL_MATERIALIZATION_SPREAD_END == pytest.approx(
+            seam_open_s / mod._OPTICAL_MATERIALIZATION_S
+        )
+        assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_BASE_S
+        )
+        assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S > (
+            mod._OPTICAL_MATERIALIZATION_DISMISS_S
+        )
+        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
+            0.75 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+        )
+        assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_DISMISS_S
+            + mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+        )
+        assert scheduled[-1] == (
+            pytest.approx(
+                mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S / mod._FADE_STEPS
+            ),
+            "fadeStep:",
+        )
+
+    def test_toggle_cancel_dismiss_uses_optical_reverse_when_compositor_is_active(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = True
+        overlay._streaming = True
+        overlay._start_fade_out = MagicMock()
+        overlay._set_overlay_scale = MagicMock()
+
+        overlay.cancel_dismiss()
+
+        assert overlay._visible is False
+        assert overlay._streaming is False
+        overlay._window.setAlphaValue_.assert_called_with(1.0)
+        overlay._set_overlay_scale.assert_called_once_with(1.0)
+        overlay._start_fade_out.assert_called_once()
+        assert overlay._cancel_timer_anim is None
+
+    def test_materialization_choreographs_core_magnification_overshoot(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "core_magnification": 14.0,
+        }
+
+        seed = mod._materialized_optical_shell_config(base, 0.0)
+        early = mod._materialized_optical_shell_config(base, 0.20)
+        loaded = mod._materialized_optical_shell_config(base, 0.62)
+        surge = mod._materialized_optical_shell_config(base, 0.69)
+        peak = mod._materialized_optical_shell_config(base, 0.72)
+        settle = mod._materialized_optical_shell_config(base, 0.90)
+        final = mod._materialized_optical_shell_config(base, 1.0)
+
+        assert seed["core_magnification"] < base["core_magnification"] * 0.10
+        assert early["core_magnification"] > seed["core_magnification"]
+        assert loaded["core_magnification"] < base["core_magnification"]
+        assert surge["core_magnification"] > base["core_magnification"]
+        assert peak["core_magnification"] == pytest.approx(
+            base["core_magnification"] * 1.20
+        )
+        assert settle["core_magnification"] > base["core_magnification"]
+        assert settle["core_magnification"] < peak["core_magnification"]
+        assert final["core_magnification"] == pytest.approx(base["core_magnification"])
+
+    def test_material_fill_lags_warp_spread_then_blooms_vertically(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        seed = mod._materialization_fill_state(0.0)
+        wide_warp = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_START * 0.92
+        )
+        early_slit = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_START + 0.25 * (
+                mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+                - mod._OPTICAL_MATERIAL_FILL_START
+            )
+        )
+        gathering = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.25 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
+        blooming = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.92 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
+        full = mod._materialization_fill_state(1.0)
+
+        assert seed["opacity"] == pytest.approx(0.0)
+        assert seed["height_frac"] < 0.02
+        assert wide_warp["opacity"] == pytest.approx(0.0)
+        assert wide_warp["height_frac"] < 0.02
+        assert early_slit["opacity"] < 0.35
+        assert early_slit["height_frac"] < 0.12
+        assert gathering["height_frac"] < 0.45
+        assert blooming["height_frac"] > 0.75
+        assert full["opacity"] == pytest.approx(1.0)
+        assert full["height_frac"] == pytest.approx(1.0)
+
+    def test_material_fill_vertical_bloom_has_surface_tension_ease_in(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        gathering = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.20 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
+        snap = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.85 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
+
+        assert gathering["height_frac"] < 0.25
+        assert snap["height_frac"] - gathering["height_frac"] > 0.55
+
+    def test_materialization_warp_vertical_bloom_snaps_like_fill(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "core_magnification": 14.0,
+        }
+        seed = mod._materialized_optical_shell_config(
+            base,
+            mod._OPTICAL_MATERIALIZATION_BLOOM_START,
+        )
+        early = mod._materialized_optical_shell_config(
+            base,
+            mod._OPTICAL_MATERIALIZATION_BLOOM_START
+            + 0.25 * (1.0 - mod._OPTICAL_MATERIALIZATION_BLOOM_START),
+        )
+        late = mod._materialized_optical_shell_config(
+            base,
+            mod._OPTICAL_MATERIALIZATION_BLOOM_START
+            + 0.80 * (1.0 - mod._OPTICAL_MATERIALIZATION_BLOOM_START),
+        )
+
+        span = base["content_height_points"] - seed["content_height_points"]
+        early_frac = (early["content_height_points"] - seed["content_height_points"]) / span
+        late_frac = (late["content_height_points"] - seed["content_height_points"]) / span
+
+        assert early_frac < 0.04
+        assert late_frac > 0.50
+
+    def test_materialization_core_magnification_loads_then_snaps_to_overshoot(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "core_magnification": 14.0,
+        }
+        mid_progress = mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END + 0.50 * (
+            mod._OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+            - mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+        )
+        late_progress = mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END + 0.85 * (
+            mod._OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+            - mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+        )
+
+        mid = mod._materialized_optical_shell_config(base, mid_progress)
+        late = mod._materialized_optical_shell_config(base, late_progress)
+
+        assert mid["core_magnification"] < base["core_magnification"] * 0.93
+        assert late["core_magnification"] > base["core_magnification"] * 1.02
+
+    def test_dismiss_seam_latch_resolves_from_peak_to_closed_rest(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        start = mod._dismiss_seam_latch_amount(
+            0.0
+        )
+        midway = mod._dismiss_seam_latch_amount(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45
+        )
+        closed = mod._dismiss_seam_latch_amount(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
+
+        assert start == pytest.approx(1.0)
+        assert midway < start
+        assert closed == pytest.approx(0.0)
+
+    def test_dismiss_seam_latch_applies_tunable_horizontal_pucker_fields(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "content_width_points": 800.0,
+            "content_height_points": 120.0,
+            "cleanup_blur_radius_points": 8.0,
+            "mip_blur_strength": 1.0,
+            "ring_amplitude_points": 20.0,
+            "tail_amplitude_points": 7.0,
+        }
+
+        tuned = mod._apply_dismiss_seam_latch_fields(
+            base,
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.5,
+        )
+
+        assert tuned["warp_mode"] == pytest.approx(1.0)
+        assert tuned["mip_blur_strength"] == pytest.approx(0.0)
+        assert tuned["scar_amount"] > 0.0
+        assert tuned["scar_seam_length_frac"] == pytest.approx(0.8)
+        assert tuned["scar_seam_thickness_frac"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC
+        )
+        assert tuned["scar_seam_focus_frac"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC
+        )
+        assert tuned["scar_vertical_grip"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP
+        )
+        assert tuned["scar_horizontal_grip"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP
+        )
+        assert tuned["scar_axis_rotation"] == pytest.approx(0.0)
+        assert tuned["scar_mirrored_lip"] == pytest.approx(0.0)
+
+    def test_dismiss_seam_defaults_match_smoked_unrotated_static_field(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        tuning = mod._seam_pucker_tuning_defaults()
+
+        assert tuning["seam_latch_start"] == pytest.approx(0.0)
+        assert tuning["seam_latch_intensity"] == pytest.approx(2.0)
+        assert tuning["scar_seam_length_frac"] == pytest.approx(0.8)
+        assert tuning["scar_seam_thickness_frac"] == pytest.approx(0.15)
+        assert tuning["scar_seam_focus_frac"] == pytest.approx(1.0)
+        assert tuning["scar_vertical_grip"] == pytest.approx(1.0)
+        assert tuning["scar_horizontal_grip"] == pytest.approx(0.6)
+        assert tuning["scar_axis_rotation"] == pytest.approx(0.0)
+        assert tuning["scar_mirrored_lip"] == pytest.approx(0.0)
+
+    def test_seam_pucker_tuner_uses_dedicated_static_preview_when_overlay_hidden(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        preview = MagicMock()
+        overlay._apply_materialization_fill_state = MagicMock()
+        overlay._start_seam_pucker_tuning_compositor = MagicMock(return_value=preview)
+        overlay.show = MagicMock()
+
+        overlay.preview_seam_pucker_tuning()
+
+        overlay.show.assert_not_called()
+        overlay._start_seam_pucker_tuning_compositor.assert_called_once()
+        assert overlay._seam_pucker_tuning_started_preview is True
+        overlay._apply_materialization_fill_state.assert_not_called()
+        config = preview.update_shell_config.call_args.args[0]
+        assert config["warp_mode"] == pytest.approx(1.0)
+        assert config["mip_blur_strength"] == pytest.approx(0.0)
+        assert config["client_id"] == "assistant.seam_pucker_tuner"
+        assert config["content_width_points"] > config["content_height_points"]
+        overlay.update_seam_pucker_tuning(
+            seam_latch_intensity=2.0,
+            scar_seam_thickness_frac=1.5,
+            scar_seam_focus_frac=1.0,
+            scar_vertical_grip=1.0,
+            scar_horizontal_grip=0.6,
+        )
+        config = preview.update_shell_config.call_args.args[0]
+        assert config["content_height_points"] >= 96.0
+        assert max(
+            _seam_scar_vertical_displacement(config, offset)
+            for offset in (8.0, 16.0, 32.0, 48.0)
+        ) > 3.0
+
+    def test_mirrored_lip_pucker_is_symmetric_across_horizontal_seam(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "content_width_points": 800.0,
+            "content_height_points": 180.0,
+            "corner_radius_points": 28.0,
+        }
+        tuning = mod._seam_pucker_tuning_defaults()
+        tuning.update(
+            {
+                "seam_latch_intensity": 1.4,
+                "scar_seam_thickness_frac": 1.2,
+                "scar_seam_focus_frac": 0.8,
+                "scar_vertical_grip": 0.7,
+                "scar_horizontal_grip": 0.3,
+                "scar_mirrored_lip": 1.0,
+            }
+        )
+        config = mod._apply_dismiss_seam_latch_fields(base, 0.21, tuning)
+
+        _, top_dy = _seam_scar_displacement(config, 36.0, -24.0)
+        _, bottom_dy = _seam_scar_displacement(config, 36.0, 24.0)
+
+        assert config["warp_mode"] == pytest.approx(3.0)
+        assert top_dy == pytest.approx(-bottom_dy)
+        assert abs(top_dy) > 1.0
+
+    def test_seam_pucker_tuner_reapplies_static_preview_on_slider_update(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        preview = MagicMock()
+        overlay._seam_pucker_tuning_compositor = preview
+        overlay._start_seam_pucker_tuning_compositor = MagicMock(return_value=preview)
+        overlay._apply_materialization_fill_state = MagicMock()
+        overlay.show = MagicMock()
+
+        overlay.preview_seam_pucker_tuning()
+        first_count = preview.update_shell_config.call_count
+        overlay.set_seam_pucker_tuning_value("scar_vertical_grip", 0.88)
+
+        overlay.show.assert_not_called()
+        assert preview.update_shell_config.call_count == first_count + 1
+        config = preview.update_shell_config.call_args.args[0]
+        assert config["scar_vertical_grip"] == pytest.approx(0.88)
+        overlay._apply_materialization_fill_state.assert_not_called()
+
+    def test_seam_pucker_tuner_release_stops_diagnostic_preview_not_overlay(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._seam_pucker_tuning_preview_active = True
+        overlay._seam_pucker_tuning_started_preview = True
+        preview = MagicMock()
+        overlay._seam_pucker_tuning_compositor = preview
+        overlay.hide = MagicMock()
+
+        overlay.release_seam_pucker_tuning_preview()
+
+        overlay.hide.assert_not_called()
+        preview.stop.assert_called_once()
+        assert overlay._seam_pucker_tuning_compositor is None
+
+    def test_dismiss_radial_tail_uses_underdamped_oscillator(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        start = mod._dismiss_pucker_amount(0.0)
+        rebound = mod._dismiss_pucker_amount(0.20)
+        aftershock = mod._dismiss_pucker_amount(0.40)
+        tail = mod._dismiss_pucker_amount(0.75)
+        rest = mod._dismiss_pucker_amount(1.0)
+
+        assert start == pytest.approx(1.0)
+        assert rebound < 0.0
+        assert aftershock > 0.0
+        assert abs(aftershock) < abs(rebound)
+        assert abs(tail) < abs(aftershock)
+        assert abs(rest) < 0.02
+
+    def test_dismiss_pucker_tail_amplitude_peaks_early_then_tapers(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        first = mod._dismiss_pucker_amplitude_multiplier(0.08 / 1.5)
+        peak = mod._dismiss_pucker_amplitude_multiplier(0.30)
+        taper = mod._dismiss_pucker_amplitude_multiplier(0.75)
+        rest = mod._dismiss_pucker_amplitude_multiplier(1.0)
+
+        assert first > 2.0
+        assert peak == pytest.approx(5.0)
+        assert taper < peak * 0.25
+        assert rest < taper
+
+    def test_radial_pucker_tail_switches_to_circular_scar_without_blur(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "ring_amplitude_points": 30.0,
+            "tail_amplitude_points": 8.0,
+            "cleanup_blur_radius_points": 0.75,
+        }
+
+        start = mod._dismiss_pucker_shell_config(base, 0.0)
+        rebound = mod._dismiss_pucker_shell_config(base, 0.20)
+        rest = mod._dismiss_pucker_shell_config(base, 1.0)
+
+        assert start["warp_mode"] == pytest.approx(2.0)
+        assert start["content_width_points"] == pytest.approx(
+            start["content_height_points"]
+        )
+        old_diameter = min(
+            base["content_width_points"] * 0.52,
+            base["content_height_points"] * 2.9,
+        )
+        assert start["content_width_points"] >= old_diameter * math.sqrt(10.0)
+        assert start["scar_amount"] > 0.0
+        assert rebound["scar_amount"] < 0.0
+        assert abs(rebound["scar_amount"]) > abs(start["scar_amount"])
+        assert abs(rest["scar_amount"]) < 0.02
+        assert start["cleanup_blur_radius_points"] == pytest.approx(0.0)
+        assert start["mip_blur_strength"] == pytest.approx(0.0)
+
+    def test_reverse_materialization_hides_local_layers_before_compositor_seed(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        order = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.update_shell_config.side_effect = (
+            lambda _config: order.append("compositor")
+        )
+        overlay._fill_layer.setOpacity_.side_effect = (
+            lambda _opacity: order.append("fill-opacity")
+        )
+
+        overlay._start_materialization_animation(
+            {
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            },
+            direction=-1,
+        )
+
+        assert order[:2] == ["fill-opacity", "compositor"]
+
+    def test_materialization_step_updates_fill_layer_without_window_alpha_fade(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._fill_layer.setValue_forKeyPath_.assert_called()
+        overlay._fill_layer.setOpacity_.assert_called()
+        assert overlay._window.setAlphaValue_.call_args is None
+
+    def test_optical_fade_out_keeps_window_opaque_until_reverse_collapse_finishes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fade_direction = -1
+        overlay._fade_from = 1.0
+        overlay._fade_step = 0
+
+        overlay.fadeStep_(None)
+
+        overlay._window.setAlphaValue_.assert_called_with(1.0)
+
+    def test_pulse_does_not_override_fill_opacity_during_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.sampled_brightness = 0.0
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.30
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        assert overlay._fill_layer.setOpacity_.call_args_list
+        for call in overlay._fill_layer.setOpacity_.call_args_list:
+            assert call.args[0] == pytest.approx(
+                mod._materialization_fill_state(0.30)["opacity"]
+            )
+
+    def test_pulse_does_not_regenerate_punchthrough_mask_during_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.sampled_brightness = 0.0
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.30
+        overlay._text_punchthrough = True
+        overlay._text_view.textStorage.return_value.length.return_value = 12
+        overlay._update_punchthrough_mask = MagicMock()
+
+        overlay._pulseStepInner()
+
+        overlay._update_punchthrough_mask.assert_not_called()
+
+    def test_fill_image_ready_preserves_active_materialization_geometry(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.55
+        overlay._desired_fill_image_signature = ("sig",)
+        overlay._pending_fill_image_signature = ("sig",)
+
+        overlay.fillImageReady_(
+            {
+                "signature": ("sig",),
+                "total_w": 680.0,
+                "total_h": 160.0,
+                "scale": 2.0,
+                "image": "fill-image",
+                "payload": b"payload",
+                "has_compositor": True,
+            }
+        )
+
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._materialization_fill_state(0.55)["height_frac"],
+            "transform.scale.y",
+        )
+
+    def test_ridge_mask_refresh_preserves_active_materialization_geometry(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: None)
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_progress = 0.55
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._materialization_fill_state(0.55)["height_frac"],
+            "transform.scale.y",
+        )
+
+    def test_materialization_temporarily_clears_punchthrough_mask(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._text_punchthrough = True
+        overlay._punchthrough_mask_layer = MagicMock()
+
+        overlay._start_materialization_animation(
+            {
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+
+        overlay._fill_layer.setMask_.assert_called_with(None)
+        assert overlay._punchthrough_mask_layer is None
+        assert overlay._punchthrough_mask_dirty is True
+
+    def test_entrance_materialization_rebuilds_punchthrough_mask_after_full_body(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        overlay._text_punchthrough = True
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._refresh_punchthrough_mask_if_needed.assert_called_once()
+
+    def test_fade_in_defers_pulse_until_materialization_finishes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._fade_direction = 1
+        overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._start_pulse_timer = MagicMock()
+
+        overlay.fadeStep_(None)
+
+        overlay._start_pulse_timer.assert_not_called()
+
+    def test_entrance_materialization_completion_starts_deferred_pulse(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        overlay._visible = True
+        overlay._recording_load_shed = False
+        overlay._start_pulse_timer = MagicMock()
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._start_pulse_timer.assert_called_once()
+
+    def test_dismiss_stops_pulse_before_reverse_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value={
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+        overlay._cancel_pulse = MagicMock()
+
+        overlay._start_fade_out()
+
+        overlay._cancel_pulse.assert_called_once()
+
+    def test_optical_start_defers_materialization_until_fill_image_is_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: None)
+        overlay._fill_hidden_until_signature = ("pending-fill",)
+        overlay._start_materialization_animation = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        overlay._start_materialization_animation.assert_not_called()
+        assert overlay._materialization_progress == pytest.approx(0.0)
+        assert overlay._deferred_materialization_shell_config is not None
+
+    def test_fill_image_ready_starts_deferred_materialization_from_slit(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._deferred_materialization_shell_config = dict(shell_config)
+        overlay._materialization_progress = 0.0
+        overlay._desired_fill_image_signature = ("sig",)
+        overlay._pending_fill_image_signature = ("sig",)
+        overlay._fill_hidden_until_signature = ("sig",)
+        overlay._start_materialization_animation = MagicMock()
+
+        overlay.fillImageReady_(
+            {
+                "signature": ("sig",),
+                "total_w": 680.0,
+                "total_h": 160.0,
+                "scale": 2.0,
+                "image": "fill-image",
+                "payload": b"payload",
+                "has_compositor": True,
+            }
+        )
+
+        overlay._start_materialization_animation.assert_called_once_with(shell_config)
+        assert overlay._deferred_materialization_shell_config is None
+
+    def test_reverse_materialization_hides_fill_at_seam_handoff(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+
+        overlay._apply_materialization_fill_state(
+            mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
+
+        overlay._fill_layer.setOpacity_.assert_called_with(0.0)
+        overlay._boost_layer.setOpacity_.assert_called_with(0.0)
+        overlay._spring_tint_layer.setOpacity_.assert_called_with(0.0)
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+            "transform.scale.y",
+        )
+
+    def test_reverse_materialization_keeps_fill_body_alive_until_seam_handoff(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        progress = mod._OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS
+
+        overlay._apply_materialization_fill_state(progress)
+
+        expected = mod._materialization_fill_state(progress)
+        assert expected["opacity"] > 0.0
+        assert expected["height_frac"] > mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC
+        overlay._fill_layer.setOpacity_.assert_called_with(expected["opacity"])
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            expected["height_frac"],
+            "transform.scale.y",
+        )
+
+    def test_reverse_materialization_start_preserves_full_fill_body(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+
+        overlay._apply_materialization_fill_state(1.0)
+
+        overlay._fill_layer.setOpacity_.assert_called_with(1.0)
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            1.0,
+            "transform.scale.y",
+        )
+
+    def test_reverse_materialization_suppresses_companion_material_layers_immediately(
+        self, mock_pyobjc
+    ):
+        overlay, _mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+
+        overlay._apply_materialization_fill_state(1.0)
+
+        overlay._boost_layer.setOpacity_.assert_called_with(0.0)
+        overlay._boost_layer.setHidden_.assert_called_with(True)
+        overlay._spring_tint_layer.setOpacity_.assert_called_with(0.0)
+        overlay._spring_tint_layer.setHidden_.assert_called_with(True)
+
+    def test_reverse_materialization_uses_hard_body_dismiss_fill(
+        self, mock_pyobjc
+    ):
+        overlay, _mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._fill_image = "glow-bearing-fill"
+        overlay._dismiss_fill_image = "hard-body-fill"
+
+        overlay._apply_materialization_fill_state(1.0)
+
+        overlay._fill_layer.setContents_.assert_called_with("hard-body-fill")
+
+    def test_reverse_materialization_prearms_radial_pucker_before_slit_closes(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        seam_compositor = MagicMock()
+        radial_compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._dismiss_seam_compositor = seam_compositor
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
+        overlay._ensure_dismiss_seam_compositor = MagicMock(
+            return_value=seam_compositor
+        )
+        overlay._ensure_dismiss_radial_pucker_compositor = MagicMock(
+            return_value=radial_compositor
+        )
+        overlay._materialization_timer = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+        overlay._materialization_final_shell_config = shell_config
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        overlay._start_dismiss_pucker_tail_animation = MagicMock()
+        overlap_elapsed = mod._OPTICAL_MATERIALIZATION_DISMISS_S * (
+            1.0 - mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: overlap_elapsed + 0.04)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        main_config = compositor.update_shell_config.call_args.args[0]
+        assert main_config["content_width_points"] != pytest.approx(
+            main_config["content_height_points"]
+        )
+        assert main_config["content_width_points"] == pytest.approx(
+            shell_config["content_width_points"]
+        )
+        assert main_config["content_height_points"] < shell_config["content_height_points"]
+        radial_config = radial_compositor.update_shell_config.call_args.args[0]
+        assert radial_config["warp_mode"] == pytest.approx(2.0)
+        assert radial_config["content_width_points"] == pytest.approx(
+            radial_config["content_height_points"]
+        )
+        assert radial_config["scar_amount"] != pytest.approx(0.0)
+        assert radial_config["mip_blur_strength"] == pytest.approx(0.0)
+        overlay._ensure_dismiss_radial_pucker_compositor.assert_called_once()
+        overlay._ensure_dismiss_seam_compositor.assert_called_once()
+        seam_config = seam_compositor.update_shell_config.call_args.args[0]
+        assert seam_config["content_width_points"] == pytest.approx(
+            shell_config["content_width_points"]
+        )
+        assert seam_config["content_height_points"] >= 96.0
+        assert seam_config["warp_mode"] == pytest.approx(1.0)
+        assert seam_config["mip_blur_strength"] == pytest.approx(0.0)
+        assert seam_config["scar_amount"] > 1.0
+        assert seam_config["scar_seam_length_frac"] <= 0.8
+        overlay._start_dismiss_pucker_tail_animation.assert_not_called()
+
+    def test_reverse_materialization_batches_shared_sidecar_compositor_updates(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        host = MagicMock()
+        compositor = SimpleNamespace(
+            _host=host,
+            _client_id="assistant.command",
+            update_shell_config=MagicMock(),
+        )
+        seam_compositor = SimpleNamespace(
+            _host=host,
+            _client_id="assistant.command.dismiss_seam",
+            update_shell_config=MagicMock(),
+        )
+        radial_compositor = SimpleNamespace(
+            _host=host,
+            _client_id="assistant.command.dismiss_radial_pucker",
+            update_shell_config=MagicMock(),
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._dismiss_seam_compositor = seam_compositor
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
+        overlay._ensure_dismiss_seam_compositor = MagicMock(
+            return_value=seam_compositor
+        )
+        overlay._ensure_dismiss_radial_pucker_compositor = MagicMock(
+            return_value=radial_compositor
+        )
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        overlay._start_dismiss_pucker_tail_animation = MagicMock()
+        elapsed = mod._OPTICAL_MATERIALIZATION_DISMISS_S * (
+            1.0 - mod._OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+        )
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: elapsed)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        host.update_client_configs.assert_called_once()
+        batched = host.update_client_configs.call_args.args[0]
+        assert list(batched) == [
+            "assistant.command.dismiss_radial_pucker",
+            "assistant.command.dismiss_seam",
+            "assistant.command",
+        ]
+        compositor.update_shell_config.assert_not_called()
+        seam_compositor.update_shell_config.assert_not_called()
+        radial_compositor.update_shell_config.assert_not_called()
+
+    def test_reverse_materialization_prearms_radial_pucker_by_one_third_fill_height(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        radial_compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
+        overlay._ensure_dismiss_radial_pucker_compositor = MagicMock(
+            return_value=radial_compositor
+        )
+        overlay._materialization_timer = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+        overlay._materialization_final_shell_config = shell_config
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        one_third_fill_progress = (
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            + (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+            * (
+                (1.0 / 3.0 - mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+                / (1.0 - mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+            )
+            ** (1.0 / 3.0)
+        )
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S
+            * (1.0 - one_third_fill_progress),
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        fill_state = mod._materialization_fill_state(overlay._materialization_progress)
+        main_config = compositor.update_shell_config.call_args.args[0]
+        radial_config = radial_compositor.update_shell_config.call_args.args[0]
+        assert fill_state["height_frac"] == pytest.approx(1.0 / 3.0)
+        assert main_config["content_width_points"] != pytest.approx(
+            main_config["content_height_points"]
+        )
+        assert radial_config["warp_mode"] == pytest.approx(2.0)
+        assert radial_config["scar_amount"] != pytest.approx(0.0)
+
+    def test_reverse_materialization_prearms_seam_quietly_by_one_third_fill_height(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        seam_compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._dismiss_seam_compositor = seam_compositor
+        overlay._ensure_dismiss_seam_compositor = MagicMock(return_value=seam_compositor)
+        overlay._materialization_timer = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+        overlay._materialization_final_shell_config = shell_config
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        one_third_fill_progress = (
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            + (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+            * (
+                (1.0 / 3.0 - mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+                / (1.0 - mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+            )
+            ** (1.0 / 3.0)
+        )
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S
+            * (1.0 - one_third_fill_progress),
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        fill_state = mod._materialization_fill_state(overlay._materialization_progress)
+        seam_config = seam_compositor.update_shell_config.call_args.args[0]
+        assert fill_state["height_frac"] == pytest.approx(1.0 / 3.0)
+        assert seam_config["warp_mode"] == pytest.approx(1.0)
+        assert seam_config["mip_blur_strength"] == pytest.approx(0.0)
+        assert seam_config["scar_amount"] == pytest.approx(0.0)
+        assert seam_config["scar_seam_length_frac"] == pytest.approx(0.8)
+        assert seam_config["content_width_points"] == pytest.approx(
+            shell_config["content_width_points"]
+        )
+
+    def test_reverse_materialization_peaks_seam_when_fill_is_slit_height(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        seam_compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._dismiss_seam_compositor = seam_compositor
+        overlay._ensure_dismiss_seam_compositor = MagicMock(return_value=seam_compositor)
+        overlay._materialization_timer = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+        overlay._materialization_final_shell_config = shell_config
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S
+            * (1.0 - mod._OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS),
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        fill_state = mod._materialization_fill_state(overlay._materialization_progress)
+        seam_config = seam_compositor.update_shell_config.call_args.args[0]
+        assert fill_state["height_frac"] == pytest.approx(
+            mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC
+        )
+        assert seam_config["scar_amount"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY
+        )
+        assert seam_config["scar_seam_length_frac"] == pytest.approx(0.8)
+        assert seam_config["mip_blur_strength"] == pytest.approx(0.0)
+
+    def test_reverse_materialization_hides_backdrop_at_radial_prearm_point(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S
+            * (1.0 - mod._OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS),
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._backdrop_layer.setHidden_.assert_called_with(True)
+
+    def test_live_dismiss_seam_matches_tuner_coordinate_path(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        final_shell = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "mip_blur_strength": 1.0,
+        }
+
+        live_start = mod._dismiss_seam_latch_shell_config(
+            final_shell,
+            mod._OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS,
+        )
+        tuner_start = mod._apply_dismiss_seam_latch_fields(
+            {
+                **final_shell,
+                "client_id": "assistant.command.dismiss_seam",
+                "role": "assistant",
+                "visible": True,
+                "z_index": 10,
+            },
+            0.0,
+            {
+                **mod._seam_pucker_tuning_defaults(),
+                "preview_progress": 0.0,
+                "scar_seam_length_frac": 0.8,
+            },
+        )
+        live_closed = mod._dismiss_seam_latch_shell_config(final_shell, 0.0)
+
+        for key in (
+            "scar_amount",
+            "scar_seam_length_frac",
+            "scar_seam_thickness_frac",
+            "scar_seam_focus_frac",
+            "scar_vertical_grip",
+            "scar_horizontal_grip",
+            "scar_axis_rotation",
+            "scar_mirrored_lip",
+            "warp_mode",
+            "mip_blur_strength",
+        ):
+            assert live_start[key] == pytest.approx(tuner_start[key])
+
+        assert live_closed["scar_amount"] == pytest.approx(0.0)
+        assert live_closed["scar_seam_length_frac"] == pytest.approx(0.0)
+
+    def test_reverse_materialization_completion_starts_radial_pucker_tail(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_final_shell_config = shell_config
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        overlay._start_dismiss_pucker_tail_animation = MagicMock()
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S,
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._start_dismiss_pucker_tail_animation.assert_called_once_with(
+            shell_config,
+            initial_progress=pytest.approx(
+                mod._OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS
+            ),
+        )
+
+    def test_dismiss_pucker_tail_hides_local_material_layers(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+
+        overlay._start_dismiss_pucker_tail_animation(shell_config)
+
+        overlay._backdrop_layer.setHidden_.assert_called_with(True)
+        overlay._fill_layer.setHidden_.assert_called_with(True)
+        overlay._boost_layer.setHidden_.assert_called_with(True)
+        overlay._spring_tint_layer.setHidden_.assert_called_with(True)
+
+    def test_dismiss_pucker_tail_can_continue_from_prearmed_phase(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        now = {"value": 10.0}
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: now["value"])
+
+        overlay._start_dismiss_pucker_tail_animation(
+            shell_config,
+            initial_progress=0.12,
+        )
+
+        seed_config = compositor.update_shell_config.call_args.args[0]
+        assert seed_config["scar_amount"] == pytest.approx(
+            mod._dismiss_pucker_shell_config(shell_config, 0.12)["scar_amount"]
+        )
+
+        now["value"] = 10.15
+        overlay.dismissPuckerTailStep_(overlay._pucker_tail_timer)
+
+        expected_progress = 0.12 + 0.15 / mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+        step_config = compositor.update_shell_config.call_args.args[0]
+        assert step_config["scar_amount"] == pytest.approx(
+            mod._dismiss_pucker_shell_config(shell_config, expected_progress)[
+                "scar_amount"
+            ]
+        )
 
 
 class TestShowFinishHide:
@@ -448,10 +1896,12 @@ class TestShowFinishHide:
 
         assert overlay._pulse_timer is not None
 
-    def test_show_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
+    def test_show_fade_in_respects_pressure_slit_smoke_scale(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
 
-        assert mod._FADE_IN_S <= 0.17
+        assert mod._FADE_IN_S == pytest.approx(
+            0.16 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+        )
 
     def test_visual_start_waits_until_after_entrance_fade(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
@@ -675,6 +2125,19 @@ class TestWindowLayering:
         assert overlay._utterance_text == ""
         assert overlay._collapsed_text == ""
 
+    def test_show_stops_stale_compositor_before_ordering_front(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._stop_fullscreen_compositor = MagicMock(
+            side_effect=lambda: events.append("stop")
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append("front")
+
+        overlay.show()
+
+        assert events[:2] == ["stop", "front"]
+
     def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
 
@@ -821,6 +2284,46 @@ class TestWindowLayering:
         )
 
         assert ("compositor", None) in events
+        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "_entrancePopStep:") not in events
+        assert ("timer", "fadeStep:") not in events
+
+    def test_optical_show_waits_for_materialized_body_even_after_first_compositor_frame(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+
+        class PresentedCompositor:
+            presented_count = 1
+            sampled_brightness = 0.5
+
+            def refresh_brightness(self):
+                events.append(("brightness", None))
+
+        def _schedule(_interval, _target, selector, _userinfo, _repeats):
+            events.append(("timer", selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        def _start_compositor():
+            events.append(("compositor", None))
+            overlay._fullscreen_compositor = PresentedCompositor()
+            overlay._materialization_progress = 0.10
+
+        overlay._start_fullscreen_compositor = MagicMock(side_effect=_start_compositor)
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+        )
+
+        assert ("compositor", None) in events
+        assert ("brightness", None) in events
         assert ("timer", "visualReadyStep:") in events
         assert ("timer", "_entrancePopStep:") not in events
         assert ("timer", "fadeStep:") not in events
@@ -1647,6 +3150,46 @@ class TestAdaptiveCompositing:
 
         assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
 
+    def test_fullscreen_compositor_samples_brightness_before_materialization(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._brightness = 0.07
+        overlay._brightness_target = 0.07
+        overlay._apply_surface_theme = MagicMock()
+        overlay._start_materialization_animation = MagicMock()
+        refresh_calls = []
+        updates = []
+
+        class SampledCompositor:
+            sampled_brightness = 0.91
+
+            def refresh_brightness(self):
+                refresh_calls.append(True)
+
+            def update_shell_config(self, shell_config):
+                updates.append(dict(shell_config))
+
+        compositor = SampledCompositor()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert refresh_calls == [True]
+        assert overlay._brightness == pytest.approx(0.91)
+        overlay._start_materialization_animation.assert_called_once()
+        materialized_config = overlay._start_materialization_animation.call_args.args[0]
+        assert materialized_config["initial_brightness"] == pytest.approx(0.91)
+        assert updates[-1]["initial_brightness"] == pytest.approx(0.91)
+
     def test_fullscreen_compositor_receives_display_local_shell_center(
         self, mock_pyobjc, monkeypatch
     ):
@@ -1841,7 +3384,9 @@ class TestAdaptiveCompositing:
             monkeypatch.setattr(
                 sys.modules["AppKit"], "NSMutableAttributedString", _AttrAlloc(), raising=False
             )
-            monkeypatch.setattr(sys.modules["AppKit"], "NSShadow", _ShadowAlloc(), raising=False)
+            monkeypatch.setattr(
+                sys.modules["AppKit"], "NSShadow", _ShadowAlloc(), raising=False
+            )
             monkeypatch.setattr(
                 sys.modules["AppKit"].NSColor,
                 "colorWithSRGBRed_green_blue_alpha_",
@@ -1976,6 +3521,89 @@ class TestAdaptiveCompositing:
             # The important invariant is: not O(N) per-character calls.
             assert len(response_attrs) <= 6
             assert any(rng == (response_start, len(response)) for rng in response_attrs)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_pulse_batches_long_response_shadow_symmetrically(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT", "8")
+        sys.modules.pop("spoke.command_overlay", None)
+        try:
+            mod = importlib.import_module("spoke.command_overlay")
+
+            class _FakeTextStorage:
+                def __init__(self, text):
+                    self.text = text
+                    self.attrs = []
+
+                def length(self):
+                    return len(self.text)
+
+                def addAttribute_value_range_(self, name, value, rng):
+                    self.attrs.append((name, value, rng))
+
+            class _FakeShadow:
+                def __init__(self):
+                    self.color = None
+                    self.offset = None
+                    self.blur = None
+
+                def setShadowColor_(self, color):
+                    self.color = color
+
+                def setShadowOffset_(self, offset):
+                    self.offset = offset
+
+                def setShadowBlurRadius_(self, radius):
+                    self.blur = radius
+
+            class _ShadowBuilder:
+                def init(self):
+                    return _FakeShadow()
+
+            class _ShadowAlloc:
+                def alloc(self):
+                    return _ShadowBuilder()
+
+            monkeypatch.setattr(sys.modules["AppKit"], "NSShadow", _ShadowAlloc(), raising=False)
+            monkeypatch.setattr(
+                sys.modules["AppKit"].NSColor,
+                "colorWithSRGBRed_green_blue_alpha_",
+                staticmethod(lambda r, g, b, a: (r, g, b, a)),
+                raising=False,
+            )
+
+            overlay, _ = _make_overlay(mock_pyobjc)
+            overlay._text_view = MagicMock()
+            response = "A long answer whose fallback glow should peak in the middle"
+            storage = _FakeTextStorage("Prompt\n\n" + response)
+            overlay._text_view.textStorage.return_value = storage
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._utterance_text = "Prompt"
+            overlay._response_text = response
+            overlay._cancel_spring = 0.0
+            overlay._cancel_spring_target = 0.0
+            overlay._cancel_spring_fired = False
+            overlay._on_cancel_spring_threshold = None
+            overlay._text_punchthrough = False
+            overlay._fullscreen_compositor = None
+            overlay._apply_surface_theme = MagicMock()
+            overlay._apply_backdrop_pulse_style = MagicMock()
+
+            overlay._pulseStepInner()
+
+            response_start = len("Prompt\n\n")
+            shadow_attrs = [
+                (rng, value)
+                for name, value, rng in storage.attrs
+                if name == "NSShadow" and rng[0] >= response_start
+            ]
+
+            assert len(shadow_attrs) == 3
+            assert shadow_attrs[0][1].color == shadow_attrs[-1][1].color
+            assert shadow_attrs[1][1].color != shadow_attrs[0][1].color
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
@@ -2562,3 +4190,128 @@ class TestSDFCaching:
         overlay._apply_ridge_masks(600.0, 80.0)
 
         assert radii == [32.0]
+
+    def test_assistant_optical_fill_overscan_grows_fill_not_warp(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Assistant material fill may bleed slightly without changing warp geometry."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = MagicMock()
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        observed_sdf = []
+
+        def capture_sdf(total_w, total_h, body_w, body_h, corner_radius, scale):
+            observed_sdf.append((total_w, total_h, body_w, body_h, corner_radius, scale))
+            return np.zeros((4, 4), dtype=np.float32)
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", capture_sdf)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", lambda *_args: ("image", b"payload"))
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        shell = mod._command_optical_shell_config(600.0, 80.0)
+
+        overscan = mod._COMMAND_MATERIAL_FILL_OVERSCAN_POINTS
+        assert observed_sdf[-1][2] == pytest.approx(600.0 + 2 * overscan)
+        assert observed_sdf[-1][3] == pytest.approx(80.0 + 2 * overscan)
+        assert shell["content_width_points"] == pytest.approx(
+            600.0
+            + mod._COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII
+            * mod._optical_shell_body_corner_radius(80.0)
+        )
+        assert shell["content_height_points"] == pytest.approx(
+            80.0
+            + mod._COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII
+            * mod._optical_shell_body_corner_radius(80.0)
+        )
+
+    def test_assistant_dismiss_fill_drops_exterior_sdf_glow(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Dismiss materialization must not shrink the glow image's bounding slab."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = MagicMock()
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        alphas = []
+
+        def fake_sdf(*_args):
+            return np.array(
+                [
+                    [2.0, 2.0, 2.0],
+                    [2.0, -2.0, 2.0],
+                    [2.0, 2.0, 2.0],
+                ],
+                dtype=np.float32,
+            )
+
+        def capture_image(alpha, *_rgb):
+            alphas.append(np.array(alpha, copy=True))
+            return f"image-{len(alphas)}", f"payload-{len(alphas)}".encode()
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", fake_sdf)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", capture_image)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert len(alphas) == 2
+        normal_alpha, dismiss_alpha = alphas
+        assert normal_alpha[0, 0] > 0.0
+        assert dismiss_alpha[0, 0] == pytest.approx(0.0)
+        assert dismiss_alpha[1, 1] > 0.0
+        assert overlay._dismiss_fill_image == "image-2"
+
+    def test_assistant_light_fill_gets_alpha_boost_on_dark_background_only(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Dark-background light shell fill should be denser without dark-fill drift."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = MagicMock()
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        alphas = []
+
+        def fake_sdf(*_args):
+            return np.array(
+                [
+                    [2.0, 2.0, 2.0],
+                    [2.0, -100.0, 2.0],
+                    [2.0, 2.0, 2.0],
+                ],
+                dtype=np.float32,
+            )
+
+        def capture_image(alpha, *_rgb):
+            alphas.append(np.array(alpha, copy=True))
+            return f"image-{len(alphas)}", f"payload-{len(alphas)}".encode()
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", fake_sdf)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", capture_image)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._brightness = 0.0
+        overlay._apply_ridge_masks(600.0, 80.0)
+        dark_background_center = alphas[0][1, 1]
+
+        overlay._fill_image_signature = None
+        overlay._pending_fill_image_signature = None
+        overlay._brightness = 1.0
+        overlay._apply_ridge_masks(600.0, 80.0)
+        light_background_center = alphas[2][1, 1]
+
+        assert dark_background_center == pytest.approx(0.903, abs=0.01)
+        assert light_background_center == pytest.approx(0.851, abs=0.01)

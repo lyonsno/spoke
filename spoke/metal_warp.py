@@ -99,6 +99,14 @@ def _shell_y_squeeze(shell_config: dict[str, float]) -> float:
     return float(shell_config.get("y_squeeze", _WARP_Y_SQUEEZE))
 
 
+def _shell_mip_blur_strength(shell_config: dict[str, float]) -> float:
+    return min(max(float(shell_config.get("mip_blur_strength", 1.0)), 0.0), 1.0)
+
+
+def _shell_needs_mip_texture(shell_config: dict[str, float]) -> bool:
+    return _shell_mip_blur_strength(shell_config) > 1e-6
+
+
 def _warp_exterior_mix_weight(capsule_sdf: float, mix_width_points: float) -> float:
     width = max(float(mix_width_points), 1e-6)
     x = min(max(float(capsule_sdf) / width, 0.0), 1.0)
@@ -147,6 +155,15 @@ struct WarpParams {{
     float exteriorMixWidth; // width of the exterior onset band in pixels
     float xSqueeze;
     float ySqueeze;
+    float mipBlurStrength; // 0 = crisp level-0 sampling, 1 = material blur LOD
+    float warpMode; // 0 = material shell, 1 = seam-tension scar
+    float scarAmount; // signed: positive pinches inward, negative rebounds outward
+    float scarSeamLengthFrac; // normalized half-length before horizontal falloff
+    float scarSeamThicknessFrac; // normalized vertical falloff thickness
+    float scarSeamFocusFrac; // normalized near-seam focus width
+    float scarVerticalGrip; // vertical pinch strength for seam scar
+    float scarHorizontalGrip; // side pinch strength for seam scar
+    float scarAxisRotation; // 0 = horizontal seam field, 1 = 90-degree rotated field
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -211,6 +228,103 @@ kernel void opticalShellWarp(
         return;
     }}
 
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    float2 result = d;
+    if (params.warpMode > 2.5f) {{
+        // Mirrored seam lip: evaluate one side of the slit with folded
+        // coordinates, then unfold it across the horizontal seam. This makes
+        // the centerline a real crease: both halves meet positionally while
+        // their vertical derivatives oppose each other.
+        float foldedY = abs(p.y);
+        float side = p.y < 0.0f ? -1.0f : 1.0f;
+        float2 rotatedFoldedP = float2(foldedY, p.x);
+        float2 rotatedExtent = max(float2(halfRect.y, halfRect.x), float2(1.0f, 1.0f));
+        float x01 = clamp(abs(rotatedFoldedP.x) / rotatedExtent.x, 0.0f, 1.0f);
+        float y01 = clamp(abs(rotatedFoldedP.y) / rotatedExtent.y, 0.0f, 1.0f);
+        float lengthFrac = clamp(params.scarSeamLengthFrac, 0.05f, 1.0f);
+        float thicknessFrac = clamp(params.scarSeamThicknessFrac, 0.01f, 1.5f);
+        float focusFrac = clamp(params.scarSeamFocusFrac, 0.01f, 1.0f);
+        float xFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, x01);
+        float yFalloff = exp(-y01 / thicknessFrac);
+        float seamFocus = exp(-y01 / focusFrac);
+        float sideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), x01);
+        float field = xFalloff * yFalloff;
+        float amount = clamp(params.scarAmount, -2.0f, 2.0f);
+        float verticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * seamFocus);
+        float horizontalGrip = max(params.scarHorizontalGrip, 0.0f) * sideFocus * (0.25f + 0.75f * seamFocus);
+        float2 rotatedDisplacement = -rotatedFoldedP * float2(horizontalGrip, verticalGrip) * amount * field;
+        float2 foldedDisplacement = float2(rotatedDisplacement.y, rotatedDisplacement.x);
+        float2 displacement = float2(foldedDisplacement.x, side * foldedDisplacement.y);
+        result = d + displacement;
+        scaleX = 1.0f - verticalGrip * amount * field;
+        scaleY = 1.0f - horizontalGrip * amount * field;
+    }} else if (params.warpMode > 1.5f) {{
+        // Radial scar: the post-close underdamped ringdown after the seam has
+        // vanished. This deliberately avoids the material-shell fisheye and
+        // mip blur path so the screen stays readable while the surface relaxes.
+        float radius = max(min(halfRect.x, halfRect.y), 1.0f);
+        float r01 = clamp(length(p) / radius, 0.0f, 1.0f);
+        // Exponential falloff gives a tornado/funnel core with no visible
+        // outer shoulder; the large radius only carries a faint asymptotic tail.
+        float field = exp(-6.5f * r01);
+        float centerFocus = exp(-8.0f * r01);
+        float amount = clamp(params.scarAmount, -2.0f, 2.0f);
+        float grip = mix(0.050f, 0.18f, centerFocus);
+        float2 displacement = p * grip * amount * field;
+        result = d + displacement;
+        scaleX = 1.0f + grip * amount * field;
+        scaleY = scaleX;
+    }} else if (params.warpMode > 0.5f) {{
+        // Seam-tension scar: a dismiss-only displacement field, not the
+        // material-shell fisheye. Positive scarAmount makes content appear to
+        // pinch toward the sealed horizontal seam; negative amount rebounds it
+        // outward before settling.
+        float lengthFrac = clamp(params.scarSeamLengthFrac, 0.05f, 1.0f);
+        float thicknessFrac = clamp(params.scarSeamThicknessFrac, 0.01f, 1.5f);
+        float focusFrac = clamp(params.scarSeamFocusFrac, 0.01f, 1.0f);
+        float amount = clamp(params.scarAmount, -2.0f, 2.0f);
+        float axisRotation = clamp(params.scarAxisRotation, 0.0f, 1.0f);
+
+        float2 normalExtent = max(halfRect, float2(1.0f, 1.0f));
+        float normalX01 = clamp(abs(p.x) / normalExtent.x, 0.0f, 1.0f);
+        float normalY01 = clamp(abs(p.y) / normalExtent.y, 0.0f, 1.0f);
+        float normalXFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, normalX01);
+        float normalYFalloff = exp(-normalY01 / thicknessFrac);
+        float normalField = normalXFalloff * normalYFalloff;
+        float normalSeamFocus = exp(-normalY01 / focusFrac);
+        float normalSideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), normalX01);
+        float normalVerticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * normalSeamFocus);
+        float normalHorizontalGrip = max(params.scarHorizontalGrip, 0.0f) * normalSideFocus * (0.25f + 0.75f * normalSeamFocus);
+        float2 normalDisplacement = -p * float2(normalHorizontalGrip, normalVerticalGrip) * amount * normalField;
+
+        float2 rotatedP = float2(p.y, p.x);
+        float2 rotatedExtent = max(float2(halfRect.y, halfRect.x), float2(1.0f, 1.0f));
+        float rotatedX01 = clamp(abs(rotatedP.x) / rotatedExtent.x, 0.0f, 1.0f);
+        float rotatedY01 = clamp(abs(rotatedP.y) / rotatedExtent.y, 0.0f, 1.0f);
+        float rotatedXFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, rotatedX01);
+        float rotatedYFalloff = exp(-rotatedY01 / thicknessFrac);
+        float rotatedField = rotatedXFalloff * rotatedYFalloff;
+        float rotatedSeamFocus = exp(-rotatedY01 / focusFrac);
+        float rotatedSideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), rotatedX01);
+        float rotatedVerticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * rotatedSeamFocus);
+        float rotatedHorizontalGrip = max(params.scarHorizontalGrip, 0.0f) * rotatedSideFocus * (0.25f + 0.75f * rotatedSeamFocus);
+        float2 rotatedQDisplacement = -rotatedP * float2(rotatedHorizontalGrip, rotatedVerticalGrip) * amount * rotatedField;
+        float2 rotatedDisplacement = float2(rotatedQDisplacement.y, rotatedQDisplacement.x);
+
+        // Positive seam scar samples toward the seam rather than reusing the
+        // material shell's outward bulge. The rotated path lets the tuner test
+        // the same squeeze family sideways, which better matches a sealed slit.
+        float2 displacement = mix(normalDisplacement, rotatedDisplacement, axisRotation);
+        result = d + displacement;
+        float2 scaleDisplacement = mix(
+            float2(normalHorizontalGrip * normalField, normalVerticalGrip * normalField),
+            float2(rotatedVerticalGrip * rotatedField, rotatedHorizontalGrip * rotatedField),
+            axisRotation
+        );
+        scaleX = 1.0f - scaleDisplacement.x * amount;
+        scaleY = 1.0f - scaleDisplacement.y * amount;
+    }} else {{
     float curveBoost = min(
         {_WARP_CURVEBOOST_CAP}f,
         max(0.0f, (params.coreMagnification - 1.0f) * {_WARP_CURVEBOOST_MAG_SCALE}f)
@@ -226,11 +340,11 @@ kernel void opticalShellWarp(
     float sourceField01 = 1.0f - depthRemap(1.0f - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    float scaleX = pow(max(scale, 0.0f), params.xSqueeze);
-    float scaleY = pow(max(scale, 0.0f), params.ySqueeze);
+    scaleX = pow(max(scale, 0.0f), params.xSqueeze);
+    scaleY = pow(max(scale, 0.0f), params.ySqueeze);
     float2 warped = c + p * float2(scaleX, scaleY);
 
-    float2 result = warped;
+    result = warped;
     if (capsuleSdf > 0.0f) {{
         // Exterior: blend toward boundary warp scale
         float probeRaw = clamp(1.0f - 0.15f, 0.0f, 1.0f);
@@ -244,6 +358,7 @@ kernel void opticalShellWarp(
         t = t * t;
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
         result = mix(d, boundaryWarped, t * 0.50f);
+    }}
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
@@ -262,7 +377,8 @@ kernel void opticalShellWarp(
         0.0f,
         {_WARP_ALIAS_MIP_BIAS_MAX}f
     );
-    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f);
+    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f)
+        * clamp(params.mipBlurStrength, 0.0f, 1.0f);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 warpedColor;
@@ -318,13 +434,18 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("20f")
+_WARP_PARAMS_FORMAT = "29f"
+_WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
+
+
+def _diagnostic_pixels(width, height) -> int:
+    return max(int(width), 0) * max(int(height), 0)
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "20f",
+        _WARP_PARAMS_FORMAT,
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -345,6 +466,15 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("exterior_mix_width_points", _WARP_EXTERIOR_MIX_WIDTH_POINTS)),
         _shell_x_squeeze(shell_config),
         _shell_y_squeeze(shell_config),
+        float(shell_config.get("mip_blur_strength", 1.0)),
+        float(shell_config.get("warp_mode", 0.0)),
+        float(shell_config.get("scar_amount", 0.0)),
+        float(shell_config.get("scar_seam_length_frac", 0.70)),
+        float(shell_config.get("scar_seam_thickness_frac", 0.15)),
+        float(shell_config.get("scar_seam_focus_frac", 0.34)),
+        float(shell_config.get("scar_vertical_grip", 0.20)),
+        float(shell_config.get("scar_horizontal_grip", 0.07)),
+        float(shell_config.get("scar_axis_rotation", 0.0)),
     )
 
 
@@ -397,10 +527,13 @@ class MetalWarpPipeline:
         self._output_texture_size = None
         self._mip_texture = None
         self._mip_texture_size = None
+        self._multipass_textures = [None, None]
+        self._multipass_texture_size = None
         self._accum_textures = [None, None]  # ping-pong accumulation buffers
         self._accum_texture_size = None
         self._accum_index = 0
         self._accum_generation = 0  # incremented on resize for atomicity
+        self._ensure_diagnostics_fields()
 
         # Cache threadgroup dimensions — these are hardware constants
         self._thread_exec_width = pipeline.threadExecutionWidth()
@@ -413,6 +546,61 @@ class MetalWarpPipeline:
 
         logger.info("Metal warp pipeline created (threadgroup=%dx%d)",
                      self._thread_exec_width, self._max_tg_height)
+
+    def _ensure_diagnostics_fields(self) -> None:
+        defaults = {
+            "_drawable_copy_frames": 0,
+            "_drawable_copy_pixels": 0,
+            "_mip_generation_frames": 0,
+            "_mip_generation_source_pixels": 0,
+            "_warp_dispatches": 0,
+            "_warp_dispatch_pixels": 0,
+        }
+        if not hasattr(self, "_diagnostics_lock"):
+            self._diagnostics_lock = threading.Lock()
+        for name, value in defaults.items():
+            if not hasattr(self, name):
+                setattr(self, name, value)
+
+    def _record_drawable_copy(self, width, height) -> None:
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            self._drawable_copy_frames += 1
+            self._drawable_copy_pixels += _diagnostic_pixels(width, height)
+
+    def _record_mip_generation(self, width, height) -> None:
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            self._mip_generation_frames += 1
+            self._mip_generation_source_pixels += _diagnostic_pixels(width, height)
+
+    def _record_warp_dispatch(self, width, height) -> None:
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            self._warp_dispatches += 1
+            self._warp_dispatch_pixels += _diagnostic_pixels(width, height)
+
+    def diagnostics_snapshot(self) -> dict[str, int | float]:
+        """Return counters for the full-screen copy/mip work feeding the shell."""
+        self._ensure_diagnostics_fields()
+        with self._diagnostics_lock:
+            drawable_copy_frames = int(self._drawable_copy_frames)
+            drawable_copy_pixels = int(self._drawable_copy_pixels)
+            mip_generation_frames = int(self._mip_generation_frames)
+            mip_generation_source_pixels = int(self._mip_generation_source_pixels)
+            warp_dispatches = int(self._warp_dispatches)
+            warp_dispatch_pixels = int(self._warp_dispatch_pixels)
+        return {
+            "drawable_copy_frames": drawable_copy_frames,
+            "drawable_copy_pixels": drawable_copy_pixels,
+            "mip_generation_frames": mip_generation_frames,
+            "mip_generation_source_pixels": mip_generation_source_pixels,
+            "warp_dispatches": warp_dispatches,
+            "warp_dispatch_pixels": warp_dispatch_pixels,
+            "avg_drawable_copy_mp": drawable_copy_pixels / max(drawable_copy_frames, 1) / 1_000_000.0,
+            "avg_mip_generation_source_mp": mip_generation_source_pixels / max(mip_generation_frames, 1) / 1_000_000.0,
+            "avg_warp_dispatch_mp": warp_dispatch_pixels / max(warp_dispatches, 1) / 1_000_000.0,
+        }
 
     def warp_iosurface(self, input_surface, *, width, height, shell_config):
         """Run the warp on an IOSurface and return a new IOSurface with the result."""
@@ -490,6 +678,24 @@ class MetalWarpPipeline:
             logger.warning("Failed to create accumulation textures %dx%d", width, height)
             self._accum_textures = [None, None]
 
+    def _ensure_multipass_textures(self, width, height):
+        """Create full-frame ping-pong textures for layered shell composition."""
+        if getattr(self, "_multipass_texture_size", None) == (width, height):
+            return
+        import objc
+        desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            80, width, height, False,
+        )
+        desc.setUsage_(1 | 2)  # read | write
+        self._multipass_textures = [
+            self._device.newTextureWithDescriptor_(desc),
+            self._device.newTextureWithDescriptor_(desc),
+        ]
+        self._multipass_texture_size = (width, height)
+        if self._multipass_textures[0] is None or self._multipass_textures[1] is None:
+            logger.warning("Failed to create multipass textures %dx%d", width, height)
+            self._multipass_textures = [None, None]
+
     def reset_temporal_state(self):
         """Force next frame to fully replace the accumulator.
 
@@ -536,8 +742,17 @@ class MetalWarpPipeline:
             command_buffer.commit()
             return True
 
-        # Create or reuse a mipmapped texture for blur LOD sampling.
-        if self._mip_texture is None or self._mip_texture_size != (in_w, in_h):
+        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
+            dict(config) for config in shell_config if config
+        ]
+        needs_mip_texture = any(_shell_needs_mip_texture(config) for config in shell_configs)
+
+        # Create or reuse a mipmapped texture only for material shells that
+        # actually want blur LOD sampling. Fill-less pressure scars should
+        # sample the original input texture directly.
+        if needs_mip_texture and (
+            self._mip_texture is None or self._mip_texture_size != (in_w, in_h)
+        ):
             mip_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
                 80, in_w, in_h, True,
             )
@@ -553,7 +768,8 @@ class MetalWarpPipeline:
         # drawable is written before presentation (no tearing on 120Hz).
         blit = command_buffer.blitCommandEncoder()
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
-        if self._mip_texture is not None:
+        self._record_drawable_copy(in_w, in_h)
+        if needs_mip_texture and self._mip_texture is not None:
             origin = (0, 0, 0)
             size = (in_w, in_h, 1)
             try:
@@ -567,27 +783,57 @@ class MetalWarpPipeline:
                 except Exception:
                     pass
             blit.generateMipmapsForTexture_(self._mip_texture)
+            self._record_mip_generation(in_w, in_h)
         blit.endEncoding()
-
-        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
-            dict(config) for config in shell_config if config
-        ]
 
         if len(shell_configs) > 1:
             # Shared fullscreen hosts can carry multiple overlays on the same
-            # screen. Apply each shell in sequence against the same captured
-            # input, but disable temporal blending for the multi-shell path so
-            # the per-pass accumulation buffer does not cross-contaminate
-            # overlays with different bounding boxes.
+            # screen. Apply each shell against the accumulated previous pass:
+            # a later seam/radial client must not paint raw captured pixels
+            # over the main shell's center while its own dispatch box says
+            # "outside my warp zone". Ping-ponging keeps pass-through pixels
+            # equal to the previous shell composition instead of the original
+            # screen capture.
             self._ensure_accum_textures(out_w, out_h)
+            self._ensure_multipass_textures(out_w, out_h)
             accum_read = self._accum_textures[0]
             accum_write = self._accum_textures[1]
-            for config in shell_configs:
+            multipass_a, multipass_b = self._multipass_textures
+            if multipass_a is None or multipass_b is None:
+                command_buffer.presentDrawable_(drawable)
+                command_buffer.commit()
+                return True
+            current_source = output_texture
+            for index, config in enumerate(shell_configs):
                 box_x0, box_y0, box_x1, box_y1 = _warp_dispatch_box(out_w, out_h, config)
                 box_w = box_x1 - box_x0
                 box_h = box_y1 - box_y0
                 if box_w <= 0 or box_h <= 0:
                     continue
+                pass_dest = (
+                    output_texture
+                    if index == len(shell_configs) - 1
+                    else (multipass_a if index % 2 == 0 else multipass_b)
+                )
+                if current_source is not pass_dest:
+                    blit = command_buffer.blitCommandEncoder()
+                    blit.copyFromTexture_toTexture_(current_source, pass_dest)
+                    if _shell_needs_mip_texture(config) and self._mip_texture is not None:
+                        origin = (0, 0, 0)
+                        size = (out_w, out_h, 1)
+                        try:
+                            blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+                                current_source, 0, 0, origin, size,
+                                self._mip_texture, 0, 0, origin,
+                            )
+                        except Exception:
+                            try:
+                                blit.copyFromTexture_toTexture_(current_source, self._mip_texture)
+                            except Exception:
+                                pass
+                        blit.generateMipmapsForTexture_(self._mip_texture)
+                        self._record_mip_generation(out_w, out_h)
+                    blit.endEncoding()
                 warp_config = dict(config)
                 warp_config["temporal_blend"] = 1.0
                 params_data = _pack_warp_params(
@@ -597,22 +843,21 @@ class MetalWarpPipeline:
                     grid_offset_x=float(box_x0),
                     grid_offset_y=float(box_y0),
                 )
-                if self._params_buffer is not None:
-                    contents_ptr = self._params_buffer.contents()
-                    if contents_ptr is not None:
-                        ctypes.memmove(contents_ptr, params_data, len(params_data))
-                        params_buffer = self._params_buffer
-                    else:
-                        params_buffer = _create_metal_buffer(self._device, params_data)
-                else:
-                    params_buffer = _create_metal_buffer(self._device, params_data)
+                # Each queued encoder reads params later, when the command
+                # buffer executes. Reusing one mutable buffer here makes every
+                # shell see whichever config was written last.
+                params_buffer = _create_metal_buffer(self._device, params_data)
                 if params_buffer is None:
                     continue
                 encoder = command_buffer.computeCommandEncoder()
                 encoder.setComputePipelineState_(self._pipeline)
-                warp_input = self._mip_texture if self._mip_texture is not None else input_texture
+                warp_input = (
+                    self._mip_texture
+                    if _shell_needs_mip_texture(config) and self._mip_texture is not None
+                    else current_source
+                )
                 encoder.setTexture_atIndex_(warp_input, 0)
-                encoder.setTexture_atIndex_(output_texture, 1)
+                encoder.setTexture_atIndex_(pass_dest, 1)
                 if accum_read is not None and accum_write is not None:
                     encoder.setTexture_atIndex_(accum_read, 2)
                     encoder.setTexture_atIndex_(accum_write, 3)
@@ -621,6 +866,8 @@ class MetalWarpPipeline:
                 grid_size = (box_w, box_h, 1)
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
+                self._record_warp_dispatch(box_w, box_h)
+                current_source = pass_dest
         else:
             # Pass 2: compute warp over capsule bounding box only
             active_config = shell_configs[0] if shell_configs else {}
@@ -665,7 +912,11 @@ class MetalWarpPipeline:
 
                 encoder = command_buffer.computeCommandEncoder()
                 encoder.setComputePipelineState_(self._pipeline)
-                warp_input = self._mip_texture if self._mip_texture is not None else input_texture
+                warp_input = (
+                    self._mip_texture
+                    if _shell_needs_mip_texture(active_config) and self._mip_texture is not None
+                    else input_texture
+                )
                 encoder.setTexture_atIndex_(warp_input, 0)
                 encoder.setTexture_atIndex_(output_texture, 1)
                 if accum_read is not None and accum_write is not None:
@@ -677,6 +928,7 @@ class MetalWarpPipeline:
                 grid_size = (box_w, box_h, 1)
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
+                self._record_warp_dispatch(box_w, box_h)
 
                 # Flip accumulation buffer — only if generation hasn't changed
                 # (a resize between dispatch and here would invalidate the flip).

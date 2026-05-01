@@ -119,6 +119,7 @@ _GLOW_TEST_RMS = os.environ.get("SPOKE_GLOW_TEST_RMS")
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.636  # pumped 50%
+_DIM_SDF_BLOOM_MULTIPLIER = 2.25
 
 def _dim_target_for_brightness(brightness: float) -> float:
     # Spike to 0.80 at mid-gray
@@ -925,6 +926,22 @@ def _continuous_glow_pass_specs():
     ]
 
 
+def _continuous_dimmer_pass_specs():
+    """Masked hold-space dimmer, tuned as a broad low-intensity veil."""
+    soft_bloom = next(
+        spec for spec in _continuous_glow_pass_specs() if spec["name"] == "wide_bloom"
+    )
+    return [
+        {
+            "name": "hold_dimmer",
+            "path_kind": "distance_field",
+            "falloff": soft_bloom["falloff"] * 16.0,
+            "power": 1.15,
+            "alpha": min(soft_bloom["fill_alpha"] * _DIM_SDF_BLOOM_MULTIPLIER, 0.95),
+        }
+    ]
+
+
 def _continuous_vignette_pass_specs():
     """Procedural subtractive passes driven from the same distance field."""
     return [
@@ -1047,16 +1064,34 @@ class GlowOverlay(NSObject):
         geometry["scale"] = mask_scale
 
         glow_colors = _glow_role_colors(_GLOW_COLOR)
+        self._mask_payloads = []
 
-        # ── Optional screen dim: subtle dark backdrop for glow contrast ──
+        # ── Optional screen dim: SDF-shaped dark backdrop for glow contrast ──
         self._dim_layer = None
+        self._dim_pass_layers = []
         if _DIM_SCREEN:
             self._dim_layer = CALayer.alloc().init()
             self._dim_layer.setFrame_(((0, 0), (w, h)))
-            self._dim_layer.setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 1.0).CGColor()
-            )
             self._dim_layer.setOpacity_(0.0)
+            dim_pass_layers = []
+            for entry in _distance_field_masks_for_specs(geometry, _continuous_dimmer_pass_specs()):
+                spec = entry["spec"]
+                layer = CALayer.alloc().init()
+                layer.setFrame_(((0, 0), (w, h)))
+                mask_layer = CALayer.alloc().init()
+                mask_layer.setFrame_(((0, 0), (w, h)))
+                mask_layer.setContents_(entry["image"])
+                mask_layer.setContentsScale_(mask_scale)
+                layer.setMask_(mask_layer)
+                layer.setBackgroundColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                        0, 0, 0, spec["alpha"]
+                    ).CGColor()
+                )
+                self._dim_layer.addSublayer_(layer)
+                self._mask_payloads.append(entry["payload"])
+                dim_pass_layers.append({"layer": layer, "spec": spec})
+            self._dim_pass_layers = dim_pass_layers
             content.layer().addSublayer_(self._dim_layer)
 
         # ── Container layer: holds shadow + masked fill ──────────
@@ -1067,7 +1102,6 @@ class GlowOverlay(NSObject):
 
         # Procedural additive passes: one continuous field, different falloff curves.
         glow_pass_layers = []
-        self._mask_payloads = []
         for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
             spec = entry["spec"]
             layer = CALayer.alloc().init()

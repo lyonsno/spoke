@@ -1,5 +1,10 @@
-from spoke import metal_warp
+import ctypes
+import sys
+import types
+
 import pytest
+
+from spoke import metal_warp
 
 
 def test_metal_warp_owns_visual_tuning_constants_while_backdrop_is_fallback():
@@ -38,7 +43,7 @@ def test_pack_warp_params_uses_shell_specific_bleed_zone_frac():
             "exterior_mix_width_points": 20.0,
         },
     )
-    values = metal_warp.struct.unpack("20f", payload)
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
     assert values[16] == pytest.approx(0.8)
     assert values[17] == pytest.approx(20.0)
 
@@ -55,9 +60,113 @@ def test_pack_warp_params_uses_shell_specific_axis_squeeze():
             "y_squeeze": 1.2,
         },
     )
-    values = metal_warp.struct.unpack("20f", payload)
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
     assert values[18] == pytest.approx(3.25)
     assert values[19] == pytest.approx(1.2)
+
+
+def test_pack_warp_params_uses_shell_specific_mip_blur_strength():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "mip_blur_strength": 0.0,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+    assert values[20] == pytest.approx(0.0)
+
+
+def test_pack_warp_params_uses_shell_specific_scar_mode_controls():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "warp_mode": 1.0,
+            "scar_amount": -0.25,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+    assert values[21] == pytest.approx(1.0)
+    assert values[22] == pytest.approx(-0.25)
+
+
+def test_pack_warp_params_uses_shell_specific_seam_pucker_controls():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "warp_mode": 1.0,
+            "scar_amount": 0.75,
+            "scar_seam_length_frac": 0.62,
+            "scar_seam_thickness_frac": 0.44,
+            "scar_seam_focus_frac": 0.27,
+            "scar_vertical_grip": 0.51,
+            "scar_horizontal_grip": 0.19,
+            "scar_axis_rotation": 1.0,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+
+    assert values[23] == pytest.approx(0.62)
+    assert values[24] == pytest.approx(0.44)
+    assert values[25] == pytest.approx(0.27)
+    assert values[26] == pytest.approx(0.51)
+    assert values[27] == pytest.approx(0.19)
+    assert values[28] == pytest.approx(1.0)
+
+
+def test_metal_shader_can_rotate_seam_scar_axis_for_pucker_tuning():
+    source = metal_warp._metal_shader_source()
+    seam_branch = source.split("Seam-tension scar:", 1)[1].split(
+        "float curveBoost",
+        1,
+    )[0]
+
+    assert "scarAxisRotation" in seam_branch
+    assert "float2 rotatedP = float2(p.y, p.x)" in seam_branch
+    assert "mix(normalDisplacement, rotatedDisplacement" in seam_branch
+
+
+def test_metal_shader_has_mirrored_seam_lip_mode():
+    source = metal_warp._metal_shader_source()
+    assert "Mirrored seam lip:" in source
+    mirrored_branch = source.split("Mirrored seam lip:", 1)[1].split(
+        "Radial scar:",
+        1,
+    )[0]
+
+    assert "float foldedY = abs(p.y)" in mirrored_branch
+    assert "float side = p.y < 0.0f ? -1.0f : 1.0f" in mirrored_branch
+    assert "float2 rotatedFoldedP = float2(foldedY, p.x)" in mirrored_branch
+    assert "float2 foldedDisplacement = float2(rotatedDisplacement.y, rotatedDisplacement.x)" in mirrored_branch
+    assert "float2 displacement = float2(foldedDisplacement.x, side * foldedDisplacement.y)" in mirrored_branch
+
+
+def test_metal_shader_has_separate_radial_scar_mode():
+    source = metal_warp._metal_shader_source()
+    assert "params.warpMode > 1.5f" in source
+    assert "Radial scar" in source
+
+
+def test_radial_scar_uses_asymptotic_exponential_falloff():
+    source = metal_warp._metal_shader_source()
+    radial_branch = source.split("Radial scar:", 1)[1].split(
+        "Seam-tension scar:",
+        1,
+    )[0]
+
+    assert "exp(-" in radial_branch
+    assert "smoothstep" not in radial_branch
 
 
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
@@ -125,3 +234,506 @@ def test_warp_exterior_mix_weight_keeps_boundary_strength_but_starts_later_with_
     assert metal_warp._warp_exterior_mix_weight(0.0, 20.0) == pytest.approx(1.0)
     assert metal_warp._warp_exterior_mix_weight(10.0, 20.0) < metal_warp._warp_exterior_mix_weight(10.0, 40.0)
     assert metal_warp._warp_exterior_mix_weight(30.0, 20.0) == pytest.approx(0.0)
+
+
+def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
+    """Each shell pass needs immutable params for the queued Metal command."""
+
+    class FakeBuffer:
+        def __init__(self, data_or_length):
+            if isinstance(data_or_length, bytes):
+                self._raw = ctypes.create_string_buffer(data_or_length)
+            else:
+                self._raw = ctypes.create_string_buffer(int(data_or_length))
+
+        def contents(self):
+            return ctypes.addressof(self._raw)
+
+        def payload(self):
+            return bytes(self._raw.raw[: metal_warp._WARP_PARAMS_SIZE])
+
+    class FakeTexture:
+        def __init__(self, width, height, label):
+            self._width = width
+            self._height = height
+            self.label = label
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeTextureDescriptor:
+        def __init__(self, width=0, height=0):
+            self.width = width
+            self.height = height
+
+        @classmethod
+        def texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            cls, _fmt, width, height, _mipmapped
+        ):
+            return cls(width, height)
+
+        def setUsage_(self, _usage):
+            return None
+
+    fake_objc = types.ModuleType("objc")
+    fake_objc.lookUpClass = lambda name: FakeTextureDescriptor
+    monkeypatch.setitem(sys.modules, "objc", fake_objc)
+
+    class FakeDevice:
+        def __init__(self):
+            self.created_textures = 0
+
+        def newTextureWithDescriptor_iosurface_plane_(self, desc, _surface, _plane):
+            return FakeTexture(desc.width, desc.height, "input")
+
+        def newTextureWithDescriptor_(self, desc):
+            self.created_textures += 1
+            return FakeTexture(desc.width, desc.height, f"scratch-{self.created_textures}")
+
+        def newBufferWithLength_options_(self, length, _options):
+            return FakeBuffer(length)
+
+    class FakeBlitEncoder:
+        def __init__(self):
+            self.copies = []
+
+        def copyFromTexture_toTexture_(self, src, dst):
+            self.copies.append((src.label, dst.label))
+            return None
+
+        def copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+            self, src, _src_slice, _src_level, _origin, _size, dst, _dst_slice, _dst_level, _dst_origin
+        ):
+            self.copies.append((src.label, dst.label))
+            return None
+
+        def generateMipmapsForTexture_(self, _texture):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeComputeEncoder:
+        def __init__(self):
+            self.params_buffer = None
+            self.source_texture = None
+            self.dest_texture = None
+
+        def setComputePipelineState_(self, _pipeline):
+            return None
+
+        def setTexture_atIndex_(self, texture, index):
+            if index == 0:
+                self.source_texture = texture
+            elif index == 1:
+                self.dest_texture = texture
+            return None
+
+        def setBuffer_offset_atIndex_(self, buffer, _offset, index):
+            if index == 0:
+                self.params_buffer = buffer
+
+        def dispatchThreads_threadsPerThreadgroup_(self, _grid, _threadgroup):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeCommandBuffer:
+        def __init__(self):
+            self.encoders = []
+            self.blit_encoders = []
+
+        def blitCommandEncoder(self):
+            encoder = FakeBlitEncoder()
+            self.blit_encoders.append(encoder)
+            return encoder
+
+        def computeCommandEncoder(self):
+            encoder = FakeComputeEncoder()
+            self.encoders.append(encoder)
+            return encoder
+
+        def presentDrawable_(self, _drawable):
+            return None
+
+        def commit(self):
+            return None
+
+    class FakeCommandQueue:
+        def __init__(self):
+            self.command_buffers = []
+
+        def commandBuffer(self):
+            command_buffer = FakeCommandBuffer()
+            self.command_buffers.append(command_buffer)
+            return command_buffer
+
+    class FakeDrawable:
+        def texture(self):
+            return FakeTexture(100, 50, "drawable")
+
+    monkeypatch.setattr(
+        metal_warp,
+        "_create_metal_buffer",
+        lambda _device, data: FakeBuffer(data),
+    )
+
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._device = FakeDevice()
+    pipeline._command_queue = FakeCommandQueue()
+    pipeline._pipeline = object()
+    pipeline._mip_texture = None
+    pipeline._mip_texture_size = None
+    pipeline._accum_textures = [None, None]
+    pipeline._accum_texture_size = None
+    pipeline._accum_index = 0
+    pipeline._accum_generation = 0
+    pipeline._thread_exec_width = 8
+    pipeline._max_tg_height = 8
+    pipeline._params_buffer = FakeBuffer(metal_warp._WARP_PARAMS_SIZE)
+
+    assert pipeline.warp_to_drawable(
+        object(),
+        FakeDrawable(),
+        width=100,
+        height=50,
+        shell_config=[
+            {
+                "center_x": 25.0,
+                "center_y": 20.0,
+                "content_width_points": 20.0,
+                "content_height_points": 10.0,
+                "mip_blur_strength": 1.0,
+            },
+            {
+                "center_x": 75.0,
+                "center_y": 20.0,
+                "content_width_points": 20.0,
+                "content_height_points": 10.0,
+                "mip_blur_strength": 0.0,
+            },
+        ],
+    )
+
+    encoders = pipeline._command_queue.command_buffers[-1].encoders
+    params_buffers = [encoder.params_buffer for encoder in encoders]
+
+    assert len(params_buffers) == 2
+    assert len({id(buffer) for buffer in params_buffers}) == 2
+    assert encoders[1].source_texture is encoders[0].dest_texture
+    assert encoders[1].source_texture.label != "input"
+    assert encoders[-1].dest_texture.label == "drawable"
+    assert [
+        metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, buffer.payload())[10]
+        for buffer in params_buffers
+    ] == [pytest.approx(25.0), pytest.approx(75.0)]
+
+
+def test_warp_diagnostics_record_fullscreen_mip_cost_against_bounded_shell(monkeypatch):
+    """Current blur source work is full-frame even when the shell dispatch is bounded."""
+
+    class FakeBuffer:
+        def __init__(self, data_or_length):
+            if isinstance(data_or_length, bytes):
+                self._raw = ctypes.create_string_buffer(data_or_length)
+            else:
+                self._raw = ctypes.create_string_buffer(int(data_or_length))
+
+        def contents(self):
+            return ctypes.addressof(self._raw)
+
+    class FakeTexture:
+        def __init__(self, width, height):
+            self._width = width
+            self._height = height
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeTextureDescriptor:
+        def __init__(self, width=0, height=0):
+            self.width = width
+            self.height = height
+
+        @classmethod
+        def texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            cls, _fmt, width, height, _mipmapped
+        ):
+            return cls(width, height)
+
+        def setUsage_(self, _usage):
+            return None
+
+    fake_objc = types.ModuleType("objc")
+    fake_objc.lookUpClass = lambda name: FakeTextureDescriptor
+    monkeypatch.setitem(sys.modules, "objc", fake_objc)
+
+    class FakeDevice:
+        def newTextureWithDescriptor_iosurface_plane_(self, desc, _surface, _plane):
+            return FakeTexture(desc.width, desc.height)
+
+        def newTextureWithDescriptor_(self, desc):
+            return FakeTexture(desc.width, desc.height)
+
+        def newBufferWithLength_options_(self, length, _options):
+            return FakeBuffer(length)
+
+    class FakeBlitEncoder:
+        def copyFromTexture_toTexture_(self, *_args):
+            return None
+
+        def copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+            self, *_args
+        ):
+            return None
+
+        def generateMipmapsForTexture_(self, _texture):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeComputeEncoder:
+        def setComputePipelineState_(self, _pipeline):
+            return None
+
+        def setTexture_atIndex_(self, _texture, _index):
+            return None
+
+        def setBuffer_offset_atIndex_(self, _buffer, _offset, _index):
+            return None
+
+        def dispatchThreads_threadsPerThreadgroup_(self, _grid, _threadgroup):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeCommandBuffer:
+        def blitCommandEncoder(self):
+            return FakeBlitEncoder()
+
+        def computeCommandEncoder(self):
+            return FakeComputeEncoder()
+
+        def presentDrawable_(self, _drawable):
+            return None
+
+        def commit(self):
+            return None
+
+    class FakeCommandQueue:
+        def commandBuffer(self):
+            return FakeCommandBuffer()
+
+    class FakeDrawable:
+        def texture(self):
+            return FakeTexture(100, 50)
+
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._device = FakeDevice()
+    pipeline._command_queue = FakeCommandQueue()
+    pipeline._pipeline = object()
+    pipeline._mip_texture = None
+    pipeline._mip_texture_size = None
+    pipeline._accum_textures = [None, None]
+    pipeline._accum_texture_size = None
+    pipeline._accum_index = 0
+    pipeline._accum_generation = 0
+    pipeline._thread_exec_width = 8
+    pipeline._max_tg_height = 8
+    pipeline._params_buffer = FakeBuffer(metal_warp._WARP_PARAMS_SIZE)
+
+    shell_config = {
+        "center_x": 50.0,
+        "center_y": 25.0,
+        "content_width_points": 20.0,
+        "content_height_points": 10.0,
+        "bleed_zone_frac": 0.0,
+    }
+    expected_box = metal_warp._warp_dispatch_box(100, 50, shell_config)
+    expected_dispatch_pixels = (expected_box[2] - expected_box[0]) * (expected_box[3] - expected_box[1])
+
+    assert pipeline.warp_to_drawable(
+        object(),
+        FakeDrawable(),
+        width=100,
+        height=50,
+        shell_config=shell_config,
+    )
+
+    diagnostics = pipeline.diagnostics_snapshot()
+    assert diagnostics["drawable_copy_frames"] == 1
+    assert diagnostics["drawable_copy_pixels"] == 5_000
+    assert diagnostics["mip_generation_frames"] == 1
+    assert diagnostics["mip_generation_source_pixels"] == 5_000
+    assert diagnostics["warp_dispatch_pixels"] == expected_dispatch_pixels
+    assert diagnostics["warp_dispatch_pixels"] < diagnostics["mip_generation_source_pixels"]
+
+
+def test_crisp_shell_skips_mip_generation_and_samples_input_texture(monkeypatch):
+    """A fill-less pressure scar should not travel through the material mip path."""
+
+    class FakeBuffer:
+        def __init__(self, data_or_length):
+            if isinstance(data_or_length, bytes):
+                self._raw = ctypes.create_string_buffer(data_or_length)
+            else:
+                self._raw = ctypes.create_string_buffer(int(data_or_length))
+
+        def contents(self):
+            return ctypes.addressof(self._raw)
+
+    class FakeTexture:
+        def __init__(self, width, height, label):
+            self._width = width
+            self._height = height
+            self.label = label
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeTextureDescriptor:
+        def __init__(self, width=0, height=0, mipmapped=False):
+            self.width = width
+            self.height = height
+            self.mipmapped = mipmapped
+
+        @classmethod
+        def texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            cls, _fmt, width, height, mipmapped
+        ):
+            return cls(width, height, mipmapped)
+
+        def setUsage_(self, _usage):
+            return None
+
+    fake_objc = types.ModuleType("objc")
+    fake_objc.lookUpClass = lambda name: FakeTextureDescriptor
+    monkeypatch.setitem(sys.modules, "objc", fake_objc)
+
+    class FakeDevice:
+        def __init__(self):
+            self.created_mipmapped = []
+
+        def newTextureWithDescriptor_iosurface_plane_(self, desc, _surface, _plane):
+            return FakeTexture(desc.width, desc.height, "input")
+
+        def newTextureWithDescriptor_(self, desc):
+            self.created_mipmapped.append(desc.mipmapped)
+            return FakeTexture(desc.width, desc.height, "output")
+
+        def newBufferWithLength_options_(self, length, _options):
+            return FakeBuffer(length)
+
+    class FakeBlitEncoder:
+        def __init__(self):
+            self.mipmap_calls = 0
+
+        def copyFromTexture_toTexture_(self, *_args):
+            return None
+
+        def copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
+            self, *_args
+        ):
+            return None
+
+        def generateMipmapsForTexture_(self, _texture):
+            self.mipmap_calls += 1
+
+        def endEncoding(self):
+            return None
+
+    class FakeComputeEncoder:
+        def __init__(self):
+            self.texture0 = None
+
+        def setComputePipelineState_(self, _pipeline):
+            return None
+
+        def setTexture_atIndex_(self, texture, index):
+            if index == 0:
+                self.texture0 = texture
+
+        def setBuffer_offset_atIndex_(self, _buffer, _offset, _index):
+            return None
+
+        def dispatchThreads_threadsPerThreadgroup_(self, _grid, _threadgroup):
+            return None
+
+        def endEncoding(self):
+            return None
+
+    class FakeCommandBuffer:
+        def __init__(self):
+            self.blit_encoder = FakeBlitEncoder()
+            self.compute_encoder = FakeComputeEncoder()
+
+        def blitCommandEncoder(self):
+            return self.blit_encoder
+
+        def computeCommandEncoder(self):
+            return self.compute_encoder
+
+        def presentDrawable_(self, _drawable):
+            return None
+
+        def commit(self):
+            return None
+
+    class FakeCommandQueue:
+        def __init__(self):
+            self.command_buffers = []
+
+        def commandBuffer(self):
+            command_buffer = FakeCommandBuffer()
+            self.command_buffers.append(command_buffer)
+            return command_buffer
+
+    class FakeDrawable:
+        def texture(self):
+            return FakeTexture(100, 50, "drawable")
+
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._device = FakeDevice()
+    pipeline._command_queue = FakeCommandQueue()
+    pipeline._pipeline = object()
+    pipeline._mip_texture = None
+    pipeline._mip_texture_size = None
+    pipeline._accum_textures = [None, None]
+    pipeline._accum_texture_size = None
+    pipeline._accum_index = 0
+    pipeline._accum_generation = 0
+    pipeline._thread_exec_width = 8
+    pipeline._max_tg_height = 8
+    pipeline._params_buffer = FakeBuffer(metal_warp._WARP_PARAMS_SIZE)
+
+    assert pipeline.warp_to_drawable(
+        object(),
+        FakeDrawable(),
+        width=100,
+        height=50,
+        shell_config={
+            "center_x": 50.0,
+            "center_y": 25.0,
+            "content_width_points": 20.0,
+            "content_height_points": 10.0,
+            "mip_blur_strength": 0.0,
+        },
+    )
+
+    command_buffer = pipeline._command_queue.command_buffers[-1]
+    assert True not in pipeline._device.created_mipmapped
+    assert command_buffer.blit_encoder.mipmap_calls == 0
+    assert command_buffer.compute_encoder.texture0.label == "input"
+    assert pipeline.diagnostics_snapshot()["mip_generation_frames"] == 0

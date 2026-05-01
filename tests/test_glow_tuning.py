@@ -2,6 +2,7 @@
 import colorsys
 import importlib
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -137,6 +138,201 @@ class TestGlowTuning:
             assert mod._dim_target_for_brightness(0.0) == pytest.approx(mod._DIM_OPACITY_DARK)
             assert mod._dim_target_for_brightness(0.5) == pytest.approx(0.8)
             assert mod._dim_target_for_brightness(1.0) == pytest.approx(mod._DIM_OPACITY_LIGHT)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_screen_dimmer_uses_own_soft_sdf_pass(self, mock_pyobjc):
+        """The hold-space dimmer should use its own soft SDF pass, not a flat wash."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            soft_bloom = next(
+                spec
+                for spec in mod._continuous_glow_pass_specs()
+                if spec["name"] == "wide_bloom"
+            )
+            specs = mod._continuous_dimmer_pass_specs()
+            dimmer = specs[0]
+
+            assert specs == [dimmer]
+            assert dimmer["name"] == "hold_dimmer"
+            assert dimmer["path_kind"] == "distance_field"
+            assert dimmer["falloff"] > soft_bloom["falloff"]
+            assert dimmer["power"] < soft_bloom["power"]
+            assert dimmer["alpha"] == pytest.approx(soft_bloom["fill_alpha"] * 2.25)
+            assert dimmer["alpha"] < 1.0
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_screen_dimmer_becomes_lower_intensity_long_tail_veil(self, mock_pyobjc):
+        """The dimmer should get less intense at the rim while spreading into a shallow veil."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            soft_bloom = next(
+                spec
+                for spec in mod._continuous_glow_pass_specs()
+                if spec["name"] == "wide_bloom"
+            )
+            dimmer = mod._continuous_dimmer_pass_specs()[0]
+            old_edge_alpha = soft_bloom["fill_alpha"] * 4.5
+            old_mid_alpha = old_edge_alpha * mod._distance_field_opacity(
+                soft_bloom["falloff"] * 6.0,
+                soft_bloom["falloff"] * 7.5,
+                1.35,
+            )
+            old_far_alpha = old_edge_alpha * mod._distance_field_opacity(
+                soft_bloom["falloff"] * 12.0,
+                soft_bloom["falloff"] * 7.5,
+                1.35,
+            )
+            new_edge_alpha = dimmer["alpha"]
+            new_mid_alpha = new_edge_alpha * mod._distance_field_opacity(
+                soft_bloom["falloff"] * 6.0,
+                dimmer["falloff"],
+                dimmer["power"],
+            )
+            new_far_alpha = new_edge_alpha * mod._distance_field_opacity(
+                soft_bloom["falloff"] * 12.0,
+                dimmer["falloff"],
+                dimmer["power"],
+            )
+
+            assert new_edge_alpha == pytest.approx(old_edge_alpha * 0.5)
+            assert new_mid_alpha < old_mid_alpha
+            assert new_far_alpha > old_far_alpha
+            assert new_far_alpha < old_edge_alpha * 0.25
+            assert dimmer["falloff"] >= soft_bloom["falloff"] * 16.0
+            assert dimmer["power"] <= 1.15
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_setup_installs_masked_dimmer_pass_instead_of_flat_fill(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """The dim layer should be a container for SDF-masked pass layers."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            class FakeColor:
+                def __init__(self, alpha=1.0):
+                    self.alpha = alpha
+
+                def CGColor(self):
+                    return self
+
+                def colorWithAlphaComponent_(self, alpha):
+                    return FakeColor(alpha)
+
+            class FakeNSColor:
+                @staticmethod
+                def colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha):
+                    return FakeColor(alpha)
+
+                @staticmethod
+                def clearColor():
+                    return FakeColor(0.0)
+
+            class FakeLayer:
+                def __init__(self):
+                    self.background_color = None
+                    self.frame = None
+                    self.mask = None
+                    self.opacity_value = None
+                    self.sublayers = []
+
+                @classmethod
+                def alloc(cls):
+                    return cls()
+
+                def init(self):
+                    return self
+
+                def setFrame_(self, frame):
+                    self.frame = frame
+
+                def setBackgroundColor_(self, color):
+                    self.background_color = color
+
+                def setOpacity_(self, opacity):
+                    self.opacity_value = opacity
+
+                def addSublayer_(self, layer):
+                    self.sublayers.append(layer)
+
+                def setMask_(self, mask):
+                    self.mask = mask
+
+                def setContents_(self, contents):
+                    self.contents = contents
+
+                def setContentsScale_(self, scale):
+                    self.contents_scale = scale
+
+            class FakeContent:
+                def __init__(self):
+                    self.root_layer = FakeLayer()
+
+                def setWantsLayer_(self, wants_layer):
+                    self.wants_layer = wants_layer
+
+                def layer(self):
+                    return self.root_layer
+
+            class FakeWindow:
+                @classmethod
+                def alloc(cls):
+                    return cls()
+
+                def initWithContentRect_styleMask_backing_defer_(self, *args):
+                    self.content = FakeContent()
+                    return self
+
+                def contentView(self):
+                    return self.content
+
+                def setLevel_(self, level):
+                    self.level = level
+
+                def setOpaque_(self, opaque):
+                    self.opaque = opaque
+
+                def setBackgroundColor_(self, color):
+                    self.background_color = color
+
+                def setIgnoresMouseEvents_(self, ignores):
+                    self.ignores_mouse = ignores
+
+                def setHasShadow_(self, has_shadow):
+                    self.has_shadow = has_shadow
+
+                def setCollectionBehavior_(self, behavior):
+                    self.collection_behavior = behavior
+
+            monkeypatch.setattr(mod, "CALayer", FakeLayer)
+            monkeypatch.setattr(mod, "NSColor", FakeNSColor)
+            monkeypatch.setattr(mod, "NSWindow", FakeWindow)
+            monkeypatch.setattr(mod, "_alpha_field_to_image", lambda alpha: ("image", alpha))
+
+            frame = SimpleNamespace(
+                origin=SimpleNamespace(x=0.0, y=0.0),
+                size=SimpleNamespace(width=20.0, height=12.0),
+            )
+            screen = SimpleNamespace(
+                frame=lambda: frame,
+                backingScaleFactor=lambda: 1.0,
+            )
+            glow = mod.GlowOverlay.__new__(mod.GlowOverlay)
+            glow._screen = screen
+            glow._metrics = None
+
+            glow.setup()
+
+            assert glow._dim_layer.background_color is None
+            assert len(glow._dim_pass_layers) == 1
+            assert glow._dim_pass_layers[0]["spec"]["name"] == "hold_dimmer"
+            assert glow._dim_pass_layers[0]["layer"].mask is not None
+            assert glow._dim_pass_layers[0]["layer"] in glow._dim_layer.sublayers
         finally:
             sys.modules.pop("spoke.glow", None)
 

@@ -527,6 +527,32 @@ def test_distance_field_masks_for_specs_builds_additive_masks_with_notch_corner_
         sys.modules.pop("spoke.glow", None)
 
 
+def test_distance_field_masks_for_specs_builds_hold_dimmer_mask(mock_pyobjc):
+    """The screen dimmer should get a real SDF mask with the display silhouette."""
+    sys.modules.pop("spoke.glow", None)
+    mod = importlib.import_module("spoke.glow")
+    try:
+        screen_14 = SimpleNamespace(
+            auxiliaryTopLeftArea=lambda: _rect(0.0, 950.0, 660.0, 32.0),
+            auxiliaryTopRightArea=lambda: _rect(852.0, 950.0, 660.0, 32.0),
+        )
+
+        geometry_14 = mod._display_shape_geometry(screen_14, 1512.0, 982.0, 2.0)
+        geometry_14["scale"] = 2.0
+
+        mod._alpha_field_to_image = lambda alpha: ("image", alpha)
+        masks = mod._distance_field_masks_for_specs(
+            geometry_14,
+            mod._continuous_dimmer_pass_specs(),
+        )
+
+        assert [entry["spec"]["name"] for entry in masks] == ["hold_dimmer"]
+        assert masks[0]["image"] == "image"
+        assert masks[0]["payload"] is not None
+    finally:
+        sys.modules.pop("spoke.glow", None)
+
+
 def test_distance_field_alphas_for_specs_use_helper_corner_lift_for_additive_passes(mock_pyobjc):
     """Additive corner masks should borrow the continuous helper field rather than only dimming the exact field."""
     sys.modules.pop("spoke.glow", None)

@@ -21,7 +21,8 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Literal
+from types import MappingProxyType
+from typing import Any, Literal, Mapping
 
 import objc
 
@@ -60,6 +61,20 @@ class OpticalShellMaterialSnapshot:
     core_magnification: float = 1.0
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
+    mip_blur_strength: float = 1.0
+    warp_mode: float = 0.0
+    scar_amount: float = 0.0
+    scar_seam_length_frac: float = 0.70
+    scar_seam_thickness_frac: float = 0.15
+    scar_seam_focus_frac: float = 0.34
+    scar_vertical_grip: float = 0.20
+    scar_horizontal_grip: float = 0.07
+    scar_axis_rotation: float = 0.0
+    scar_mirrored_lip: float = 0.0
+    bleed_zone_frac: float | None = None
+    exterior_mix_width_points: float | None = None
+    x_squeeze: float | None = None
+    y_squeeze: float | None = None
     cleanup_blur_radius_points: float = 0.0
     debug_visualize: bool = False
     debug_grid_spacing_points: float = 18.0
@@ -75,6 +90,7 @@ class OverlayRenderSnapshot:
     excluded_window_ids: tuple[int, ...] = ()
     z_index: int = 0
     payload: dict | None = None
+    optical_field: Mapping[str, Any] | None = None
 
 
 def _load_screencapturekit_bridge():
@@ -119,6 +135,10 @@ def _normalize_shell_configs(shell_configs) -> list[dict]:
     return configs
 
 
+def _wants_continuous_present(shell_configs: list[dict]) -> bool:
+    return any(bool(config.get("continuous_present")) for config in shell_configs)
+
+
 def _initial_brightness_from_shell_config(config: dict | None, fallback: float) -> float:
     if config is None:
         return fallback
@@ -132,6 +152,111 @@ def _initial_brightness_from_shell_config(config: dict | None, fallback: float) 
 def _configure_stream_frame_interval(config) -> None:
     if hasattr(config, "setMinimumFrameInterval_"):
         config.setMinimumFrameInterval_(_SCK_FRAME_INTERVAL)
+
+
+def _average_ms(total_ms: float, count: int) -> float:
+    if count <= 0:
+        return 0.0
+    return total_ms / count
+
+
+def _clamp_sample_bounds(start: float, extent: float, limit: int) -> tuple[int, int] | None:
+    lo = max(int(start), 0)
+    hi = min(int(start + extent), int(limit))
+    if hi <= lo:
+        return None
+    return lo, hi
+
+
+def _sample_pixel_buffer_brightness(
+    pixel_buffer,
+    width: int,
+    height: int,
+    config: dict,
+    screen,
+) -> float | None:
+    """Sample shell-region luminance from the live SCK pixel buffer."""
+    if pixel_buffer is None or width <= 0 or height <= 0:
+        return None
+    bridge = _load_screencapturekit_bridge()
+    if bridge is None:
+        return None
+    cv_lib = bridge.get("_cv_lib")
+    if cv_lib is None:
+        return None
+
+    raw_pb = objc.pyobjc_id(pixel_buffer)
+    readonly = 1
+    try:
+        cv_lib.CVPixelBufferLockBaseAddress.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        cv_lib.CVPixelBufferLockBaseAddress.restype = ctypes.c_int
+        cv_lib.CVPixelBufferUnlockBaseAddress.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        cv_lib.CVPixelBufferUnlockBaseAddress.restype = ctypes.c_int
+        cv_lib.CVPixelBufferGetBaseAddress.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetBaseAddress.restype = ctypes.c_void_p
+        cv_lib.CVPixelBufferGetBytesPerRow.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetBytesPerRow.restype = ctypes.c_size_t
+        cv_lib.CVPixelBufferGetWidth.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetWidth.restype = ctypes.c_size_t
+        cv_lib.CVPixelBufferGetHeight.argtypes = [ctypes.c_void_p]
+        cv_lib.CVPixelBufferGetHeight.restype = ctypes.c_size_t
+    except Exception:
+        return None
+
+    try:
+        if cv_lib.CVPixelBufferLockBaseAddress(raw_pb, readonly) != 0:
+            return None
+    except Exception:
+        return None
+
+    try:
+        base = cv_lib.CVPixelBufferGetBaseAddress(raw_pb)
+        bytes_per_row = int(cv_lib.CVPixelBufferGetBytesPerRow(raw_pb))
+        buffer_width = int(cv_lib.CVPixelBufferGetWidth(raw_pb) or width)
+        buffer_height = int(cv_lib.CVPixelBufferGetHeight(raw_pb) or height)
+        if not base or bytes_per_row <= 0 or buffer_width <= 0 or buffer_height <= 0:
+            return None
+
+        cx = float(config.get("center_x", buffer_width * 0.5))
+        cy = float(config.get("center_y", buffer_height * 0.5))
+        rw = float(config.get("content_width_points", buffer_width)) * 0.5
+        rh = float(config.get("content_height_points", buffer_height)) * 0.5
+        x_bounds = _clamp_sample_bounds(cx - rw, rw * 2.0, buffer_width)
+        y_bounds = _clamp_sample_bounds(cy - rh, rh * 2.0, buffer_height)
+        if x_bounds is None or y_bounds is None:
+            return None
+
+        x0, x1 = x_bounds
+        y0, y1 = y_bounds
+        data = (ctypes.c_ubyte * (bytes_per_row * buffer_height)).from_address(base)
+        total = 0.0
+        count = 0
+        for sy in range(y0, y1, 5):
+            row = sy * bytes_per_row
+            for sx in range(x0, x1, 5):
+                offset = row + (sx * 4)
+                if offset + 2 < len(data):
+                    b = data[offset]
+                    g = data[offset + 1]
+                    r = data[offset + 2]
+                    total += (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                    count += 1
+        if count <= 0:
+            return None
+        return total / count
+    except Exception:
+        return None
+    finally:
+        try:
+            cv_lib.CVPixelBufferUnlockBaseAddress(raw_pb, readonly)
+        except Exception:
+            pass
+
+
+def _fps_from_intervals(count: int, total_interval_ms: float) -> float:
+    if count <= 1 or total_interval_ms <= 0:
+        return 0.0
+    return ((count - 1) * 1000.0) / total_interval_ms
 
 
 class FullScreenCompositor:
@@ -182,6 +307,26 @@ class FullScreenCompositor:
         self._interval_frame_count = 0
         self._interval_presented = 0
         self._last_drawable_size = (0, 0)
+        self._capture_frame_count = 0
+        self._display_link_ticks = 0
+        self._duplicate_frames = 0
+        self._skipped_frames = 0
+        self._brightness_samples = 0
+        self._windowserver_brightness_samples = 0
+        self._warp_to_drawable_calls = 0
+        self._total_capture_frame_interval_ms = 0.0
+        self._total_display_link_interval_ms = 0.0
+        self._total_presented_interval_ms = 0.0
+        self._total_brightness_sample_interval_ms = 0.0
+        self._total_compositor_tick_ms = 0.0
+        self._total_presented_frame_ms = 0.0
+        self._total_warp_to_drawable_ms = 0.0
+        self._total_brightness_sample_ms = 0.0
+        self._total_windowserver_brightness_sample_ms = 0.0
+        self._last_capture_frame_at = None
+        self._last_display_link_at = None
+        self._last_presented_at = None
+        self._last_brightness_sample_at = None
 
         # Brightness sampling from the captured IOSurface
         self._sampled_brightness = 0.5
@@ -288,34 +433,190 @@ class FullScreenCompositor:
         """Number of frames the compositor has successfully presented."""
         return self._presented_count
 
+    def _ensure_diagnostics_fields(self) -> None:
+        defaults = {
+            "_capture_frame_count": 0,
+            "_display_link_ticks": 0,
+            "_duplicate_frames": 0,
+            "_skipped_frames": 0,
+            "_brightness_samples": 0,
+            "_windowserver_brightness_samples": 0,
+            "_warp_to_drawable_calls": 0,
+            "_total_capture_frame_interval_ms": 0.0,
+            "_total_display_link_interval_ms": 0.0,
+            "_total_presented_interval_ms": 0.0,
+            "_total_brightness_sample_interval_ms": 0.0,
+            "_total_compositor_tick_ms": 0.0,
+            "_total_presented_frame_ms": 0.0,
+            "_total_warp_to_drawable_ms": 0.0,
+            "_total_brightness_sample_ms": 0.0,
+            "_total_windowserver_brightness_sample_ms": 0.0,
+            "_last_capture_frame_at": None,
+            "_last_display_link_at": None,
+            "_last_presented_at": None,
+            "_last_brightness_sample_at": None,
+        }
+        for name, value in defaults.items():
+            if not hasattr(self, name):
+                setattr(self, name, value)
+
+    def diagnostics_snapshot(self) -> dict[str, float | int]:
+        """Return compositor residency counters and cheap timing proxies."""
+        self._ensure_diagnostics_fields()
+        with self._lock:
+            capture_frames = int(self._capture_frame_count)
+            display_ticks = int(self._display_link_ticks)
+            presented_frames = int(self._presented_count)
+            brightness_samples = int(self._brightness_samples)
+            windowserver_brightness_samples = int(self._windowserver_brightness_samples)
+            warp_calls = int(self._warp_to_drawable_calls)
+            capture_interval_ms = float(self._total_capture_frame_interval_ms)
+            display_interval_ms = float(self._total_display_link_interval_ms)
+            presented_interval_ms = float(self._total_presented_interval_ms)
+            brightness_interval_ms = float(self._total_brightness_sample_interval_ms)
+            total_compositor_tick_ms = float(self._total_compositor_tick_ms)
+            total_presented_frame_ms = float(self._total_presented_frame_ms)
+            total_warp_to_drawable_ms = float(self._total_warp_to_drawable_ms)
+            total_brightness_sample_ms = float(self._total_brightness_sample_ms)
+            total_windowserver_brightness_sample_ms = float(
+                self._total_windowserver_brightness_sample_ms
+            )
+            duplicate_frames = int(self._duplicate_frames)
+            skipped_frames = int(self._skipped_frames)
+        diagnostics = {
+            "capture_frames": capture_frames,
+            "capture_fps": _fps_from_intervals(capture_frames, capture_interval_ms),
+            "display_link_ticks": display_ticks,
+            "display_link_fps": _fps_from_intervals(display_ticks, display_interval_ms),
+            "presented_frames": presented_frames,
+            "presented_fps": _fps_from_intervals(presented_frames, presented_interval_ms),
+            "skipped_frames": skipped_frames,
+            "duplicate_frames": duplicate_frames,
+            "brightness_samples": brightness_samples,
+            "windowserver_brightness_samples": windowserver_brightness_samples,
+            "avg_capture_frame_interval_ms": _average_ms(
+                capture_interval_ms,
+                max(capture_frames - 1, 0),
+            ),
+            "avg_display_link_interval_ms": _average_ms(
+                display_interval_ms,
+                max(display_ticks - 1, 0),
+            ),
+            "avg_presented_interval_ms": _average_ms(
+                presented_interval_ms,
+                max(presented_frames - 1, 0),
+            ),
+            "avg_brightness_sample_interval_ms": _average_ms(
+                brightness_interval_ms,
+                max(brightness_samples - 1, 0),
+            ),
+            "avg_compositor_tick_ms": _average_ms(
+                total_compositor_tick_ms,
+                display_ticks,
+            ),
+            "avg_presented_frame_ms": _average_ms(
+                total_presented_frame_ms,
+                presented_frames,
+            ),
+            "avg_warp_to_drawable_ms": _average_ms(
+                total_warp_to_drawable_ms,
+                warp_calls,
+            ),
+            "avg_brightness_sample_ms": _average_ms(
+                total_brightness_sample_ms,
+                brightness_samples,
+            ),
+            "avg_windowserver_brightness_sample_ms": _average_ms(
+                total_windowserver_brightness_sample_ms,
+                windowserver_brightness_samples,
+            ),
+        }
+        pipeline = getattr(self, "_pipeline", None)
+        pipeline_diagnostics = getattr(pipeline, "diagnostics_snapshot", None)
+        if callable(pipeline_diagnostics):
+            try:
+                diagnostics.update(dict(pipeline_diagnostics()))
+            except Exception:
+                logger.debug("Metal pipeline diagnostics snapshot failed", exc_info=True)
+        return diagnostics
+
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
         with self._lock:
             configs = list(self._shell_configs)
+            iosurface = self._latest_iosurface
+            pixel_buffer = self._latest_pixel_buffer
             w = self._latest_width
             h = self._latest_height
         if not configs or w <= 0 or h <= 0:
             return
-        self._sample_iosurface_brightness(None, w, h, configs[0])
+        self._sample_brightness_with_diagnostics(
+            iosurface,
+            w,
+            h,
+            configs[0],
+            pixel_buffer,
+        )
 
     def sample_brightness_for_config(self, config: dict) -> float:
         """Sample brightness for a specific shell config."""
         with self._lock:
+            iosurface = self._latest_iosurface
+            pixel_buffer = self._latest_pixel_buffer
             w = self._latest_width
             h = self._latest_height
         if config is None or w <= 0 or h <= 0:
             return self._sampled_brightness
-        self._sample_iosurface_brightness(None, w, h, config)
+        self._sample_brightness_with_diagnostics(
+            iosurface,
+            w,
+            h,
+            config,
+            pixel_buffer,
+        )
         return self._sampled_brightness
 
-    def _sample_iosurface_brightness(self, iosurface, w, h, config):
+    def _sample_brightness_with_diagnostics(
+        self,
+        iosurface,
+        w,
+        h,
+        config,
+        pixel_buffer=None,
+    ) -> None:
+        self._ensure_diagnostics_fields()
+        sample_start = time.monotonic()
+        source = None
+        try:
+            source = self._sample_iosurface_brightness(iosurface, w, h, config, pixel_buffer)
+        finally:
+            sample_end = time.monotonic()
+            elapsed_ms = max((sample_end - sample_start) * 1000.0, 0.0)
+            with self._lock:
+                self._brightness_samples += 1
+                self._total_brightness_sample_ms += elapsed_ms
+                if source == "windowserver":
+                    self._windowserver_brightness_samples += 1
+                    self._total_windowserver_brightness_sample_ms += elapsed_ms
+                if self._last_brightness_sample_at is not None:
+                    self._total_brightness_sample_interval_ms += max(
+                        (sample_end - self._last_brightness_sample_at) * 1000.0,
+                        0.0,
+                    )
+                self._last_brightness_sample_at = sample_end
+
+    def _sample_iosurface_brightness(self, iosurface, w, h, config, pixel_buffer=None):
         """Sample average luminance of the capsule region.
 
-        Uses CGWindowListCreateImage on a small rect centered on the
-        capsule, excluding the compositor's own window.  This captures
-        the raw desktop content behind the overlay — the same content
-        the warp is transforming.
+        Prefer the live SCK pixel buffer already feeding the Metal warp.
+        Fall back to a WindowServer rect capture only when the frame buffer
+        cannot be read.
         """
+        sampled = _sample_pixel_buffer_brightness(pixel_buffer, w, h, config, self._screen)
+        if sampled is not None:
+            self._sampled_brightness = sampled
+            return "pixel_buffer"
+
         try:
             from Quartz import (
                 CGWindowListCreateImage,
@@ -379,8 +680,10 @@ class FullScreenCompositor:
                         count += 1
             if count > 0:
                 self._sampled_brightness = total / count
+            return "windowserver"
         except Exception:
             pass  # non-critical — keep previous brightness
+        return None
 
     @property
     def is_running(self) -> bool:
@@ -680,12 +983,21 @@ class FullScreenCompositor:
         the SCK buffer pool from recycling the IOSurface before the
         display link thread renders it.
         """
+        self._ensure_diagnostics_fields()
+        now = time.monotonic()
         with self._lock:
             self._latest_iosurface = iosurface
             self._latest_pixel_buffer = pixel_buffer  # prevent recycling
             self._latest_width = width
             self._latest_height = height
             self._latest_frame_generation += 1
+            self._capture_frame_count += 1
+            if self._last_capture_frame_at is not None:
+                self._total_capture_frame_interval_ms += max(
+                    (now - self._last_capture_frame_at) * 1000.0,
+                    0.0,
+                )
+            self._last_capture_frame_at = now
 
     # ------------------------------------------------------------------
     # CVDisplayLink render loop
@@ -714,43 +1026,61 @@ class FullScreenCompositor:
         if not self._running:
             return
 
+        self._ensure_diagnostics_fields()
+        tick_start = time.monotonic()
         with self._lock:
+            self._display_link_ticks += 1
+            if self._last_display_link_at is not None:
+                self._total_display_link_interval_ms += max(
+                    (tick_start - self._last_display_link_at) * 1000.0,
+                    0.0,
+                )
+            self._last_display_link_at = tick_start
             iosurface = self._latest_iosurface
             w = self._latest_width
             h = self._latest_height
             configs = list(self._shell_configs)
             frame_generation = self._latest_frame_generation
             config_generation = self._config_generation
-
-        if iosurface is None or w <= 0 or h <= 0 or not configs:
-            return
-        if (
-            frame_generation == self._rendered_frame_generation
-            and config_generation == self._rendered_config_generation
-        ):
-            return
-
-        self._frame_count += 1
-        self._interval_frame_count += 1
-
-        now = time.monotonic()
-        elapsed = now - self._last_report_time
-        if elapsed >= 5.0:
-            fps = self._interval_frame_count / elapsed if elapsed > 0 else 0
-            pfps = self._interval_presented / elapsed if elapsed > 0 else 0
-            logger.info(
-                "Compositor: %d ticks (%.1f fps), %d presented (%.1f fps)",
-                self._interval_frame_count, fps,
-                self._interval_presented, pfps,
-            )
-            self._last_report_time = now
-            self._interval_frame_count = 0
-            self._interval_presented = 0
-
-        if self._metal_layer is None:
-            return
+            continuous_present = _wants_continuous_present(configs)
 
         try:
+            if iosurface is None or w <= 0 or h <= 0 or not configs:
+                return
+            if (
+                frame_generation == self._rendered_frame_generation
+                and config_generation == self._rendered_config_generation
+                and not continuous_present
+            ):
+                with self._lock:
+                    self._duplicate_frames += 1
+                return
+
+            skipped_frames = max(frame_generation - self._rendered_frame_generation - 1, 0)
+            if skipped_frames:
+                with self._lock:
+                    self._skipped_frames += skipped_frames
+
+            self._frame_count += 1
+            self._interval_frame_count += 1
+
+            now = time.monotonic()
+            elapsed = now - self._last_report_time
+            if elapsed >= 5.0:
+                fps = self._interval_frame_count / elapsed if elapsed > 0 else 0
+                pfps = self._interval_presented / elapsed if elapsed > 0 else 0
+                logger.info(
+                    "Compositor: %d ticks (%.1f fps), %d presented (%.1f fps)",
+                    self._interval_frame_count, fps,
+                    self._interval_presented, pfps,
+                )
+                self._last_report_time = now
+                self._interval_frame_count = 0
+                self._interval_presented = 0
+
+            if self._metal_layer is None:
+                return
+
             # Validate config before acquiring a drawable — an empty or
             # missing config would default to a full-screen warp that
             # flashes the entire display.
@@ -763,19 +1093,42 @@ class FullScreenCompositor:
             if self._last_drawable_size != (w, h):
                 self._metal_layer.setDrawableSize_((w, h))
                 self._last_drawable_size = (w, h)
+            present_start = time.monotonic()
             drawable = self._metal_layer.nextDrawable()
             if drawable is None:
                 return
 
-            if self._pipeline.warp_to_drawable(
+            warp_start = time.monotonic()
+            did_present = self._pipeline.warp_to_drawable(
                 iosurface,
                 drawable,
                 width=w,
                 height=h,
                 shell_config=warp_configs if len(warp_configs) > 1 else warp_configs[0],
-            ):
+            )
+            warp_end = time.monotonic()
+            with self._lock:
+                self._warp_to_drawable_calls += 1
+                self._total_warp_to_drawable_ms += max(
+                    (warp_end - warp_start) * 1000.0,
+                    0.0,
+                )
+
+            if did_present:
                 self._presented_count += 1
                 self._interval_presented += 1
+                present_end = time.monotonic()
+                with self._lock:
+                    self._total_presented_frame_ms += max(
+                        (present_end - present_start) * 1000.0,
+                        0.0,
+                    )
+                    if self._last_presented_at is not None:
+                        self._total_presented_interval_ms += max(
+                            (present_end - self._last_presented_at) * 1000.0,
+                            0.0,
+                        )
+                    self._last_presented_at = present_end
                 self._rendered_frame_generation = frame_generation
                 self._rendered_config_generation = config_generation
 
@@ -784,6 +1137,13 @@ class FullScreenCompositor:
         except Exception:
             if self._frame_count <= 10:
                 logger.info("Compositor tick[%d] failed", self._frame_count, exc_info=True)
+        finally:
+            tick_end = time.monotonic()
+            with self._lock:
+                self._total_compositor_tick_ms += max(
+                    (tick_end - tick_start) * 1000.0,
+                    0.0,
+                )
 
 
 class _CompositorRendererProxy:
@@ -897,14 +1257,35 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "core_magnification": snapshot.material.core_magnification,
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
+        "mip_blur_strength": snapshot.material.mip_blur_strength,
+        "warp_mode": snapshot.material.warp_mode,
+        "scar_amount": snapshot.material.scar_amount,
+        "scar_seam_length_frac": snapshot.material.scar_seam_length_frac,
+        "scar_seam_thickness_frac": snapshot.material.scar_seam_thickness_frac,
+        "scar_seam_focus_frac": snapshot.material.scar_seam_focus_frac,
+        "scar_vertical_grip": snapshot.material.scar_vertical_grip,
+        "scar_horizontal_grip": snapshot.material.scar_horizontal_grip,
+        "scar_axis_rotation": snapshot.material.scar_axis_rotation,
+        "scar_mirrored_lip": snapshot.material.scar_mirrored_lip,
         "cleanup_blur_radius_points": snapshot.material.cleanup_blur_radius_points,
         "debug_visualize": snapshot.material.debug_visualize,
         "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
     }
+    for key in (
+        "bleed_zone_frac",
+        "exterior_mix_width_points",
+        "x_squeeze",
+        "y_squeeze",
+    ):
+        value = getattr(snapshot.material, key)
+        if value is not None:
+            config[key] = value
     if snapshot.excluded_window_ids:
         config["excluded_window_ids"] = tuple(snapshot.excluded_window_ids)
     if isinstance(snapshot.payload, dict):
         config.update(snapshot.payload)
+    if snapshot.optical_field is not None:
+        config["optical_field"] = dict(snapshot.optical_field)
     return config
 
 
@@ -916,6 +1297,12 @@ def _snapshot_from_shell_config(
     excluded_window_ids: tuple[int, ...] = (),
 ) -> OverlayRenderSnapshot:
     config = dict(shell_config)
+
+    def _optional_float(key: str) -> float | None:
+        if key not in config or config[key] is None:
+            return None
+        return float(config[key])
+
     geometry = OpticalShellGeometrySnapshot(
         center_x=float(config.get("center_x", 0.0)),
         center_y=float(config.get("center_y", 0.0)),
@@ -931,6 +1318,20 @@ def _snapshot_from_shell_config(
         core_magnification=float(config.get("core_magnification", 1.0)),
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),
+        mip_blur_strength=float(config.get("mip_blur_strength", 1.0)),
+        warp_mode=float(config.get("warp_mode", 0.0)),
+        scar_amount=float(config.get("scar_amount", 0.0)),
+        scar_seam_length_frac=float(config.get("scar_seam_length_frac", 0.70)),
+        scar_seam_thickness_frac=float(config.get("scar_seam_thickness_frac", 0.15)),
+        scar_seam_focus_frac=float(config.get("scar_seam_focus_frac", 0.34)),
+        scar_vertical_grip=float(config.get("scar_vertical_grip", 0.20)),
+        scar_horizontal_grip=float(config.get("scar_horizontal_grip", 0.07)),
+        scar_axis_rotation=float(config.get("scar_axis_rotation", 0.0)),
+        scar_mirrored_lip=float(config.get("scar_mirrored_lip", 0.0)),
+        bleed_zone_frac=_optional_float("bleed_zone_frac"),
+        exterior_mix_width_points=_optional_float("exterior_mix_width_points"),
+        x_squeeze=_optional_float("x_squeeze"),
+        y_squeeze=_optional_float("y_squeeze"),
         cleanup_blur_radius_points=float(config.get("cleanup_blur_radius_points", 0.0)),
         debug_visualize=bool(config.get("debug_visualize", False)),
         debug_grid_spacing_points=float(config.get("debug_grid_spacing_points", 18.0)),
@@ -940,6 +1341,9 @@ def _snapshot_from_shell_config(
         for key in ("agent_thread_cards", "agent_thread_hud", "surface_kind")
         if key in config
     }
+    optical_field = None
+    if isinstance(config.get("optical_field"), dict):
+        optical_field = MappingProxyType(dict(config["optical_field"]))
     return OverlayRenderSnapshot(
         identity=identity,
         generation=generation,
@@ -949,6 +1353,7 @@ def _snapshot_from_shell_config(
         excluded_window_ids=tuple(int(v) for v in config.get("excluded_window_ids", excluded_window_ids)),
         z_index=int(config.get("z_index", 0)),
         payload=payload,
+        optical_field=optical_field,
     )
 
 
@@ -993,13 +1398,21 @@ class OverlayCompositorHost:
                 "content_view": content_view,
                 "snapshot": None,
                 "generation": 0,
+                "client": None,
             }
             self._clients[identity.client_id] = entry
         else:
             entry["identity"] = identity
             entry["window"] = window
             entry["content_view"] = content_view
-        return OverlayCompositorClient(self, identity)
+        client = entry.get("client")
+        if client is None or getattr(client, "_host", None) is not self:
+            client = OverlayCompositorClient(self, identity)
+            entry["client"] = client
+        else:
+            client.identity = identity
+            client._client_id = identity.client_id
+        return client
 
     def unregister_client(self, client_id: str) -> None:
         self.release_client(client_id)
@@ -1036,6 +1449,42 @@ class OverlayCompositorHost:
             excluded_window_ids=tuple(window_ids),
         )
         return self.publish(snapshot)
+
+    def update_client_configs(self, client_configs: dict[str, dict]) -> bool:
+        """Publish several client configs with one compositor-visible state swap."""
+        if not client_configs:
+            return True
+        updates: list[tuple[str, dict, OverlayRenderSnapshot]] = []
+        previous: dict[str, tuple[OverlayRenderSnapshot | None, int]] = {}
+        for client_id, shell_config in client_configs.items():
+            entry = self._clients.get(client_id)
+            if entry is None:
+                return False
+            generation = int(entry.get("generation", 0)) + 1
+            window_ids = self._window_ids_for_entry(entry)
+            snapshot = _snapshot_from_shell_config(
+                entry["identity"],
+                shell_config,
+                generation=generation,
+                excluded_window_ids=tuple(window_ids),
+            )
+            previous[client_id] = (entry.get("snapshot"), int(entry.get("generation", 0)))
+            updates.append((client_id, shell_config, snapshot))
+        for client_id, _shell_config, snapshot in updates:
+            entry = self._clients[client_id]
+            entry["identity"] = snapshot.identity
+            entry["snapshot"] = snapshot
+            entry["generation"] = max(int(entry.get("generation", 0)), snapshot.generation)
+        if not self._sync_host(start_if_needed=True):
+            for client_id, (snapshot, generation) in previous.items():
+                entry = self._clients.get(client_id)
+                if entry is not None:
+                    entry["snapshot"] = snapshot
+                    entry["generation"] = generation
+            if not any(client.get("snapshot") is not None for client in self._clients.values()):
+                _shared_overlay_hosts.pop(self._registry_key, None)
+            return False
+        return True
 
     def update_client_config_key(self, client_id: str, key: str, value) -> bool:
         entry = self._clients.get(client_id)
@@ -1076,7 +1525,13 @@ class OverlayCompositorHost:
         return float(getattr(self._compositor, "sampled_brightness", 0.5))
 
     def refresh_brightness(self, client_id: str) -> None:
-        if client_id not in self._clients:
+        entry = self._clients.get(client_id)
+        if entry is None or entry.get("snapshot") is None:
+            return
+        config = _snapshot_to_shell_config(entry["snapshot"])
+        sampler = getattr(self._compositor, "sample_brightness_for_config", None)
+        if callable(sampler):
+            sampler(config)
             return
         refresher = getattr(self._compositor, "refresh_brightness", None)
         if callable(refresher):
@@ -1092,6 +1547,32 @@ class OverlayCompositorHost:
     def presented_count(self) -> int:
         return int(getattr(self._compositor, "presented_count", 0))
 
+    def diagnostics_snapshot(self) -> dict[str, float | int]:
+        diagnostics = getattr(self._compositor, "diagnostics_snapshot", None)
+        if callable(diagnostics):
+            return dict(diagnostics())
+        return {
+            "capture_frames": 0,
+            "capture_fps": 0.0,
+            "display_link_ticks": 0,
+            "display_link_fps": 0.0,
+            "presented_frames": self.presented_count,
+            "presented_fps": 0.0,
+            "skipped_frames": 0,
+            "duplicate_frames": 0,
+            "brightness_samples": 0,
+            "windowserver_brightness_samples": 0,
+            "avg_capture_frame_interval_ms": 0.0,
+            "avg_display_link_interval_ms": 0.0,
+            "avg_presented_interval_ms": 0.0,
+            "avg_brightness_sample_interval_ms": 0.0,
+            "avg_compositor_tick_ms": 0.0,
+            "avg_presented_frame_ms": 0.0,
+            "avg_warp_to_drawable_ms": 0.0,
+            "avg_brightness_sample_ms": 0.0,
+            "avg_windowserver_brightness_sample_ms": 0.0,
+        }
+
     def debug_snapshot(self) -> dict:
         clients = []
         for snapshot in self.render_snapshots():
@@ -1101,6 +1582,7 @@ class OverlayCompositorHost:
         return {
             "client_count": len(clients),
             "clients": clients,
+            "diagnostics": self.diagnostics_snapshot(),
         }
 
     def _window_ids_for_entry(self, entry: dict) -> list[int]:
@@ -1206,6 +1688,14 @@ class OverlayCompositorClient:
         except (TypeError, ValueError):
             return 0
 
+    def diagnostics_snapshot(self) -> dict[str, float | int]:
+        if self._host is None:
+            return {}
+        diagnostics = getattr(self._host, "diagnostics_snapshot", None)
+        if callable(diagnostics):
+            return dict(diagnostics())
+        return {}
+
     def release(self) -> None:
         self.stop()
 
@@ -1228,8 +1718,9 @@ def start_overlay_compositor(
     shell_config,
     client_id: str = "assistant.command",
     role: str = "assistant",
+    registry: OverlayCompositorRegistry | None = None,
 ):
-    registry = OverlayCompositorRegistry()
+    registry = registry or OverlayCompositorRegistry()
     host = registry.host_for_screen(screen)
     identity = OverlayClientIdentity(
         client_id=client_id,

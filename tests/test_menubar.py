@@ -464,6 +464,61 @@ class TestMenuBarIcon:
         assert any(call.args == ("Main", "selectModel:", "") for call in calls)
         assert any(call.args == ("Smoke", "selectModel:", "") for call in calls)
 
+    def test_build_menu_shows_preview_warp_tuner_toggle(self, menubar_module):
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._on_toggle_handsfree = None
+        icon._on_toggle_terraform = None
+        icon._on_toggle_preview_warp = MagicMock()
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(
+            call.args == ("Preview Warp Tuner", "togglePreviewWarp:", "w")
+            for call in calls
+        )
+
+    def test_build_menu_shows_assistant_seam_pucker_tuner_toggle(self, menubar_module):
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._on_toggle_handsfree = None
+        icon._on_toggle_terraform = None
+        icon._on_toggle_preview_warp = None
+        icon._on_toggle_seam_pucker = MagicMock()
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(
+            call.args == ("Assistant Seam Pucker Tuner", "toggleSeamPucker:", "p")
+            for call in calls
+        )
+
     def test_launch_target_items_have_dispatch_state_and_enabled_wiring(
         self, menubar_module, monkeypatch
     ):

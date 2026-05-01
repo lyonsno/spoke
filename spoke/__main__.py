@@ -212,8 +212,8 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT = 8.0
-_LOCAL_PREVIEW_INTERVAL_S = 0.3
-_COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S = 1.5
+_LOCAL_PREVIEW_INTERVAL_S = 0.4
+_COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S = 0.4
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
@@ -1004,6 +1004,7 @@ class SpokeAppDelegate(NSObject):
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
+        self._overlay_compositor_registry = None
         self._transcribing = False
         self._transcription_token = 0
         self._parallel_insert_token = 0
@@ -1267,8 +1268,12 @@ class SpokeAppDelegate(NSObject):
         )
         self._glow.setup()
 
+        from .fullscreen_compositor import OverlayCompositorRegistry
+        self._overlay_compositor_registry = OverlayCompositorRegistry()
+
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
         self._overlay.setup()
+        self._overlay.set_compositor_registry(self._overlay_compositor_registry)
 
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
@@ -1277,6 +1282,7 @@ class SpokeAppDelegate(NSObject):
                 None, metrics=self._optical_shell_metrics
             )
             self._command_overlay.setup()
+            self._command_overlay.set_compositor_registry(self._overlay_compositor_registry)
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
@@ -1286,9 +1292,22 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
+        from .preview_warp_hud import PreviewWarpHUD
+        self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
+        self._preview_warp_hud.restore_visibility()
+        self._menubar._on_toggle_preview_warp = self._preview_warp_hud.toggle
+        if getattr(self, "_command_overlay", None) is not None:
+            from .seam_pucker_hud import SeamPuckerHUD
+            self._seam_pucker_hud = SeamPuckerHUD.alloc().initWithOverlay_(
+                self._command_overlay
+            )
+            self._seam_pucker_hud.restore_visibility()
+            self._menubar._on_toggle_seam_pucker = self._seam_pucker_hud.toggle
+
         # Hands-free mode — expose the toggle when a wakeword backend is configured
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
+        self._menubar.refresh_menu()
 
         # Iron Giant: install event tap and probe mic in parallel.
         # The event tap (spacebar interception) only needs Accessibility permission,
@@ -7608,6 +7627,10 @@ class SpokeAppDelegate(NSObject):
             hf.disable(reason="app quit")
         if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
             self._terraform_hud.cleanup()
+        if hasattr(self, "_preview_warp_hud") and self._preview_warp_hud is not None:
+            self._preview_warp_hud.cleanup()
+        if hasattr(self, "_seam_pucker_hud") and self._seam_pucker_hud is not None:
+            self._seam_pucker_hud.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 
@@ -7761,6 +7784,10 @@ def main() -> None:
         )
         _record_runtime_phase("signal.sigterm", lock_pid=lock_pid)
         delegate._detector.uninstall()
+        if hasattr(delegate, "_preview_warp_hud") and delegate._preview_warp_hud is not None:
+            delegate._preview_warp_hud.cleanup()
+        if hasattr(delegate, "_seam_pucker_hud") and delegate._seam_pucker_hud is not None:
+            delegate._seam_pucker_hud.cleanup()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
         # Remove heartbeat so next launch doesn't see us as a zombie.
