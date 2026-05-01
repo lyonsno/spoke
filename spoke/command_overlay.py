@@ -417,6 +417,11 @@ def _smoothstep(progress: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def _snap_ease_in(progress: float) -> float:
+    t = _clamp01(progress)
+    return t * t * t
+
+
 def _lerp_color(
     start: tuple[float, float, float],
     end: tuple[float, float, float],
@@ -661,8 +666,8 @@ def _materialized_optical_shell_config(
     config["_materialization_base_height_points"] = base_h
     config["_materialization_base_corner_radius_points"] = base_radius
 
-    spread_t = _clamp01(p / _OPTICAL_MATERIALIZATION_SPREAD_END) ** 3.0
-    bloom_t = _smoothstep(
+    spread_t = _snap_ease_in(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
+    bloom_t = _snap_ease_in(
         (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
         / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
     )
@@ -679,7 +684,11 @@ def _materialized_optical_shell_config(
         seed_mag = base_mag * _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC
         if p <= _OPTICAL_MATERIALIZATION_MAG_ACCEL_END:
             t = _clamp01(p / _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
-            config["core_magnification"] = _lerp(seed_mag, base_mag * 0.82, t * t)
+            config["core_magnification"] = _lerp(
+                seed_mag,
+                base_mag * 0.82,
+                _snap_ease_in(t),
+            )
         elif p <= _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT:
             t = _clamp01(
                 (p - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
@@ -691,7 +700,7 @@ def _materialized_optical_shell_config(
             config["core_magnification"] = _lerp(
                 base_mag * 0.82,
                 base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
-                t,
+                _snap_ease_in(t),
             )
         else:
             t = _clamp01(
@@ -701,7 +710,7 @@ def _materialized_optical_shell_config(
             config["core_magnification"] = _lerp(
                 base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
                 base_mag,
-                t * t,
+                _snap_ease_in(t),
             )
     for key in ("band_width_points", "tail_width_points"):
         if key in config:

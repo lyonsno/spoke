@@ -579,13 +579,15 @@ class TestOpticalShellMaterialization:
 
         seed = mod._materialized_optical_shell_config(base, 0.0)
         early = mod._materialized_optical_shell_config(base, 0.20)
-        surge = mod._materialized_optical_shell_config(base, 0.62)
+        loaded = mod._materialized_optical_shell_config(base, 0.62)
+        surge = mod._materialized_optical_shell_config(base, 0.69)
         peak = mod._materialized_optical_shell_config(base, 0.72)
         settle = mod._materialized_optical_shell_config(base, 0.90)
         final = mod._materialized_optical_shell_config(base, 1.0)
 
         assert seed["core_magnification"] < base["core_magnification"] * 0.10
         assert early["core_magnification"] > seed["core_magnification"]
+        assert loaded["core_magnification"] < base["core_magnification"]
         assert surge["core_magnification"] > base["core_magnification"]
         assert peak["core_magnification"] == pytest.approx(
             base["core_magnification"] * 1.20
@@ -645,6 +647,67 @@ class TestOpticalShellMaterialization:
 
         assert gathering["height_frac"] < 0.25
         assert snap["height_frac"] - gathering["height_frac"] > 0.55
+
+    def test_materialization_warp_vertical_bloom_snaps_like_fill(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "core_magnification": 14.0,
+        }
+        seed = mod._materialized_optical_shell_config(
+            base,
+            mod._OPTICAL_MATERIALIZATION_BLOOM_START,
+        )
+        early = mod._materialized_optical_shell_config(
+            base,
+            mod._OPTICAL_MATERIALIZATION_BLOOM_START
+            + 0.25 * (1.0 - mod._OPTICAL_MATERIALIZATION_BLOOM_START),
+        )
+        late = mod._materialized_optical_shell_config(
+            base,
+            mod._OPTICAL_MATERIALIZATION_BLOOM_START
+            + 0.80 * (1.0 - mod._OPTICAL_MATERIALIZATION_BLOOM_START),
+        )
+
+        span = base["content_height_points"] - seed["content_height_points"]
+        early_frac = (early["content_height_points"] - seed["content_height_points"]) / span
+        late_frac = (late["content_height_points"] - seed["content_height_points"]) / span
+
+        assert early_frac < 0.04
+        assert late_frac > 0.50
+
+    def test_materialization_core_magnification_loads_then_snaps_to_overshoot(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "core_magnification": 14.0,
+        }
+        mid_progress = mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END + 0.50 * (
+            mod._OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+            - mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+        )
+        late_progress = mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END + 0.85 * (
+            mod._OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+            - mod._OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+        )
+
+        mid = mod._materialized_optical_shell_config(base, mid_progress)
+        late = mod._materialized_optical_shell_config(base, late_progress)
+
+        assert mid["core_magnification"] < base["core_magnification"] * 0.93
+        assert late["core_magnification"] > base["core_magnification"] * 1.02
 
     def test_dismiss_seam_latch_resolves_from_peak_to_closed_rest(
         self, mock_pyobjc
