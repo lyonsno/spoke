@@ -366,3 +366,87 @@ def test_finish_on_main_clears_transcribing():
     _run_finish_on_main(app, {"x": 0.5, "y": 0.0, "width": 0.5, "height": 1.0})
 
     assert app._transcribing is False
+
+
+# ── optical field integration tests ──
+
+def test_positioning_emits_optical_field_request():
+    """_finish_on_main should emit an OpticalFieldRequest with the computed bounds."""
+    from spoke.optical_field import OpticalFieldRequest, OpticalFieldBounds
+
+    app = MagicMock()
+    app._transcribing = True
+    app._detector = MagicMock()
+    app._menubar = None
+    app._overlay = None
+    app._fullscreen_compositor = None  # no compositor → fallback path
+    app._command_overlay = None
+
+    _run_finish_on_main(app, {"x": 0.5, "y": 0.0, "width": 0.5, "height": 1.0})
+
+    # Should store the request on the app for persistence across show/hide
+    req = app._positioning_field_request
+    assert isinstance(req, OpticalFieldRequest)
+    assert req.caller_id == "semantic_positioning"
+    assert req.role == "assistant"
+    assert req.state == "materialize"
+    assert req.bounds.width > 0
+    assert req.bounds.height > 0
+
+
+def test_positioning_pushes_to_compositor_backend():
+    """When a compositor with optical field backend exists, push config there."""
+    from spoke.optical_field import OpticalFieldPlaceholderBackend
+
+    backend = OpticalFieldPlaceholderBackend()
+    compositor = MagicMock()
+    compositor._optical_field_backend = backend
+
+    app = MagicMock()
+    app._transcribing = True
+    app._detector = MagicMock()
+    app._menubar = None
+    app._overlay = None
+    app._fullscreen_compositor = compositor
+    app._command_overlay = MagicMock()
+    app._command_overlay._compositor_client_id = "cmd_overlay_1"
+
+    _run_finish_on_main(app, {"x": 0.25, "y": 0.25, "width": 0.5, "height": 0.5})
+
+    # Backend should have the request
+    reqs = backend.requests()
+    assert len(reqs) == 1
+    assert reqs[0].caller_id == "semantic_positioning"
+
+    # Compositor should have received an update
+    compositor.update_client_config.assert_called_once()
+
+
+def test_positioning_request_persists_across_calls():
+    """Successive positioning calls update the same caller_id, not accumulate."""
+    from spoke.optical_field import OpticalFieldPlaceholderBackend
+
+    backend = OpticalFieldPlaceholderBackend()
+    compositor = MagicMock()
+    compositor._optical_field_backend = backend
+
+    app = MagicMock()
+    app._transcribing = True
+    app._detector = MagicMock()
+    app._menubar = None
+    app._overlay = None
+    app._fullscreen_compositor = compositor
+    app._command_overlay = MagicMock()
+    app._command_overlay._compositor_client_id = "cmd_overlay_1"
+
+    # First positioning
+    _run_finish_on_main(app, {"x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5})
+    assert len(backend.requests()) == 1
+
+    # Second positioning — should upsert, not duplicate
+    app._transcribing = True
+    _run_finish_on_main(app, {"x": 0.5, "y": 0.5, "width": 0.5, "height": 0.5})
+    assert len(backend.requests()) == 1
+    # Bounds should reflect the second call
+    req = backend.requests()[0]
+    assert req.bounds.x > 0  # moved from origin

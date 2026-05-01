@@ -13,6 +13,11 @@ import logging
 import threading
 import time
 
+from ..optical_field import (
+    OpticalFieldBounds,
+    OpticalFieldRequest,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -106,6 +111,9 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
     _finish_on_main(app, result)
 
 
+_POSITIONING_CALLER_ID = "semantic_positioning"
+
+
 def _finish_on_main(app, result: dict | None) -> None:
     """Schedule overlay repositioning on the main thread."""
     from PyObjCTools import AppHelper
@@ -152,19 +160,50 @@ def _finish_on_main(app, result: dict | None) -> None:
         elapsed = result.get("elapsed_s", 0)
 
         logger.info(
-            "Positioning overlay to (%.0f, %.0f) %.0fx%.0f — %r in %.1fs",
+            "Positioning overlay via optical field → (%.0f, %.0f) %.0fx%.0f — %r in %.1fs",
             x, mac_y, w, h, content_desc, elapsed,
         )
 
-        command_overlay = getattr(app, '_command_overlay', None)
-        preview_overlay = getattr(app, '_overlay', None)
-        target = command_overlay or preview_overlay
-        which = "command" if target is command_overlay else "preview" if target is preview_overlay else "none"
-        logger.info("Positioning target: %s overlay (%s)", which, type(target).__name__ if target else "None")
-        import sys
-        print(f"[POSITIONING] Moving {which} overlay", file=sys.stderr, flush=True)
-        if target is not None:
-            _move_overlay(target, x, mac_y, w, h)
+        # Emit an OpticalFieldRequest with the computed bounds.
+        # The compositor owns the rendering — we don't touch NSWindow
+        # frames, SDF layers, or backdrop geometry directly.
+        request = OpticalFieldRequest(
+            caller_id=_POSITIONING_CALLER_ID,
+            bounds=OpticalFieldBounds(x=x, y=mac_y, width=w, height=h),
+            role="assistant",
+            state="materialize",
+            visible=True,
+        )
+
+        # Push through the compositor's optical field backend if available,
+        # otherwise fall back to direct overlay move for smoke testing.
+        compositor = getattr(app, '_fullscreen_compositor', None)
+        backend = getattr(compositor, '_optical_field_backend', None) if compositor else None
+        if backend is not None:
+            from ..optical_field import compile_placeholder_shell_config
+            backend.upsert(request)
+            shell_config = compile_placeholder_shell_config(request)
+            # Find the active client to push the config to
+            command_overlay = getattr(app, '_command_overlay', None)
+            client_id = getattr(command_overlay, '_compositor_client_id', None) if command_overlay else None
+            if client_id and hasattr(compositor, 'update_client_config'):
+                compositor.update_client_config(client_id, shell_config)
+                logger.info("Pushed optical field config to compositor client %s", client_id)
+            else:
+                # No compositor client — push as a shell config update
+                compositor.update_shell_config(shell_config)
+                logger.info("Pushed optical field config as shell config")
+        else:
+            # Fallback: direct overlay move (legacy smoke path)
+            logger.info("No optical field backend — falling back to direct overlay move")
+            command_overlay = getattr(app, '_command_overlay', None)
+            preview_overlay = getattr(app, '_overlay', None)
+            target = command_overlay or preview_overlay
+            if target is not None:
+                _move_overlay(target, x, mac_y, w, h)
+
+        # Store the last request so position persists across show/hide
+        app._positioning_field_request = request
 
         # Flash the debug grid showing which cells the model marked YES/NO
         content_map = result.get("content_map")
