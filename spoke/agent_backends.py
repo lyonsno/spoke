@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import threading
@@ -43,6 +44,13 @@ _GEMINI_CANDIDATE_PATHS = (
     "/usr/local/bin/gemini",
     os.path.expanduser("~/.local/bin/gemini"),
 )
+_GEMINI_OPERATOR_PROMPT_PREFIX = """You are running inside Spoke's compact operator shell.
+Answer the user's latest instruction directly and concisely.
+Do not print an implementation plan, checklist, file-by-file itinerary, or "I will..." reconnaissance log unless the user explicitly asks for one.
+If tools are useful, use them and report the result rather than narrating every intended step first.
+
+User instruction:
+"""
 _CODEX_SESSION_LOG_SCAN_LIMIT = 250_000
 
 
@@ -303,10 +311,11 @@ def _gemini_command(
     prompt: str,
     resume_id: str | None,
 ) -> list[str]:
+    operator_prompt = f"{_GEMINI_OPERATOR_PROMPT_PREFIX}{prompt}"
     command = [
         gemini_path,
         "-p",
-        prompt,
+        operator_prompt,
         "--output-format",
         "stream-json",
         "--approval-mode",
@@ -740,6 +749,20 @@ def _append_event(
         event_sink(event)
 
 
+def _emit_process_started(
+    process: subprocess.Popen,
+    event_sink: Callable[[AgentBackendEvent], None] | None,
+) -> None:
+    if event_sink is None:
+        return
+    data: dict[str, Any] = {"pid": process.pid}
+    try:
+        data["pgid"] = os.getpgid(process.pid)
+    except OSError:
+        data["pgid"] = process.pid
+    event_sink(AgentBackendEvent(kind="_process_started", data=data))
+
+
 def _agent_shell_identity_event(
     *,
     provider: str,
@@ -804,9 +827,11 @@ def _run_codex_cli(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
     except OSError as exc:
         raise AgentBackendUnavailable(f"Codex CLI failed to start: {exc}") from exc
+    _emit_process_started(process, event_sink)
 
     provider_session_id = resume_id
     final_response = ""
@@ -935,9 +960,11 @@ def _run_claude_cli(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
     except OSError as exc:
         raise AgentBackendUnavailable(f"Claude Code CLI failed to start: {exc}") from exc
+    _emit_process_started(process, event_sink)
 
     provider_session_id = resume_id
     final_response = ""
@@ -1049,9 +1076,11 @@ def _run_gemini_cli(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
     except OSError as exc:
         raise AgentBackendUnavailable(f"Gemini CLI failed to start: {exc}") from exc
+    _emit_process_started(process, event_sink)
 
     provider_session_id = resume_id
     final_response_parts: list[str] = []
@@ -1234,6 +1263,9 @@ class AgentBackendManager:
                 "event_counter": 0,
                 "error": None,
                 "backend_unavailable": False,
+                "_process_pid": None,
+                "_process_pgid": None,
+                "_process_terminated": False,
                 "_cancel_event": cancel_event,
             }
             self._sessions[session_id] = session
@@ -1266,6 +1298,14 @@ class AgentBackendManager:
             session = self._sessions.get(session_id)
             if session is None:
                 return
+            if event.kind == "_process_started":
+                pid = event.data.get("pid")
+                pgid = event.data.get("pgid")
+                if isinstance(pid, int):
+                    session["_process_pid"] = pid
+                if isinstance(pgid, int):
+                    session["_process_pgid"] = pgid
+                return
             session["event_counter"] += 1
             session["events"].append(
                 {
@@ -1276,6 +1316,24 @@ class AgentBackendManager:
                 }
             )
 
+    def _terminate_session_process_locked(self, session: dict[str, Any]) -> None:
+        if session.get("_process_terminated") is True:
+            return
+        pgid = session.get("_process_pgid")
+        pid = session.get("_process_pid")
+        try:
+            if isinstance(pgid, int):
+                os.killpg(pgid, signal.SIGTERM)
+            elif isinstance(pid, int):
+                os.kill(pid, signal.SIGTERM)
+            else:
+                return
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+        session["_process_terminated"] = True
+
     def cancel(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             session = self._sessions.get(session_id)
@@ -1284,6 +1342,7 @@ class AgentBackendManager:
             if session["state"] in {"completed", "failed", "cancelled"}:
                 return self._public_session(session)
             session["_cancel_event"].set()
+            self._terminate_session_process_locked(session)
             session["state"] = "cancelling"
             return self._public_session(session)
 

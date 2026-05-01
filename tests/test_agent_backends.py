@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import threading
 import time
 from pathlib import Path
@@ -408,6 +409,20 @@ class TestAgentBackendManager:
         assert [(event.kind, event.data["tool_calls"]) for event in result_events] == [
             ("usage_limits", 1)
         ]
+
+    def test_gemini_command_wraps_prompt_for_compact_operator_shell(self):
+        from spoke.agent_backends import _gemini_command
+
+        command = _gemini_command(
+            gemini_path="/usr/local/bin/gemini",
+            prompt="Inspect the Agent Shell backend.",
+            resume_id=None,
+        )
+
+        prompt = command[2]
+        assert "compact operator shell" in prompt
+        assert "do not print an implementation plan" in prompt.lower()
+        assert "Inspect the Agent Shell backend." in prompt
 
     def test_codex_json_item_events_preserve_tool_loop_shape(self):
         from spoke.agent_backends import _event_from_codex_item
@@ -950,6 +965,53 @@ class TestAgentBackendManager:
         assert result["state"] == "cancelled"
         assert result["result"] is None
         assert result["provider_session_id"] is None
+
+    def test_cancel_terminates_registered_backend_process_group(self, monkeypatch):
+        from spoke.agent_backends import (
+            AgentBackendEvent,
+            AgentBackendManager,
+            AgentBackendRunResult,
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+        killpg = MagicMock()
+        monkeypatch.setattr("os.killpg", killpg)
+
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
+            event_sink(
+                AgentBackendEvent(
+                    kind="_process_started",
+                    data={"pid": 12345, "pgid": 67890},
+                )
+            )
+            started.set()
+            while not cancel_check() and not release.wait(0.01):
+                pass
+            return AgentBackendRunResult(
+                provider=provider,
+                session_id="gemini-thread-123",
+                final_response="Should be discarded",
+            )
+
+        manager = AgentBackendManager(backend_runner=fake_runner)
+
+        launched = manager.launch(
+            provider="gemini-cli",
+            prompt="run recon",
+            cwd="/tmp/project",
+        )
+        assert started.wait(1)
+
+        cancelled = manager.cancel(launched["id"])
+        release.set()
+
+        assert cancelled["state"] == "cancelling"
+        killpg.assert_called_once_with(67890, signal.SIGTERM)
+        assert all(
+            event["kind"] != "_process_started"
+            for event in manager.get_session(launched["id"])["backend_events"]
+        )
 
 
 class TestAgentBackendToolDispatch:
