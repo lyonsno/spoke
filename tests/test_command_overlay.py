@@ -1288,6 +1288,32 @@ class TestOpticalShellMaterialization:
         assert config["warp_mode"] == pytest.approx(2.0)
         assert config["scar_amount"] != pytest.approx(0.0)
 
+    def test_reverse_materialization_hides_backdrop_at_radial_prearm_point(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S
+            * (1.0 - mod._OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS),
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._backdrop_layer.setHidden_.assert_called_with(True)
+
     def test_live_dismiss_seam_matches_tuner_coordinate_path(
         self, mock_pyobjc
     ):

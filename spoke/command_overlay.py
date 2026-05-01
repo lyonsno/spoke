@@ -3357,6 +3357,7 @@ class CommandOverlay(NSObject):
             shell_config = _materialized_optical_shell_config(final_config, progress)
             if getattr(self, "_materialization_direction", 1) < 0:
                 if progress <= _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS:
+                    self._hide_local_shell_layers_for_pucker_tail()
                     pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
                         progress
                     )
