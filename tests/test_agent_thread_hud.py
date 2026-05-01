@@ -96,3 +96,39 @@ def test_hud_surfaces_are_deterministically_bounded_and_clipped():
         "codex-thread-3",
         "codex-thread-0",
     ]
+
+
+def test_hud_surfaces_receive_initial_placement_geometry_for_renderer_consumption():
+    from spoke.agent_thread_hud import build_agent_thread_hud
+
+    cards = [
+        {
+            "provider_session_id": f"codex-thread-{index}",
+            "thread_id": f"codex-thread-{index}",
+            "provider": "codex",
+            "title": f"thread {index}",
+            "readiness": "ready",
+            "bearing": "bearing",
+            "activity_line": "Ready to read",
+            "latest_response": f"response {index}",
+            "selected": index == 0,
+        }
+        for index in range(3)
+    ]
+
+    hud = build_agent_thread_hud(
+        cards,
+        content_width_points=420.0,
+        content_height_points=140.0,
+    )
+
+    assert [surface["geometry"]["anchor"] for surface in hud["cards"]] == [
+        "bottom",
+        "bottom",
+        "right",
+    ]
+    assert [surface["geometry"]["priority"] for surface in hud["cards"]] == [
+        100,
+        101,
+        0,
+    ]
