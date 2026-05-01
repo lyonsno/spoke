@@ -168,29 +168,32 @@ def test_resolve_intent_prompt_has_both_modes():
     assert "center" in INTENT_SYSTEM
 
 
-def test_target_region_resolution():
-    """Target region resolver handles exact keys and aliases."""
-    from spoke.positioning.reposition import _resolve_target_region
+def test_target_system_prompt_has_grid_layout():
+    """Target system prompt explains the 4×4 grid layout."""
+    from spoke.positioning.reposition import TARGET_SYSTEM
 
-    # Exact match
-    rect = _resolve_target_region("center")
+    assert "A1" in TARGET_SYSTEM
+    assert "D4" in TARGET_SYSTEM
+    assert "YES" in TARGET_SYSTEM
+    assert "center" in TARGET_SYSTEM
+
+
+def test_largest_rectangle_target_picks_yes_cells():
+    """largest_rectangle_target finds rect in YES (occupy) cells."""
+    from spoke.positioning.reposition import largest_rectangle_target
+
+    # Center 2×2 block
+    target_map = {}
+    for r in "ABCD":
+        for c in "1234":
+            target_map[f"{r}{c}"] = (r in "BC" and c in "23")
+
+    rect = largest_rectangle_target(target_map)
     assert rect is not None
     assert rect["x"] == 0.25
+    assert rect["y"] == 0.25
     assert rect["width"] == 0.5
-
-    # Alias
-    rect = _resolve_target_region("middle")
-    assert rect is not None
-    assert rect["x"] == 0.25
-
-    # Substring
-    rect = _resolve_target_region("the top-right area")
-    assert rect is not None
-    assert rect["x"] == 0.5
-    assert rect["y"] == 0.0
-
-    # Unknown
-    assert _resolve_target_region("narnia") is None
+    assert rect["height"] == 0.5
 
 
 # ── content detection parsing tests ──

@@ -151,15 +151,10 @@ def _finish_on_main(app, result: dict | None) -> None:
         # Flash the debug grid showing which cells the model marked YES/NO
         content_map = result.get("content_map")
         utterance = result.get("utterance", "")
+        is_target = content_desc.startswith("targeting:")
         if content_map is not None:
             _flash_debug_grid(sw, sh, content_map, content_desc,
-                              utterance=utterance)
-        elif content_desc.startswith("targeting:"):
-            # Target mode — no content map, just show the target region
-            if app._menubar is not None:
-                app._menubar.set_status_text(
-                    f"{content_desc} ({elapsed:.1f}s)"
-                )
+                              utterance=utterance, target_mode=is_target)
 
         if app._menubar is not None:
             app._menubar.set_status_text(
@@ -178,6 +173,7 @@ def _flash_debug_grid(
     content_desc: str,
     duration: float = 3.0,
     utterance: str = "",
+    target_mode: bool = False,
 ) -> None:
     """Flash a transparent 4×4 grid overlay on screen showing YES/NO cells.
 
@@ -226,13 +222,16 @@ def _flash_debug_grid(
             # macOS y: bottom-left origin. Row A is the top of the screen.
             mac_y = sh - (r_idx + 1) * cell_h
             cell.setFrame_(((c_idx * cell_w, mac_y), (cell_w, cell_h)))
-            if has_content:
+            # In avoid mode: YES(content)=red, NO(empty)=green
+            # In target mode: YES(occupy)=green, NO(skip)=red
+            is_green = (not has_content) if not target_mode else has_content
+            if is_green:
                 cell.setBackgroundColor_(
-                    NSColor.colorWithRed_green_blue_alpha_(1.0, 0.2, 0.2, 0.25).CGColor()
+                    NSColor.colorWithRed_green_blue_alpha_(0.2, 1.0, 0.2, 0.25).CGColor()
                 )
             else:
                 cell.setBackgroundColor_(
-                    NSColor.colorWithRed_green_blue_alpha_(0.2, 1.0, 0.2, 0.25).CGColor()
+                    NSColor.colorWithRed_green_blue_alpha_(1.0, 0.2, 0.2, 0.25).CGColor()
                 )
             cell.setBorderWidth_(1.0)
             cell.setBorderColor_(
@@ -255,7 +254,10 @@ def _flash_debug_grid(
             root.addSublayer_(label)
 
     # Title bar showing utterance and resolved content description
-    title_text = f"Avoiding: {content_desc}"
+    if target_mode:
+        title_text = f"Targeting: {content_desc.removeprefix('targeting: ')}"
+    else:
+        title_text = f"Avoiding: {content_desc}"
     if utterance:
         title_text = f"\"{utterance}\" → {title_text}"
     title = CATextLayer.alloc().init()
