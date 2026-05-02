@@ -433,11 +433,11 @@ def _show_diagnostic_overlay(result: dict, debug_steps: list[str] | None) -> Non
 
         text = "\n".join(lines)
 
-        # Right-side column extending from top to bottom
+        # Top-right diagnostic panel — top third of screen
         win_w = 480
-        win_h = sh - 80  # full height minus menu bar + margin
+        win_h = int(sh / 3)
         win_x = sw - win_w - 8
-        win_y = 40  # above dock
+        win_y = sh - win_h - 40  # below menu bar
 
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(win_x, win_y, win_w, win_h),
