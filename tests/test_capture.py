@@ -367,6 +367,33 @@ class TestStartStop:
         wav = cap.stop()
         assert len(wav) > 44  # WAV header + data
 
+    @patch("spoke.capture.threading.Thread")
+    @patch("spoke.capture.sd")
+    def test_stop_defers_portaudio_stream_teardown(self, mock_sd, MockThread):
+        """stop() must not call CoreAudio/PortAudio stream.stop inline.
+
+        Hold release can arrive on the CGEventTap callback stack; if CoreAudio
+        blocks in AudioOutputUnitStop there, the keyboard path and visible
+        recording cleanup wedge together.
+        """
+        cap = AudioCapture()
+        stream = mock_sd.InputStream.return_value
+        stream.active = True
+        cap._stream = stream
+        cap._frames = [np.zeros(1024, dtype=np.float32)]
+
+        wav = cap.stop()
+
+        assert len(wav) > 44
+        stream.stop.assert_not_called()
+        stream.close.assert_not_called()
+        MockThread.assert_called_once()
+        kwargs = MockThread.call_args.kwargs
+        assert kwargs["target"] == cap._teardown_stream
+        assert kwargs["args"] == (stream,)
+        assert kwargs["daemon"] is True
+        MockThread.return_value.start.assert_called_once()
+
     @patch("spoke.capture.sd")
     def test_stop_with_no_frames_returns_empty(self, mock_sd):
         """stop() with no recorded frames should return empty bytes."""
