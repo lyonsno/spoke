@@ -20,11 +20,15 @@ selection) and the tray's editable mode (full keyboard for typing).
 
 Each key has a consistent identity across the entire grammar:
 
-- **Spacebar** = go, do the thing, commit. Tap to insert, hold to record.
+- **Spacebar** = go, do the thing, commit. Tap to type, hold to record.
+  Release sends output to the cursor (the passive default).
 - **Shift** = not the default thing, navigate, review, back out. Enter the
-  tray, scrub through history, dismiss, delete.
-- **Enter** = submit, confirm. Part of the send chord. Confirms terminal
-  approvals.
+  tray, scrub through history, dismiss, delete. Switch navigation surface
+  (tray ↔ agent cards, future).
+- **Enter** = send to the active destination. Always. From the tray, during
+  recording, from anywhere — Enter means "send this to whoever I'm talking
+  to." The active destination is the assistant by default, or whatever sticky
+  route is set.
 - **`]`** = route to destination. Tap during recording to select where the
   utterance goes. Part of the send chord. The assistant is the default
   destination; other destinations are bound via route keys.
@@ -221,14 +225,29 @@ the global one.
 |---|---|
 | Spacebar tap | Type a space character in the tray |
 | Spacebar hold (≥ 200ms) | Start new recording (transcription appends at cursor in tray) |
-| Enter + `]` | **Send** — send tray text to the hot route destination |
+| Enter | **Send** — send tray text to active destination (assistant by default, sticky route if set) |
+| Shift+Enter | Insert a newline character in the tray text |
+| Enter + `]` | **Send chord** — send tray text to a specific route destination |
+| Double-tap space, then hold | **Insert at cursor** — insert tray text at cursor in frontmost app and dismiss |
 | Shift + release spacebar | Navigate up (more recent item; dismiss at top) |
 | Spacebar + tap shift | Navigate down (older item) |
 | Shift held + double-tap spacebar | Delete current tray entry |
 
-The send chord is **Enter + `]`** — the same two keys, regardless of whether
-sticky routing is active or not. `]` specifies the destination, enter confirms
-the send.
+**Enter = send.** Bare Enter from the tray always sends to the active
+destination. The active destination is the assistant by default, or whatever
+sticky route is set via the sticky toggle. This matches universal compose
+surface convention — Enter sends, Shift+Enter inserts a newline.
+
+**Enter + `]`** is the explicit send chord for targeting a specific route
+destination. It overrides the default active destination. `]` specifies
+*where*, Enter specifies *go*.
+
+**Double-tap space, then hold** is the insert-at-cursor gesture. Tap space
+twice (each tap types a space character), then on the third press, hold.
+The hold enters a visual wind-up state. On release, the tray entry is
+pasted at the cursor in the frontmost app and the tray is dismissed. The
+double-tap requirement makes this virtually impossible to trigger
+accidentally during normal typing.
 
 The delete gesture requires a double-tap of spacebar while shift is held
 (two taps within ~300ms). The first tap navigates up as normal; the second
@@ -254,12 +273,12 @@ navigate.
 
 - **New recording from tray** (spacebar hold ≥ 200ms) appends the
   transcription at the cursor position in the current tray entry.
-- **Send** (Enter + `]`) consumes the current entry — it is removed from the
-  stack after delivery.
-- **Insert at cursor** requires leaving the tray (dismiss, then dictate with
-  clean release as normal). The tray is for editing and sending, not for
-  direct cursor insertion. To insert tray text into an app, copy it
-  (Cmd+C while editing in the tray) and paste it (Cmd+V after dismissing).
+- **Send** (Enter, or Enter + route key) consumes the current entry — it is
+  removed from the stack after delivery. Bare Enter sends to the active
+  destination; Enter + route key overrides.
+- **Insert at cursor** (double-tap space, then hold) pastes the current entry
+  at the cursor in the frontmost app and dismisses the tray. The double-tap
+  requirement prevents accidental triggers during typing.
 - **Delete** (shift held + tap spacebar) removes the current entry.
 - **Dismiss** (navigate up past top) hides the tray but preserves the stack.
   Re-entering the tray (shift+release from a short hold, or paste failure)
@@ -509,6 +528,42 @@ more reliable than voice for known, frequent destinations.
 Once a persistent mode is active, subsequent recordings may route through
 that mode's logic regardless of route key state. The mode is the authority;
 the route key was the entry gesture.
+
+## Double-tap-then-hold gesture family
+
+Double-tap-then-hold is a universal gesture modifier: tap a key twice, then
+hold it on the third press. The taps commit the key's normal action; the
+hold that follows triggers the deeper action. The double-tap requirement
+makes accidental activation nearly impossible during normal use.
+
+This is the grammar's bridge gesture — it connects surfaces that are
+otherwise closed. The tray owns the keyboard, so there's no spare key for
+"insert at cursor in the app behind the tray." Double-tap-then-hold
+provides the bridge without stealing any key from its normal role.
+
+| Key | Double-tap-then-hold action | Status |
+|---|---|---|
+| Spacebar | Insert tray entry at cursor in frontmost app | Wired |
+| Enter | Send to assistant regardless of context | Future |
+| Shift | Switch navigation surface (tray ↔ agent cards) | Future |
+
+The detection window is ~300ms between taps. The hold must follow the
+second tap within the same window. Each key tracks its own tap history
+independently — tapping space then enter does not open a window on enter.
+
+### Surface switching (future)
+
+Double-tap-then-hold Shift switches what the space/shift rocking gesture
+navigates. By default, rocking cycles through tray history. After a
+surface switch, the same rocking gesture cycles through agent cards instead
+— selecting which agent's full output is shown in the assistant overlay
+and which agents are displayed as compact bearing cards.
+
+This is the operator's primary instrument for managing a fleet of concurrent
+agent sessions through the keyboard grammar. The agent card system
+(SpinalTap thread cards) provides the data; the surface switch provides
+the control surface. Double-tap-then-hold Shift again flips back to tray
+navigation.
 
 ## Recording cap
 
