@@ -665,6 +665,31 @@ class TestAgentBackendManager:
             for event in events
         )
 
+    def test_acp_backend_load_session_includes_project_context_fields(self):
+        from spoke.agent_backends import _run_acp_session_with_client
+
+        client = _FakeAcpClient(provider="claude-code")
+
+        _run_acp_session_with_client(
+            provider="claude-code",
+            prompt="continue",
+            cwd="/tmp/spoke",
+            resume_id="claude-session-123",
+            cancel_check=lambda: False,
+            event_sink=None,
+            client=client,
+            timeout=1,
+        )
+
+        assert (
+            "session/load",
+            {
+                "sessionId": "claude-session-123",
+                "cwd": "/private/tmp/spoke",
+                "mcpServers": [],
+            },
+        ) in client.requests
+
     def test_acp_backend_cancel_uses_session_cancel_not_process_signal(self):
         from spoke.agent_backends import _run_acp_session_with_client
 

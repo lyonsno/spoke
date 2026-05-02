@@ -1045,11 +1045,9 @@ def _run_acp_session_with_client(
             request_handler=_handle_client_request,
         )
         session_method = "session/load" if resume_id else "session/new"
-        session_params = (
-            {"sessionId": resume_id}
-            if resume_id
-            else {"cwd": str(Path(cwd).resolve()), "mcpServers": []}
-        )
+        session_params = {"cwd": str(Path(cwd).resolve()), "mcpServers": []}
+        if resume_id:
+            session_params["sessionId"] = resume_id
         session, _ = client.request(
             session_method,
             session_params,
