@@ -276,9 +276,15 @@ def _finish_on_main(app, result: dict | None) -> None:
         # Store the last request so position persists across show/hide
         app._positioning_field_request = request
 
+        utterance = result.get("utterance", "")
+
+        # Show a standalone smoke rectangle at the computed position
+        # with user prompt + model response text to gauge text capacity
+        smoke_text = f"{utterance}\n\n{content_desc}"
+        _show_smoke_rect(x, mac_y, w, h, smoke_text)
+
         # Flash the debug grid showing which cells the model marked YES/NO
         content_map = result.get("content_map")
-        utterance = result.get("utterance", "")
         # target_mode inverts colors: YES=green (go here) vs YES=red (content to avoid)
         positive_mode = content_desc.startswith("targeting:") or content_desc.startswith("finding:")
         if content_map is not None:
@@ -306,6 +312,63 @@ def _finish_on_main(app, result: dict | None) -> None:
 _debug_grid_window = None  # prevent GC from collecting the window
 _debug_error_window = None  # prevent GC from collecting error window
 _debug_diag_window = None  # persistent diagnostic overlay
+_smoke_rect_window = None  # standalone positioned rectangle
+
+
+def _show_smoke_rect(x: float, y: float, w: float, h: float, text: str) -> None:
+    """Show a standalone semi-transparent rectangle at the computed position.
+
+    Persists until the next positioning run replaces it. Filled with text
+    (user prompt + model response) clipped to fit.
+    """
+    from AppKit import (
+        NSBackingStoreBuffered,
+        NSBorderlessWindowMask,
+        NSColor,
+        NSFont,
+        NSMakeRect,
+        NSWindow,
+    )
+    from Quartz import CATextLayer
+
+    global _smoke_rect_window
+    if _smoke_rect_window is not None:
+        _smoke_rect_window.orderOut_(None)
+
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(x, y, w, h),
+        NSBorderlessWindowMask,
+        NSBackingStoreBuffered,
+        False,
+    )
+    win.setLevel_(2147483647 - 1)  # just below debug overlays
+    win.setOpaque_(False)
+    win.setBackgroundColor_(
+        NSColor.colorWithRed_green_blue_alpha_(0.05, 0.05, 0.12, 0.82)
+    )
+    win.setIgnoresMouseEvents_(True)
+    win.setHasShadow_(False)
+
+    content = win.contentView()
+    content.setWantsLayer_(True)
+
+    padding = 12
+    label = CATextLayer.alloc().init()
+    label.setFrame_(((padding, padding), (w - 2 * padding, h - 2 * padding)))
+    label.setString_(text)
+    label.setFont_("Menlo")
+    label.setFontSize_(13)
+    label.setForegroundColor_(
+        NSColor.colorWithRed_green_blue_alpha_(0.9, 0.9, 0.9, 0.95).CGColor()
+    )
+    label.setWrapped_(True)
+    label.setTruncationMode_("end")
+    label.setContentsScale_(2.0)
+    content.layer().addSublayer_(label)
+
+    win.setAlphaValue_(1.0)
+    win.orderFront_(None)
+    _smoke_rect_window = win
 
 
 def _flash_error_on_main(text: str, duration: float = 5.0) -> None:
