@@ -87,12 +87,12 @@ DETECT_SYSTEM = (
     "You are a content detection system.\n\n"
     "You will be shown an image of a screen divided into a 6x6 grid "
     "(rows A-F, columns 1-6).\n\n"
-    "IMPORTANT: The yellow text labels (A1, A2, B1, etc.) and yellow grid lines "
+    "IMPORTANT: The gray text labels (A1, A2, B1, etc.) and gray grid lines "
     "are reference markers drawn ON TOP of the screen image. They are NOT part of "
     "the screen content. Ignore them completely when deciding YES or NO. Only look "
     "at what is underneath them.\n\n"
     "You will also receive a description of a type of content. For each cell "
-    "in the grid, determine whether the UNDERLYING screen content (not the yellow "
+    "in the grid, determine whether the UNDERLYING screen content (not the gray "
     "labels) contains that type of content.\n\n"
     "Output exactly 36 lines, one per cell, in order:\n"
     "A1: YES or NO\n"
@@ -225,7 +225,10 @@ def detect_content(screenshot: Image.Image, content_desc: str) -> dict[str, bool
         for col in range(POS_COLS):
             cell = f"{ROW_LABELS[row]}{col + 1}"
             match = re.search(rf"{cell}\s*:\s*(YES|NO)", raw.upper())
-            result[cell] = match.group(1) == "YES" if match else False
+            # Default to True (content present) on parse failure — safe for AVOID
+            # mode (won't place overlay on unparseable cells) and neutral for FIND
+            # mode (caller inverts, so unparseable cells won't attract the overlay).
+            result[cell] = match.group(1) == "YES" if match else True
     return result
 
 
@@ -432,7 +435,7 @@ def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: s
             "max_tokens": 8,
             "chat_template_kwargs": {"enable_thinking": False},
         },
-        timeout=30,
+        timeout=120,
     )
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"].strip().upper()
@@ -440,7 +443,9 @@ def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: s
     for region in COARSE_REGIONS:
         if region in raw:
             return region
-    return "MC"  # fallback to center
+    import logging
+    logging.getLogger(__name__).warning("Could not parse center region from %r, falling back to MC", raw)
+    return "MC"
 
 
 def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str,
@@ -477,7 +482,7 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
             "max_tokens": 16,
             "chat_template_kwargs": {"enable_thinking": False},
         },
-        timeout=30,
+        timeout=120,
     )
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"].strip()
