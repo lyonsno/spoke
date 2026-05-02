@@ -368,6 +368,41 @@ def test_release_one_client_keeps_host_running_until_last_client_releases(monkey
     assert registry.host_for_screen(screen) is not host
 
 
+def test_host_stops_when_all_clients_are_hidden(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    host = registry.host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(351),
+        content_view=object(),
+    )
+    assert assistant.update_shell_config(
+        {
+            "center_x": 100.0,
+            "center_y": 200.0,
+            "content_width_points": 300.0,
+            "content_height_points": 80.0,
+            "visible": True,
+        }
+    )
+    compositor = _FakeFullScreenCompositor.instances[0]
+
+    assert assistant.update_shell_config(
+        {
+            "center_x": 100.0,
+            "center_y": 200.0,
+            "content_width_points": 300.0,
+            "content_height_points": 80.0,
+            "visible": False,
+        }
+    )
+
+    assert compositor.stop_calls == 1
+    assert compositor.updated_configs[-1] == []
+    assert host._started is False
+
+
 def test_brightness_sampling_uses_requesting_client_snapshot(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())

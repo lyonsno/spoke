@@ -438,8 +438,11 @@ class TestOpticalShellMaterialization:
             * mod._OPTICAL_MATERIALIZATION_BASE_SPREAD_END
             / mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
         )
+        assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_BASE_S * 0.5
+        )
         assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
-            0.75 * scale
+            1.5 * scale
         )
         assert mod._FADE_OUT_S == pytest.approx(0.5 * scale)
         assert mod._DISMISS_DURATION_S == pytest.approx(0.2 * scale)
@@ -539,13 +542,13 @@ class TestOpticalShellMaterialization:
             seam_open_s / mod._OPTICAL_MATERIALIZATION_S
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
-            mod._OPTICAL_MATERIALIZATION_BASE_S
+            mod._OPTICAL_MATERIALIZATION_BASE_S * 0.5
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S > (
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
         )
         assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
-            0.75 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
+            1.5 * mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
@@ -1732,6 +1735,70 @@ class TestOpticalShellMaterialization:
             ),
         )
 
+    def test_reverse_materialization_completion_keeps_prearmed_radial_pucker_alive(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        radial_compositor = MagicMock()
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
+        overlay._stop_dismiss_radial_pucker_compositor = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_final_shell_config = shell_config
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 0.0
+        overlay._start_dismiss_pucker_tail_animation = MagicMock()
+        monkeypatch.setattr(
+            mod.time,
+            "perf_counter",
+            lambda: mod._OPTICAL_MATERIALIZATION_DISMISS_S,
+        )
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._stop_dismiss_radial_pucker_compositor.assert_not_called()
+        overlay._start_dismiss_pucker_tail_animation.assert_called_once()
+
+    def test_dismiss_pucker_tail_reuses_prearmed_radial_client(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        main_compositor = MagicMock()
+        radial_compositor = MagicMock()
+        overlay._fullscreen_compositor = main_compositor
+        overlay._dismiss_radial_pucker_compositor = radial_compositor
+        overlay._stop_dismiss_radial_pucker_compositor = MagicMock()
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+
+        overlay._start_dismiss_pucker_tail_animation(
+            shell_config,
+            initial_progress=0.12,
+        )
+
+        overlay._stop_dismiss_radial_pucker_compositor.assert_not_called()
+        radial_config = radial_compositor.update_shell_config.call_args.args[0]
+        assert radial_config["warp_mode"] == pytest.approx(2.0)
+        assert radial_config["scar_amount"] == pytest.approx(
+            mod._dismiss_radial_pucker_shell_config(shell_config, 0.12)[
+                "scar_amount"
+            ]
+        )
+        main_config = main_compositor.update_shell_config.call_args.args[0]
+        assert main_config["visible"] is False
+
     def test_dismiss_pucker_tail_hides_local_material_layers(
         self, mock_pyobjc
     ):
@@ -2154,9 +2221,15 @@ class TestWindowLayering:
         overlay._window.orderFrontRegardless.side_effect = lambda: events.append(
             ("front", None)
         )
-        overlay._start_fullscreen_compositor = MagicMock(
-            side_effect=lambda: events.append(("compositor", None))
-        )
+
+        class PendingCompositor:
+            presented_count = 0
+
+        def _start_compositor():
+            events.append(("compositor", None))
+            overlay._fullscreen_compositor = PendingCompositor()
+
+        overlay._start_fullscreen_compositor = MagicMock(side_effect=_start_compositor)
         overlay._refresh_punchthrough_mask_if_needed = MagicMock(
             side_effect=lambda: events.append(("mask", None))
         )
@@ -2171,9 +2244,11 @@ class TestWindowLayering:
         assert ("compositor", None) in events
         assert ("mask", None) in events
         assert ("timer", "visualStart:") not in events
+        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "fadeStep:") not in events
         assert events.index(("scroll_hidden", True)) < events.index(("front", None))
         assert events.index(("front", None)) < events.index(("compositor", None))
-        assert events.index(("mask", None)) < events.index(("timer", "fadeStep:"))
+        assert events.index(("mask", None)) < events.index(("timer", "visualReadyStep:"))
 
     def test_optical_show_waits_for_first_compositor_frame_before_entrance(
         self, mock_pyobjc, monkeypatch
@@ -2408,22 +2483,42 @@ class TestWindowLayering:
         overlay._fill_layer.setHidden_.assert_called_with(False)
         assert overlay._fill_hidden_until_signature is None
 
-    def test_optical_show_defers_heavy_backdrop_startup_until_after_first_paint(
+    def test_optical_show_without_initial_text_waits_for_compositor_before_fade(
         self, mock_pyobjc, monkeypatch
     ):
         monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+
+        class PendingCompositor:
+            presented_count = 0
+
+        def _schedule(_interval, _target, selector, _userinfo, _repeats):
+            events.append(("timer", selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
         overlay._refresh_backdrop_snapshot = MagicMock()
-        overlay._start_fullscreen_compositor = MagicMock()
+        overlay._start_fullscreen_compositor = MagicMock(
+            side_effect=lambda: setattr(
+                overlay,
+                "_fullscreen_compositor",
+                PendingCompositor(),
+            )
+        )
         overlay._start_backdrop_refresh_timer = MagicMock()
 
         overlay.show()
 
         overlay._window.orderFrontRegardless.assert_called_once()
         overlay._refresh_backdrop_snapshot.assert_not_called()
-        overlay._start_fullscreen_compositor.assert_not_called()
+        overlay._start_fullscreen_compositor.assert_called_once()
         overlay._start_backdrop_refresh_timer.assert_not_called()
-        assert overlay._visual_start_timer is not None
+        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "fadeStep:") not in events
+        assert getattr(overlay, "_visual_start_timer", None) is None
 
     def test_show_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

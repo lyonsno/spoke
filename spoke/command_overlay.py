@@ -99,8 +99,8 @@ _OPTICAL_MATERIALIZATION_S = (
     )
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 )
-_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
-_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 0.75 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
+_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S * 0.5
+_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.5 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
 _OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS = 0.12
 _OPTICAL_MATERIALIZATION_SEAM_LATCH_START = 0.0
@@ -983,6 +983,16 @@ def _dismiss_radial_pucker_shell_config(shell_config: dict, progress: float) -> 
     config["role"] = "assistant"
     config["visible"] = True
     config["z_index"] = 9
+    return config
+
+
+def _hidden_dismiss_main_shell_config(shell_config: dict) -> dict:
+    """Keep the main client registered without drawing a default shell frame."""
+    config = _materialized_optical_shell_config(shell_config, 0.0)
+    config["visible"] = False
+    config["continuous_present"] = True
+    config["mip_blur_strength"] = 0.0
+    config["cleanup_blur_radius_points"] = 0.0
     return config
 
 
@@ -2141,8 +2151,9 @@ class CommandOverlay(NSObject):
         self._visible = True
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)
+        optical_shell_start = _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
         known_content_optical_start = (
-            has_initial_transcript and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            has_initial_transcript and optical_shell_start
         )
         self._response_text = ""
         self._utterance_text = ""
@@ -2223,17 +2234,18 @@ class CommandOverlay(NSObject):
             self._suppress_stale_fill_until_ready = False
 
         self._window.orderFrontRegardless()
-        if known_content_optical_start:
-            # Initial text is already laid out. Arm the optical compositor
-            # while the command window is still alpha-zero so the user sees one
-            # composed entrance, not plain text -> warp -> punch-through as
-            # separate phases.
+        if optical_shell_start:
+            # Arm the optical compositor while the command window is still
+            # alpha-zero. Live/promptless starts need this too: under load a
+            # deferred compositor can otherwise expose a naked pre-warp frame.
             self._start_fullscreen_compositor()
-            self._refresh_punchthrough_mask_if_needed()
             if getattr(self, "_fullscreen_compositor", None) is None:
-                self._enable_text_punchthrough(False)
+                if known_content_optical_start:
+                    self._enable_text_punchthrough(False)
                 self._start_backdrop_refresh_timer()
-        if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+            else:
+                self._refresh_punchthrough_mask_if_needed()
+        if not optical_shell_start:
             self._refresh_backdrop_snapshot()
         self._start_brightness_sampling()
 
@@ -2242,16 +2254,14 @@ class CommandOverlay(NSObject):
             self._start_thinking_timer(reset=not preserve_thinking_timer)
 
         if (
-            known_content_optical_start
+            optical_shell_start
             and getattr(self, "_fullscreen_compositor", None) is not None
         ):
             self._schedule_visual_ready_start()
         else:
             self._start_entrance_animation()
 
-        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and not known_content_optical_start:
-            self._schedule_visual_start()
-        elif (
+        if (
             not known_content_optical_start
             and getattr(self, "_fullscreen_compositor", None) is None
         ):
@@ -3399,21 +3409,31 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._visual_ready_timer = None
 
-    def _cancel_materialization_animation(self) -> None:
+    def _cancel_materialization_animation(
+        self,
+        *,
+        preserve_radial_pucker: bool = False,
+    ) -> None:
         timer = getattr(self, "_materialization_timer", None)
         if timer is not None:
             timer.invalidate()
             self._materialization_timer = None
         self._stop_dismiss_seam_compositor()
-        self._stop_dismiss_radial_pucker_compositor()
+        if not preserve_radial_pucker:
+            self._stop_dismiss_radial_pucker_compositor()
 
-    def _cancel_dismiss_pucker_tail_animation(self) -> None:
+    def _cancel_dismiss_pucker_tail_animation(
+        self,
+        *,
+        preserve_radial_pucker: bool = False,
+    ) -> None:
         timer = getattr(self, "_pucker_tail_timer", None)
         if timer is not None:
             timer.invalidate()
             self._pucker_tail_timer = None
         self._pucker_tail_progress_offset = 0.0
-        self._stop_dismiss_radial_pucker_compositor()
+        if not preserve_radial_pucker:
+            self._stop_dismiss_radial_pucker_compositor()
 
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
@@ -3558,7 +3578,9 @@ class CommandOverlay(NSObject):
         except Exception:
             logger.debug("Failed to update command materialization shell", exc_info=True)
         if raw >= 1.0:
-            self._cancel_materialization_animation()
+            self._cancel_materialization_animation(
+                preserve_radial_pucker=getattr(self, "_materialization_direction", 1) < 0
+            )
             if getattr(self, "_materialization_direction", 1) > 0:
                 self._materialization_progress = 1.0
                 self._apply_materialization_fill_state(1.0)
@@ -3586,23 +3608,13 @@ class CommandOverlay(NSObject):
         initial_progress: float = 0.0,
     ) -> None:
         """Run the post-close inverse pucker after the dismiss slit shuts."""
-        self._cancel_dismiss_pucker_tail_animation()
+        self._cancel_dismiss_pucker_tail_animation(preserve_radial_pucker=True)
         self._stop_dismiss_seam_compositor()
         self._hide_local_shell_layers_for_pucker_tail()
         self._pucker_tail_shell_config = dict(final_shell_config)
         self._pucker_tail_progress_offset = _clamp01(initial_progress)
         self._pucker_tail_started_at = time.perf_counter()
-        compositor = getattr(self, "_fullscreen_compositor", None)
-        if compositor is not None:
-            try:
-                compositor.update_shell_config(
-                    _dismiss_pucker_shell_config(
-                        self._pucker_tail_shell_config,
-                        self._pucker_tail_progress_offset,
-                    )
-                )
-            except Exception:
-                logger.debug("Failed to seed command dismiss pucker", exc_info=True)
+        self._publish_dismiss_pucker_tail_frame(self._pucker_tail_progress_offset)
         self._pucker_tail_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _DISMISS_ANIM_FPS,
             self,
@@ -3611,6 +3623,31 @@ class CommandOverlay(NSObject):
             True,
         )
         _pin_timer_to_active_run_loop_modes(self._pucker_tail_timer)
+
+    def _publish_dismiss_pucker_tail_frame(self, progress: float) -> None:
+        shell_config = getattr(self, "_pucker_tail_shell_config", None)
+        if shell_config is None:
+            return
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        radial_compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
+        if radial_compositor is not None:
+            updates: list[tuple[object, dict]] = [
+                (
+                    radial_compositor,
+                    _dismiss_radial_pucker_shell_config(shell_config, progress),
+                )
+            ]
+            if compositor is not None:
+                updates.append((compositor, _hidden_dismiss_main_shell_config(shell_config)))
+            if not self._publish_shared_compositor_configs(updates):
+                self._publish_individual_compositor_configs(updates)
+            return
+        if compositor is None:
+            return
+        try:
+            compositor.update_shell_config(_dismiss_pucker_shell_config(shell_config, progress))
+        except Exception:
+            logger.debug("Failed to update command dismiss pucker", exc_info=True)
 
     def dismissPuckerTailStep_(self, timer) -> None:
         if getattr(self, "_pucker_tail_timer", None) is not timer:
@@ -3625,12 +3662,7 @@ class CommandOverlay(NSObject):
             getattr(self, "_pucker_tail_progress_offset", 0.0)
             + elapsed / max(_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S, 1e-6)
         )
-        try:
-            compositor.update_shell_config(
-                _dismiss_pucker_shell_config(shell_config, progress)
-            )
-        except Exception:
-            logger.debug("Failed to update command dismiss pucker", exc_info=True)
+        self._publish_dismiss_pucker_tail_frame(progress)
         if progress >= 1.0:
             self._cancel_dismiss_pucker_tail_animation()
 
