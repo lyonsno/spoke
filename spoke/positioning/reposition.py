@@ -528,16 +528,23 @@ def reposition_twostep(
     utterance: str,
     screenshot: Image.Image,
     current_overlay: dict | None = None,
+    on_step: "callable | None" = None,
 ) -> dict | None:
-    """Two-step pipeline: center pick + size multiplier.
+    """Two-step pipeline: center pick + size as screen percentages.
 
     current_overlay: dict with x, y, width, height as fractions (0-1),
     or None for default 40%×40% centered overlay.
+    on_step: optional callback(debug_lines: list[str]) called after each
+    pipeline step completes, for incremental progress display.
 
     Returns dict with x, y, width, height as fractions of screen (0-1).
     """
     reposition_twostep._last_debug = []
     t0 = time.time()
+
+    def _report():
+        if on_step:
+            on_step(list(reposition_twostep._last_debug))
 
     if current_overlay is None:
         current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
@@ -548,6 +555,7 @@ def reposition_twostep(
     reposition_twostep._last_debug.append(
         f"Intent: {intent} ({t_intent - t0:.1f}s)"
     )
+    _report()
 
     mode = intent["mode"]
     if mode == "target":
@@ -570,6 +578,7 @@ def reposition_twostep(
     if center_thinking:
         reposition_twostep._last_debug.append(f"Center thinking: {center_thinking[:500]}")
         _pick_center._last_thinking = None
+    _report()
 
     # Step 2: pick size (VLM, same image — returns screen fractions directly)
     new_w, new_h = _pick_size(screenshot_b64, utterance, content_desc, mode,
@@ -582,6 +591,7 @@ def reposition_twostep(
     if size_thinking:
         reposition_twostep._last_debug.append(f"Size thinking: {size_thinking[:500]}")
         _pick_size._last_thinking = None
+    _report()
 
     # Clamp so overlay stays on screen
     new_x = max(0.0, min(1.0 - new_w, center_x - new_w / 2))

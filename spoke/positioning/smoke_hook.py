@@ -98,8 +98,16 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
                     "x": b.x / sw, "y": (sh - b.y - b.height) / sh,
                     "width": b.width / sw, "height": b.height / sh,
                 }
+        def _on_step(debug_lines):
+            """Update diagnostic overlay incrementally as each step completes."""
+            # Build a partial result dict for the diagnostic overlay
+            partial = {"utterance": text, "elapsed_s": 0, "x": 0, "y": 0, "width": 0, "height": 0,
+                        "content_desc": "running..."}
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(lambda: _show_diagnostic_overlay(partial, debug_lines))
+
         try:
-            result = reposition_twostep(text, screenshot, current_overlay)
+            result = reposition_twostep(text, screenshot, current_overlay, on_step=_on_step)
         except Exception as e:
             logger.exception("Two-step positioning pipeline failed")
             import traceback
@@ -390,11 +398,11 @@ def _show_diagnostic_overlay(result: dict, debug_steps: list[str] | None) -> Non
 
         text = "\n".join(lines)
 
-        # Small overlay in upper right — generous height for wrapped text
-        win_w = 420
-        win_h = min(24 + len(lines) * 18, 400)
-        win_x = sw - win_w - 12
-        win_y = sh - win_h - 40  # below menu bar
+        # Right-side column extending from top to bottom
+        win_w = 480
+        win_h = sh - 80  # full height minus menu bar + margin
+        win_x = sw - win_w - 8
+        win_y = 40  # above dock
 
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(win_x, win_y, win_w, win_h),
