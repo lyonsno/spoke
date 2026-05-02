@@ -465,6 +465,100 @@ def test_positioning_uses_command_overlay_compositor_session_when_backend_absent
     assert config["initial_brightness"] == pytest.approx(0.42)
 
 
+def test_positioning_hook_reemits_stored_request_when_command_overlay_shows():
+    """Summoning the command overlay should preserve the last semantic bounds."""
+    import spoke.positioning.smoke_hook as smoke_hook
+    from spoke.optical_field import OpticalFieldBounds, OpticalFieldRequest
+    from spoke.positioning.smoke_hook import install_positioning_hook
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    command_session = MagicMock()
+    command_overlay = MagicMock()
+    command_overlay._fullscreen_compositor = command_session
+    command_overlay._screen.backingScaleFactor.return_value = 2.0
+    command_overlay._brightness = 0.42
+    original_show = MagicMock()
+    command_overlay.show = original_show
+
+    app = MagicMock()
+    app._command_transcribe_worker = MagicMock()
+    app._command_overlay = command_overlay
+    app._positioning_field_request = OpticalFieldRequest(
+        caller_id="semantic_positioning",
+        bounds=OpticalFieldBounds(x=360.0, y=225.0, width=720.0, height=450.0),
+        role="assistant",
+        state="rest",
+        visible=True,
+    )
+
+    install_positioning_hook(app)
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=Frame()):
+        app._command_overlay.show(initial_utterance="hello")
+
+    original_show.assert_called_once_with(initial_utterance="hello")
+    command_session.update_shell_config.assert_called_once()
+    config = command_session.update_shell_config.call_args.args[0]
+    assert config["optical_field"]["caller_id"] == "semantic_positioning"
+    assert config["optical_field"]["state"] == "materialize"
+    assert config["optical_field"]["slot"] == "materialize"
+    assert config["center_x"] == pytest.approx(1440.0)
+    assert config["center_y"] == pytest.approx(900.0)
+    assert config["content_width_points"] == pytest.approx(1440.0)
+    assert config["content_height_points"] == pytest.approx(900.0)
+
+
+def test_positioning_hook_emits_dismiss_state_when_command_overlay_dismisses():
+    """Dismissal should keep the semantic caller lifecycle coherent."""
+    import spoke.positioning.smoke_hook as smoke_hook
+    from spoke.optical_field import OpticalFieldBounds, OpticalFieldRequest
+    from spoke.positioning.smoke_hook import install_positioning_hook
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    command_session = MagicMock()
+    command_overlay = MagicMock()
+    command_overlay._fullscreen_compositor = command_session
+    command_overlay._screen.backingScaleFactor.return_value = 2.0
+    command_overlay._brightness = 0.42
+    original_cancel = MagicMock()
+    command_overlay.cancel_dismiss = original_cancel
+
+    app = MagicMock()
+    app._command_transcribe_worker = MagicMock()
+    app._command_overlay = command_overlay
+    app._positioning_field_request = OpticalFieldRequest(
+        caller_id="semantic_positioning",
+        bounds=OpticalFieldBounds(x=360.0, y=225.0, width=720.0, height=450.0),
+        role="assistant",
+        state="rest",
+        visible=True,
+    )
+
+    install_positioning_hook(app)
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=Frame()):
+        app._command_overlay.cancel_dismiss()
+
+    original_cancel.assert_called_once_with()
+    command_session.update_shell_config.assert_called_once()
+    config = command_session.update_shell_config.call_args.args[0]
+    assert config["optical_field"]["caller_id"] == "semantic_positioning"
+    assert config["optical_field"]["state"] == "dismiss"
+    assert config["optical_field"]["slot"] == "dismiss"
+
+
 # ── two-step pipeline tests ──
 
 def test_coarse_regions_cover_screen():

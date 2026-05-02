@@ -13,6 +13,7 @@ import logging
 import numbers
 import threading
 import time
+from dataclasses import replace
 
 from ..optical_field import (
     OpticalFieldBounds,
@@ -410,6 +411,34 @@ def _push_request_to_command_overlay_compositor(
         return False
     updater(_compile_command_overlay_shell_config(request, command_overlay, screen_frame))
     return True
+
+
+def _request_with_lifecycle(
+    request: OpticalFieldRequest,
+    *,
+    state: str,
+    visible: bool,
+) -> OpticalFieldRequest:
+    return replace(request, state=state, visible=visible)
+
+
+def _reemit_stored_positioning_request(
+    app,
+    *,
+    state: str,
+    visible: bool,
+) -> None:
+    request = _explicit_attr(app, "_positioning_field_request", None)
+    command_overlay = _explicit_attr(app, "_command_overlay", None)
+    if not isinstance(request, OpticalFieldRequest) or command_overlay is None:
+        return
+    updated = _request_with_lifecycle(request, state=state, visible=visible)
+    app._positioning_field_request = updated
+    screen = _get_main_screen_frame()
+    if screen is None:
+        return
+    if _push_request_to_command_overlay_compositor(command_overlay, updated, screen):
+        logger.info("Re-emitted semantic positioning request for %s", state)
 
 
 def _finish_on_main_immediate(app, result: dict) -> None:
@@ -1032,8 +1061,6 @@ def install_positioning_hook(app) -> None:
     Call this during app setup to make enter-held recordings
     trigger repositioning instead of assistant commands.
     """
-    import types
-
     original = app._command_transcribe_worker
 
     def patched_worker(wav_bytes, token):
@@ -1041,4 +1068,56 @@ def install_positioning_hook(app) -> None:
 
     app._command_transcribe_worker = patched_worker
     app._original_command_transcribe_worker = original
+
+    command_overlay = _explicit_attr(app, "_command_overlay", None)
+    if command_overlay is not None and not _explicit_attr(
+        command_overlay,
+        "_positioning_lifecycle_hook_installed",
+        False,
+    ):
+        original_show = _explicit_attr(command_overlay, "show", None)
+        if callable(original_show):
+
+            def positioned_show(*args, **kwargs):
+                result = original_show(*args, **kwargs)
+                _reemit_stored_positioning_request(
+                    app,
+                    state="materialize",
+                    visible=True,
+                )
+                return result
+
+            command_overlay.show = positioned_show
+            command_overlay._positioning_original_show = original_show
+
+        original_cancel = _explicit_attr(command_overlay, "cancel_dismiss", None)
+        if callable(original_cancel):
+
+            def positioned_cancel_dismiss(*args, **kwargs):
+                _reemit_stored_positioning_request(
+                    app,
+                    state="dismiss",
+                    visible=False,
+                )
+                return original_cancel(*args, **kwargs)
+
+            command_overlay.cancel_dismiss = positioned_cancel_dismiss
+            command_overlay._positioning_original_cancel_dismiss = original_cancel
+
+        original_hide = _explicit_attr(command_overlay, "hide", None)
+        if callable(original_hide):
+
+            def positioned_hide(*args, **kwargs):
+                _reemit_stored_positioning_request(
+                    app,
+                    state="dismiss",
+                    visible=False,
+                )
+                return original_hide(*args, **kwargs)
+
+            command_overlay.hide = positioned_hide
+            command_overlay._positioning_original_hide = original_hide
+
+        command_overlay._positioning_lifecycle_hook_installed = True
+
     logger.info("Positioning smoke hook installed — enter-held → reposition")
