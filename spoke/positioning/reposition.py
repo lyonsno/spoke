@@ -160,8 +160,15 @@ def _sampling_params(max_tokens: int | None = None) -> dict:
     return params
 
 
-def _encode_image(img: Image.Image, scale: float = 0.5) -> str:
+def _image_scale() -> float:
+    """Image scale factor from env, default 0.5."""
+    return float(os.environ.get("SPOKE_POSITIONING_IMAGE_SCALE", "0.5"))
+
+
+def _encode_image(img: Image.Image, scale: float | None = None) -> str:
     """Encode PIL image as base64 PNG, optionally downscaling."""
+    if scale is None:
+        scale = _image_scale()
     if scale < 1.0:
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
     buf = io.BytesIO()
