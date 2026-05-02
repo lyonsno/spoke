@@ -319,6 +319,234 @@ def largest_rectangle(content_map: dict[str, bool]) -> dict | None:
     }
 
 
+# ── Two-step center+size pipeline ──
+
+COARSE_REGIONS = {
+    "TL": (1/6, 1/6),   "TC": (1/2, 1/6),   "TR": (5/6, 1/6),
+    "ML": (1/6, 1/2),   "MC": (1/2, 1/2),   "MR": (5/6, 1/2),
+    "BL": (1/6, 5/6),   "BC": (1/2, 5/6),   "BR": (5/6, 5/6),
+}
+
+CENTER_SYSTEM = (
+    "You are a screen layout system. The user wants to reposition an overlay.\n\n"
+    "The screen is divided into a 3×3 grid of regions:\n"
+    "  TL  TC  TR   ← top\n"
+    "  ML  MC  MR   ← middle\n"
+    "  BL  BC  BR   ← bottom\n\n"
+    "The image shows the current screen. A red dashed outline shows where the "
+    "overlay is currently positioned.\n\n"
+    "Based on the user's request and what you see on screen, pick the ONE region "
+    "where the CENTER of the overlay should move to.\n\n"
+    "Output ONLY the region code (e.g. TR). Nothing else."
+)
+
+SIZE_SYSTEM = (
+    "You are a screen layout system. The user wants to reposition an overlay.\n\n"
+    "The image shows the current screen. A red dashed outline shows the overlay's "
+    "current position and size.\n\n"
+    "The overlay center has been decided. Now decide how the overlay should be "
+    "sized relative to its current dimensions.\n\n"
+    "Consider the user's request and what's visible on screen. If they want to "
+    "cover a region, make it big enough. If they want to avoid content, keep it "
+    "compact.\n\n"
+    "Output ONLY two numbers on one line: width_mult height_mult\n"
+    "Each is a multiplier on the current size. Range: 0.3 to 3.0\n"
+    "Examples:\n"
+    "  1.0 1.0  (keep current size)\n"
+    "  1.5 1.0  (50% wider, same height)\n"
+    "  0.5 0.5  (half size)\n"
+    "  2.0 1.5  (double width, 50% taller)\n\n"
+    "Output ONLY the two numbers. Nothing else."
+)
+
+
+def _draw_overlay_outline(screenshot: Image.Image, overlay_rect: dict | None) -> Image.Image:
+    """Draw a red dashed outline on the screenshot showing the current overlay position."""
+    img = screenshot.copy()
+    if overlay_rect is None:
+        return img
+
+    draw = ImageDraw.Draw(img)
+    sw, sh = img.size
+    x = int(overlay_rect.get("x", 0.3) * sw)
+    y = int(overlay_rect.get("y", 0.3) * sh)
+    w = int(overlay_rect.get("width", 0.4) * sw)
+    h = int(overlay_rect.get("height", 0.4) * sh)
+
+    # Draw dashed outline in red
+    outline_color = (255, 60, 60)
+    thickness = max(2, min(sw, sh) // 300)
+    # Top, bottom, left, right edges
+    for edge_start, edge_end in [
+        ((x, y), (x + w, y)),           # top
+        ((x, y + h), (x + w, y + h)),   # bottom
+        ((x, y), (x, y + h)),           # left
+        ((x + w, y), (x + w, y + h)),   # right
+    ]:
+        dash_len = 12
+        sx, sy = edge_start
+        ex, ey = edge_end
+        if sx == ex:  # vertical
+            for dy in range(0, ey - sy, dash_len * 2):
+                draw.line([(sx, sy + dy), (sx, min(sy + dy + dash_len, ey))],
+                          fill=outline_color, width=thickness)
+        else:  # horizontal
+            for dx in range(0, ex - sx, dash_len * 2):
+                draw.line([(sx + dx, sy), (min(sx + dx + dash_len, ex), sy)],
+                          fill=outline_color, width=thickness)
+
+    return img
+
+
+def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: str) -> str:
+    """Step 1: Pick a coarse center region from the 3×3 grid."""
+    user_text = f"User request: {utterance}\nMode: {mode}\nContent: {content_desc}"
+
+    resp = requests.post(
+        _get_api_url(),
+        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": CENTER_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": 8,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"].strip().upper()
+    # Extract region code
+    for region in COARSE_REGIONS:
+        if region in raw:
+            return region
+    return "MC"  # fallback to center
+
+
+def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str,
+               center_region: str) -> tuple[float, float]:
+    """Step 2: Pick width/height multipliers given the center and screen image."""
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Mode: {mode}\n"
+        f"Content: {content_desc}\n"
+        f"Overlay center: {center_region}"
+    )
+
+    resp = requests.post(
+        _get_api_url(),
+        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": SIZE_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": 16,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+
+    # Parse "width_mult height_mult"
+    parts = raw.split()
+    try:
+        w_mult = max(0.3, min(3.0, float(parts[0])))
+        h_mult = max(0.3, min(3.0, float(parts[1]))) if len(parts) > 1 else w_mult
+    except (ValueError, IndexError):
+        w_mult, h_mult = 1.0, 1.0
+    return w_mult, h_mult
+
+
+def reposition_twostep(
+    utterance: str,
+    screenshot: Image.Image,
+    current_overlay: dict | None = None,
+) -> dict | None:
+    """Two-step pipeline: center pick + size multiplier.
+
+    current_overlay: dict with x, y, width, height as fractions (0-1),
+    or None for default 40%×40% centered overlay.
+
+    Returns dict with x, y, width, height as fractions of screen (0-1).
+    """
+    reposition_twostep._last_debug = []
+    t0 = time.time()
+
+    if current_overlay is None:
+        current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
+
+    # Resolve intent (text-only, fast)
+    intent = resolve_intent(utterance)
+    t_intent = time.time()
+    reposition_twostep._last_debug.append(
+        f"Intent: {intent} ({t_intent - t0:.1f}s)"
+    )
+
+    mode = intent["mode"]
+    if mode == "target":
+        content_desc = intent.get("target_desc", utterance)
+    else:
+        content_desc = intent.get("content_desc", utterance)
+
+    # Prepare image with overlay outline
+    annotated = _draw_overlay_outline(screenshot, current_overlay)
+    screenshot_b64 = _encode_image(annotated, scale=0.5)
+
+    # Step 1: pick center (VLM, image prefill happens here)
+    center_region = _pick_center(screenshot_b64, utterance, content_desc, mode)
+    t_center = time.time()
+    center_x, center_y = COARSE_REGIONS.get(center_region, (0.5, 0.5))
+    reposition_twostep._last_debug.append(
+        f"Center: {center_region} → ({center_x:.2f}, {center_y:.2f}) ({t_center - t_intent:.1f}s)"
+    )
+
+    # Step 2: pick size (VLM, same image)
+    w_mult, h_mult = _pick_size(screenshot_b64, utterance, content_desc, mode, center_region)
+    t_size = time.time()
+    reposition_twostep._last_debug.append(
+        f"Size: {w_mult:.1f}× width, {h_mult:.1f}× height ({t_size - t_center:.1f}s)"
+    )
+
+    # Compute final rect
+    cur_w = current_overlay["width"]
+    cur_h = current_overlay["height"]
+    new_w = min(1.0, cur_w * w_mult)
+    new_h = min(1.0, cur_h * h_mult)
+
+    # Clamp so overlay stays on screen
+    new_x = max(0.0, min(1.0 - new_w, center_x - new_w / 2))
+    new_y = max(0.0, min(1.0 - new_h, center_y - new_h / 2))
+
+    elapsed = round(time.time() - t0, 2)
+    reposition_twostep._last_debug.append(f"Total: {elapsed:.1f}s")
+
+    return {
+        "x": new_x,
+        "y": new_y,
+        "width": new_w,
+        "height": new_h,
+        "content_desc": f"{mode}: {content_desc}",
+        "utterance": utterance,
+        "elapsed_s": elapsed,
+        "center_region": center_region,
+        "w_mult": w_mult,
+        "h_mult": h_mult,
+    }
+
+
 def reposition(utterance: str, screenshot: Image.Image) -> dict | None:
     """Full pipeline: utterance + screenshot → new overlay position.
 

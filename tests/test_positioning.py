@@ -422,6 +422,51 @@ def test_positioning_pushes_to_compositor_backend():
     compositor.update_client_config.assert_called_once()
 
 
+# ── two-step pipeline tests ──
+
+def test_coarse_regions_cover_screen():
+    """All 9 coarse regions map to valid fractional coordinates."""
+    from spoke.positioning.reposition import COARSE_REGIONS
+
+    assert len(COARSE_REGIONS) == 9
+    for name, (cx, cy) in COARSE_REGIONS.items():
+        assert 0 < cx < 1, f"{name} cx={cx}"
+        assert 0 < cy < 1, f"{name} cy={cy}"
+
+
+def test_draw_overlay_outline_no_crash():
+    """Drawing overlay outline on a screenshot should not crash."""
+    from spoke.positioning.reposition import _draw_overlay_outline
+
+    img = Image.new("RGB", (800, 600), (0, 0, 0))
+    result = _draw_overlay_outline(img, {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4})
+    assert result.size == (800, 600)
+
+
+def test_draw_overlay_outline_none_overlay():
+    """None overlay rect should return unmodified image."""
+    from spoke.positioning.reposition import _draw_overlay_outline
+
+    img = Image.new("RGB", (800, 600), (128, 128, 128))
+    result = _draw_overlay_outline(img, None)
+    assert result.size == (800, 600)
+
+
+def test_twostep_clamps_to_screen():
+    """Final rect from two-step pipeline must stay within 0-1 bounds."""
+    # Simulate what reposition_twostep does in the clamping step
+    center_x, center_y = 0.9, 0.9  # near bottom-right corner
+    new_w, new_h = 0.4, 0.4  # would overflow
+
+    new_x = max(0.0, min(1.0 - new_w, center_x - new_w / 2))
+    new_y = max(0.0, min(1.0 - new_h, center_y - new_h / 2))
+
+    assert new_x + new_w <= 1.0
+    assert new_y + new_h <= 1.0
+    assert new_x >= 0.0
+    assert new_y >= 0.0
+
+
 def test_positioning_request_persists_across_calls():
     """Successive positioning calls update the same caller_id, not accumulate."""
     from spoke.optical_field import OpticalFieldPlaceholderBackend

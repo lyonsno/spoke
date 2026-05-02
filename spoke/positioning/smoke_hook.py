@@ -80,19 +80,48 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
     logger.info("Positioning: captured screen %s", screenshot.size)
 
     # Step 3: Run positioning pipeline
-    from .reposition import reposition
-    try:
-        result = reposition(text, screenshot)
-    except Exception as e:
-        logger.exception("Positioning pipeline failed")
-        import traceback
-        _flash_error_on_main(f"Pipeline error: {e}\n{traceback.format_exc()[-500:]}")
-        _finish_on_main(app, None)
-        return
+    # SPOKE_POSITIONING_MODE: "grid" (default) or "twostep"
+    import os as _os
+    mode = _os.environ.get("SPOKE_POSITIONING_MODE", "grid")
+
+    if mode == "twostep":
+        from .reposition import reposition_twostep
+        # Pass current overlay position if we have one from a previous run
+        current_overlay = None
+        prev_req = getattr(app, '_positioning_field_request', None)
+        if prev_req is not None:
+            screen = _get_main_screen_frame_for_worker()
+            if screen is not None:
+                sw, sh = screen
+                b = prev_req.bounds
+                current_overlay = {
+                    "x": b.x / sw, "y": (sh - b.y - b.height) / sh,
+                    "width": b.width / sw, "height": b.height / sh,
+                }
+        try:
+            result = reposition_twostep(text, screenshot, current_overlay)
+        except Exception as e:
+            logger.exception("Two-step positioning pipeline failed")
+            import traceback
+            _flash_error_on_main(f"Pipeline error: {e}\n{traceback.format_exc()[-500:]}")
+            _finish_on_main(app, None)
+            return
+        pipeline_fn = reposition_twostep
+    else:
+        from .reposition import reposition
+        try:
+            result = reposition(text, screenshot)
+        except Exception as e:
+            logger.exception("Positioning pipeline failed")
+            import traceback
+            _flash_error_on_main(f"Pipeline error: {e}\n{traceback.format_exc()[-500:]}")
+            _finish_on_main(app, None)
+            return
+        pipeline_fn = reposition
 
     if result is None:
         logger.info("Positioning: no viable position found")
-        raw_debug = getattr(reposition, '_last_debug', None)
+        raw_debug = getattr(pipeline_fn, '_last_debug', None)
         debug_lines = [f"Utterance: {text!r}", "Result: None (no viable rectangle)"]
         if raw_debug:
             debug_lines.extend(raw_debug)
@@ -216,8 +245,11 @@ def _finish_on_main(app, result: dict | None) -> None:
                               elapsed_s=elapsed)
 
         # Persistent diagnostic overlay in upper right — survives grid dismiss
-        from .reposition import reposition as _reposition_fn
-        debug_steps = getattr(_reposition_fn, '_last_debug', None)
+        # Try twostep debug first, then grid debug
+        from .reposition import reposition_twostep as _twostep_fn
+        from .reposition import reposition as _grid_fn
+        debug_steps = (getattr(_twostep_fn, '_last_debug', None)
+                       or getattr(_grid_fn, '_last_debug', None))
         _show_diagnostic_overlay(result, debug_steps)
 
         if app._menubar is not None:
@@ -543,6 +575,16 @@ def _get_main_screen_frame():
         return None
     frame = screen.frame()
     return frame
+
+
+def _get_main_screen_frame_for_worker() -> tuple[float, float] | None:
+    """Get the main screen's (width, height) — safe to call from worker thread."""
+    from AppKit import NSScreen
+    screen = NSScreen.mainScreen()
+    if screen is None:
+        return None
+    frame = screen.frame()
+    return (frame.size.width, frame.size.height)
 
 
 def _move_overlay(overlay, x: float, y: float, w: float, h: float) -> None:
