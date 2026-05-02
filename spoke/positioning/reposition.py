@@ -441,6 +441,249 @@ BBOX_SYSTEM = (
 )
 
 
+CENTER_ONLY_SYSTEM = (
+    "You are a screen layout system. The user wants to reposition an overlay.\n\n"
+    "The image shows the current screen. A red dashed outline shows the overlay's "
+    "current position and size.\n\n"
+    "The user's request was transcribed from speech and may contain phonetic "
+    "errors. Interpret phonetically when a literal reading doesn't make sense.\n\n"
+    "SPEED IS CRITICAL.\n"
+    "- For general spatial requests, estimate quickly. Do not analyze screen contents.\n"
+    "- Only examine screen contents when the user references something visible.\n"
+    "- If the request is ambiguous, pick the most likely interpretation and go.\n\n"
+    "Does this request require moving the overlay's center?\n"
+    "- If YES: output the new center as two numbers: center_x center_y\n"
+    "- If NO (the user only wants to resize): output NONE\n\n"
+    "All values are in pixels. (0,0) is the top-left corner of the screen.\n\n"
+    "Output ONLY 'center_x center_y' or 'NONE'. Nothing else."
+)
+
+RESIZE_SYSTEM = (
+    "You are a screen layout system. The user just repositioned an overlay.\n\n"
+    "The overlay's center has been placed. Now decide if the size should change.\n\n"
+    "The user's request was transcribed from speech and may contain phonetic "
+    "errors. Interpret phonetically when a literal reading doesn't make sense.\n\n"
+    "Does this request require changing the overlay's size?\n"
+    "- If YES: output the new size as two numbers: width height (in pixels)\n"
+    "- If NO (the user only wanted to move it): output NONE\n\n"
+    "Consider: if the user said 'cover X' or 'fill the right side', the size "
+    "should match that region. If they said 'move to the top right' or 'go left', "
+    "keep the current size.\n\n"
+    "Output ONLY 'width height' or 'NONE'. Nothing else."
+)
+
+
+def _pick_center_only(screenshot_b64: str, utterance: str,
+                      screen_w: int, screen_h: int,
+                      current_overlay: dict | None = None,
+                      bearing: str | None = None) -> tuple[int, int] | None:
+    """Step 1: Pick center point only. Returns (cx, cy) or None if no move needed."""
+    cur_x = int((current_overlay or {}).get("x", 0.3) * screen_w)
+    cur_y = int((current_overlay or {}).get("y", 0.3) * screen_h)
+    cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
+    cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+    cur_cx = cur_x + cur_w // 2
+    cur_cy = cur_y + cur_h // 2
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Current overlay: center=({cur_cx}, {cur_cy}) width={cur_w} height={cur_h}"
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers("center"),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": CENTER_ONLY_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=16),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+
+    if "NONE" in raw.upper():
+        return None
+    parts = raw.split()
+    try:
+        cx = max(0, min(screen_w, int(float(parts[0]))))
+        cy = max(0, min(screen_h, int(float(parts[1]))))
+        return cx, cy
+    except (ValueError, IndexError):
+        return None
+
+
+def _pick_resize(screenshot_b64: str, utterance: str,
+                 screen_w: int, screen_h: int,
+                 new_center: tuple[int, int],
+                 current_overlay: dict | None = None,
+                 bearing: str | None = None) -> tuple[int, int] | None:
+    """Step 2: Pick new size. Returns (w, h) or None if no resize needed."""
+    cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
+    cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Overlay center just moved to: ({new_center[0]}, {new_center[1]})\n"
+        f"Current overlay size: width={cur_w} height={cur_h}"
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers("resize"),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": RESIZE_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=16),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+
+    if "NONE" in raw.upper():
+        return None
+    parts = raw.split()
+    try:
+        w = max(1, min(screen_w, int(float(parts[0]))))
+        h = max(1, min(screen_h, int(float(parts[1]))))
+        return w, h
+    except (ValueError, IndexError):
+        return None
+
+
+def reposition_centersize(
+    utterance: str,
+    screenshot: Image.Image,
+    current_overlay: dict | None = None,
+    screen_w: int = 1920,
+    screen_h: int = 1080,
+    on_step: "callable | None" = None,
+    bearing: str | None = None,
+) -> dict | None:
+    """Two-phase pipeline: center first (overlay moves), then resize.
+
+    Returns dict with x, y, width, height as fractions of screen (0-1),
+    plus _screenshot_b64 for bearing update. Calls on_step after center
+    resolves so the overlay can move before resize completes.
+    """
+    reposition_centersize._last_debug = []
+    t0 = time.time()
+
+    def _report():
+        if on_step:
+            on_step(list(reposition_centersize._last_debug))
+
+    if current_overlay is None:
+        current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
+
+    if bearing:
+        reposition_centersize._last_debug.append(f"Bearing: {bearing[:200]}")
+        _report()
+
+    # Prepare image with overlay outline
+    annotated = _draw_overlay_outline(screenshot, current_overlay)
+    screenshot_b64 = _encode_image(annotated)
+
+    cur_w = int(current_overlay["width"] * screen_w)
+    cur_h = int(current_overlay["height"] * screen_h)
+    cur_cx = int(current_overlay["x"] * screen_w) + cur_w // 2
+    cur_cy = int(current_overlay["y"] * screen_h) + cur_h // 2
+
+    # Step 1: center
+    center_result = _pick_center_only(
+        screenshot_b64, utterance, screen_w, screen_h,
+        current_overlay, bearing,
+    )
+    t_center = time.time()
+
+    if center_result is not None:
+        cx, cy = center_result
+        reposition_centersize._last_debug.append(
+            f"Center: ({cx}, {cy}) ({t_center - t0:.1f}s)"
+        )
+    else:
+        cx, cy = cur_cx, cur_cy
+        reposition_centersize._last_debug.append(
+            f"Center: unchanged ({t_center - t0:.1f}s)"
+        )
+
+    # Emit intermediate result so overlay can move NOW
+    bx = max(0, min(screen_w - cur_w, cx - cur_w // 2))
+    by = max(0, min(screen_h - cur_h, cy - cur_h // 2))
+    intermediate = {
+        "x": bx / screen_w,
+        "y": by / screen_h,
+        "width": cur_w / screen_w,
+        "height": cur_h / screen_h,
+        "content_desc": utterance,
+        "utterance": utterance,
+        "elapsed_s": round(t_center - t0, 2),
+        "_intermediate": True,
+    }
+    _report()
+
+    # Signal the caller to move the overlay now
+    if on_step:
+        on_step(list(reposition_centersize._last_debug), intermediate)
+
+    # Step 2: resize
+    resize_result = _pick_resize(
+        screenshot_b64, utterance, screen_w, screen_h,
+        (cx, cy), current_overlay, bearing,
+    )
+    t_resize = time.time()
+
+    if resize_result is not None:
+        new_w, new_h = resize_result
+        reposition_centersize._last_debug.append(
+            f"Resize: {new_w}×{new_h}px ({t_resize - t_center:.1f}s)"
+        )
+    else:
+        new_w, new_h = cur_w, cur_h
+        reposition_centersize._last_debug.append(
+            f"Resize: unchanged ({t_resize - t_center:.1f}s)"
+        )
+
+    # Final position with new size
+    bx = max(0, min(screen_w - new_w, cx - new_w // 2))
+    by = max(0, min(screen_h - new_h, cy - new_h // 2))
+
+    elapsed = round(time.time() - t0, 2)
+    reposition_centersize._last_debug.append(f"Total: {elapsed:.1f}s")
+    _report()
+
+    return {
+        "x": bx / screen_w,
+        "y": by / screen_h,
+        "width": new_w / screen_w,
+        "height": new_h / screen_h,
+        "content_desc": utterance,
+        "utterance": utterance,
+        "elapsed_s": elapsed,
+        "_screenshot_b64": screenshot_b64,
+    }
+
+
 BEARING_SYSTEM = (
     "You are an operator context system. You just repositioned an overlay on the "
     "user's screen. Based on the screenshot, the user's request, and the previous "
