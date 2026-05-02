@@ -576,7 +576,7 @@ def reposition_twostep(
     )
     center_thinking = getattr(_pick_center, '_last_thinking', None)
     if center_thinking:
-        reposition_twostep._last_debug.append(f"Center thinking: {center_thinking[:500]}")
+        reposition_twostep._last_debug.append(f"Center thinking: {center_thinking}")
         _pick_center._last_thinking = None
     _report()
 
@@ -589,7 +589,7 @@ def reposition_twostep(
     )
     size_thinking = getattr(_pick_size, '_last_thinking', None)
     if size_thinking:
-        reposition_twostep._last_debug.append(f"Size thinking: {size_thinking[:500]}")
+        reposition_twostep._last_debug.append(f"Size thinking: {size_thinking}")
         _pick_size._last_thinking = None
     _report()
 
