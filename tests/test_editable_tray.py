@@ -821,13 +821,14 @@ class TestEnterKeyEventTapTrayRouting:
 class TestTapThenHoldInsertAtCursor:
     """Tap space then hold space from tray = insert tray entry at cursor."""
 
-    def test_tap_then_hold_fires_insert(self, main_module, monkeypatch):
-        """Space tap followed by space hold within 300ms should insert at cursor."""
+    def test_double_tap_then_hold_fires_insert(self, main_module, monkeypatch):
+        """Two space taps followed by space hold within 300ms should insert at cursor."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._enter_tray("insert me")
 
-        # Simulate: first tap inserted a space (sets timestamp)
+        # Simulate: two taps happened recently
         d._tray_last_space_tap = time.monotonic()
+        d._tray_space_tap_count = 2
 
         # Now a hold starts within the window — should be insert mode
         with patch("spoke.__main__.inject_text") as mock_inject, \
@@ -836,16 +837,30 @@ class TestTapThenHoldInsertAtCursor:
 
         assert d._tray_active is False
 
-    def test_old_tap_does_not_trigger_insert(self, main_module, monkeypatch):
-        """A space tap that happened > 300ms ago should not trigger insert mode."""
+    def test_single_tap_then_hold_does_not_trigger_insert(self, main_module, monkeypatch):
+        """A single space tap followed by hold should NOT trigger insert — needs double tap."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._enter_tray("hello")
         d._tray_insert_hold_active = False
 
-        # Tap happened 500ms ago — outside the 300ms window
-        d._tray_last_space_tap = time.monotonic() - 0.5
+        # Only one tap — not enough for double-tap-then-hold
+        d._tray_last_space_tap = time.monotonic()
+        d._tray_space_tap_count = 1
 
-        # The tap-then-hold check should not fire
+        # The double-tap-then-hold check requires count >= 2
+        assert d._tray_space_tap_count < 2
+        assert d._tray_insert_hold_active is False
+
+    def test_old_double_tap_does_not_trigger_insert(self, main_module, monkeypatch):
+        """Double tap that happened > 300ms ago should not trigger insert mode."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("hello")
+        d._tray_insert_hold_active = False
+
+        # Two taps happened but too long ago
+        d._tray_last_space_tap = time.monotonic() - 0.5
+        d._tray_space_tap_count = 2
+
         last_tap = d._tray_last_space_tap
         assert (time.monotonic() - last_tap) >= 0.3  # outside window
         assert d._tray_insert_hold_active is False

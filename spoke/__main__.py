@@ -1233,6 +1233,7 @@ class SpokeAppDelegate(NSObject):
         self._recording_from_tray: bool = False
         self._tray_insert_hold_active: bool = False
         self._tray_last_space_tap: float = 0.0
+        self._tray_space_tap_count: int = 0
         self._tray_tool_result: dict | None = None
 
         # Route key state — active per-recording selection and sticky persistence
@@ -1996,13 +1997,17 @@ class SpokeAppDelegate(NSObject):
                 self._recovery_hold_active = True
                 logger.info("Hold started during tray with shift — waiting for release (navigate)")
                 return
-            # Tap-then-hold detection: if a space tap just happened within 300ms,
-            # this hold is the insert-at-cursor gesture, not a new recording.
+            # Double-tap-then-hold detection: if two space taps happened within
+            # 300ms and this hold follows within the same window, this is the
+            # insert-at-cursor gesture. Much less vulnerable to false positives
+            # than single-tap-then-hold during fast typing.
             last_tap = getattr(self, '_tray_last_space_tap', 0.0)
-            if last_tap and (time.monotonic() - last_tap) < 0.3:
-                logger.info("Tap-then-hold from tray — entering insert-at-cursor wind-up")
+            tap_count = getattr(self, '_tray_space_tap_count', 0)
+            if last_tap and tap_count >= 2 and (time.monotonic() - last_tap) < 0.3:
+                logger.info("Double-tap-then-hold from tray — entering insert-at-cursor wind-up")
                 self._tray_insert_hold_active = True
                 self._tray_last_space_tap = 0.0
+                self._tray_space_tap_count = 0
                 # Show visual wind-up on the overlay
                 if self._overlay is not None and hasattr(self._overlay, 'show_insert_windup'):
                     self._overlay.show_insert_windup()
@@ -2466,7 +2471,13 @@ class SpokeAppDelegate(NSObject):
                 # Spacebar tap from tray = type a space character into the tray
                 logger.info("Spacebar during tray — inserting space character")
                 self._tray_insert_char(" ")
-                self._tray_last_space_tap = time.monotonic()
+                now = time.monotonic()
+                last = getattr(self, '_tray_last_space_tap', 0.0)
+                if last and (now - last) < 0.3:
+                    self._tray_space_tap_count = getattr(self, '_tray_space_tap_count', 0) + 1
+                else:
+                    self._tray_space_tap_count = 1
+                self._tray_last_space_tap = now
             else:
                 # Spacebar from recovery (non-tray) = retry insert
                 logger.info("Spacebar during recovery — retrying Insert")
