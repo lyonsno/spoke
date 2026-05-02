@@ -115,6 +115,19 @@ def _get_api_key():
     return os.environ.get("OMLX_SERVER_API_KEY", "1234")
 
 
+def _detect_thinking_enabled() -> bool:
+    """Whether to enable thinking for content detection calls."""
+    return os.environ.get("SPOKE_POSITIONING_THINKING", "0") == "1"
+
+
+def _detect_max_tokens() -> int:
+    """Max tokens for content detection: 256 without thinking, 16384 with."""
+    if _detect_thinking_enabled():
+        return 16384
+    # 6×6 grid × 4 tokens per cell worst case = 144, rounded up with headroom
+    return 256
+
+
 def _encode_image(img: Image.Image, scale: float = 0.5) -> str:
     """Encode PIL image as base64 PNG, optionally downscaling."""
     if scale < 1.0:
@@ -198,9 +211,9 @@ def detect_content(screenshot: Image.Image, content_desc: str) -> dict[str, bool
                     {"type": "text", "text": content_desc},
                 ]},
             ],
-            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 256,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "temperature": 0.6, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": _detect_max_tokens(),
+            "chat_template_kwargs": {"enable_thinking": _detect_thinking_enabled()},
         },
         timeout=120,
     )
@@ -233,8 +246,8 @@ def target_cells(target_desc: str) -> dict[str, bool]:
                 {"role": "user", "content": target_desc},
             ],
             "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 512,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": _detect_max_tokens(),
+            "chat_template_kwargs": {"enable_thinking": _detect_thinking_enabled()},
         },
         timeout=30,
     )
