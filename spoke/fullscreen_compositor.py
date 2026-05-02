@@ -1289,46 +1289,61 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
     return config
 
 
-def _agent_shell_child_shell_configs(parent_config: dict) -> list[dict]:
-    optical_fields = parent_config.get("agent_shell_card_optical_fields")
+def _agent_shell_card_surface_configs(
+    source_config: dict,
+    *,
+    previous: Mapping[str, dict] | None = None,
+) -> dict[str, dict]:
+    optical_fields = source_config.get("agent_shell_card_optical_fields")
     if not isinstance(optical_fields, dict):
-        return []
+        return {}
     requests = optical_fields.get("requests")
     if not isinstance(requests, list):
-        return []
-    children: list[dict] = []
+        return {}
+    previous = previous or {}
+    surfaces: dict[str, dict] = {}
     for request in requests:
         if not isinstance(request, dict):
             continue
         child_config = request.get("compiled_shell_config")
         if not isinstance(child_config, dict):
             continue
-        child = dict(child_config)
-        child["surface_attachment"] = "sibling"
-        child["movable"] = True
+        caller_id = request.get("caller_id")
+        client_id = (
+            caller_id
+            if isinstance(caller_id, str) and caller_id
+            else child_config.get("client_id")
+        )
+        if not isinstance(client_id, str) or not client_id:
+            continue
+        surface = dict(child_config)
+        surface["client_id"] = client_id
+        surface["surface_attachment"] = "sibling"
+        surface["movable"] = True
         try:
-            parent_left = float(parent_config.get("center_x", 0.0)) - (
-                float(parent_config.get("content_width_points", 0.0)) * 0.5
+            source_left = float(source_config.get("center_x", 0.0)) - (
+                float(source_config.get("content_width_points", 0.0)) * 0.5
             )
-            parent_bottom = float(parent_config.get("center_y", 0.0)) - (
-                float(parent_config.get("content_height_points", 0.0)) * 0.5
+            source_bottom = float(source_config.get("center_y", 0.0)) - (
+                float(source_config.get("content_height_points", 0.0)) * 0.5
             )
-            child["center_x"] = parent_left + float(child.get("center_x", 0.0))
-            child["center_y"] = parent_bottom + float(child.get("center_y", 0.0))
+            surface["center_x"] = source_left + float(surface.get("center_x", 0.0))
+            surface["center_y"] = source_bottom + float(surface.get("center_y", 0.0))
         except (TypeError, ValueError):
             pass
-        caller_id = request.get("caller_id")
-        if isinstance(caller_id, str) and caller_id:
-            child.setdefault("client_id", caller_id)
-        child.setdefault("parent_client_id", parent_config.get("client_id", ""))
-        child.setdefault("visible", True)
-        children.append(child)
-    return children
+        existing = previous.get(client_id)
+        if isinstance(existing, dict):
+            for key in ("center_x", "center_y"):
+                if key in existing:
+                    surface[key] = existing[key]
+        surface["source_client_id"] = source_config.get("client_id", "")
+        surface.setdefault("visible", True)
+        surfaces[client_id] = surface
+    return surfaces
 
 
 def _snapshot_to_visible_shell_configs(snapshot: OverlayRenderSnapshot) -> list[dict]:
-    parent = _snapshot_to_shell_config(snapshot)
-    return [parent, *_agent_shell_child_shell_configs(parent)]
+    return [_snapshot_to_shell_config(snapshot)]
 
 
 def _snapshot_from_shell_config(
@@ -1428,6 +1443,7 @@ class OverlayCompositorHost:
         self._display_id = _display_id_from_registry_key(registry_key)
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
+        self._agent_shell_card_surfaces: dict[str, dict] = {}
         self._started = False
 
     @property
@@ -1548,6 +1564,11 @@ class OverlayCompositorHost:
 
     def release_client(self, client_id: str) -> None:
         self._clients.pop(client_id, None)
+        self._agent_shell_card_surfaces = {
+            surface_id: config
+            for surface_id, config in self._agent_shell_card_surfaces.items()
+            if config.get("source_client_id") != client_id
+        }
         if self._clients:
             self._sync_host()
             return
@@ -1648,12 +1669,27 @@ class OverlayCompositorHost:
         for entry in self._clients.values():
             overlay_window_ids.extend(self._window_ids_for_entry(entry))
         snapshots = self.render_snapshots()
-        shell_configs = [
+        for snapshot in snapshots:
+            config = _snapshot_to_shell_config(snapshot)
+            if "agent_shell_card_optical_fields" in config:
+                self._agent_shell_card_surfaces = _agent_shell_card_surface_configs(
+                    config,
+                    previous=self._agent_shell_card_surfaces,
+                )
+        parent_shell_configs = [
             config
             for snapshot in snapshots
             if snapshot.visible
             for config in _snapshot_to_visible_shell_configs(snapshot)
         ]
+        card_shell_configs = sorted(
+            self._agent_shell_card_surfaces.values(),
+            key=lambda config: (
+                int(config.get("z_index", 0)),
+                str(config.get("client_id", "")),
+            ),
+        )
+        shell_configs = [*parent_shell_configs, *card_shell_configs]
         set_excluded = getattr(self._compositor, "set_excluded_window_ids", None)
         if callable(set_excluded):
             set_excluded(overlay_window_ids)

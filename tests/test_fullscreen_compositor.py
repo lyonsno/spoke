@@ -452,7 +452,7 @@ def test_shell_config_preserves_agent_shell_primitive_render_payload(monkeypatch
     assert config["surface_kind"] == "agent_shell"
 
 
-def test_host_expands_agent_shell_card_optical_fields_into_visible_child_configs(monkeypatch):
+def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_motion_and_visibility(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()
     screen = object()
@@ -463,10 +463,11 @@ def test_host_expands_agent_shell_card_optical_fields_into_visible_child_configs
         content_view=object(),
     )
 
-    assert client.update_shell_config(
-        {
-            "center_x": 10.0,
-            "center_y": 20.0,
+    def _config(*, center_x, center_y, visible=True):
+        return {
+            "center_x": center_x,
+            "center_y": center_y,
+            "visible": visible,
             "content_width_points": 300.0,
             "content_height_points": 120.0,
             "corner_radius_points": 16.0,
@@ -500,7 +501,8 @@ def test_host_expands_agent_shell_card_optical_fields_into_visible_child_configs
             },
             "surface_kind": "agent_shell",
         }
-    )
+
+    assert client.update_shell_config(_config(center_x=10.0, center_y=20.0))
 
     configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
     assert [config["client_id"] for config in configs] == [
@@ -513,6 +515,27 @@ def test_host_expands_agent_shell_card_optical_fields_into_visible_child_configs
     assert configs[1]["surface_attachment"] == "sibling"
     assert configs[1]["movable"] is True
     assert configs[1]["optical_field"]["profile"] == "agent_card"
+    first_card_center = (configs[1]["center_x"], configs[1]["center_y"])
+
+    assert client.update_shell_config(_config(center_x=500.0, center_y=500.0))
+    moved_parent_configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    assert moved_parent_configs[0]["center_x"] == 500.0
+    assert (
+        moved_parent_configs[1]["center_x"],
+        moved_parent_configs[1]["center_y"],
+    ) == first_card_center
+
+    assert client.update_shell_config(
+        _config(center_x=900.0, center_y=900.0, visible=False)
+    )
+    hidden_parent_configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    assert [config["client_id"] for config in hidden_parent_configs] == [
+        "agent.card.codex-thread-1",
+    ]
+    assert (
+        hidden_parent_configs[0]["center_x"],
+        hidden_parent_configs[0]["center_y"],
+    ) == first_card_center
 
 
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):
