@@ -162,7 +162,6 @@ def _agent_shell_card_text_overlay_specs(
     scale: float,
 ) -> list[dict]:
     specs: list[dict] = []
-    safe_scale = max(float(scale), 0.1)
     for config in shell_configs:
         if not isinstance(config, dict):
             continue
@@ -174,10 +173,10 @@ def _agent_shell_card_text_overlay_specs(
         if not primary and not secondary:
             continue
         try:
-            width = max(float(config.get("content_width_points", 0.0)) / safe_scale, 1.0)
-            height = max(float(config.get("content_height_points", 0.0)) / safe_scale, 1.0)
-            center_x = float(config.get("center_x", 0.0)) / safe_scale
-            center_y_top = float(config.get("center_y", 0.0)) / safe_scale
+            width = max(float(config.get("content_width_points", 0.0)), 1.0)
+            height = max(float(config.get("content_height_points", 0.0)), 1.0)
+            center_x = float(config.get("center_x", 0.0))
+            center_y_top = float(config.get("center_y", 0.0))
         except (TypeError, ValueError):
             continue
         left = max(0.0, min(screen_width_points, center_x - width * 0.5))
@@ -188,7 +187,7 @@ def _agent_shell_card_text_overlay_specs(
             {
                 "client_id": _string(config.get("client_id")),
                 "text": "\n".join(part for part in (primary, secondary) if part),
-                "font_size": 13.0 if config.get("role") == "selected_thread" else 11.0,
+                "font_size": 15.0 if config.get("role") == "selected_thread" else 13.0,
                 "frame": {
                     "x": round(left + inset, 3),
                     "y": round(bottom + inset, 3),
