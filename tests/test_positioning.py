@@ -559,6 +559,95 @@ def test_positioning_hook_emits_dismiss_state_when_command_overlay_dismisses():
     assert config["optical_field"]["slot"] == "dismiss"
 
 
+def test_positioning_hook_publishes_house_dismiss_sidecars_when_host_is_available():
+    """Semantic dismiss should use the reusable House sidecars on the shared host."""
+    import spoke.positioning.smoke_hook as smoke_hook
+    from spoke.fullscreen_compositor import OverlayClientIdentity
+    from spoke.optical_field import OpticalFieldBounds, OpticalFieldRequest
+    from spoke.positioning.smoke_hook import install_positioning_hook
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    class FakeHost:
+        display_id = 1
+
+        def __init__(self):
+            self.clients = {}
+            self.batches = []
+
+        def register_client(self, identity, *, window, content_view):
+            assert isinstance(identity, OverlayClientIdentity)
+            client = FakeClient(self, identity.client_id)
+            self.clients[identity.client_id] = client
+            return client
+
+        def update_client_configs(self, configs):
+            self.batches.append(configs)
+            return True
+
+    class FakeClient:
+        def __init__(self, host, client_id):
+            self._host = host
+            self._client_id = client_id
+
+        def update_shell_config(self, config):
+            self._host.batches.append({self._client_id: config})
+            return True
+
+        def release(self):
+            self._host.clients.pop(self._client_id, None)
+
+    host = FakeHost()
+    command_session = FakeClient(host, "assistant.command")
+    command_overlay = MagicMock()
+    command_overlay._fullscreen_compositor = command_session
+    command_overlay._screen.backingScaleFactor.return_value = 2.0
+    command_overlay._brightness = 0.42
+    command_overlay._window = object()
+    command_overlay._content_view = object()
+    original_cancel = MagicMock()
+    command_overlay.cancel_dismiss = original_cancel
+
+    app = MagicMock()
+    app._command_transcribe_worker = MagicMock()
+    app._command_overlay = command_overlay
+    app._positioning_field_request = OpticalFieldRequest(
+        caller_id="semantic_positioning",
+        bounds=OpticalFieldBounds(x=360.0, y=225.0, width=720.0, height=450.0),
+        role="assistant",
+        state="rest",
+        visible=True,
+    )
+
+    install_positioning_hook(app)
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=Frame()):
+        app._command_overlay.cancel_dismiss()
+
+    original_cancel.assert_called_once_with()
+    assert host.batches
+    batch = host.batches[-1]
+    assert set(batch) == {
+        "assistant.command",
+        "semantic_positioning.dismiss_seam",
+        "semantic_positioning.dismiss_radial_pucker",
+    }
+    main_config = batch["assistant.command"]
+    assert main_config["optical_field"]["caller_id"] == "semantic_positioning"
+    assert main_config["optical_field"]["state"] == "dismiss"
+    assert main_config["optical_field"]["progress"] == pytest.approx(0.0)
+    assert batch["semantic_positioning.dismiss_seam"]["optical_field"]["sidecar"] == "dismiss_seam"
+    assert (
+        batch["semantic_positioning.dismiss_radial_pucker"]["optical_field"]["sidecar"]
+        == "dismiss_radial_pucker"
+    )
+
+
 # ── two-step pipeline tests ──
 
 def test_coarse_regions_cover_screen():

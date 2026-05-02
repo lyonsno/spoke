@@ -365,37 +365,139 @@ def _command_overlay_backing_scale(command_overlay) -> float:
     return 2.0
 
 
+def _compile_command_overlay_shell_configs(
+    request: OpticalFieldRequest,
+    command_overlay,
+    screen_frame,
+) -> tuple[dict, ...]:
+    """Compile a request into the existing command-overlay compositor dialect."""
+    from ..optical_field import compile_optical_field_shell_configs
+
+    configs = tuple(dict(config) for config in compile_optical_field_shell_configs(request))
+    scale = _command_overlay_backing_scale(command_overlay)
+    screen_x, screen_y, screen_h = _screen_frame_parts(screen_frame)
+
+    session = _explicit_attr(command_overlay, "_fullscreen_compositor", None)
+    session_client_id = _explicit_attr(session, "_client_id", None)
+
+    for config in configs:
+        center_x = float(config.get("center_x", request.bounds.center_x))
+        config["center_x"] = (center_x - screen_x) * scale
+        center_y = float(config.get("center_y", request.bounds.center_y))
+        if screen_h > 0.0:
+            config["center_y"] = (screen_y + screen_h - center_y) * scale
+        else:
+            config["center_y"] = center_y * scale
+
+        for key in _DISPLAY_LOCAL_POINT_KEYS:
+            if key in config:
+                config[key] = float(config[key]) * scale
+
+        brightness = _explicit_attr(command_overlay, "_brightness", None)
+        if isinstance(brightness, numbers.Real):
+            config["initial_brightness"] = max(0.0, min(1.0, float(brightness)))
+
+        if session_client_id and config.get("client_id") == request.caller_id:
+            config["client_id"] = str(session_client_id)
+
+    return configs
+
+
 def _compile_command_overlay_shell_config(
     request: OpticalFieldRequest,
     command_overlay,
     screen_frame,
 ) -> dict:
-    """Compile a request into the existing command-overlay compositor dialect."""
-    from ..optical_field import compile_placeholder_shell_config
+    """Compile the primary command-overlay compositor config."""
+    return _compile_command_overlay_shell_configs(request, command_overlay, screen_frame)[0]
 
-    config = compile_placeholder_shell_config(request)
-    scale = _command_overlay_backing_scale(command_overlay)
-    screen_x, screen_y, screen_h = _screen_frame_parts(screen_frame)
 
-    config["center_x"] = (request.bounds.center_x - screen_x) * scale
-    if screen_h > 0.0:
-        config["center_y"] = (screen_y + screen_h - request.bounds.center_y) * scale
-    else:
-        config["center_y"] = request.bounds.center_y * scale
+def _release_positioning_sidecar_clients(command_overlay, active_client_ids: set[str]) -> None:
+    clients = _explicit_attr(command_overlay, "_positioning_sidecar_clients", None)
+    if not isinstance(clients, dict):
+        return
+    identities = _explicit_attr(command_overlay, "_positioning_sidecar_identities", None)
+    if not isinstance(identities, dict):
+        identities = {}
+    for client_id in set(clients) - active_client_ids:
+        client = clients.pop(client_id, None)
+        identities.pop(client_id, None)
+        release = getattr(client, "release", None)
+        if callable(release):
+            try:
+                release()
+            except Exception:
+                logger.debug(
+                    "Failed to release semantic positioning sidecar %s",
+                    client_id,
+                    exc_info=True,
+                )
 
-    for key in _DISPLAY_LOCAL_POINT_KEYS:
-        if key in config:
-            config[key] = float(config[key]) * scale
 
-    brightness = _explicit_attr(command_overlay, "_brightness", None)
-    if isinstance(brightness, numbers.Real):
-        config["initial_brightness"] = max(0.0, min(1.0, float(brightness)))
+def _ensure_positioning_sidecar_client(command_overlay, session, config: dict):
+    host = _explicit_attr(session, "_host", None)
+    if host is None:
+        return None
+    register = getattr(host, "register_client", None)
+    if not callable(register):
+        return None
+    window = _explicit_attr(command_overlay, "_window", None)
+    content_view = _explicit_attr(command_overlay, "_content_view", None)
+    if window is None or content_view is None:
+        return None
 
-    session = _explicit_attr(command_overlay, "_fullscreen_compositor", None)
-    client_id = _explicit_attr(session, "_client_id", None)
-    if client_id:
-        config["client_id"] = str(client_id)
-    return config
+    client_id = str(config.get("client_id", ""))
+    if not client_id:
+        return None
+
+    from ..fullscreen_compositor import OverlayClientIdentity
+
+    role = str(config.get("role", "assistant"))
+    if role not in {"assistant", "preview", "tray", "recovery"}:
+        role = "assistant"
+    identity = OverlayClientIdentity(
+        client_id=client_id,
+        display_id=getattr(host, "display_id", "unknown"),
+        role=role,
+    )
+
+    clients = _explicit_attr(command_overlay, "_positioning_sidecar_clients", None)
+    if not isinstance(clients, dict):
+        clients = {}
+        command_overlay._positioning_sidecar_clients = clients
+    identities = _explicit_attr(command_overlay, "_positioning_sidecar_identities", None)
+    if not isinstance(identities, dict):
+        identities = {}
+        command_overlay._positioning_sidecar_identities = identities
+
+    client = clients.get(client_id)
+    if client is None or identities.get(client_id) != identity:
+        client = register(identity, window=window, content_view=content_view)
+        clients[client_id] = client
+        identities[client_id] = identity
+    return client
+
+
+def _publish_command_overlay_config_batch(updates: list[tuple[object, dict]]) -> bool:
+    if not updates:
+        return True
+    host = _explicit_attr(updates[0][0], "_host", None)
+    updater = getattr(host, "update_client_configs", None)
+    if host is None or not callable(updater):
+        return False
+    batch: dict[str, dict] = {}
+    for client, config in updates:
+        if _explicit_attr(client, "_host", None) is not host:
+            return False
+        client_id = _explicit_attr(client, "_client_id", None) or config.get("client_id")
+        if not client_id:
+            return False
+        batch[str(client_id)] = config
+    try:
+        return bool(updater(batch))
+    except Exception:
+        logger.debug("Failed to batch semantic positioning compositor update", exc_info=True)
+        return False
 
 
 def _push_request_to_command_overlay_compositor(
@@ -409,7 +511,31 @@ def _push_request_to_command_overlay_compositor(
     updater = getattr(session, "update_shell_config", None)
     if not callable(updater):
         return False
-    updater(_compile_command_overlay_shell_config(request, command_overlay, screen_frame))
+    configs = _compile_command_overlay_shell_configs(request, command_overlay, screen_frame)
+    primary_config = configs[0]
+    sidecar_updates: list[tuple[object, dict]] = []
+    active_sidecars: set[str] = set()
+    for config in configs[1:]:
+        client_id = str(config.get("client_id", ""))
+        client = _ensure_positioning_sidecar_client(command_overlay, session, config)
+        if client is not None:
+            if client_id:
+                active_sidecars.add(client_id)
+            sidecar_updates.append((client, config))
+    _release_positioning_sidecar_clients(command_overlay, active_sidecars)
+    if sidecar_updates and _publish_command_overlay_config_batch(
+        [(session, primary_config), *sidecar_updates]
+    ):
+        return True
+
+    updater(primary_config)
+    for client, config in sidecar_updates:
+        sidecar_updater = getattr(client, "update_shell_config", None)
+        if callable(sidecar_updater):
+            try:
+                sidecar_updater(config)
+            except Exception:
+                logger.debug("Failed to update semantic positioning sidecar", exc_info=True)
     return True
 
 
@@ -419,7 +545,8 @@ def _request_with_lifecycle(
     state: str,
     visible: bool,
 ) -> OpticalFieldRequest:
-    return replace(request, state=state, visible=visible)
+    progress = 0.0 if state == "dismiss" else 1.0
+    return replace(request, state=state, visible=visible, progress=progress)
 
 
 def _reemit_stored_positioning_request(
