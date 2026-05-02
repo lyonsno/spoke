@@ -189,7 +189,7 @@ _FADE_STEPS = 15
 _DISMISS_DURATION_S = 0.2 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _DISMISS_GROW_S = 0.06 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _DISMISS_SHRINK_S = _DISMISS_DURATION_S - _DISMISS_GROW_S
-_DISMISS_ANIM_FPS = 144.0
+_DISMISS_ANIM_FPS = 60.0
 _DISMISS_GROW_SCALE = 1.018
 _DISMISS_END_SCALE = 0.94
 
@@ -759,7 +759,7 @@ def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
         }
     state = _materialization_fill_state(p)
     return {
-        "opacity": 1.0,
+        "opacity": state["opacity"],
         "height_frac": state["height_frac"],
     }
 
