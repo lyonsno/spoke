@@ -1594,9 +1594,18 @@ class OverlayCompositorHost:
         set_excluded = getattr(self._compositor, "set_excluded_window_ids", None)
         if callable(set_excluded):
             set_excluded(overlay_window_ids)
+        if not shell_configs:
+            if self._started:
+                try:
+                    self._compositor.stop()
+                except Exception:
+                    logger.debug("Failed to stop shared overlay compositor host", exc_info=True)
+                self._started = False
+            update_all = getattr(self._compositor, "update_shell_configs", None)
+            if callable(update_all):
+                update_all([])
+            return True
         if start_if_needed and not self._started:
-            if not shell_configs:
-                return False
             started = self._compositor.start(shell_configs[0])
             if not started:
                 return False

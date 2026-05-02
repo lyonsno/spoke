@@ -132,6 +132,7 @@ class AudioCapture:
         self._callbacks_enabled = False
         self._callback_generation = 0
         self._stream_closing = False
+        self._stream_generation = 0
 
     def warmup(self) -> None:
         """Pre-initialize PortAudio so first start() is fast."""
@@ -141,14 +142,8 @@ class AudioCapture:
         except Exception:
             logger.debug("PortAudio warmup failed", exc_info=True)
 
-    def _close_stream(self) -> None:
-        """Best-effort stream teardown for normal stop and failed starts."""
-        stream = self._stream
-        self._stream_closing = True
-        self._stream = None
-        if stream is None:
-            self._stream_closing = False
-            return
+    def _teardown_stream(self, stream: sd.InputStream) -> None:
+        """Best-effort blocking PortAudio stream teardown."""
         try:
             stream.stop()
         except Exception:
@@ -157,8 +152,38 @@ class AudioCapture:
             stream.close()
         except Exception:
             logger.debug("Audio stream close failed during teardown", exc_info=True)
+
+    def _close_stream(self) -> None:
+        """Best-effort synchronous stream teardown for failed starts/restarts."""
+        stream = self._stream
+        self._stream_closing = True
+        self._stream = None
+        self._stream_generation += 1
+        if stream is None:
+            self._stream_closing = False
+            return
+        try:
+            self._teardown_stream(stream)
         finally:
             self._stream_closing = False
+
+    def _close_stream_async(self) -> None:
+        """Detach stream teardown so CoreAudio cannot block the caller thread."""
+        stream = self._stream
+        self._stream_closing = True
+        self._stream = None
+        self._stream_generation += 1
+        if stream is None:
+            self._stream_closing = False
+            return
+
+        threading.Thread(
+            target=self._teardown_stream,
+            args=(stream,),
+            daemon=True,
+            name="audio-stream-teardown",
+        ).start()
+        self._stream_closing = False
 
     def _reset_portaudio(self) -> None:
         """Best-effort PortAudio reset after a dead input stream."""
@@ -258,6 +283,8 @@ class AudioCapture:
 
         self._stop_callback_dispatch()
         self._callback_generation += 1
+        self._stream_generation += 1
+        stream_generation = self._stream_generation
         self._frames = []
         self._read_cursor = 0
         self._stream_closing = False
@@ -304,7 +331,13 @@ class AudioCapture:
                     channels=CHANNELS,
                     dtype=DTYPE,
                     blocksize=BLOCKSIZE,
-                    callback=self._audio_callback,
+                    callback=lambda indata, frames, time_info, status: self._audio_callback(
+                        indata,
+                        frames,
+                        time_info,
+                        status,
+                        generation=stream_generation,
+                    ),
                 )
                 stream.start()
                 self._stream = stream
@@ -342,7 +375,7 @@ class AudioCapture:
     def stop(self) -> bytes:
         """Stop recording and return the complete audio as WAV bytes."""
         if self._stream is not None:
-            self._close_stream()
+            self._close_stream_async()
             chunk_count = len(self._frames)
             logger.info("Audio capture stopped (%d chunks)", chunk_count)
             if chunk_count == 0:
@@ -493,8 +526,11 @@ class AudioCapture:
         frames: int,
         time_info: object,
         status: sd.CallbackFlags,
+        generation: int | None = None,
     ) -> None:
         """Called by PortAudio on its own thread. Must be fast."""
+        if generation is not None and generation != self._stream_generation:
+            return
         if self._stream is None or self._stream_closing:
             return
         tick_start = time.perf_counter()

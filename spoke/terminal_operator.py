@@ -133,6 +133,18 @@ _EPISTAXIS_ENV_PASSTHROUGH = (
     "EPISTAXIS_LIVE_TOOLS_ROOT",
     "EPISTAXIS_BOOTSTRAP_SOURCE_REPO",
     "EPISTAXIS_BIN_DIR",
+    # Beast Pipe / Gemini CLI: model resolution, auth, config
+    "EPISTAXIS_MODEL",
+    "EPISTAXIS_ZETESIS_MODEL",
+    "EPISTAXIS_GEMINI_NO_FALLBACK",
+    # OMLX embedding server: archive search, reranker
+    "OMLX_SERVER_API_KEY",
+    "SPOKE_COMMAND_API_KEY",
+    "SPOKE_OMLX_URL",
+    # Gemini CLI auth — OAuth tokens live under HOME but the CLI may
+    # also check these for API-key auth fallback
+    "GEMINI_API_KEY",
+    "GEMINI_API_KEY_INACTIVE",
 )
 _RG_SHORT_VALUE_FLAGS = frozenset({"A", "B", "C", "e", "f", "g", "j", "m", "M", "t", "T"})
 _EXECUTION_ENV_OVERRIDES = {
