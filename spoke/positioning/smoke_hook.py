@@ -10,6 +10,7 @@ Usage: monkey-patch SpokeApp._command_transcribe_worker with
 from __future__ import annotations
 
 import logging
+import numbers
 import threading
 import time
 
@@ -304,6 +305,111 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
 
 
 _POSITIONING_CALLER_ID = "semantic_positioning"
+_DISPLAY_LOCAL_POINT_KEYS = (
+    "content_width_points",
+    "content_height_points",
+    "corner_radius_points",
+    "band_width_points",
+    "tail_width_points",
+    "ring_amplitude_points",
+    "tail_amplitude_points",
+    "exterior_mix_width_points",
+    "cleanup_blur_radius_points",
+    "debug_grid_spacing_points",
+)
+
+
+def _explicit_attr(obj, name: str, default=None):
+    """Read explicitly seated attributes without triggering MagicMock children."""
+    try:
+        attrs = getattr(obj, "__dict__", None)
+        if isinstance(attrs, dict) and name in attrs:
+            return attrs[name]
+        if obj.__class__.__module__.startswith("unittest.mock"):
+            return default
+    except Exception:
+        pass
+    return getattr(obj, name, default)
+
+
+def _numeric(value, default: float = 0.0) -> float:
+    if isinstance(value, numbers.Real):
+        return float(value)
+    return default
+
+
+def _screen_frame_parts(screen_frame) -> tuple[float, float, float]:
+    """Return screen origin x/y and height in logical Cocoa points."""
+    try:
+        origin = getattr(screen_frame, "origin", None)
+        size = getattr(screen_frame, "size", None)
+        return (
+            _numeric(getattr(origin, "x", 0.0)),
+            _numeric(getattr(origin, "y", 0.0)),
+            _numeric(getattr(size, "height", 0.0)),
+        )
+    except Exception:
+        return (0.0, 0.0, 0.0)
+
+
+def _command_overlay_backing_scale(command_overlay) -> float:
+    screen = _explicit_attr(command_overlay, "_screen", None)
+    if screen is not None and hasattr(screen, "backingScaleFactor"):
+        try:
+            scale = float(screen.backingScaleFactor())
+            if scale > 0.0:
+                return scale
+        except Exception:
+            pass
+    return 2.0
+
+
+def _compile_command_overlay_shell_config(
+    request: OpticalFieldRequest,
+    command_overlay,
+    screen_frame,
+) -> dict:
+    """Compile a request into the existing command-overlay compositor dialect."""
+    from ..optical_field import compile_placeholder_shell_config
+
+    config = compile_placeholder_shell_config(request)
+    scale = _command_overlay_backing_scale(command_overlay)
+    screen_x, screen_y, screen_h = _screen_frame_parts(screen_frame)
+
+    config["center_x"] = (request.bounds.center_x - screen_x) * scale
+    if screen_h > 0.0:
+        config["center_y"] = (screen_y + screen_h - request.bounds.center_y) * scale
+    else:
+        config["center_y"] = request.bounds.center_y * scale
+
+    for key in _DISPLAY_LOCAL_POINT_KEYS:
+        if key in config:
+            config[key] = float(config[key]) * scale
+
+    brightness = _explicit_attr(command_overlay, "_brightness", None)
+    if isinstance(brightness, numbers.Real):
+        config["initial_brightness"] = max(0.0, min(1.0, float(brightness)))
+
+    session = _explicit_attr(command_overlay, "_fullscreen_compositor", None)
+    client_id = _explicit_attr(session, "_client_id", None)
+    if client_id:
+        config["client_id"] = str(client_id)
+    return config
+
+
+def _push_request_to_command_overlay_compositor(
+    command_overlay,
+    request: OpticalFieldRequest,
+    screen_frame,
+) -> bool:
+    session = _explicit_attr(command_overlay, "_fullscreen_compositor", None)
+    if session is None:
+        return False
+    updater = getattr(session, "update_shell_config", None)
+    if not callable(updater):
+        return False
+    updater(_compile_command_overlay_shell_config(request, command_overlay, screen_frame))
+    return True
 
 
 def _finish_on_main_immediate(app, result: dict) -> None:
@@ -384,32 +490,40 @@ def _finish_on_main(app, result: dict | None) -> None:
             visible=True,
         )
 
-        # Push through the compositor's optical field backend if available,
-        # otherwise fall back to direct overlay move for smoke testing.
-        compositor = getattr(app, '_fullscreen_compositor', None)
-        backend = getattr(compositor, '_optical_field_backend', None) if compositor else None
-        if backend is not None:
-            from ..optical_field import compile_placeholder_shell_config
-            backend.upsert(request)
-            shell_config = compile_placeholder_shell_config(request)
-            # Find the active client to push the config to
-            command_overlay = getattr(app, '_command_overlay', None)
-            client_id = getattr(command_overlay, '_compositor_client_id', None) if command_overlay else None
-            if client_id and hasattr(compositor, 'update_client_config'):
-                compositor.update_client_config(client_id, shell_config)
-                logger.info("Pushed optical field config to compositor client %s", client_id)
-            else:
-                # No compositor client — push as a shell config update
-                compositor.update_shell_config(shell_config)
-                logger.info("Pushed optical field config as shell config")
+        command_overlay = _explicit_attr(app, '_command_overlay', None)
+
+        # Main now seats the live compositor session on CommandOverlay. Push the
+        # optical-field request through that client contract when available.
+        if _push_request_to_command_overlay_compositor(command_overlay, request, screen):
+            logger.info("Pushed optical field config through command overlay compositor session")
         else:
-            # Fallback: direct overlay move (legacy smoke path)
-            logger.info("No optical field backend — falling back to direct overlay move")
-            command_overlay = getattr(app, '_command_overlay', None)
-            preview_overlay = getattr(app, '_overlay', None)
-            target = command_overlay or preview_overlay
-            if target is not None:
-                _move_overlay(target, x, mac_y, w, h)
+            # Older smoke/test surfaces seated a backend on the app-level
+            # compositor. Keep that bridge while the production primitive settles.
+            compositor = _explicit_attr(app, '_fullscreen_compositor', None)
+            backend = _explicit_attr(compositor, '_optical_field_backend', None) if compositor else None
+            if backend is not None:
+                from ..optical_field import compile_placeholder_shell_config
+                backend.upsert(request)
+                shell_config = compile_placeholder_shell_config(request)
+                client_id = (
+                    _explicit_attr(command_overlay, '_compositor_client_id', None)
+                    if command_overlay
+                    else None
+                )
+                if client_id and hasattr(compositor, 'update_client_config'):
+                    compositor.update_client_config(client_id, shell_config)
+                    logger.info("Pushed optical field config to compositor client %s", client_id)
+                else:
+                    # No compositor client — push as a shell config update
+                    compositor.update_shell_config(shell_config)
+                    logger.info("Pushed optical field config as shell config")
+            else:
+                # Fallback: direct overlay move (legacy smoke path)
+                logger.info("No optical field compositor path — falling back to direct overlay move")
+                preview_overlay = _explicit_attr(app, '_overlay', None)
+                target = command_overlay or preview_overlay
+                if target is not None:
+                    _move_overlay(target, x, mac_y, w, h)
 
         # Store the last request so position persists across show/hide
         app._positioning_field_request = request

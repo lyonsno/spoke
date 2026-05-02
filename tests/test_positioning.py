@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -420,6 +421,48 @@ def test_positioning_pushes_to_compositor_backend():
 
     # Compositor should have received an update
     compositor.update_client_config.assert_called_once()
+
+
+def test_positioning_uses_command_overlay_compositor_session_when_backend_absent():
+    """The live command overlay owns the compositor session on main."""
+    import spoke.positioning.smoke_hook as smoke_hook
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    frame = Frame()
+    command_session = MagicMock()
+    command_overlay = MagicMock()
+    command_overlay._fullscreen_compositor = command_session
+    command_overlay._screen.backingScaleFactor.return_value = 2.0
+    command_overlay._brightness = 0.42
+
+    app = MagicMock()
+    app._transcribing = True
+    app._detector = MagicMock()
+    app._menubar = None
+    app._overlay = None
+    app._fullscreen_compositor = None
+    app._command_overlay = command_overlay
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=frame):
+        _run_finish_on_main(app, {"x": 0.25, "y": 0.25, "width": 0.5, "height": 0.5})
+
+    command_session.update_shell_config.assert_called_once()
+    config = command_session.update_shell_config.call_args.args[0]
+    assert config["client_id"] == "semantic_positioning"
+    assert config["role"] == "assistant"
+    assert config["optical_field"]["caller_id"] == "semantic_positioning"
+    # The deterministic test frame is 1440x900 logical points.
+    assert config["center_x"] == pytest.approx(1440.0)
+    assert config["center_y"] == pytest.approx(900.0)
+    assert config["content_width_points"] == pytest.approx(1440.0)
+    assert config["content_height_points"] == pytest.approx(900.0)
+    assert config["initial_brightness"] == pytest.approx(0.42)
 
 
 # ── two-step pipeline tests ──
