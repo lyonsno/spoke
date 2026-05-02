@@ -436,6 +436,86 @@ BBOX_SYSTEM = (
 )
 
 
+BEARING_SYSTEM = (
+    "You are an operator context system. You just repositioned an overlay on the "
+    "user's screen. Based on the screenshot, the user's request, and the previous "
+    "bearing (if any), update the bearing.\n\n"
+    "The bearing is a compressed snapshot of what the user is doing and what the "
+    "overlay means to them right now. It helps future repositioning calls make "
+    "better decisions faster.\n\n"
+    "Output EXACTLY this structure, one short phrase per field:\n"
+    "screen_layout: <what's on screen — panes, apps, content areas>\n"
+    "overlay_role: <what the overlay is being used for right now>\n"
+    "default_size: <WxH pixels — the 'normal' size when not covering something specific>\n"
+    "default_position: <where the overlay naturally sits when not directed elsewhere>\n"
+    "user_tendency: <how the user tends to use repositioning — what they avoid, prefer>\n"
+    "last_action: <what the user just asked for and what happened>\n\n"
+    "Keep each field to one short phrase. Do not elaborate. Do not add fields."
+)
+
+
+def update_bearing(
+    screenshot_b64: str,
+    utterance: str,
+    bbox_result: dict,
+    previous_bearing: str | None,
+    screen_w: int,
+    screen_h: int,
+) -> str:
+    """Background call: update the operator bearing after repositioning.
+
+    Runs with thinking on for richness. Returns the new bearing as a string.
+    """
+    bx = int(bbox_result["x"] * screen_w)
+    by = int(bbox_result["y"] * screen_h)
+    bw = int(bbox_result["width"] * screen_w)
+    bh = int(bbox_result["height"] * screen_h)
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Overlay was placed at: x={bx} y={by} width={bw} height={bh}\n"
+    )
+    if previous_bearing:
+        user_text += f"\nPrevious bearing:\n{previous_bearing}\n"
+    else:
+        user_text += "\nNo previous bearing (first positioning run).\n"
+
+    # Always use thinking preset for bearing updates
+    params = {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "repetition_penalty": 1.0,
+        "presence_penalty": 1.5,
+        "max_tokens": 16384,
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers("bearing"),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": BEARING_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **params,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    msg = resp.json()["choices"][0]["message"]
+    content = msg.get("content", "").strip()
+
+    # The bearing is the content — structured fields
+    return content
+
+
 def _draw_overlay_outline(screenshot: Image.Image, overlay_rect: dict | None) -> Image.Image:
     """Draw a red dashed outline on the screenshot showing the current overlay position."""
     img = screenshot.copy()
@@ -569,7 +649,8 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
 
 def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str,
                screen_w: int, screen_h: int,
-               current_overlay: dict | None = None) -> tuple[int, int, int, int]:
+               current_overlay: dict | None = None,
+               bearing: str | None = None) -> tuple[int, int, int, int]:
     """Single-shot: pick overlay bounding box in pixel coordinates."""
     thinking = _detect_thinking_enabled()
 
@@ -583,6 +664,11 @@ def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str
         f"Screen resolution: {screen_w}×{screen_h} pixels\n"
         f"Current overlay: x={cur_x} y={cur_y} width={cur_w} height={cur_h}"
     )
+    if bearing:
+        user_text += (
+            f"\n\nOperator bearing (from recent context — use if coherent with "
+            f"what you see, ignore if stale):\n{bearing}"
+        )
 
     resp = requests.post(
         _get_api_url(),
@@ -630,10 +716,12 @@ def reposition_bbox(
     screen_w: int = 1920,
     screen_h: int = 1080,
     on_step: "callable | None" = None,
+    bearing: str | None = None,
 ) -> dict | None:
-    """Single-shot bbox pipeline: intent → one VLM call → pixel bounding box.
+    """Single-shot bbox pipeline: one VLM call → pixel bounding box.
 
-    Returns dict with x, y, width, height as fractions of screen (0-1).
+    Returns dict with x, y, width, height as fractions of screen (0-1),
+    plus _screenshot_b64 for the bearing update call.
     """
     reposition_bbox._last_debug = []
     t0 = time.time()
@@ -645,14 +733,18 @@ def reposition_bbox(
     if current_overlay is None:
         current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
 
+    if bearing:
+        reposition_bbox._last_debug.append(f"Bearing: {bearing[:200]}")
+        _report()
+
     # Prepare image with overlay outline
     annotated = _draw_overlay_outline(screenshot, current_overlay)
     screenshot_b64 = _encode_image(annotated)
 
-    # Single VLM call: raw utterance straight to bbox, no intent classification
+    # Single VLM call: raw utterance straight to bbox
     bx, by, bw, bh = _pick_bbox(
         screenshot_b64, utterance, utterance, "direct",
-        screen_w, screen_h, current_overlay,
+        screen_w, screen_h, current_overlay, bearing=bearing,
     )
     t_bbox = time.time()
     reposition_bbox._last_debug.append(
@@ -668,7 +760,7 @@ def reposition_bbox(
     reposition_bbox._last_debug.append(f"Total: {elapsed:.1f}s")
     _report()
 
-    return {
+    result = {
         "x": bx / screen_w,
         "y": by / screen_h,
         "width": bw / screen_w,
@@ -676,7 +768,9 @@ def reposition_bbox(
         "content_desc": utterance,
         "utterance": utterance,
         "elapsed_s": elapsed,
+        "_screenshot_b64": screenshot_b64,
     }
+    return result
 
 
 def reposition_twostep(

@@ -85,7 +85,7 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
     mode = _os.environ.get("SPOKE_POSITIONING_MODE", "grid")
 
     if mode == "bbox":
-        from .reposition import reposition_bbox
+        from .reposition import reposition_bbox, update_bearing
         current_overlay = None
         prev_req = getattr(app, '_positioning_field_request', None)
         if prev_req is not None:
@@ -101,6 +101,9 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
         scr_w = int(screen_dims[0]) if screen_dims else 1920
         scr_h = int(screen_dims[1]) if screen_dims else 1080
 
+        # Get previous bearing if available
+        bearing = getattr(app, '_positioning_bearing', None)
+
         def _on_step_bbox(debug_lines):
             partial = {"utterance": text, "elapsed_s": 0, "x": 0, "y": 0, "width": 0, "height": 0,
                         "content_desc": "running..."}
@@ -110,7 +113,8 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
         try:
             result = reposition_bbox(text, screenshot, current_overlay,
                                      screen_w=scr_w, screen_h=scr_h,
-                                     on_step=_on_step_bbox)
+                                     on_step=_on_step_bbox,
+                                     bearing=bearing)
         except Exception as e:
             logger.exception("BBox positioning pipeline failed")
             import traceback
@@ -118,6 +122,20 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
             _finish_on_main(app, None)
             return
         pipeline_fn = reposition_bbox
+
+        # Fire background bearing update — runs after overlay moves
+        screenshot_b64 = result.pop("_screenshot_b64", None)
+        if screenshot_b64:
+            def _update_bearing_bg():
+                try:
+                    new_bearing = update_bearing(
+                        screenshot_b64, text, result, bearing, scr_w, scr_h,
+                    )
+                    app._positioning_bearing = new_bearing
+                    logger.info("Bearing updated: %s", new_bearing[:200])
+                except Exception:
+                    logger.warning("Background bearing update failed", exc_info=True)
+            threading.Thread(target=_update_bearing_bg, daemon=True).start()
     elif mode == "twostep":
         from .reposition import reposition_twostep
         # Pass current overlay position if we have one from a previous run
