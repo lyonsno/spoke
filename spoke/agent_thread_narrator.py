@@ -106,6 +106,16 @@ def _latest_verbatim_tail(text: str, *, max_lines: int = 8) -> tuple[str, ...]:
     return tuple(lines[-max(1, max_lines):])
 
 
+def _is_prompt_echo(candidate: str, latest_user_prompt: str) -> bool:
+    candidate = _normalize_line(candidate)
+    latest_user_prompt = _normalize_line(latest_user_prompt)
+    if not candidate or not latest_user_prompt:
+        return False
+    if candidate == latest_user_prompt:
+        return True
+    return len(latest_user_prompt) >= 48 and candidate.startswith(latest_user_prompt[:48])
+
+
 def _bearing(session: dict[str, Any], card: dict[str, Any], events: list[dict[str, Any]]) -> str:
     waypoints = [
         event
@@ -119,13 +129,11 @@ def _bearing(session: dict[str, Any], card: dict[str, Any], events: list[dict[st
             _string(waypoint.get("text")) or _string(_event_data(waypoint).get("text")),
             220,
         )
-    return _clamp(
-        _string(card.get("bearing"))
-        or _string(card.get("title"))
-        or _latest_user_prompt(session)
-        or "No bearing yet",
-        220,
-    )
+    latest_user_prompt = _latest_user_prompt(session)
+    for candidate in (_string(card.get("bearing")), _string(card.get("title"))):
+        if candidate and not _is_prompt_echo(candidate, latest_user_prompt):
+            return _clamp(candidate, 220)
+    return "No durable bearing captured yet"
 
 
 def _readiness(session: dict[str, Any], card: dict[str, Any], latest_text: str) -> str:
@@ -215,10 +223,16 @@ def _since_user_prompt(events: list[dict[str, Any]], tail: tuple[str, ...]) -> s
         fact = _event_fact(event)
         if fact and fact not in facts:
             facts.append(fact)
-    if tail:
+    if tail and facts:
         facts.append(
             f"assistant produced {len(tail)} recent line"
             f"{'' if len(tail) == 1 else 's'}"
+        )
+    if tail and not facts:
+        return (
+            f"Assistant replied with {len(tail)} visible line"
+            f"{'' if len(tail) == 1 else 's'}; "
+            "no tool or state events captured in this slice."
         )
     if not facts:
         return "No new activity captured yet."

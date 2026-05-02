@@ -2267,7 +2267,7 @@ class TestAgentShellMenuState:
         ]
         assert surface["agent_shell_selected_response"].splitlines() == [
             "Bearing: Narrator MVP lane",
-            "Since your prompt: Assistant produced 2 recent lines.",
+            "Since your prompt: Assistant replied with 2 visible lines; no tool or state events captured in this slice.",
             "",
             "Recent output:",
             "Narrator state exists.",
@@ -2463,8 +2463,9 @@ class TestAgentShellMenuState:
         delegate._command_overlay.replace_transcript.assert_called_once_with(
             utterance="hello codex",
             response=(
-                "Bearing: hello codex\n"
-                "Since your prompt: Assistant produced 1 recent line.\n\n"
+                "Bearing: No durable bearing captured yet\n"
+                "Since your prompt: Assistant replied with 1 visible line; "
+                "no tool or state events captured in this slice.\n\n"
                 "Recent output:\n"
                 "hello from codex"
             ),

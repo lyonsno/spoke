@@ -276,10 +276,44 @@ def test_selected_overlay_response_uses_bearing_summary_and_recent_tail():
 
     assert response.splitlines() == [
         "Bearing: Smoke result lane",
-        "Since your prompt: Assistant produced 3 recent lines.",
+        "Since your prompt: Assistant replied with 3 visible lines; no tool or state events captured in this slice.",
         "",
         "Recent output:",
         "Line one.",
         "Line two.",
         "Line three.",
     ]
+
+
+def test_selected_overlay_bearing_does_not_echo_latest_user_prompt():
+    from spoke.agent_thread_narrator import (
+        build_agent_thread_narrator_state,
+        format_selected_thread_narrator_response,
+    )
+
+    prompt = (
+        "Let's see, so what I'm seeing here right now, I'm not sure if it's "
+        "actually the most recent thing in the conversation."
+    )
+    state = build_agent_thread_narrator_state(
+        {
+            "provider": "claude-code",
+            "provider_session_id": "claude-thread-echo",
+            "last_utterance": prompt,
+            "last_response": "No lost messages this time; we are in sync.",
+            "thread_card": {
+                "title": prompt,
+                "bearing": prompt,
+                "readiness": "ready",
+            },
+        }
+    )
+
+    response = format_selected_thread_narrator_response(state)
+
+    assert state.bearing == "No durable bearing captured yet"
+    assert prompt not in response.splitlines()[0]
+    assert (
+        "Since your prompt: Assistant replied with 1 visible line; "
+        "no tool or state events captured in this slice."
+    ) in response
