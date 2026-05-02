@@ -99,7 +99,7 @@ _OPTICAL_MATERIALIZATION_S = (
     )
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 )
-_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S * 0.5
+_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
 _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 1.5 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = 0.42
 _OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS = 0.12
@@ -743,6 +743,13 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
         )
         ** 3.0,
     )
+    warp_bloom = _snap_ease_in(
+        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
+        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
+    )
+    # The local fill is visually inside the compositor warp; never let it
+    # become taller than the field that is currently opening around it.
+    height = min(height, max(_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC, warp_bloom))
     return {
         "opacity": _clamp01(opacity),
         "height_frac": _clamp01(height),
