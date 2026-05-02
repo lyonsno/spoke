@@ -386,6 +386,23 @@ SIZE_SYSTEM = (
     "Output ONLY the two numbers. Nothing else."
 )
 
+BBOX_SYSTEM = (
+    "You are a screen layout system. The user wants to reposition an overlay.\n\n"
+    "The image shows the current screen. A red dashed outline shows the overlay's "
+    "current position and size.\n\n"
+    "Based on the user's request and what you see on screen, output the pixel "
+    "coordinates where the overlay should be placed.\n\n"
+    "Output ONLY four numbers on one line: x y width height\n"
+    "All values are in pixels. (0,0) is the top-left corner of the screen.\n"
+    "x = left edge of overlay, y = top edge, width and height = overlay size.\n\n"
+    "Examples for a 1920×1080 screen:\n"
+    "  0 0 1920 50      (full-width thin strip at the very top)\n"
+    "  960 0 960 1080    (right half of screen, full height)\n"
+    "  400 300 500 400   (a box in the center area)\n"
+    "  0 0 300 1080      (narrow column on the left, full height)\n\n"
+    "Output ONLY the four numbers. Nothing else."
+)
+
 
 def _draw_overlay_outline(screenshot: Image.Image, overlay_rect: dict | None) -> Image.Image:
     """Draw a red dashed outline on the screenshot showing the current overlay position."""
@@ -522,6 +539,137 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
     except (ValueError, IndexError):
         w_pct, h_pct = 40.0, 40.0
     return w_pct / 100.0, h_pct / 100.0
+
+
+def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str,
+               screen_w: int, screen_h: int,
+               current_overlay: dict | None = None) -> tuple[int, int, int, int]:
+    """Single-shot: pick overlay bounding box in pixel coordinates."""
+    thinking = _detect_thinking_enabled()
+
+    cur_x = int((current_overlay or {}).get("x", 0.3) * screen_w)
+    cur_y = int((current_overlay or {}).get("y", 0.3) * screen_h)
+    cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
+    cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Mode: {mode}\n"
+        f"Content: {content_desc}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Current overlay: x={cur_x} y={cur_y} width={cur_w} height={cur_h}"
+    )
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers("bbox"),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": BBOX_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            "temperature": 0.6 if thinking else 0.3,
+            "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": 16384 if thinking else 32,
+            "chat_template_kwargs": {"enable_thinking": thinking},
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    msg = resp.json()["choices"][0]["message"]
+    raw = msg.get("content", "").strip()
+
+    thinking_text = msg.get("reasoning_content") or msg.get("thinking", "")
+    if thinking_text:
+        _pick_bbox._last_thinking = thinking_text
+
+    # Parse "x y width height"
+    parts = raw.split()
+    try:
+        bx = max(0, min(screen_w, int(float(parts[0]))))
+        by = max(0, min(screen_h, int(float(parts[1]))))
+        bw = max(1, min(screen_w - bx, int(float(parts[2]))))
+        bh = max(1, min(screen_h - by, int(float(parts[3]))))
+    except (ValueError, IndexError):
+        import logging
+        logging.getLogger(__name__).warning("Could not parse bbox from %r, using center default", raw)
+        bw, bh = screen_w // 3, screen_h // 3
+        bx, by = (screen_w - bw) // 2, (screen_h - bh) // 2
+    return bx, by, bw, bh
+
+
+def reposition_bbox(
+    utterance: str,
+    screenshot: Image.Image,
+    current_overlay: dict | None = None,
+    screen_w: int = 1920,
+    screen_h: int = 1080,
+    on_step: "callable | None" = None,
+) -> dict | None:
+    """Single-shot bbox pipeline: intent → one VLM call → pixel bounding box.
+
+    Returns dict with x, y, width, height as fractions of screen (0-1).
+    """
+    reposition_bbox._last_debug = []
+    t0 = time.time()
+
+    def _report():
+        if on_step:
+            on_step(list(reposition_bbox._last_debug))
+
+    if current_overlay is None:
+        current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
+
+    # Resolve intent (text-only, fast)
+    intent = resolve_intent(utterance)
+    t_intent = time.time()
+    reposition_bbox._last_debug.append(
+        f"Intent: {intent} ({t_intent - t0:.1f}s)"
+    )
+    _report()
+
+    mode = intent["mode"]
+    if mode == "target":
+        content_desc = intent.get("target_desc", utterance)
+    else:
+        content_desc = intent.get("content_desc", utterance)
+
+    # Prepare image with overlay outline
+    annotated = _draw_overlay_outline(screenshot, current_overlay)
+    screenshot_b64 = _encode_image(annotated, scale=0.5)
+
+    # Single VLM call: pick bounding box in pixels
+    bx, by, bw, bh = _pick_bbox(
+        screenshot_b64, utterance, content_desc, mode,
+        screen_w, screen_h, current_overlay,
+    )
+    t_bbox = time.time()
+    reposition_bbox._last_debug.append(
+        f"BBox: ({bx}, {by}) {bw}×{bh}px ({t_bbox - t_intent:.1f}s)"
+    )
+    bbox_thinking = getattr(_pick_bbox, '_last_thinking', None)
+    if bbox_thinking:
+        reposition_bbox._last_debug.append(f"BBox thinking: {bbox_thinking}")
+        _pick_bbox._last_thinking = None
+    _report()
+
+    elapsed = round(time.time() - t0, 2)
+    reposition_bbox._last_debug.append(f"Total: {elapsed:.1f}s")
+    _report()
+
+    return {
+        "x": bx / screen_w,
+        "y": by / screen_h,
+        "width": bw / screen_w,
+        "height": bh / screen_h,
+        "content_desc": f"{mode}: {content_desc}",
+        "utterance": utterance,
+        "elapsed_s": elapsed,
+    }
 
 
 def reposition_twostep(
