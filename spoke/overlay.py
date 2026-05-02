@@ -35,6 +35,10 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
+try:
+    from Quartz import CATransaction
+except ImportError:  # pragma: no cover - unavailable in lightweight test fakes
+    CATransaction = None
 
 from .dedup import ontology_term_spans
 
@@ -78,6 +82,7 @@ _FONT_SIZE = 16.0
 _FADE_IN_S = 0.4  # fast ease-in so the overlay feels ready as soon as it appears
 _FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
 _FADE_STEPS = 12  # number of steps for manual fade animation
+_PREVIEW_VISUAL_FPS = _env("SPOKE_PREVIEW_VISUAL_FPS", 144.0)
 _TYPEWRITER_INTERVAL = 0.02 / 0.75  # seconds between characters (~37.5 chars/sec)
 
 
@@ -192,6 +197,16 @@ def _truncate_preview(text: str | None) -> str:
 
 def _lerp(start: float, end: float, t: float) -> float:
     return start + (end - start) * t
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _preview_fade_steps_for_duration(duration: float) -> int:
+    """Use a display-rate visual clock instead of the legacy 12-step fade."""
+    fps = max(float(_PREVIEW_VISUAL_FPS), 1.0)
+    return max(_FADE_STEPS, int(math.ceil(max(float(duration), 0.0) * fps)))
 
 
 def _lerp_color(
@@ -430,6 +445,7 @@ class TranscriptionOverlay(NSObject):
         self._visible = False
         self._fade_timer: NSTimer | None = None
         self._fade_step = 0
+        self._fade_total_steps = _FADE_STEPS
         self._fade_from = 0.0
         self._fade_direction = 0
         self._tray_mode = False
@@ -454,6 +470,7 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_sidecar_identities = {}
         self._preview_compositor_generation = 0
         self._preview_warp_tuning_overrides: dict[str, float] = {}
+        self._preview_materialization_active = False
 
         # Recovery mode state
         self._recovery_mode = False
@@ -844,6 +861,13 @@ class TranscriptionOverlay(NSObject):
         configs = compile_optical_field_shell_configs(request)
         if not configs:
             return False
+        self._apply_preview_materialization_fill_state(
+            field_state=field_state,
+            progress=progress,
+            shell_config=configs[0],
+            final_width=request.bounds.width,
+            final_height=request.bounds.height,
+        )
 
         published = False
         active_client_ids: set[str] = set()
@@ -879,6 +903,112 @@ class TranscriptionOverlay(NSObject):
             if callable(release):
                 release()
         return published
+
+    def _set_preview_layer_geometry_without_actions(
+        self,
+        layer,
+        *,
+        total_w: float,
+        total_h: float,
+        scale_x: float,
+        scale_y: float,
+    ) -> None:
+        if layer is None:
+            return
+        try:
+            if CATransaction is not None:
+                CATransaction.begin()
+                CATransaction.setDisableActions_(True)
+            if hasattr(layer, "setAnchorPoint_"):
+                layer.setAnchorPoint_((0.5, 0.5))
+            if hasattr(layer, "setBounds_"):
+                layer.setBounds_(((0, 0), (total_w, total_h)))
+            if hasattr(layer, "setPosition_"):
+                layer.setPosition_((total_w * 0.5, total_h * 0.5))
+            if hasattr(layer, "setValue_forKeyPath_"):
+                layer.setValue_forKeyPath_(max(float(scale_x), 0.001), "transform.scale.x")
+                layer.setValue_forKeyPath_(max(float(scale_y), 0.001), "transform.scale.y")
+            if hasattr(layer, "setHidden_"):
+                layer.setHidden_(False)
+        except Exception:
+            logger.debug("Failed to update preview materialization fill geometry", exc_info=True)
+        finally:
+            if CATransaction is not None:
+                try:
+                    CATransaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit preview materialization geometry", exc_info=True)
+
+    def _set_preview_layer_opacity_without_actions(self, layer, opacity: float) -> None:
+        if layer is None or not hasattr(layer, "setOpacity_"):
+            return
+        try:
+            if CATransaction is not None:
+                CATransaction.begin()
+                CATransaction.setDisableActions_(True)
+            layer.setOpacity_(float(opacity))
+        except Exception:
+            logger.debug("Failed to update preview materialization fill opacity", exc_info=True)
+        finally:
+            if CATransaction is not None:
+                try:
+                    CATransaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit preview materialization opacity", exc_info=True)
+
+    def _preview_layer_frame_size(self, layer) -> tuple[float, float]:
+        if layer is None or not hasattr(layer, "frame"):
+            return (1.0, 1.0)
+        try:
+            frame = layer.frame()
+            size = getattr(frame, "size", None)
+            return (
+                max(float(getattr(size, "width", 1.0)), 1.0),
+                max(float(getattr(size, "height", 1.0)), 1.0),
+            )
+        except Exception:
+            logger.debug("Failed to read preview materialization layer size", exc_info=True)
+            return (1.0, 1.0)
+
+    def _apply_preview_materialization_fill_state(
+        self,
+        *,
+        field_state: str,
+        progress: float,
+        shell_config: dict,
+        final_width: float,
+        final_height: float,
+    ) -> None:
+        fill = getattr(self, "_fill_layer", None)
+        if fill is None:
+            return
+        progress = _clamp01(float(progress))
+        active = field_state in {"materialize", "dismiss"} and progress < 1.0
+        self._preview_materialization_active = active
+        total_w, total_h = self._preview_layer_frame_size(fill)
+        content_w = max(float(shell_config.get("content_width_points", final_width)), 1.0)
+        content_h = max(float(shell_config.get("content_height_points", final_height)), 1.0)
+        scale_x = _clamp01(content_w / max(float(final_width), 1.0))
+        scale_y = _clamp01(content_h / max(float(final_height), 1.0))
+        if not active:
+            scale_x = 1.0
+            scale_y = 1.0
+        self._set_preview_layer_geometry_without_actions(
+            fill,
+            total_w=total_w,
+            total_h=total_h,
+            scale_x=scale_x,
+            scale_y=scale_y,
+        )
+        if field_state == "materialize":
+            opacity = progress
+        elif field_state == "dismiss":
+            opacity = _clamp01(float(shell_config.get("shell_fill_opacity", 1.0 - progress)))
+        else:
+            # Rest should not erase the just-finished materialization opacity;
+            # the RMS/brightness path owns steady-state breathing from here.
+            return
+        self._set_preview_layer_opacity_without_actions(fill, opacity)
 
     def _release_preview_compositor_client(self) -> None:
         sidecars = getattr(self, "_preview_compositor_sidecar_clients", {})
@@ -965,10 +1095,11 @@ class TranscriptionOverlay(NSObject):
 
         # Fade in using stepped timer
         self._fade_step = 0
+        self._fade_total_steps = _preview_fade_steps_for_duration(_FADE_IN_S)
         self._fade_from = 0.0
         self._fade_target = 1.0
         self._fade_direction = 1  # fading in
-        interval = _FADE_IN_S / _FADE_STEPS
+        interval = _FADE_IN_S / self._fade_total_steps
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -1018,11 +1149,14 @@ class TranscriptionOverlay(NSObject):
         """Animate fade-out using a repeating timer for smooth steps."""
         self._cancel_fade()
         self._fade_step = 0
+        self._fade_total_steps = _preview_fade_steps_for_duration(
+            duration if duration is not None else _FADE_OUT_S
+        )
         self._fade_from = self._window.alphaValue()
         self._fade_target = 0.0
         self._fade_direction = -1  # fading out
         fade_duration = duration if duration is not None else _FADE_OUT_S
-        interval = fade_duration / _FADE_STEPS
+        interval = fade_duration / self._fade_total_steps
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -1030,7 +1164,8 @@ class TranscriptionOverlay(NSObject):
     def fadeStep_(self, timer) -> None:
         """One step of the fade animation."""
         self._fade_step += 1
-        progress = self._fade_step / _FADE_STEPS
+        total_steps = max(int(getattr(self, "_fade_total_steps", _FADE_STEPS)), 1)
+        progress = self._fade_step / total_steps
 
         if self._fade_direction == 1:
             # Fade in: ease-in (slow start, confident finish)
@@ -1054,7 +1189,7 @@ class TranscriptionOverlay(NSObject):
 
         self._window.setAlphaValue_(alpha)
 
-        if self._fade_step >= _FADE_STEPS:
+        if self._fade_step >= total_steps:
             self._cancel_fade()
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
@@ -1367,7 +1502,8 @@ class TranscriptionOverlay(NSObject):
         fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
+            if not getattr(self, "_preview_materialization_active", False):
+                self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
             # Rebuild the fill image when brightness changes enough to
             # affect the baked color.
             last_t = getattr(self, '_fill_image_brightness', -1.0)

@@ -52,6 +52,11 @@ class _FakeLayer:
         self._frame = frame
         self._background_color = None
         self._opacity = None
+        self._hidden = False
+        self._bounds = None
+        self._position = None
+        self._anchor_point = None
+        self.values = {}
         self.animations = []
 
     def setFrame_(self, frame):
@@ -69,6 +74,21 @@ class _FakeLayer:
 
     def setOpacity_(self, opacity):
         self._opacity = opacity
+
+    def setHidden_(self, hidden):
+        self._hidden = hidden
+
+    def setBounds_(self, bounds):
+        self._bounds = bounds
+
+    def setPosition_(self, position):
+        self._position = position
+
+    def setAnchorPoint_(self, point):
+        self._anchor_point = point
+
+    def setValue_forKeyPath_(self, value, key_path):
+        self.values[key_path] = value
 
     def setContents_(self, contents):
         self.contents = contents
@@ -374,6 +394,59 @@ def test_preview_dismiss_uses_reusable_pressure_sidecars(
     assert seam.material.warp_mode in {1.0, 3.0}
     assert radial.optical_field["sidecar"] == "dismiss_radial_pucker"
     assert radial.material.warp_mode == pytest.approx(2.0)
+
+
+def test_preview_materialization_clock_is_not_the_old_twelve_frame_fade(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+
+    assert overlay_module._preview_fade_steps_for_duration(overlay_module._FADE_IN_S) >= 48
+    assert (
+        1.0 / overlay_module._preview_fade_steps_for_duration(1.0)
+        <= 1.0 / 120.0
+    )
+
+
+def test_preview_materialization_owns_and_scales_fill_layer(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(
+        visible=True,
+        field_state="materialize",
+        progress=0.0,
+    ) is True
+
+    assert overlay._preview_materialization_active is True
+    assert overlay._fill_layer.values["transform.scale.y"] < 0.05
+    assert overlay._fill_layer._anchor_point == (0.5, 0.5)
+    assert overlay._fill_layer._opacity == pytest.approx(0.0)
+
+    assert overlay._publish_preview_compositor_snapshot(
+        visible=True,
+        field_state="materialize",
+        progress=1.0,
+    ) is True
+
+    assert overlay._preview_materialization_active is False
+    assert overlay._fill_layer.values["transform.scale.y"] == pytest.approx(1.0)
+    assert overlay._fill_layer._opacity == pytest.approx(1.0)
+
+    assert overlay._publish_preview_compositor_snapshot(
+        visible=True,
+        field_state="rest",
+        progress=1.0,
+    ) is True
+
+    assert overlay._preview_materialization_active is False
+    assert overlay._fill_layer.values["transform.scale.y"] == pytest.approx(1.0)
+    assert overlay._fill_layer._opacity == pytest.approx(1.0)
 
 
 def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatch):
