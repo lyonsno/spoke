@@ -139,6 +139,67 @@ def _wants_continuous_present(shell_configs: list[dict]) -> bool:
     return any(bool(config.get("continuous_present")) for config in shell_configs)
 
 
+def _string(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _agent_shell_card_text_payload(config: dict) -> dict[str, str]:
+    payload = config.get("text")
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "primary": _string(payload.get("primary")).strip(),
+        "secondary": _string(payload.get("secondary")).strip(),
+        "latest_response": _string(payload.get("latest_response")).strip(),
+    }
+
+
+def _agent_shell_card_text_overlay_specs(
+    shell_configs: list[dict] | tuple[dict, ...],
+    *,
+    screen_width_points: float,
+    screen_height_points: float,
+    scale: float,
+) -> list[dict]:
+    specs: list[dict] = []
+    safe_scale = max(float(scale), 0.1)
+    for config in shell_configs:
+        if not isinstance(config, dict):
+            continue
+        if config.get("role") not in {"agent_card", "selected_thread"}:
+            continue
+        text = _agent_shell_card_text_payload(config)
+        primary = text.get("primary", "")
+        secondary = text.get("secondary", "")
+        if not primary and not secondary:
+            continue
+        try:
+            width = max(float(config.get("content_width_points", 0.0)) / safe_scale, 1.0)
+            height = max(float(config.get("content_height_points", 0.0)) / safe_scale, 1.0)
+            center_x = float(config.get("center_x", 0.0)) / safe_scale
+            center_y_top = float(config.get("center_y", 0.0)) / safe_scale
+        except (TypeError, ValueError):
+            continue
+        left = max(0.0, min(screen_width_points, center_x - width * 0.5))
+        top = max(0.0, min(screen_height_points, center_y_top - height * 0.5))
+        bottom = max(0.0, screen_height_points - top - height)
+        inset = max(8.0, min(16.0, width * 0.05))
+        specs.append(
+            {
+                "client_id": _string(config.get("client_id")),
+                "text": "\n".join(part for part in (primary, secondary) if part),
+                "font_size": 13.0 if config.get("role") == "selected_thread" else 11.0,
+                "frame": {
+                    "x": round(left + inset, 3),
+                    "y": round(bottom + inset, 3),
+                    "width": round(max(1.0, width - inset * 2.0), 3),
+                    "height": round(max(1.0, height - inset * 2.0), 3),
+                },
+            }
+        )
+    return specs
+
+
 def _initial_brightness_from_shell_config(config: dict | None, fallback: float) -> float:
     if config is None:
         return fallback
@@ -289,6 +350,8 @@ class FullScreenCompositor:
         self._rendered_config_generation = 0
         self._window = None
         self._metal_layer = None
+        self._card_text_container_layer = None
+        self._card_text_layers: dict[str, Any] = {}
         self._display_link = None
         self._stream = None
         self._stream_output = None
@@ -349,6 +412,7 @@ class FullScreenCompositor:
             if self._pipeline is not None:
                 self._pipeline.reset_temporal_state()
             self._create_fullscreen_window()
+            self._sync_agent_shell_card_text_layers(self._shell_configs)
             self._start_display_link()
             self._running = True
             self._start_capture_async()
@@ -413,6 +477,7 @@ class FullScreenCompositor:
                 return
             self._shell_configs = normalized
             self._config_generation += 1
+        self._sync_agent_shell_card_text_layers(normalized)
 
     def update_shell_config_key(self, key: str, value) -> None:
         """Update a single key in the shell config without replacing."""
@@ -422,6 +487,77 @@ class FullScreenCompositor:
                     return
                 self._shell_configs[0][key] = value
                 self._config_generation += 1
+
+    def _sync_agent_shell_card_text_layers(self, shell_configs: list[dict]) -> None:
+        container = getattr(self, "_card_text_container_layer", None)
+        if container is None:
+            return
+        try:
+            screen_frame = self._screen.frame()
+            screen_width = float(screen_frame.size.width)
+            screen_height = float(screen_frame.size.height)
+            scale = (
+                float(self._screen.backingScaleFactor())
+                if hasattr(self._screen, "backingScaleFactor")
+                else 2.0
+            )
+        except Exception:
+            return
+        specs = _agent_shell_card_text_overlay_specs(
+            shell_configs,
+            screen_width_points=screen_width,
+            screen_height_points=screen_height,
+            scale=scale,
+        )
+        active_ids = {spec["client_id"] for spec in specs}
+        layers = getattr(self, "_card_text_layers", {})
+        for client_id, layer in list(layers.items()):
+            if client_id in active_ids:
+                continue
+            try:
+                layer.removeFromSuperlayer()
+            except Exception:
+                pass
+            layers.pop(client_id, None)
+        for spec in specs:
+            client_id = spec["client_id"]
+            layer = layers.get(client_id)
+            if layer is None:
+                try:
+                    from Quartz import CATextLayer, CGColorCreateSRGB
+
+                    layer = CATextLayer.alloc().init()
+                    layer.setWrapped_(True)
+                    layer.setAlignmentMode_("left")
+                    layer.setTruncationMode_("end")
+                    layer.setContentsScale_(scale)
+                    layer.setForegroundColor_(CGColorCreateSRGB(0.92, 0.94, 0.96, 0.96))
+                    if hasattr(layer, "setShadowOpacity_"):
+                        layer.setShadowOpacity_(0.75)
+                    if hasattr(layer, "setShadowRadius_"):
+                        layer.setShadowRadius_(3.0)
+                    if hasattr(layer, "setShadowOffset_"):
+                        layer.setShadowOffset_((0.0, -1.0))
+                    container.addSublayer_(layer)
+                except Exception:
+                    logger.debug("Failed to create Agent Shell smoke text layer", exc_info=True)
+                    continue
+                layers[client_id] = layer
+            frame = spec["frame"]
+            try:
+                layer.setFrame_(
+                    (
+                        (frame["x"], frame["y"]),
+                        (frame["width"], frame["height"]),
+                    )
+                )
+                layer.setString_(spec["text"])
+                layer.setFontSize_(spec["font_size"])
+                if hasattr(layer, "setHidden_"):
+                    layer.setHidden_(False)
+            except Exception:
+                logger.debug("Failed to update Agent Shell smoke text layer", exc_info=True)
+        self._card_text_layers = layers
 
     @property
     def sampled_brightness(self) -> float:
@@ -754,6 +890,18 @@ class FullScreenCompositor:
         self._metal_layer.setFrame_(((0, 0), (frame.size.width, frame.size.height)))
 
         content.layer().addSublayer_(self._metal_layer)
+        try:
+            from Quartz import CALayer
+
+            self._card_text_container_layer = CALayer.alloc().init()
+            self._card_text_container_layer.setFrame_(
+                ((0, 0), (frame.size.width, frame.size.height))
+            )
+            content.layer().addSublayer_(self._card_text_container_layer)
+        except Exception:
+            logger.debug("Agent Shell smoke text layer unavailable", exc_info=True)
+            self._card_text_container_layer = None
+            self._card_text_layers = {}
         self._window.setContentView_(content)
         self._window.orderFrontRegardless()
         # Register in class-level set so other compositors exclude us
@@ -781,6 +929,8 @@ class FullScreenCompositor:
                 pass
             self._window = None
         self._metal_layer = None
+        self._card_text_container_layer = None
+        self._card_text_layers = {}
 
     # ------------------------------------------------------------------
     # SCK full-display capture
@@ -1336,6 +1486,13 @@ def _agent_shell_card_surface_configs(
             for key in ("center_x", "center_y"):
                 if key in existing:
                     surface[key] = existing[key]
+        text = request.get("text")
+        if isinstance(text, dict):
+            surface["text"] = {
+                "primary": _string(text.get("primary")),
+                "secondary": _string(text.get("secondary")),
+                "latest_response": _string(text.get("latest_response")),
+            }
         surface["source_client_id"] = source_config.get("client_id", "")
         surface.setdefault("visible", True)
         surfaces[client_id] = surface

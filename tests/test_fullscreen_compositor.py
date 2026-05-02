@@ -496,6 +496,11 @@ def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_motion_and_v
                                 "profile": "agent_card",
                             },
                         },
+                        "text": {
+                            "primary": "Codex lane",
+                            "secondary": "ready",
+                            "latest_response": "",
+                        },
                     }
                 ],
             },
@@ -515,6 +520,7 @@ def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_motion_and_v
     assert configs[1]["surface_attachment"] == "sibling"
     assert configs[1]["movable"] is True
     assert configs[1]["optical_field"]["profile"] == "agent_card"
+    assert configs[1]["text"]["primary"] == "Codex lane"
     first_card_center = (configs[1]["center_x"], configs[1]["center_y"])
 
     assert client.update_shell_config(_config(center_x=500.0, center_y=500.0))
@@ -536,6 +542,53 @@ def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_motion_and_v
         hidden_parent_configs[0]["center_x"],
         hidden_parent_configs[0]["center_y"],
     ) == first_card_center
+
+
+def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+
+    specs = fullscreen_compositor._agent_shell_card_text_overlay_specs(
+        [
+            {
+                "client_id": "agent.card.codex-thread-1",
+                "role": "agent_card",
+                "center_x": 400.0,
+                "center_y": 240.0,
+                "content_width_points": 300.0,
+                "content_height_points": 72.0,
+                "text": {
+                    "primary": "Codex lane",
+                    "secondary": "ready",
+                },
+            },
+            {
+                "client_id": "assistant.command",
+                "role": "assistant",
+                "center_x": 400.0,
+                "center_y": 240.0,
+                "content_width_points": 300.0,
+                "content_height_points": 72.0,
+                "text": {"primary": "ignored"},
+            },
+        ],
+        screen_width_points=800.0,
+        screen_height_points=600.0,
+        scale=2.0,
+    )
+
+    assert specs == [
+        {
+            "client_id": "agent.card.codex-thread-1",
+            "text": "Codex lane\nready",
+            "font_size": 11.0,
+                "frame": {
+                    "x": 133.0,
+                    "y": 470.0,
+                    "width": 134.0,
+                    "height": 20.0,
+                },
+        }
+    ]
 
 
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):
