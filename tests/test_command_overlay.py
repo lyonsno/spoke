@@ -419,10 +419,10 @@ class TestDismissAnimation:
 class TestOpticalShellMaterialization:
     """Assistant optical-shell materialization should be geometry-driven."""
 
-    def test_materialization_uses_high_refresh_smoke_clock(self, mock_pyobjc):
+    def test_materialization_uses_display_safe_main_thread_clock(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
 
-        assert mod._DISMISS_ANIM_FPS == pytest.approx(144.0)
+        assert mod._DISMISS_ANIM_FPS == pytest.approx(60.0)
 
     def test_pressure_slit_smoke_scale_slows_all_visual_timelines(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
@@ -1354,6 +1354,19 @@ class TestOpticalShellMaterialization:
         overlay._apply_materialization_fill_state(1.0)
 
         overlay._fill_layer.setContents_.assert_called_with("hard-body-fill")
+
+    def test_reverse_materialization_tapers_local_fill_after_seam_takes_over(
+        self, mock_pyobjc
+    ):
+        _overlay, mod = _make_overlay(mock_pyobjc)
+        progress = 0.60
+
+        dismiss_state = mod._dismiss_materialization_fill_state(progress)
+        entrance_state = mod._materialization_fill_state(progress)
+
+        assert progress < mod._OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS
+        assert dismiss_state["opacity"] == pytest.approx(entrance_state["opacity"])
+        assert dismiss_state["opacity"] < 1.0
 
     def test_reverse_materialization_prearms_radial_pucker_before_slit_closes(
         self, mock_pyobjc, monkeypatch
