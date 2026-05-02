@@ -439,7 +439,7 @@ class TestOpticalShellMaterialization:
             / mod._OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
-            mod._OPTICAL_MATERIALIZATION_BASE_S * 0.5
+            mod._OPTICAL_MATERIALIZATION_BASE_S
         )
         assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(
             1.5 * scale
@@ -542,7 +542,7 @@ class TestOpticalShellMaterialization:
             seam_open_s / mod._OPTICAL_MATERIALIZATION_S
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
-            mod._OPTICAL_MATERIALIZATION_BASE_S * 0.5
+            mod._OPTICAL_MATERIALIZATION_BASE_S
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S > (
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
@@ -648,6 +648,18 @@ class TestOpticalShellMaterialization:
         assert blooming["height_frac"] > 0.75
         assert full["opacity"] == pytest.approx(1.0)
         assert full["height_frac"] == pytest.approx(1.0)
+
+    def test_material_fill_cannot_outrun_warp_vertical_bloom(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+        progress = 0.95
+
+        fill = mod._materialization_fill_state(progress)
+        warp_bloom = mod._snap_ease_in(
+            (progress - mod._OPTICAL_MATERIALIZATION_BLOOM_START)
+            / max(1.0 - mod._OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
+        )
+
+        assert fill["height_frac"] <= warp_bloom + 1e-6
 
     def test_material_fill_vertical_bloom_has_surface_tension_ease_in(
         self, mock_pyobjc
