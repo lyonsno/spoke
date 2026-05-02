@@ -115,6 +115,16 @@ def _get_api_key():
     return os.environ.get("OMLX_SERVER_API_KEY", "1234")
 
 
+def _api_headers(step: str = "positioning") -> dict[str, str]:
+    """Standard headers for positioning API calls, including Grapheus X-Spoke-* metadata."""
+    return {
+        "Authorization": f"Bearer {_get_api_key()}",
+        "Content-Type": "application/json",
+        "X-Spoke-Pathway": "positioning",
+        "X-Spoke-Step": step,
+    }
+
+
 def _detect_thinking_enabled() -> bool:
     """Whether to enable thinking for content detection calls."""
     return os.environ.get("SPOKE_POSITIONING_THINKING", "0") == "1"
@@ -145,7 +155,7 @@ def resolve_intent(utterance: str) -> dict:
     """
     resp = requests.post(
         _get_api_url(),
-        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        headers=_api_headers("intent"),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
             "messages": [
@@ -201,7 +211,7 @@ def detect_content(screenshot: Image.Image, content_desc: str) -> dict[str, bool
 
     resp = requests.post(
         _get_api_url(),
-        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        headers=_api_headers("detect"),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
             "messages": [
@@ -241,7 +251,7 @@ def target_cells(target_desc: str) -> dict[str, bool]:
     """
     resp = requests.post(
         _get_api_url(),
-        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        headers=_api_headers("target"),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
             "messages": [
@@ -418,10 +428,11 @@ def _draw_overlay_outline(screenshot: Image.Image, overlay_rect: dict | None) ->
 def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: str) -> str:
     """Step 1: Pick a coarse center region from the 3×3 grid."""
     user_text = f"User request: {utterance}\nMode: {mode}\nContent: {content_desc}"
+    thinking = _detect_thinking_enabled()
 
     resp = requests.post(
         _get_api_url(),
-        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        headers=_api_headers("center"),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
             "messages": [
@@ -431,14 +442,22 @@ def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: s
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 8,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "temperature": 0.6 if thinking else 0.3,
+            "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": 16384 if thinking else 8,
+            "chat_template_kwargs": {"enable_thinking": thinking},
         },
         timeout=120,
     )
     resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"].strip().upper()
+    msg = resp.json()["choices"][0]["message"]
+    raw = msg.get("content", "").strip().upper()
+
+    # Capture thinking for diagnostics
+    thinking_text = msg.get("reasoning_content") or msg.get("thinking", "")
+    if thinking_text:
+        _pick_center._last_thinking = thinking_text
+
     # Extract region code
     for region in COARSE_REGIONS:
         if region in raw:
@@ -455,6 +474,7 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
 
     Returns (width_frac, height_frac) as fractions of screen (0-1).
     """
+    thinking = _detect_thinking_enabled()
     cur_w_pct = int((current_overlay or {}).get("width", 0.4) * 100)
     cur_h_pct = int((current_overlay or {}).get("height", 0.4) * 100)
 
@@ -468,7 +488,7 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
 
     resp = requests.post(
         _get_api_url(),
-        headers={"Authorization": f"Bearer {_get_api_key()}", "Content-Type": "application/json"},
+        headers=_api_headers("size"),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
             "messages": [
@@ -478,14 +498,21 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 16,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "temperature": 0.6 if thinking else 0.3,
+            "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
+            "max_tokens": 16384 if thinking else 16,
+            "chat_template_kwargs": {"enable_thinking": thinking},
         },
         timeout=120,
     )
     resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"].strip()
+    msg = resp.json()["choices"][0]["message"]
+    raw = msg.get("content", "").strip()
+
+    # Capture thinking for diagnostics
+    thinking_text = msg.get("reasoning_content") or msg.get("thinking", "")
+    if thinking_text:
+        _pick_size._last_thinking = thinking_text
 
     # Parse "width_pct height_pct"
     parts = raw.split()
@@ -539,6 +566,10 @@ def reposition_twostep(
     reposition_twostep._last_debug.append(
         f"Center: {center_region} → ({center_x:.2f}, {center_y:.2f}) ({t_center - t_intent:.1f}s)"
     )
+    center_thinking = getattr(_pick_center, '_last_thinking', None)
+    if center_thinking:
+        reposition_twostep._last_debug.append(f"Center thinking: {center_thinking[:500]}")
+        _pick_center._last_thinking = None
 
     # Step 2: pick size (VLM, same image — returns screen fractions directly)
     new_w, new_h = _pick_size(screenshot_b64, utterance, content_desc, mode,
@@ -547,6 +578,10 @@ def reposition_twostep(
     reposition_twostep._last_debug.append(
         f"Size: {new_w:.0%} width, {new_h:.0%} height ({t_size - t_center:.1f}s)"
     )
+    size_thinking = getattr(_pick_size, '_last_thinking', None)
+    if size_thinking:
+        reposition_twostep._last_debug.append(f"Size thinking: {size_thinking[:500]}")
+        _pick_size._last_thinking = None
 
     # Clamp so overlay stays on screen
     new_x = max(0.0, min(1.0 - new_w, center_x - new_w / 2))
