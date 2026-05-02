@@ -138,6 +138,28 @@ def _detect_max_tokens() -> int:
     return 256
 
 
+def _sampling_params(max_tokens: int | None = None) -> dict:
+    """Centralized sampling parameters following Qwen 3.6 official presets.
+
+    Thinking mode (general): temp=1.0, top_p=0.95, presence_penalty=1.5
+    Non-thinking mode:       temp=0.7, top_p=0.80, presence_penalty=1.5
+    """
+    thinking = _detect_thinking_enabled()
+    params = {
+        "temperature": 1.0 if thinking else 0.7,
+        "top_p": 0.95 if thinking else 0.80,
+        "top_k": 20,
+        "repetition_penalty": 1.0,
+        "presence_penalty": 1.5,
+        "chat_template_kwargs": {"enable_thinking": thinking},
+    }
+    if max_tokens is not None:
+        params["max_tokens"] = max_tokens
+    else:
+        params["max_tokens"] = 16384 if thinking else 256
+    return params
+
+
 def _encode_image(img: Image.Image, scale: float = 0.5) -> str:
     """Encode PIL image as base64 PNG, optionally downscaling."""
     if scale < 1.0:
@@ -162,9 +184,7 @@ def resolve_intent(utterance: str) -> dict:
                 {"role": "system", "content": INTENT_SYSTEM},
                 {"role": "user", "content": utterance},
             ],
-            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 64,
-            "chat_template_kwargs": {"enable_thinking": False},
+            **_sampling_params(max_tokens=64),
         },
         timeout=30,
     )
@@ -221,9 +241,7 @@ def detect_content(screenshot: Image.Image, content_desc: str) -> dict[str, bool
                     {"type": "text", "text": content_desc},
                 ]},
             ],
-            "temperature": 0.6, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": _detect_max_tokens(),
-            "chat_template_kwargs": {"enable_thinking": _detect_thinking_enabled()},
+            **_sampling_params(),
         },
         timeout=120,
     )
@@ -258,11 +276,9 @@ def target_cells(target_desc: str) -> dict[str, bool]:
                 {"role": "system", "content": TARGET_SYSTEM},
                 {"role": "user", "content": target_desc},
             ],
-            "temperature": 0.3, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": _detect_max_tokens(),
-            "chat_template_kwargs": {"enable_thinking": _detect_thinking_enabled()},
+            **_sampling_params(),
         },
-        timeout=30,
+        timeout=120,
     )
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"].strip()
@@ -459,10 +475,7 @@ def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: s
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            "temperature": 0.6 if thinking else 0.3,
-            "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 16384 if thinking else 8,
-            "chat_template_kwargs": {"enable_thinking": thinking},
+            **_sampling_params(max_tokens=16384 if thinking else 8),
         },
         timeout=120,
     )
@@ -515,10 +528,7 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            "temperature": 0.6 if thinking else 0.3,
-            "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 16384 if thinking else 16,
-            "chat_template_kwargs": {"enable_thinking": thinking},
+            **_sampling_params(max_tokens=16384 if thinking else 16),
         },
         timeout=120,
     )
@@ -572,10 +582,7 @@ def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            "temperature": 0.6 if thinking else 0.3,
-            "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
-            "max_tokens": 16384 if thinking else 32,
-            "chat_template_kwargs": {"enable_thinking": thinking},
+            **_sampling_params(max_tokens=16384 if thinking else 32),
         },
         timeout=120,
     )
