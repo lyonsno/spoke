@@ -3616,7 +3616,7 @@ class TestGeometryCaps:
         overlay._update_layout()
 
         frame = overlay._window.setFrame_display_animate_.call_args[0][0]
-        expected_height = 640.0
+        expected_height = 750.0
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
 
@@ -3712,6 +3712,62 @@ class TestGeometryCaps:
         assert doc_frame.size.width == pytest.approx(mod._OVERLAY_WIDTH - 24)
         assert doc_frame.size.height == pytest.approx(304.0 - 16)
         assert container.size == (mod._OVERLAY_WIDTH - 24, 1.0e7)
+
+    def test_punchthrough_mask_clips_tall_document_to_visible_shell(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        quartz = sys.modules["Quartz"]
+        appkit = sys.modules["AppKit"]
+        foundation = sys.modules["Foundation"]
+        foundation.NSMakeRect = _make_rect
+
+        ctx = object()
+        quartz.CGColorSpaceCreateDeviceRGB = MagicMock(return_value=object())
+        quartz.CGBitmapContextCreate = MagicMock(return_value=ctx)
+        quartz.CGBitmapContextCreateImage = MagicMock(return_value="mask-image")
+        quartz.CGContextSetRGBFillColor = MagicMock()
+        quartz.CGContextFillRect = MagicMock()
+        quartz.CGContextSetBlendMode = MagicMock()
+        quartz.CGContextSaveGState = MagicMock()
+        quartz.CGContextRestoreGState = MagicMock()
+        quartz.CGContextTranslateCTM = MagicMock()
+        quartz.CGContextScaleCTM = MagicMock()
+        quartz.CGContextClipToRect = MagicMock()
+        quartz.CGRectMake = lambda x, y, w, h: _make_rect(x, y, w, h)
+        quartz.kCGImageAlphaPremultipliedLast = "premul"
+        quartz.kCGBlendModeDestinationOut = "dest-out"
+        appkit.NSGraphicsContext = MagicMock()
+        appkit.NSGraphicsContext.graphicsContextWithCGContext_flipped_.return_value = object()
+
+        storage = MagicMock()
+        storage.length.return_value = 1200
+        overlay._text_view.textStorage.return_value = storage
+        overlay._text_view.frame.return_value = _make_rect(0.0, 0.0, 552.0, 1400.0)
+        overlay._scroll_view.frame.return_value = _make_rect(24.0, 16.0, 552.0, 328.0)
+        overlay._scroll_view.contentView.return_value.bounds.return_value = _make_rect(
+            0.0, 850.0, 552.0, 328.0
+        )
+        overlay._content_view.frame.return_value = ((220.0, 220.0), (600.0, 360.0))
+        overlay._fill_layer.frame.return_value = ((0.0, 0.0), (1040.0, 800.0))
+        overlay._fill_layer.mask.return_value = None
+        overlay._boost_layer.isHidden.return_value = False
+
+        overlay._text_punchthrough = True
+        overlay._punchthrough_mask_dirty = True
+
+        overlay._update_punchthrough_mask()
+
+        assert quartz.CGContextClipToRect.call_count == 2
+        clip_rect = quartz.CGContextClipToRect.call_args_list[0].args[1]
+        assert clip_rect.origin.x == pytest.approx(244.0)
+        assert clip_rect.origin.y == pytest.approx(236.0)
+        assert clip_rect.size.width == pytest.approx(552.0)
+        assert clip_rect.size.height == pytest.approx(328.0)
+        draw_rect = storage.drawInRect_.call_args_list[0].args[0]
+        assert draw_rect.origin.y == pytest.approx(236.0 - 850.0)
+        assert draw_rect.size.height == pytest.approx(1400.0)
 
 
 class TestToolState:

@@ -385,6 +385,6 @@ def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, 
     overlay._update_layout()
 
     f = overlay_module._OUTER_FEATHER
-    expected_height = 220.0
+    expected_height = 150.0
     assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)

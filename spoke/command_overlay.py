@@ -71,8 +71,8 @@ def _env_bool(name: str, default: bool) -> bool:
 _OVERLAY_WIDTH = _env("SPOKE_COMMAND_OVERLAY_WIDTH", 600.0)
 _OVERLAY_HEIGHT = _env("SPOKE_COMMAND_OVERLAY_HEIGHT", 80.0)
 _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
-_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
-_OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
+_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 230.0)
+_OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 100.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
 _FONT_SIZE = 15.5
 _APPROVAL_HEADER_TEXT = "Approval needed"
@@ -4749,6 +4749,7 @@ class CommandOverlay(NSObject):
                 CGContextSaveGState,
                 CGContextRestoreGState,
                 CGContextTranslateCTM,
+                CGContextClipToRect,
             )
             from AppKit import NSGraphicsContext
             from Foundation import NSMakeRect
@@ -4802,11 +4803,19 @@ class CommandOverlay(NSObject):
             # Content view is at (cx, cy) in wrapper coords (bottom-up).
             # In top-down: content top = fh - cy - content_h
             content_h = content_frame[1][1]
-            text_x = cx + 24.0
-            text_y = (fh - cy - content_h) + 16.0 - scroll_origin.y
+            scroll_frame = self._scroll_view.frame()
+            scroll_x = scroll_frame.origin.x
+            scroll_y = scroll_frame.origin.y
+            visible_w = scroll_frame.size.width
+            visible_h = scroll_frame.size.height
+            text_x = cx + scroll_x
+            visible_y = (fh - cy - content_h) + scroll_y
+            text_y = visible_y - scroll_origin.y
 
             text_w = text_frame.size.width
             text_h = text_frame.size.height
+            visible_clip = CGRectMake(text_x, visible_y, visible_w, visible_h)
+            CGContextClipToRect(ctx, visible_clip)
             ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
 
             CGContextRestoreGState(ctx)
@@ -4843,6 +4852,7 @@ class CommandOverlay(NSObject):
                     CGContextSaveGState(boost_ctx)
                     CGContextTranslateCTM(boost_ctx, 0, fh)
                     CGContextScaleCTM(boost_ctx, 1.0, -1.0)
+                    CGContextClipToRect(boost_ctx, visible_clip)
                     ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
                     CGContextRestoreGState(boost_ctx)
                     NSGraphicsContext.restoreGraphicsState()
