@@ -571,8 +571,6 @@ def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str
 
     user_text = (
         f"User request: {utterance}\n"
-        f"Mode: {mode}\n"
-        f"Content: {content_desc}\n"
         f"Screen resolution: {screen_w}×{screen_h} pixels\n"
         f"Current overlay: x={cur_x} y={cur_y} width={cur_w} height={cur_h}"
     )
@@ -638,32 +636,18 @@ def reposition_bbox(
     if current_overlay is None:
         current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
 
-    # Resolve intent (text-only, fast)
-    intent = resolve_intent(utterance)
-    t_intent = time.time()
-    reposition_bbox._last_debug.append(
-        f"Intent: {intent} ({t_intent - t0:.1f}s)"
-    )
-    _report()
-
-    mode = intent["mode"]
-    if mode == "target":
-        content_desc = intent.get("target_desc", utterance)
-    else:
-        content_desc = intent.get("content_desc", utterance)
-
     # Prepare image with overlay outline
     annotated = _draw_overlay_outline(screenshot, current_overlay)
-    screenshot_b64 = _encode_image(annotated, scale=0.5)
+    screenshot_b64 = _encode_image(annotated)
 
-    # Single VLM call: pick bounding box in pixels
+    # Single VLM call: raw utterance straight to bbox, no intent classification
     bx, by, bw, bh = _pick_bbox(
-        screenshot_b64, utterance, content_desc, mode,
+        screenshot_b64, utterance, utterance, "direct",
         screen_w, screen_h, current_overlay,
     )
     t_bbox = time.time()
     reposition_bbox._last_debug.append(
-        f"BBox: ({bx}, {by}) {bw}×{bh}px ({t_bbox - t_intent:.1f}s)"
+        f"BBox: ({bx}, {by}) {bw}×{bh}px ({t_bbox - t0:.1f}s)"
     )
     bbox_thinking = getattr(_pick_bbox, '_last_thinking', None)
     if bbox_thinking:
@@ -680,7 +664,7 @@ def reposition_bbox(
         "y": by / screen_h,
         "width": bw / screen_w,
         "height": bh / screen_h,
-        "content_desc": f"{mode}: {content_desc}",
+        "content_desc": utterance,
         "utterance": utterance,
         "elapsed_s": elapsed,
     }
