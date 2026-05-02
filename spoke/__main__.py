@@ -176,6 +176,10 @@ from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
 from .agent_shell_primitives import build_agent_shell_primitives
 from .agent_thread_cards import card_display_contract
+from .agent_thread_narrator import (
+    build_agent_thread_narrator_state,
+    format_selected_thread_narrator_response,
+)
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -3075,13 +3079,27 @@ class SpokeAppDelegate(NSObject):
             logger.info("Recalling last response: %r", last_utterance[:50])
             if self._command_overlay is not None:
                 self._sync_command_overlay_brightness(immediate=True)
+                surface = self._agent_shell_surface_snapshot(
+                    self._active_agent_shell_provider()
+                )
+                surface_kwargs = {
+                    key: surface[key]
+                    for key in (
+                        "agent_shell_header",
+                        "agent_shell_footer",
+                        "agent_shell_cards",
+                        "agent_shell_primitives",
+                    )
+                    if key in surface
+                }
                 self._command_overlay.show(
                     start_thinking_timer=False,
                     initial_utterance=last_utterance,
-                    initial_response=_command_overlay_recall_preview(last_response),
-                    **self._agent_shell_surface_snapshot(
-                        self._active_agent_shell_provider()
+                    initial_response=surface.get(
+                        "agent_shell_selected_response",
+                        _command_overlay_recall_preview(last_response),
                     ),
+                    **surface_kwargs,
                 )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
@@ -3439,11 +3457,25 @@ class SpokeAppDelegate(NSObject):
                 if self._command_overlay is not None:
                     try:
                         self._sync_command_overlay_brightness(immediate=True)
+                        surface = self._agent_shell_surface_snapshot(agent_shell_provider)
+                        surface_kwargs = {
+                            key: surface[key]
+                            for key in (
+                                "agent_shell_header",
+                                "agent_shell_footer",
+                                "agent_shell_cards",
+                                "agent_shell_primitives",
+                            )
+                            if key in surface
+                        }
                         self._command_overlay.show(
                             start_thinking_timer=False,
                             initial_utterance=last_utterance,
-                            initial_response=_command_overlay_recall_preview(last_response),
-                            **self._agent_shell_surface_snapshot(agent_shell_provider),
+                            initial_response=surface.get(
+                                "agent_shell_selected_response",
+                                _command_overlay_recall_preview(last_response),
+                            ),
+                            **surface_kwargs,
                         )
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
@@ -4043,7 +4075,65 @@ class SpokeAppDelegate(NSObject):
         cards = self._agent_shell_thread_cards_snapshot(provider)
         if cards:
             surface["agent_shell_primitives"] = build_agent_shell_primitives(cards)
+        narrator_session = self._agent_shell_selected_narrator_session(provider, cards)
+        if self._agent_shell_narrator_session_has_content(narrator_session):
+            narrator_state = build_agent_thread_narrator_state(narrator_session)
+            selected_response = format_selected_thread_narrator_response(narrator_state)
+            if selected_response:
+                surface["agent_shell_narrator_state"] = narrator_state.to_dict()
+                surface["agent_shell_selected_response"] = selected_response
         return surface
+
+    def _agent_shell_narrator_session_has_content(self, session: dict) -> bool:
+        if any(
+            isinstance(session.get(key), str) and session.get(key)
+            for key in ("prompt", "last_utterance", "result", "last_response")
+        ):
+            return True
+        thread_card = session.get("thread_card")
+        if isinstance(thread_card, dict):
+            return any(
+                isinstance(thread_card.get(key), str) and thread_card.get(key)
+                for key in ("bearing", "latest_response", "activity_line", "title")
+            )
+        return False
+
+    def _agent_shell_selected_narrator_session(
+        self,
+        provider: str,
+        cards: list[dict],
+    ) -> dict:
+        record = self._agent_shell_session_record(provider)
+        selected_card = next(
+            (
+                card
+                for card in cards
+                if isinstance(card, dict)
+                and card.get("selected") is True
+                and card.get("provider") == provider
+            ),
+            None,
+        )
+        if selected_card is None:
+            selected_card = self._sanitize_agent_shell_thread_card(record.get("thread_card"))
+        session = {
+            "provider": provider,
+            "provider_session_id": record.get("provider_session_id"),
+            "last_utterance": record.get("last_utterance"),
+            "last_response": record.get("last_response"),
+            "thread_card": selected_card if isinstance(selected_card, dict) else {},
+        }
+        if isinstance(selected_card, dict):
+            session["provider_session_id"] = (
+                selected_card.get("provider_session_id")
+                or selected_card.get("thread_id")
+                or session["provider_session_id"]
+            )
+            latest_response = selected_card.get("latest_response")
+            if isinstance(latest_response, str) and latest_response:
+                session["last_response"] = latest_response
+            session["state"] = "completed" if selected_card.get("readiness") == "ready" else ""
+        return session
 
     def _remember_agent_shell_chrome(
         self,
@@ -4841,9 +4931,20 @@ class SpokeAppDelegate(NSObject):
         # Show the command overlay with the utterance as context
         if self._command_overlay is not None:
             self._sync_command_overlay_brightness(immediate=True)
+            surface = self._agent_shell_surface_snapshot(self._active_agent_shell_provider())
+            surface_kwargs = {
+                key: surface[key]
+                for key in (
+                    "agent_shell_header",
+                    "agent_shell_footer",
+                    "agent_shell_cards",
+                    "agent_shell_primitives",
+                )
+                if key in surface
+            }
             self._command_overlay.show(
                 initial_utterance=utterance,
-                **self._agent_shell_surface_snapshot(self._active_agent_shell_provider()),
+                **surface_kwargs,
             )
             self._detector.command_overlay_active = True
             logger.info("command_overlay_active -> True (command started)")
@@ -5776,11 +5877,15 @@ class SpokeAppDelegate(NSObject):
                 return
 
             utterance, response = snapshot
+            response = chrome.get(
+                "agent_shell_selected_response",
+                _command_overlay_recall_preview(response),
+            )
             replace_transcript = getattr(overlay, "replace_transcript", None)
             if callable(replace_transcript):
                 kwargs = {
                     "utterance": utterance,
-                    "response": _command_overlay_recall_preview(response),
+                    "response": response,
                     "agent_shell_header": chrome.get("agent_shell_header", ""),
                     "agent_shell_footer": chrome.get("agent_shell_footer", ""),
                 }
@@ -5798,7 +5903,7 @@ class SpokeAppDelegate(NSObject):
                     chrome,
                 )
                 overlay.set_utterance(utterance)
-                overlay.set_response_text(_command_overlay_recall_preview(response))
+                overlay.set_response_text(response)
             if agent_shell_provider is not None:
                 header = chrome.get("agent_shell_header")
                 footer = chrome.get("agent_shell_footer")

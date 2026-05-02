@@ -2225,6 +2225,55 @@ class TestAgentShellMenuState:
         ]
         assert surface["agent_shell_primitives"][0]["display"]["show_latest_response"] is True
 
+    def test_agent_shell_surface_snapshot_exposes_selected_thread_narrator_state(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "What changed?",
+                "last_response": "Narrator state exists.\nOverlay can consume it.",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "What changed?",
+                        "last_response": "Narrator state exists.\nOverlay can consume it.",
+                        "thread_card": {
+                            "provider": "codex",
+                            "thread_id": "codex-thread-1",
+                            "provider_session_id": "codex-thread-1",
+                            "title": "Narrator MVP",
+                            "readiness": "ready",
+                            "bearing": "Narrator MVP lane",
+                            "activity_line": "Ready to read",
+                            "latest_response": "Narrator state exists.\nOverlay can consume it.",
+                        },
+                    }
+                ],
+            }
+        }
+
+        surface = delegate._agent_shell_surface_snapshot("codex")
+
+        assert surface["agent_shell_narrator_state"]["latest_user_prompt"] == "What changed?"
+        assert surface["agent_shell_narrator_state"]["bearing"] == "Narrator MVP lane"
+        assert surface["agent_shell_narrator_state"]["latest_verbatim_tail"] == [
+            "Narrator state exists.",
+            "Overlay can consume it.",
+        ]
+        assert surface["agent_shell_selected_response"].splitlines() == [
+            "Bearing: Narrator MVP lane",
+            "Since your prompt: Assistant produced 2 recent lines.",
+            "",
+            "Recent output:",
+            "Narrator state exists.",
+            "Overlay can consume it.",
+        ]
+
     def test_agent_shell_thread_cards_snapshot_merges_live_backend_public_sessions(
         self, main_module
     ):
@@ -2413,7 +2462,12 @@ class TestAgentShellMenuState:
 
         delegate._command_overlay.replace_transcript.assert_called_once_with(
             utterance="hello codex",
-            response="hello from codex",
+            response=(
+                "Bearing: hello codex\n"
+                "Since your prompt: Assistant produced 1 recent line.\n\n"
+                "Recent output:\n"
+                "hello from codex"
+            ),
             agent_shell_header="Worktree: codex-spinal-tap",
             agent_shell_footer="model gpt-5.5 | cwd /tmp/spoke",
         )

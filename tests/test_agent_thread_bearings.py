@@ -188,3 +188,98 @@ def test_model_client_result_is_bounded_and_still_source_attached():
     assert len(compiled.bearing) <= 64
     assert compiled.activity_line == "Model activity"
     assert compiled.sources == ("agent_message",)
+
+
+def test_narrator_state_extracts_latest_prompt_summary_and_verbatim_tail():
+    from spoke.agent_thread_narrator import build_agent_thread_narrator_state
+
+    state = build_agent_thread_narrator_state(
+        {
+            "id": "spoke-session-1",
+            "provider": "claude-code",
+            "provider_session_id": "claude-provider-1",
+            "prompt": "What did you change?",
+            "state": "completed",
+            "result": "\n".join(
+                [
+                    "I added the narrator state contract.",
+                    "It now carries the latest prompt.",
+                    "It also keeps the recent verbatim tail.",
+                ]
+            ),
+            "backend_events": [
+                {
+                    "kind": "thread_waypoint",
+                    "sequence": 4,
+                    "text": "Session: implement the deterministic narrator state.",
+                    "data": {"source": "anagnosis", "kind": "current_intent"},
+                },
+                {
+                    "kind": "command_execution",
+                    "sequence": 5,
+                    "data": {
+                        "status": "completed",
+                        "command": "uv run pytest -q tests/test_agent_thread_bearings.py",
+                    },
+                },
+            ],
+            "thread_card": {
+                "title": "Narrator state",
+                "readiness": "ready",
+                "activity_line": "Ready to read",
+                "bearing": "Existing card bearing",
+            },
+        }
+    )
+
+    assert state.provider == "claude-code"
+    assert state.thread_id == "claude-provider-1"
+    assert state.provider_session_id == "claude-provider-1"
+    assert state.updated_sequence == 5
+    assert state.latest_user_prompt == "What did you change?"
+    assert state.bearing == "Session: implement the deterministic narrator state."
+    assert state.since_user_prompt == "Command completed; assistant produced 3 recent lines."
+    assert state.latest_verbatim_tail == (
+        "I added the narrator state contract.",
+        "It now carries the latest prompt.",
+        "It also keeps the recent verbatim tail.",
+    )
+    assert state.current_activity == "Ready to read"
+    assert state.readiness == "ready"
+    assert state.operator_needed is True
+    assert state.confidence == "deterministic"
+    assert "thread_waypoint:4" in state.source_event_ids
+    assert "command_execution:5" in state.source_event_ids
+
+
+def test_selected_overlay_response_uses_bearing_summary_and_recent_tail():
+    from spoke.agent_thread_narrator import (
+        build_agent_thread_narrator_state,
+        format_selected_thread_narrator_response,
+    )
+
+    state = build_agent_thread_narrator_state(
+        {
+            "provider": "codex",
+            "provider_session_id": "codex-thread-1",
+            "last_utterance": "Summarize the smoke result.",
+            "last_response": "Line one.\nLine two.\nLine three.",
+            "thread_card": {
+                "title": "Smoke result",
+                "readiness": "ready",
+                "bearing": "Smoke result lane",
+            },
+        }
+    )
+
+    response = format_selected_thread_narrator_response(state)
+
+    assert response.splitlines() == [
+        "Bearing: Smoke result lane",
+        "Since your prompt: Assistant produced 3 recent lines.",
+        "",
+        "Recent output:",
+        "Line one.",
+        "Line two.",
+        "Line three.",
+    ]
