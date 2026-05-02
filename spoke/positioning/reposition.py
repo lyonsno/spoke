@@ -766,6 +766,325 @@ def update_bearing(
     return content
 
 
+# ── Grid-point pipeline ──
+# 4×4 grid → 3×3 interior intersections = 9 candidate center points
+
+GRIDPOINT_ROWS = 3
+GRIDPOINT_COLS = 3
+GRIDPOINT_LABELS = [
+    f"{r}{c}"
+    for r in ["A", "B", "C"]
+    for c in ["1", "2", "3"]
+]
+
+
+def _gridpoint_coords(label: str, screen_w: int, screen_h: int) -> tuple[int, int]:
+    """Convert a grid-point label (e.g. 'B2') to pixel center coordinates."""
+    row = ord(label[0]) - ord("A")  # 0-2
+    col = int(label[1]) - 1          # 0-2
+    # Interior points of a 4×4 grid: at 25%, 50%, 75%
+    cx = int(screen_w * (col + 1) / 4)
+    cy = int(screen_h * (row + 1) / 4)
+    return cx, cy
+
+
+def _draw_grid_points(img: Image.Image) -> Image.Image:
+    """Draw 3×3 interior intersection points with labels on the image."""
+    img = img.copy()
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    marker_r = max(4, min(w, h) // 150)
+
+    try:
+        from PIL import ImageFont
+        font_size = max(10, min(w, h) // 80)
+        font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", font_size)
+    except (OSError, IOError):
+        font = None
+
+    for label in GRIDPOINT_LABELS:
+        cx, cy = _gridpoint_coords(label, w, h)
+        # Crosshair
+        cross_len = marker_r * 2
+        draw.line([(cx - cross_len, cy), (cx + cross_len, cy)],
+                  fill=(200, 200, 200), width=2)
+        draw.line([(cx, cy - cross_len), (cx, cy + cross_len)],
+                  fill=(200, 200, 200), width=2)
+        # Label
+        draw.text((cx + marker_r + 2, cy - marker_r - 2), label,
+                  fill=(200, 200, 200), font=font)
+
+    return img
+
+
+GRIDPOINT_SYSTEM = (
+    "You are a screen layout system. The user wants to reposition an overlay.\n\n"
+    "The image shows the current screen with 9 labeled intersection points "
+    "(gray crosshairs with labels A1-C3). A red dashed outline shows the "
+    "overlay's current position.\n\n"
+    "The grid layout:\n"
+    "  A1  A2  A3   ← upper row (25% from top)\n"
+    "  B1  B2  B3   ← middle row (50%)\n"
+    "  C1  C2  C3   ← lower row (75% from top)\n"
+    "Columns: 1=25% from left, 2=center, 3=75% from left.\n\n"
+    "The user's request was transcribed from speech and may contain phonetic "
+    "errors. Interpret phonetically.\n\n"
+    "Pick the ONE point where the overlay's center should move to.\n\n"
+    "Output ONLY the point label (e.g. A3). Nothing else."
+)
+
+GRIDPOINT_RESIZE_SYSTEM = (
+    "You are a screen layout system. An overlay was just repositioned.\n\n"
+    "The image shows the current screen. The overlay's center has been placed "
+    "at the position shown.\n\n"
+    "The user's request was transcribed from speech and may contain phonetic "
+    "errors. Interpret phonetically.\n\n"
+    "Based on the user's request and what's visible on screen, decide the "
+    "overlay's size in pixels.\n\n"
+    "If the user only asked to move (not resize), output NONE.\n"
+    "Otherwise output: width height (in pixels)\n\n"
+    "Output ONLY 'width height' or 'NONE'. Nothing else."
+)
+
+
+def _pick_gridpoint(screenshot_b64: str, utterance: str,
+                    screen_w: int, screen_h: int,
+                    current_overlay: dict | None = None,
+                    bearing: str | None = None) -> str | None:
+    """Pick a grid intersection point. Returns label like 'B2' or None on parse failure."""
+    cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
+    cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+    cur_cx = int((current_overlay or {}).get("x", 0.3) * screen_w) + cur_w // 2
+    cur_cy = int((current_overlay or {}).get("y", 0.3) * screen_h) + cur_h // 2
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Current overlay: center=({cur_cx}, {cur_cy}) width={cur_w} height={cur_h}"
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers("gridpoint"),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": GRIDPOINT_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=8),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip().upper()
+
+    for label in GRIDPOINT_LABELS:
+        if label in raw:
+            return label
+    # Store raw for diagnostics
+    _pick_gridpoint._last_raw = raw
+    return None
+
+
+def _pick_gridpoint_resize(screenshot_b64: str, utterance: str,
+                           screen_w: int, screen_h: int,
+                           new_center: tuple[int, int],
+                           current_overlay: dict | None = None,
+                           bearing: str | None = None) -> tuple[int, int] | None:
+    """Pick new size after grid-point center. Returns (w, h) or None."""
+    cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
+    cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Overlay center placed at: ({new_center[0]}, {new_center[1]})\n"
+        f"Current overlay size: width={cur_w} height={cur_h}"
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+
+    # Resize always uses thinking for precision
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers("gridresize"),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": GRIDPOINT_RESIZE_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=16),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+
+    if "NONE" in raw.upper():
+        return None
+    parts = raw.split()
+    try:
+        w = max(1, min(screen_w, int(float(parts[0]))))
+        h = max(1, min(screen_h, int(float(parts[1]))))
+        return w, h
+    except (ValueError, IndexError):
+        return None
+
+
+def reposition_gridpoint(
+    utterance: str,
+    screenshot: Image.Image,
+    current_overlay: dict | None = None,
+    screen_w: int = 1920,
+    screen_h: int = 1080,
+    on_step: "callable | None" = None,
+    bearing: str | None = None,
+) -> dict | None:
+    """Grid-point pipeline: pick intersection → move → resize.
+
+    Up to 5 retries on grid-point parse failure, then falls back to
+    bbox with reasoning for position. Resize uses reasoning and a
+    fresh image with the new position inscribed.
+    """
+    reposition_gridpoint._last_debug = []
+    t0 = time.time()
+
+    def _report(intermediate=None):
+        if on_step:
+            on_step(list(reposition_gridpoint._last_debug), intermediate)
+
+    if current_overlay is None:
+        current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
+
+    if bearing:
+        reposition_gridpoint._last_debug.append(f"Bearing: {bearing[:200]}")
+        _report()
+
+    # Draw grid points and overlay outline on the screenshot
+    annotated = _draw_overlay_outline(screenshot, current_overlay)
+    annotated = _draw_grid_points(annotated)
+    screenshot_b64 = _encode_image(annotated)
+
+    cur_w = int(current_overlay["width"] * screen_w)
+    cur_h = int(current_overlay["height"] * screen_h)
+
+    # Step 1: Grid-point center pick (up to 5 retries)
+    cx, cy = None, None
+    for attempt in range(5):
+        label = _pick_gridpoint(
+            screenshot_b64, utterance, screen_w, screen_h,
+            current_overlay, bearing,
+        )
+        t_attempt = time.time()
+        if label is not None:
+            cx, cy = _gridpoint_coords(label, screen_w, screen_h)
+            reposition_gridpoint._last_debug.append(
+                f"GridPoint: {label} → ({cx}, {cy}) (attempt {attempt+1}, {t_attempt - t0:.1f}s)"
+            )
+            break
+        else:
+            last_raw = getattr(_pick_gridpoint, '_last_raw', '?')
+            reposition_gridpoint._last_debug.append(
+                f"GridPoint: parse fail (attempt {attempt+1}, {t_attempt - t0:.1f}s) raw={last_raw!r}"
+            )
+        _report()
+
+    # Fallback: bbox with reasoning if all grid attempts failed
+    if cx is None:
+        reposition_gridpoint._last_debug.append("GridPoint: all 5 attempts failed, falling back to bbox reasoning")
+        _report()
+
+        # Use bbox with thinking forced on
+        old_thinking = os.environ.get("SPOKE_POSITIONING_THINKING")
+        os.environ["SPOKE_POSITIONING_THINKING"] = "1"
+        try:
+            bx, by, bw, bh = _pick_bbox(
+                screenshot_b64, utterance, utterance, "direct",
+                screen_w, screen_h, current_overlay, bearing=bearing,
+            )
+            cx = bx + bw // 2
+            cy = by + bh // 2
+            # Also use the bbox size as a hint
+            cur_w, cur_h = bw, bh
+            t_fallback = time.time()
+            reposition_gridpoint._last_debug.append(
+                f"BBox fallback: center=({cx}, {cy}) size={bw}×{bh}px ({t_fallback - t0:.1f}s)"
+            )
+        finally:
+            if old_thinking is not None:
+                os.environ["SPOKE_POSITIONING_THINKING"] = old_thinking
+            else:
+                os.environ.pop("SPOKE_POSITIONING_THINKING", None)
+        _report()
+
+    # Emit intermediate — overlay moves NOW at current size
+    bx = max(0, min(screen_w - cur_w, cx - cur_w // 2))
+    by = max(0, min(screen_h - cur_h, cy - cur_h // 2))
+    intermediate = {
+        "x": bx / screen_w,
+        "y": by / screen_h,
+        "width": cur_w / screen_w,
+        "height": cur_h / screen_h,
+        "content_desc": utterance,
+        "utterance": utterance,
+        "elapsed_s": round(time.time() - t0, 2),
+        "_intermediate": True,
+    }
+    _report(intermediate)
+
+    # Step 2: Resize with fresh image showing new position
+    new_overlay = {"x": bx / screen_w, "y": by / screen_h,
+                   "width": cur_w / screen_w, "height": cur_h / screen_h}
+    resized_annotated = _draw_overlay_outline(screenshot, new_overlay)
+    resize_b64 = _encode_image(resized_annotated)
+
+    resize_result = _pick_gridpoint_resize(
+        resize_b64, utterance, screen_w, screen_h,
+        (cx, cy), current_overlay, bearing,
+    )
+    t_resize = time.time()
+
+    if resize_result is not None:
+        new_w, new_h = resize_result
+        reposition_gridpoint._last_debug.append(
+            f"Resize: {new_w}×{new_h}px ({t_resize - t0:.1f}s)"
+        )
+    else:
+        new_w, new_h = cur_w, cur_h
+        reposition_gridpoint._last_debug.append(
+            f"Resize: unchanged ({t_resize - t0:.1f}s)"
+        )
+
+    # Final position with new size
+    bx = max(0, min(screen_w - new_w, cx - new_w // 2))
+    by = max(0, min(screen_h - new_h, cy - new_h // 2))
+
+    elapsed = round(time.time() - t0, 2)
+    reposition_gridpoint._last_debug.append(f"Total: {elapsed:.1f}s")
+    _report()
+
+    return {
+        "x": bx / screen_w,
+        "y": by / screen_h,
+        "width": new_w / screen_w,
+        "height": new_h / screen_h,
+        "content_desc": utterance,
+        "utterance": utterance,
+        "elapsed_s": elapsed,
+        "_screenshot_b64": screenshot_b64,
+    }
+
+
 def _draw_overlay_outline(screenshot: Image.Image, overlay_rect: dict | None) -> Image.Image:
     """Draw a red dashed outline on the screenshot showing the current overlay position."""
     img = screenshot.copy()

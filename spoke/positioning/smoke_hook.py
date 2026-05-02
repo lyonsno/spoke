@@ -84,7 +84,58 @@ def positioning_transcribe_worker(app, wav_bytes: bytes, token: int) -> None:
     import os as _os
     mode = _os.environ.get("SPOKE_POSITIONING_MODE", "grid")
 
-    if mode == "centersize":
+    if mode == "gridpoint":
+        from .reposition import reposition_gridpoint, update_bearing
+        current_overlay = None
+        prev_req = getattr(app, '_positioning_field_request', None)
+        if prev_req is not None:
+            screen = _get_main_screen_frame_for_worker()
+            if screen is not None:
+                sw, sh = screen
+                b = prev_req.bounds
+                current_overlay = {
+                    "x": b.x / sw, "y": (sh - b.y - b.height) / sh,
+                    "width": b.width / sw, "height": b.height / sh,
+                }
+        screen_dims = _get_main_screen_frame_for_worker()
+        scr_w = int(screen_dims[0]) if screen_dims else 1920
+        scr_h = int(screen_dims[1]) if screen_dims else 1080
+        bearing = getattr(app, '_positioning_bearing', None)
+
+        def _on_step_gp(debug_lines, intermediate=None):
+            from PyObjCTools import AppHelper
+            if intermediate and intermediate.get("_intermediate"):
+                AppHelper.callAfter(lambda: _finish_on_main_immediate(app, intermediate))
+            partial = {"utterance": text, "elapsed_s": 0, "x": 0, "y": 0, "width": 0, "height": 0,
+                        "content_desc": "running..."}
+            AppHelper.callAfter(lambda: _show_diagnostic_overlay(partial, debug_lines))
+
+        try:
+            result = reposition_gridpoint(text, screenshot, current_overlay,
+                                          screen_w=scr_w, screen_h=scr_h,
+                                          on_step=_on_step_gp,
+                                          bearing=bearing)
+        except Exception as e:
+            logger.exception("GridPoint positioning pipeline failed")
+            import traceback
+            _flash_error_on_main(f"Pipeline error: {e}\n{traceback.format_exc()[-500:]}")
+            _finish_on_main(app, None)
+            return
+        pipeline_fn = reposition_gridpoint
+
+        screenshot_b64 = result.pop("_screenshot_b64", None)
+        if screenshot_b64:
+            def _update_bearing_bg():
+                try:
+                    new_bearing = update_bearing(
+                        screenshot_b64, text, result, bearing, scr_w, scr_h,
+                    )
+                    app._positioning_bearing = new_bearing
+                    logger.info("Bearing updated: %s", new_bearing[:200])
+                except Exception:
+                    logger.warning("Background bearing update failed", exc_info=True)
+            threading.Thread(target=_update_bearing_bg, daemon=True).start()
+    elif mode == "centersize":
         from .reposition import reposition_centersize, update_bearing
         current_overlay = None
         prev_req = getattr(app, '_positioning_field_request', None)
@@ -380,11 +431,13 @@ def _finish_on_main(app, result: dict | None) -> None:
                               elapsed_s=elapsed)
 
         # Persistent diagnostic overlay in upper right — survives grid dismiss
+        from .reposition import reposition_gridpoint as _gp_fn
         from .reposition import reposition_centersize as _cs_fn
         from .reposition import reposition_bbox as _bbox_fn
         from .reposition import reposition_twostep as _twostep_fn
         from .reposition import reposition as _grid_fn
-        debug_steps = (getattr(_cs_fn, '_last_debug', None)
+        debug_steps = (getattr(_gp_fn, '_last_debug', None)
+                       or getattr(_cs_fn, '_last_debug', None)
                        or getattr(_bbox_fn, '_last_debug', None)
                        or getattr(_twostep_fn, '_last_debug', None)
                        or getattr(_grid_fn, '_last_debug', None))
