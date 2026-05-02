@@ -427,14 +427,16 @@ BBOX_SYSTEM = (
     "slow precise one.\n"
     "- If the request is ambiguous, pick the most likely interpretation and go. "
     "Do not deliberate.\n\n"
-    "Output ONLY four numbers on one line: x y width height\n"
+    "Output ONLY four numbers on one line: center_x center_y width height\n"
     "All values are in pixels. (0,0) is the top-left corner of the screen.\n"
-    "x = left edge of overlay, y = top edge, width and height = overlay size.\n\n"
+    "center_x, center_y = center point of the overlay.\n"
+    "width, height = overlay size.\n\n"
     "Examples for a 1920×1080 screen:\n"
-    "  0 0 1920 50      (full-width thin strip at the very top)\n"
-    "  960 0 960 1080    (right half of screen, full height)\n"
-    "  400 300 500 400   (a box in the center area)\n"
-    "  0 0 300 1080      (narrow column on the left, full height)\n\n"
+    "  960 540 1920 1080  (full screen, centered)\n"
+    "  1440 540 960 1080  (right half, full height)\n"
+    "  650 350 500 400    (a box in the upper-center area)\n"
+    "  150 540 300 1080   (narrow column on the left, full height)\n"
+    "  960 25 1920 50     (full-width thin strip at the very top)\n\n"
     "Output ONLY the four numbers. Nothing else."
 )
 
@@ -663,11 +665,13 @@ def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str
     cur_y = int((current_overlay or {}).get("y", 0.3) * screen_h)
     cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
     cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+    cur_cx = cur_x + cur_w // 2
+    cur_cy = cur_y + cur_h // 2
 
     user_text = (
         f"User request: {utterance}\n"
         f"Screen resolution: {screen_w}×{screen_h} pixels\n"
-        f"Current overlay: x={cur_x} y={cur_y} width={cur_w} height={cur_h}"
+        f"Current overlay: center=({cur_cx}, {cur_cy}) width={cur_w} height={cur_h}"
     )
     if bearing:
         user_text += (
@@ -699,13 +703,18 @@ def _pick_bbox(screenshot_b64: str, utterance: str, content_desc: str, mode: str
     if thinking_text:
         _pick_bbox._last_thinking = thinking_text
 
-    # Parse "x y width height"
+    # Parse "center_x center_y width height" → convert to corner coords
     parts = raw.split()
     try:
-        bx = max(0, min(screen_w, int(float(parts[0]))))
-        by = max(0, min(screen_h, int(float(parts[1]))))
-        bw = max(1, min(screen_w - bx, int(float(parts[2]))))
-        bh = max(1, min(screen_h - by, int(float(parts[3]))))
+        cx = int(float(parts[0]))
+        cy = int(float(parts[1]))
+        bw = max(1, int(float(parts[2])))
+        bh = max(1, int(float(parts[3])))
+        # Convert center to top-left corner, clamp to screen
+        bx = max(0, min(screen_w - bw, cx - bw // 2))
+        by = max(0, min(screen_h - bh, cy - bh // 2))
+        bw = min(bw, screen_w - bx)
+        bh = min(bh, screen_h - by)
     except (ValueError, IndexError):
         import logging
         logging.getLogger(__name__).warning("Could not parse bbox from %r, using center default", raw)
