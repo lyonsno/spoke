@@ -1,6 +1,6 @@
 # Smoke env — Operation Move B**ch (semantic positioning)
 export SPOKE_POSITIONING_MODE="bbox"
-export SPOKE_POSITIONING_THINKING="1"
+export SPOKE_POSITIONING_THINKING="0"
 export SPOKE_POSITIONING_IMAGE_SCALE="0.25"
 export SPOKE_COMMAND_URL="http://localhost:8001"
 export SPOKE_COMMAND_API_KEY="1234"
