@@ -583,7 +583,7 @@ def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(mo
             "font_size": 13.0,
             "frame": {
                 "x": 265.0,
-                "y": 339.0,
+                "y": 219.0,
                 "width": 270.0,
                 "height": 42.0,
             },

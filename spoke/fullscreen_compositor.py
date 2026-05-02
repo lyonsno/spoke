@@ -181,7 +181,6 @@ def _agent_shell_card_text_overlay_specs(
             continue
         left = max(0.0, min(screen_width_points, center_x - width * 0.5))
         top = max(0.0, min(screen_height_points, center_y_top - height * 0.5))
-        bottom = max(0.0, screen_height_points - top - height)
         inset = max(8.0, min(16.0, width * 0.05))
         specs.append(
             {
@@ -190,7 +189,7 @@ def _agent_shell_card_text_overlay_specs(
                 "font_size": 15.0 if config.get("role") == "selected_thread" else 13.0,
                 "frame": {
                     "x": round(left + inset, 3),
-                    "y": round(bottom + inset, 3),
+                    "y": round(top + inset, 3),
                     "width": round(max(1.0, width - inset * 2.0), 3),
                     "height": round(max(1.0, height - inset * 2.0), 3),
                 },
@@ -508,6 +507,8 @@ class FullScreenCompositor:
             screen_height_points=screen_height,
             scale=scale,
         )
+        if specs:
+            logger.info("Agent Shell smoke labels synced: %d", len(specs))
         active_ids = {spec["client_id"] for spec in specs}
         layers = getattr(self, "_card_text_layers", {})
         for client_id, layer in list(layers.items()):
@@ -530,11 +531,13 @@ class FullScreenCompositor:
                     layer.setAlignmentMode_("left")
                     layer.setTruncationMode_("end")
                     layer.setContentsScale_(scale)
-                    layer.setForegroundColor_(CGColorCreateSRGB(0.92, 0.94, 0.96, 0.96))
+                    if hasattr(layer, "setZPosition_"):
+                        layer.setZPosition_(10000.0)
+                    layer.setForegroundColor_(CGColorCreateSRGB(0.05, 0.06, 0.07, 0.96))
                     if hasattr(layer, "setShadowOpacity_"):
-                        layer.setShadowOpacity_(0.75)
+                        layer.setShadowOpacity_(0.35)
                     if hasattr(layer, "setShadowRadius_"):
-                        layer.setShadowRadius_(3.0)
+                        layer.setShadowRadius_(1.5)
                     if hasattr(layer, "setShadowOffset_"):
                         layer.setShadowOffset_((0.0, -1.0))
                     container.addSublayer_(layer)
@@ -896,6 +899,10 @@ class FullScreenCompositor:
             self._card_text_container_layer.setFrame_(
                 ((0, 0), (frame.size.width, frame.size.height))
             )
+            if hasattr(self._card_text_container_layer, "setGeometryFlipped_"):
+                self._card_text_container_layer.setGeometryFlipped_(True)
+            if hasattr(self._card_text_container_layer, "setZPosition_"):
+                self._card_text_container_layer.setZPosition_(10000.0)
             content.layer().addSublayer_(self._card_text_container_layer)
         except Exception:
             logger.debug("Agent Shell smoke text layer unavailable", exc_info=True)
