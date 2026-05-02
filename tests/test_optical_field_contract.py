@@ -54,6 +54,7 @@ def test_placeholder_backend_preserves_contract_identity_and_profile_slot_metada
         "profile": "agent_card",
         "state": "rest",
         "slot": "rest",
+        "progress": 1.0,
         "disturbances": ("ready-pulse",),
     }
 
@@ -189,3 +190,115 @@ def test_placeholder_configs_survive_fullscreen_compositor_snapshot_round_trip()
     round_tripped = _snapshot_to_shell_config(snapshot)
 
     assert round_tripped["optical_field"] == shell_config["optical_field"]
+
+
+def test_materialization_progress_is_part_of_the_reusable_contract():
+    backend = OpticalFieldPlaceholderBackend()
+    bounds = OpticalFieldBounds(x=100.0, y=200.0, width=1200.0, height=220.0)
+
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant.shell",
+            bounds=bounds,
+            role="assistant",
+            state="materialize",
+            progress=0.0,
+            profile=OpticalFieldProfileRef(base="assistant_shell"),
+        )
+    )
+    start = backend.compile_shell_configs()[0]
+
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant.shell",
+            bounds=bounds,
+            role="assistant",
+            state="materialize",
+            progress=1.0,
+            profile=OpticalFieldProfileRef(base="assistant_shell"),
+        )
+    )
+    finished = backend.compile_shell_configs()[0]
+
+    assert start["client_id"] == "assistant.shell"
+    assert start["content_width_points"] < finished["content_width_points"]
+    assert start["content_height_points"] < finished["content_height_points"]
+    assert start["core_magnification"] < finished["core_magnification"]
+    assert finished["content_width_points"] == pytest.approx(bounds.width)
+    assert finished["content_height_points"] == pytest.approx(bounds.height)
+    assert finished["optical_field"]["progress"] == pytest.approx(1.0)
+
+
+def test_dismiss_compiles_generic_seam_and_radial_sidecars_without_private_ids():
+    backend = OpticalFieldPlaceholderBackend()
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="agent.card.codex-1",
+            bounds=OpticalFieldBounds(x=40.0, y=80.0, width=640.0, height=160.0),
+            role="agent_card",
+            state="dismiss",
+            progress=0.35,
+            profile=OpticalFieldProfileRef(base="assistant_shell"),
+            z_index=4,
+        )
+    )
+
+    configs = backend.compile_shell_configs()
+    by_id = {config["client_id"]: config for config in configs}
+
+    assert set(by_id) == {
+        "agent.card.codex-1",
+        "agent.card.codex-1.dismiss_seam",
+        "agent.card.codex-1.dismiss_radial_pucker",
+    }
+    assert all(not client_id.startswith("assistant.command") for client_id in by_id)
+
+    seam = by_id["agent.card.codex-1.dismiss_seam"]
+    assert seam["z_index"] > by_id["agent.card.codex-1"]["z_index"]
+    assert seam["warp_mode"] in {1, 3}
+    assert seam["mip_blur_strength"] == pytest.approx(0.0)
+    assert seam["scar_amount"] > 0.0
+    assert seam["optical_field"]["sidecar"] == "dismiss_seam"
+
+    radial = by_id["agent.card.codex-1.dismiss_radial_pucker"]
+    assert radial["warp_mode"] == 2
+    assert radial["mip_blur_strength"] == pytest.approx(0.0)
+    assert radial["optical_field"]["sidecar"] == "dismiss_radial_pucker"
+
+
+def test_reusable_backend_allows_distinct_consumers_to_share_pressure_lifecycle():
+    backend = OpticalFieldPlaceholderBackend()
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant.shell",
+            bounds=OpticalFieldBounds(x=120.0, y=600.0, width=1400.0, height=260.0),
+            role="assistant",
+            state="materialize",
+            progress=0.45,
+            profile=OpticalFieldProfileRef(base="assistant_shell"),
+            z_index=10,
+        )
+    )
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="semantic.card.move-bitch",
+            bounds=OpticalFieldBounds(x=80.0, y=120.0, width=380.0, height=110.0),
+            role="agent_card",
+            state="dismiss",
+            progress=0.30,
+            profile=OpticalFieldProfileRef(
+                base="assistant_shell",
+                params={"core_magnification": 1.05, "mip_blur_strength": 0.35},
+            ),
+            z_index=3,
+        )
+    )
+
+    configs = backend.compile_shell_configs()
+    ids = {config["client_id"] for config in configs}
+
+    assert "assistant.shell" in ids
+    assert "semantic.card.move-bitch" in ids
+    assert "semantic.card.move-bitch.dismiss_seam" in ids
+    assert "semantic.card.move-bitch.dismiss_radial_pucker" in ids
+    assert all(config["optical_field"]["profile"] == "assistant_shell" for config in configs)
