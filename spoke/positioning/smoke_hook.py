@@ -312,11 +312,16 @@ def _show_diagnostic_overlay(result: dict, debug_steps: list[str] | None) -> Non
     from PyObjCTools import AppHelper
 
     def _do():
+        try:
+            _do_inner()
+        except Exception:
+            logger.warning("Diagnostic overlay failed", exc_info=True)
+
+    def _do_inner():
         from AppKit import (
             NSBackingStoreBuffered,
             NSBorderlessWindowMask,
             NSColor,
-            NSFont,
             NSMakeRect,
             NSScreen,
             NSWindow,
@@ -353,9 +358,9 @@ def _show_diagnostic_overlay(result: dict, debug_steps: list[str] | None) -> Non
 
         text = "\n".join(lines)
 
-        # Small overlay in upper right
-        win_w = 380
-        win_h = min(20 + len(lines) * 16, 300)
+        # Small overlay in upper right — generous height for wrapped text
+        win_w = 420
+        win_h = min(24 + len(lines) * 18, 400)
         win_x = sw - win_w - 12
         win_y = sh - win_h - 40  # below menu bar
 
@@ -379,7 +384,7 @@ def _show_diagnostic_overlay(result: dict, debug_steps: list[str] | None) -> Non
         label = CATextLayer.alloc().init()
         label.setFrame_(((8, 4), (win_w - 16, win_h - 8)))
         label.setString_(text)
-        label.setFont_(NSFont.fontWithName_size_("Menlo", 11))
+        label.setFont_("Menlo")
         label.setFontSize_(11)
         label.setForegroundColor_(
             NSColor.colorWithRed_green_blue_alpha_(0.8, 1.0, 0.8, 0.9).CGColor()
