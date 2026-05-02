@@ -9,6 +9,8 @@ def _primitive(
     selected: bool = False,
     priority: int = 0,
     show_latest_response: bool = False,
+    primary_text: str | None = None,
+    secondary_text: str | None = None,
 ) -> dict:
     return {
         "id": primitive_id,
@@ -23,8 +25,8 @@ def _primitive(
         "latest_response": f"latest response {primitive_id}",
         "display": {
             "display_state": "selected" if selected else "inactive",
-            "primary_text": f"primary {primitive_id}",
-            "secondary_text": f"secondary {primitive_id}",
+            "primary_text": primary_text or f"primary {primitive_id}",
+            "secondary_text": secondary_text or f"secondary {primitive_id}",
             "show_latest_response": show_latest_response,
         },
         "geometry": {
@@ -156,3 +158,42 @@ def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
     assert selected["compiled_shell_config"]["optical_field"]["disturbances"] == (
         "readiness.codex-selected",
     )
+
+
+def test_placeholder_cards_are_smoke_readable_and_carry_text_payloads():
+    from spoke.agent_shell_card_renderer import (
+        build_agent_shell_card_optical_field_payload,
+        build_agent_shell_card_render_payload,
+    )
+
+    payload = build_agent_shell_card_render_payload(
+        [
+            _primitive(
+                "codex-inactive",
+                primary_text="Codex lane reading Epistaxis semantic state",
+                secondary_text="ready · /private/tmp/spoke-house-ten-thousand-ghosts",
+            ),
+            _primitive(
+                "claude-selected",
+                selected=True,
+                show_latest_response=True,
+                primary_text="Claude lane has a settled answer for the operator",
+                secondary_text="working · claude-opus-4-6",
+            ),
+        ],
+        content_width_points=720.0,
+        content_height_points=260.0,
+    )
+
+    inactive, selected = payload["cards"]
+    assert inactive["frame"]["width"] >= 300.0
+    assert inactive["frame"]["height"] >= 72.0
+    assert selected["frame"]["width"] >= 420.0
+    assert selected["frame"]["height"] >= 120.0
+
+    optical = build_agent_shell_card_optical_field_payload(payload)
+    inactive_request, selected_request = optical["requests"]
+    assert inactive_request["text"]["primary"] == inactive["primary_text"]
+    assert inactive_request["text"]["secondary"] == inactive["secondary_text"]
+    assert selected_request["text"]["primary"] == selected["primary_text"]
+    assert selected_request["text"]["secondary"] == selected["secondary_text"]

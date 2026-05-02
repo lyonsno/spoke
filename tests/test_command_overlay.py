@@ -3894,7 +3894,7 @@ class TestGeometryCaps:
         rendered = config["agent_shell_card_renderer"]["cards"][0]
         assert rendered["primitive_id"] == "codex-thread-1"
         assert rendered["latest_response"] == ""
-        assert rendered["frame"]["width"] == pytest.approx(144.0)
+        assert rendered["frame"]["width"] == pytest.approx(300.0)
         assert (
             config["agent_shell_card_optical_fields"]["surface_kind"]
             == "agent_shell_card_optical_fields"

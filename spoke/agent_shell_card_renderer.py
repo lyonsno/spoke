@@ -14,9 +14,14 @@ from .optical_field import (
 
 _CARD_MARGIN_POINTS = 12.0
 _CARD_GAP_POINTS = 8.0
-_CARD_MIN_WIDTH_POINTS = 92.0
-_CARD_MIN_HEIGHT_POINTS = 40.0
-_CARD_MAX_WIDTH_POINTS = 180.0
+_CARD_MIN_WIDTH_POINTS = 160.0
+_CARD_MIN_HEIGHT_POINTS = 56.0
+_CARD_READABLE_MIN_WIDTH_POINTS = 300.0
+_CARD_READABLE_MIN_HEIGHT_POINTS = 72.0
+_SELECTED_CARD_READABLE_MIN_WIDTH_POINTS = 420.0
+_SELECTED_CARD_READABLE_MIN_HEIGHT_POINTS = 120.0
+_CARD_MAX_WIDTH_POINTS = 560.0
+_CARD_SLOT_MIN_WIDTH_POINTS = 92.0
 _MAX_VISIBLE_CARDS = 4
 
 _MATERIAL_STYLE_TO_OPTICAL_PROFILE = {
@@ -73,7 +78,7 @@ def _anchor(primitive: dict[str, Any]) -> str:
 
 def _max_cards_for_width(width: float) -> int:
     usable = width - 2 * _CARD_MARGIN_POINTS
-    if usable < _CARD_MIN_WIDTH_POINTS:
+    if usable < _CARD_SLOT_MIN_WIDTH_POINTS:
         return 1
     return max(
         1,
@@ -81,7 +86,7 @@ def _max_cards_for_width(width: float) -> int:
             _MAX_VISIBLE_CARDS,
             int(
                 (usable + _CARD_GAP_POINTS)
-                // (_CARD_MIN_WIDTH_POINTS + _CARD_GAP_POINTS)
+                // (_CARD_SLOT_MIN_WIDTH_POINTS + _CARD_GAP_POINTS)
             ),
         ),
     )
@@ -100,17 +105,41 @@ def _visible_primitives(
 
 def _preferred_size(primitive: dict[str, Any]) -> tuple[float, float, float, float]:
     geometry = _mapping(primitive.get("geometry"))
+    selected = _selected(primitive)
+    display = _mapping(primitive.get("display"))
+    text_width_hint = _text_width_hint(
+        _string(display.get("primary_text")),
+        _string(display.get("secondary_text")),
+        selected=selected,
+    )
     min_width = max(
         _CARD_MIN_WIDTH_POINTS,
+        _SELECTED_CARD_READABLE_MIN_WIDTH_POINTS
+        if selected
+        else _CARD_READABLE_MIN_WIDTH_POINTS,
         _number(geometry.get("min_width"), _CARD_MIN_WIDTH_POINTS),
     )
     min_height = max(
         _CARD_MIN_HEIGHT_POINTS,
+        _SELECTED_CARD_READABLE_MIN_HEIGHT_POINTS
+        if selected
+        else _CARD_READABLE_MIN_HEIGHT_POINTS,
         _number(geometry.get("min_height"), _CARD_MIN_HEIGHT_POINTS),
     )
-    preferred_width = max(min_width, _number(geometry.get("preferred_width"), min_width))
+    preferred_width = max(
+        min_width,
+        text_width_hint,
+        _number(geometry.get("preferred_width"), min_width),
+    )
     preferred_height = max(min_height, _number(geometry.get("preferred_height"), min_height))
     return min_width, min_height, preferred_width, preferred_height
+
+
+def _text_width_hint(primary: str, secondary: str, *, selected: bool) -> float:
+    longest = max(len(primary), len(secondary))
+    char_width = 8.8 if selected else 7.6
+    padding = 48.0 if selected else 36.0
+    return padding + min(float(longest), 64.0) * char_width
 
 
 def _frame_for_index(
@@ -125,9 +154,17 @@ def _frame_for_index(
     usable_width = max(min_width, content_width - 2 * _CARD_MARGIN_POINTS)
     total_gap = _CARD_GAP_POINTS * max(0, count - 1)
     equal_width = (usable_width - total_gap) / max(1, count)
-    width = max(min_width, min(_CARD_MAX_WIDTH_POINTS, preferred_width, equal_width))
-    height = max(min_height, min(preferred_height, max(min_height, content_height * 0.42)))
     anchor = _anchor(primitive)
+    if anchor == "right":
+        width = max(
+            min_width,
+            min(_CARD_MAX_WIDTH_POINTS, preferred_width, max(min_width, content_width * 0.46)),
+        )
+        height_budget = max(min_height, content_height * 0.62)
+    else:
+        width = max(min_width, min(_CARD_MAX_WIDTH_POINTS, preferred_width, equal_width))
+        height_budget = max(min_height, content_height * 0.42)
+    height = max(min_height, min(preferred_height, height_budget))
     if anchor == "right":
         x = content_width + _CARD_MARGIN_POINTS
         y = max(_CARD_MARGIN_POINTS, (content_height * 0.5) - (height * 0.5))
@@ -340,6 +377,13 @@ def build_agent_shell_card_optical_field_payload(
             z_index=(200 + index) if selected else (100 + index),
         )
         requests.append(_request_dict(request))
+        requests[-1]["text"] = {
+            "primary": _string(card.get("primary_text")),
+            "secondary": _string(card.get("secondary_text")),
+            "latest_response": _string(card.get("latest_response"))
+            if bool(card.get("show_latest_response"))
+            else "",
+        }
     return {
         "surface_kind": "agent_shell_card_optical_fields",
         "requests": requests,
