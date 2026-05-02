@@ -582,6 +582,34 @@ class TestOpticalShellMaterialization:
         overlay._start_fade_out.assert_called_once()
         assert overlay._cancel_timer_anim is None
 
+    def test_fade_out_keeps_agent_shell_card_compositor_alive_after_transcript_hides(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._agent_shell_primitives = [{"id": "codex-thread-1"}]
+        overlay._fade_direction = -1
+        overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._fade_from = 1.0
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value={
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+
+        overlay.fadeStep_(None)
+
+        compositor.stop.assert_not_called()
+        hidden_config = compositor.update_shell_config.call_args.args[0]
+        assert hidden_config["visible"] is False
+        assert overlay._fullscreen_compositor is compositor
+        overlay._window.orderOut_.assert_called_once_with(None)
+
     def test_materialization_choreographs_core_magnification_overshoot(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
         base = {

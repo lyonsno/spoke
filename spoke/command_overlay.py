@@ -2668,6 +2668,14 @@ class CommandOverlay(NSObject):
         self._agent_shell_cards = []
         self._push_agent_shell_payload()
 
+    def _has_agent_shell_surface_payload(self) -> bool:
+        cards = getattr(self, "_agent_shell_cards", None)
+        primitives = getattr(self, "_agent_shell_primitives", None)
+        return bool(
+            (isinstance(cards, list) and cards)
+            or (isinstance(primitives, list) and primitives)
+        )
+
     def _push_agent_shell_payload(self) -> None:
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
@@ -2675,10 +2683,37 @@ class CommandOverlay(NSObject):
         shell_config = self._current_optical_shell_config()
         if shell_config is None:
             return
+        shell_config = dict(shell_config)
+        if not getattr(self, "_visible", False):
+            shell_config["visible"] = False
+        if not self._has_agent_shell_surface_payload():
+            shell_config["surface_kind"] = "agent_shell"
+            shell_config["agent_shell_card_optical_fields"] = {
+                "surface_kind": "agent_shell_card_optical_fields",
+                "requests": [],
+            }
         try:
             compositor.update_shell_config(shell_config)
         except Exception:
             logger.debug("Failed to push Agent Shell card payload", exc_info=True)
+
+    def _publish_hidden_agent_shell_surfaces(self) -> bool:
+        if not self._has_agent_shell_surface_payload():
+            return False
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return False
+        shell_config = self._display_local_optical_shell_config()
+        if shell_config is None:
+            return False
+        shell_config = dict(shell_config)
+        shell_config["visible"] = False
+        try:
+            compositor.update_shell_config(shell_config)
+        except Exception:
+            logger.debug("Failed to keep Agent Shell cards published after hide", exc_info=True)
+            return False
+        return True
 
     def replace_transcript(
         self,
@@ -3116,7 +3151,12 @@ class CommandOverlay(NSObject):
                 self._reset_backdrop_layer()
                 if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
                     self._backdrop_renderer.stop_live_stream()
-                self._stop_fullscreen_compositor()
+                if self._publish_hidden_agent_shell_surfaces():
+                    self._cancel_materialization_animation()
+                    self._cancel_dismiss_pucker_tail_animation()
+                    self._enable_text_punchthrough(False)
+                else:
+                    self._stop_fullscreen_compositor()
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
             else:

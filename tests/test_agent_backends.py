@@ -2395,6 +2395,50 @@ class TestAgentShellMenuState:
         delegate._command_overlay.set_utterance.assert_not_called()
         delegate._command_overlay.set_response_text.assert_not_called()
 
+    def test_repaint_hidden_overlay_refreshes_agent_shell_cards_without_transcript(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "hello codex",
+                "last_response": "hello from codex",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "hello codex",
+                        "last_response": "hello from codex",
+                    },
+                    {
+                        "provider_session_id": "codex-thread-2",
+                        "last_utterance": "other codex",
+                        "last_response": "other answer",
+                    },
+                ],
+            }
+        }
+        delegate._command_overlay = MagicMock()
+        delegate._command_overlay._visible = False
+        delegate._command_client = MagicMock()
+        delegate._sync_command_overlay_brightness = MagicMock()
+        delegate._detector = MagicMock()
+
+        delegate._repaint_visible_command_overlay_for_current_route()
+
+        delegate._command_overlay.set_agent_shell_primitives.assert_called_once()
+        primitives = delegate._command_overlay.set_agent_shell_primitives.call_args.args[0]
+        assert [primitive["provider_session_id"] for primitive in primitives] == [
+            "codex-thread-1",
+            "codex-thread-2",
+        ]
+        delegate._command_overlay.replace_transcript.assert_not_called()
+        delegate._command_overlay.set_utterance.assert_not_called()
+        delegate._command_overlay.set_response_text.assert_not_called()
+
 
 class TestAgentShellDelegateDispatch:
     def test_send_text_routes_active_agent_shell_to_backend_manager(

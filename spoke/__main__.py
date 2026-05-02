@@ -5722,16 +5722,34 @@ class SpokeAppDelegate(NSObject):
             "items": items,
         }
 
+    def _sync_agent_shell_card_surfaces_for_current_route(
+        self,
+        overlay,
+        provider: str | None,
+        chrome: dict,
+    ) -> None:
+        if provider is None:
+            clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
+            if callable(clear_chrome):
+                clear_chrome()
+                return
+            set_cards = getattr(overlay, "set_agent_shell_cards", None)
+            if callable(set_cards):
+                set_cards([])
+            return
+        set_primitives = getattr(overlay, "set_agent_shell_primitives", None)
+        set_cards = getattr(overlay, "set_agent_shell_cards", None)
+        primitives = chrome.get("agent_shell_primitives")
+        if callable(set_primitives) and primitives:
+            set_primitives(primitives)
+        elif callable(set_cards):
+            set_cards(chrome.get("agent_shell_cards", []))
+
     def _repaint_visible_command_overlay_for_current_route(self) -> None:
         overlay = getattr(self, "_command_overlay", None)
-        if overlay is None or not getattr(overlay, "_visible", False):
+        if overlay is None:
             return
 
-        snapshot = self._last_command_overlay_snapshot()
-        if snapshot is None:
-            return
-
-        utterance, response = snapshot
         try:
             self._sync_command_overlay_brightness(immediate=True)
             agent_shell_provider = self._active_agent_shell_provider()
@@ -5740,6 +5758,24 @@ class SpokeAppDelegate(NSObject):
                 if agent_shell_provider is not None
                 else {}
             )
+            if not getattr(overlay, "_visible", False):
+                self._sync_agent_shell_card_surfaces_for_current_route(
+                    overlay,
+                    agent_shell_provider,
+                    chrome,
+                )
+                return
+
+            snapshot = self._last_command_overlay_snapshot()
+            if snapshot is None:
+                self._sync_agent_shell_card_surfaces_for_current_route(
+                    overlay,
+                    agent_shell_provider,
+                    chrome,
+                )
+                return
+
+            utterance, response = snapshot
             replace_transcript = getattr(overlay, "replace_transcript", None)
             if callable(replace_transcript):
                 kwargs = {
@@ -5756,21 +5792,11 @@ class SpokeAppDelegate(NSObject):
                     kwargs["agent_shell_cards"] = cards
                 replace_transcript(**kwargs)
             else:
-                if agent_shell_provider is None:
-                    clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
-                    if callable(clear_chrome):
-                        clear_chrome()
-                    set_cards = getattr(overlay, "set_agent_shell_cards", None)
-                    if callable(set_cards):
-                        set_cards([])
-                else:
-                    set_primitives = getattr(overlay, "set_agent_shell_primitives", None)
-                    set_cards = getattr(overlay, "set_agent_shell_cards", None)
-                    primitives = chrome.get("agent_shell_primitives")
-                    if callable(set_primitives) and primitives:
-                        set_primitives(primitives)
-                    elif callable(set_cards):
-                        set_cards(chrome.get("agent_shell_cards", []))
+                self._sync_agent_shell_card_surfaces_for_current_route(
+                    overlay,
+                    agent_shell_provider,
+                    chrome,
+                )
                 overlay.set_utterance(utterance)
                 overlay.set_response_text(_command_overlay_recall_preview(response))
             if agent_shell_provider is not None:
