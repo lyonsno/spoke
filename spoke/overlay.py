@@ -450,6 +450,8 @@ class TranscriptionOverlay(NSObject):
         self._compositor_registry = None
         self._preview_compositor_client = None
         self._preview_compositor_identity = None
+        self._preview_compositor_sidecar_clients = {}
+        self._preview_compositor_sidecar_identities = {}
         self._preview_compositor_generation = 0
         self._preview_warp_tuning_overrides: dict[str, float] = {}
 
@@ -702,13 +704,75 @@ class TranscriptionOverlay(NSObject):
             debug_grid_spacing_points=18.0,
         )
 
+    def _preview_optical_field_request(self, *, field_state: str, progress: float):
+        from spoke.optical_field import (
+            OpticalFieldBounds,
+            OpticalFieldProfileRef,
+            OpticalFieldRequest,
+            OpticalFieldSlotOverride,
+        )
+
+        geometry = self._preview_compositor_geometry_snapshot()
+        material = self._preview_compositor_material_snapshot()
+        min_dimension = max(
+            1.0,
+            min(geometry.content_width_points, geometry.content_height_points),
+        )
+        profile_params = {
+            "corner_radius_frac": geometry.corner_radius_points / min_dimension,
+            "core_magnification": material.core_magnification,
+            "band_width_frac": geometry.band_width_points / min_dimension,
+            "tail_width_frac": geometry.tail_width_points / min_dimension,
+            "ring_amplitude_frac": material.ring_amplitude_points / min_dimension,
+            "tail_amplitude_frac": material.tail_amplitude_points / min_dimension,
+            "bleed_zone_frac": material.bleed_zone_frac,
+            "exterior_mix_frac": (material.exterior_mix_width_points or 0.0) / min_dimension,
+            "mip_blur_strength": material.mip_blur_strength,
+            "initial_brightness": material.initial_brightness,
+            "min_brightness": material.min_brightness,
+            "x_squeeze": material.x_squeeze,
+            "y_squeeze": material.y_squeeze,
+            "cleanup_blur_radius_points": material.cleanup_blur_radius_points,
+        }
+        # The preview pill already has hand-tuned proportions.  Express them as
+        # normalized profile overrides so the renderer consumes the same House
+        # lifecycle contract without losing the existing visual baseline.
+        profile = OpticalFieldProfileRef(
+            base="preview_pill",
+            params=profile_params,
+            slots={
+                "materialize": OpticalFieldSlotOverride(params=profile_params),
+                "dismiss": OpticalFieldSlotOverride(params=profile_params),
+            },
+        )
+        return OpticalFieldRequest(
+            caller_id="preview.transcription",
+            bounds=OpticalFieldBounds(
+                x=geometry.center_x - geometry.content_width_points * 0.5,
+                y=geometry.center_y - geometry.content_height_points * 0.5,
+                width=geometry.content_width_points,
+                height=geometry.content_height_points,
+            ),
+            role="preview",
+            state=field_state,
+            progress=min(max(float(progress), 0.0), 1.0),
+            profile=profile,
+            visible=True,
+            z_index=0,
+        )
+
     def _preview_compositor_excluded_window_ids(self) -> tuple[int, ...]:
         try:
             return (int(self._window.windowNumber()),)
         except Exception:
             return ()
 
-    def _ensure_preview_compositor_client(self):
+    def _ensure_preview_compositor_client(
+        self,
+        *,
+        client_id: str = "preview.transcription",
+        role: str = "preview",
+    ):
         registry = getattr(self, "_compositor_registry", None)
         if registry is None or self._screen is None or self._window is None:
             return None
@@ -718,42 +782,116 @@ class TranscriptionOverlay(NSObject):
         from spoke.fullscreen_compositor import OverlayClientIdentity
 
         identity = OverlayClientIdentity(
-            client_id="preview.transcription",
+            client_id=client_id,
             display_id=host.display_id,
-            role="preview",
+            role=role,
         )
-        client = getattr(self, "_preview_compositor_client", None)
-        current_identity = getattr(self, "_preview_compositor_identity", None)
+        if client_id == "preview.transcription":
+            client = getattr(self, "_preview_compositor_client", None)
+            current_identity = getattr(self, "_preview_compositor_identity", None)
+        else:
+            client = getattr(self, "_preview_compositor_sidecar_clients", {}).get(client_id)
+            current_identity = getattr(self, "_preview_compositor_sidecar_identities", {}).get(client_id)
         if client is None or current_identity != identity:
             client = host.register_client(
                 identity,
                 window=self._window,
                 content_view=self._content_view,
             )
-            self._preview_compositor_client = client
-        self._preview_compositor_identity = identity
+            if client_id == "preview.transcription":
+                self._preview_compositor_client = client
+            else:
+                self._preview_compositor_sidecar_clients[client_id] = client
+        if client_id == "preview.transcription":
+            self._preview_compositor_identity = identity
+        else:
+            self._preview_compositor_sidecar_identities[client_id] = identity
         return client
 
-    def _publish_preview_compositor_snapshot(self, *, visible: bool) -> bool:
-        client = self._ensure_preview_compositor_client()
-        identity = getattr(self, "_preview_compositor_identity", None)
-        if client is None or identity is None:
-            return False
-        from spoke.fullscreen_compositor import OverlayRenderSnapshot
+    def _publish_preview_compositor_snapshot(
+        self,
+        *,
+        visible: bool,
+        field_state: str = "rest",
+        progress: float = 1.0,
+    ) -> bool:
+        from spoke.fullscreen_compositor import _snapshot_from_shell_config
+        from spoke.optical_field import compile_optical_field_shell_configs
 
-        self._preview_compositor_generation += 1
-        snapshot = OverlayRenderSnapshot(
-            identity=identity,
-            generation=self._preview_compositor_generation,
-            visible=bool(visible),
-            geometry=self._preview_compositor_geometry_snapshot(),
-            material=self._preview_compositor_material_snapshot(),
-            excluded_window_ids=self._preview_compositor_excluded_window_ids(),
-            z_index=0,
+        if not visible:
+            client = self._ensure_preview_compositor_client()
+            identity = getattr(self, "_preview_compositor_identity", None)
+            if client is None or identity is None:
+                return False
+            from spoke.fullscreen_compositor import OverlayRenderSnapshot
+
+            self._preview_compositor_generation += 1
+            snapshot = OverlayRenderSnapshot(
+                identity=identity,
+                generation=self._preview_compositor_generation,
+                visible=False,
+                geometry=self._preview_compositor_geometry_snapshot(),
+                material=self._preview_compositor_material_snapshot(),
+                excluded_window_ids=self._preview_compositor_excluded_window_ids(),
+                z_index=0,
+            )
+            return bool(client.publish(snapshot))
+
+        request = self._preview_optical_field_request(
+            field_state=field_state,
+            progress=progress,
         )
-        return bool(client.publish(snapshot))
+        configs = compile_optical_field_shell_configs(request)
+        if not configs:
+            return False
+
+        published = False
+        active_client_ids: set[str] = set()
+        self._preview_compositor_generation += 1
+        for config in configs:
+            client_id = str(config.get("client_id", request.caller_id))
+            role = str(config.get("role", request.role))
+            active_client_ids.add(client_id)
+            client = self._ensure_preview_compositor_client(client_id=client_id, role=role)
+            identity = (
+                self._preview_compositor_identity
+                if client_id == "preview.transcription"
+                else self._preview_compositor_sidecar_identities.get(client_id)
+            )
+            if client is None or identity is None:
+                continue
+            config = dict(config)
+            config["visible"] = True
+            config["excluded_window_ids"] = self._preview_compositor_excluded_window_ids()
+            snapshot = _snapshot_from_shell_config(
+                identity,
+                config,
+                generation=self._preview_compositor_generation,
+                excluded_window_ids=self._preview_compositor_excluded_window_ids(),
+            )
+            published = bool(client.publish(snapshot)) or published
+
+        stale_sidecars = set(getattr(self, "_preview_compositor_sidecar_clients", {})) - active_client_ids
+        for client_id in stale_sidecars:
+            client = self._preview_compositor_sidecar_clients.pop(client_id, None)
+            self._preview_compositor_sidecar_identities.pop(client_id, None)
+            release = getattr(client, "release", None)
+            if callable(release):
+                release()
+        return published
 
     def _release_preview_compositor_client(self) -> None:
+        sidecars = getattr(self, "_preview_compositor_sidecar_clients", {})
+        for client in list(sidecars.values()):
+            release = getattr(client, "release", None)
+            if callable(release):
+                release()
+                continue
+            stop = getattr(client, "stop", None)
+            if callable(stop):
+                stop()
+        self._preview_compositor_sidecar_clients = {}
+        self._preview_compositor_sidecar_identities = {}
         client = getattr(self, "_preview_compositor_client", None)
         self._preview_compositor_client = None
         self._preview_compositor_identity = None
@@ -818,7 +956,11 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
-        self._publish_preview_compositor_snapshot(visible=True)
+        self._publish_preview_compositor_snapshot(
+            visible=True,
+            field_state="materialize",
+            progress=0.0,
+        )
         self._window.orderFrontRegardless()
 
         # Fade in using stepped timer
@@ -846,7 +988,11 @@ class TranscriptionOverlay(NSObject):
         self._visible = False
         self._tray_mode = False
         self._cancel_typewriter()
-        self._hide_and_release_preview_compositor_client()
+        self._publish_preview_compositor_snapshot(
+            visible=True,
+            field_state="dismiss",
+            progress=0.0,
+        )
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 
@@ -890,10 +1036,21 @@ class TranscriptionOverlay(NSObject):
             # Fade in: ease-in (slow start, confident finish)
             eased = progress * progress
             alpha = eased
+            if not getattr(self, "_tray_mode", False):
+                self._publish_preview_compositor_snapshot(
+                    visible=True,
+                    field_state="materialize",
+                    progress=progress,
+                )
         else:
             # Fade out: ease-in (slow start, fast end)
             eased = progress * progress
             alpha = self._fade_from * (1.0 - eased)
+            self._publish_preview_compositor_snapshot(
+                visible=True,
+                field_state="dismiss",
+                progress=progress,
+            )
 
         self._window.setAlphaValue_(alpha)
 
@@ -901,8 +1058,14 @@ class TranscriptionOverlay(NSObject):
             self._cancel_fade()
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
+                self._hide_and_release_preview_compositor_client()
                 self._window.orderOut_(None)
             else:
+                self._publish_preview_compositor_snapshot(
+                    visible=True,
+                    field_state="rest",
+                    progress=1.0,
+                )
                 self._window.setAlphaValue_(1.0)
 
     def _cancel_fade(self) -> None:

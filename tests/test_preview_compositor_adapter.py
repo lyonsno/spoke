@@ -318,6 +318,64 @@ def test_preview_warp_tuning_updates_visible_shared_snapshot(
     assert snapshot.material.exterior_mix_width_points == pytest.approx(33.0)
 
 
+def test_preview_adapter_publishes_through_optical_field_contract(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    assert snapshot.optical_field == {
+        "caller_id": "preview.transcription",
+        "profile": "preview_pill",
+        "state": "rest",
+        "slot": "rest",
+        "progress": 1.0,
+        "disturbances": (),
+    }
+    assert snapshot.material.initial_brightness == pytest.approx(0.37)
+    assert snapshot.material.x_squeeze == pytest.approx(
+        overlay_module._PREVIEW_OPTICAL_SHELL_X_SQUEEZE
+    )
+    assert snapshot.material.y_squeeze == pytest.approx(
+        overlay_module._PREVIEW_OPTICAL_SHELL_Y_SQUEEZE
+    )
+
+
+def test_preview_dismiss_uses_reusable_pressure_sidecars(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(
+        visible=True,
+        field_state="dismiss",
+        progress=0.35,
+    ) is True
+
+    assert {
+        "preview.transcription",
+        "preview.transcription.dismiss_seam",
+        "preview.transcription.dismiss_radial_pucker",
+    }.issubset(host.clients)
+    seam = host.clients["preview.transcription.dismiss_seam"].published[-1]
+    radial = host.clients["preview.transcription.dismiss_radial_pucker"].published[-1]
+    assert seam.optical_field["sidecar"] == "dismiss_seam"
+    assert seam.optical_field["profile"] == "preview_pill"
+    assert seam.material.warp_mode in {1.0, 3.0}
+    assert radial.optical_field["sidecar"] == "dismiss_radial_pucker"
+    assert radial.material.warp_mode == pytest.approx(2.0)
+
+
 def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatch):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
     overlay = _make_overlay(overlay_module, monkeypatch)

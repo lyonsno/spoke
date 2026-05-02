@@ -185,6 +185,12 @@ def _float_param(params: Mapping[str, Any], key: str) -> float:
     return float(params[key])
 
 
+def _optional_float_param(params: Mapping[str, Any], key: str) -> float | None:
+    if key not in params or params[key] is None:
+        return None
+    return float(params[key])
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
@@ -223,7 +229,7 @@ def _base_shell_config(
     )
     exterior_mix = scale * _float_param(params, "exterior_mix_frac")
 
-    return {
+    config = {
         "enabled": True,
         "client_id": request.caller_id,
         "role": request.role,
@@ -252,6 +258,18 @@ def _base_shell_config(
             ),
         },
     }
+    for key in (
+        "initial_brightness",
+        "min_brightness",
+        "x_squeeze",
+        "y_squeeze",
+        "cleanup_blur_radius_points",
+        "cleanup_blur_strength",
+    ):
+        value = _optional_float_param(params, key)
+        if value is not None:
+            config[key] = value
+    return config
 
 
 def _with_optical_field_sidecar(
