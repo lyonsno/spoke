@@ -344,18 +344,19 @@ SIZE_SYSTEM = (
     "You are a screen layout system. The user wants to reposition an overlay.\n\n"
     "The image shows the current screen. A red dashed outline shows the overlay's "
     "current position and size.\n\n"
-    "The overlay center has been decided. Now decide how the overlay should be "
-    "sized relative to its current dimensions.\n\n"
+    "The overlay center has been decided. Now decide how wide and tall the overlay "
+    "should be, as a percentage of the full screen.\n\n"
     "Consider the user's request and what's visible on screen. If they want to "
-    "cover a region, make it big enough. If they want to avoid content, keep it "
-    "compact.\n\n"
-    "Output ONLY two numbers on one line: width_mult height_mult\n"
-    "Each is a multiplier on the current size. Range: 0.3 to 3.0\n"
+    "cover a region, make it big enough to cover it. If they want to avoid content, "
+    "keep it compact. 'Full height' means 100. 'Full width' means 100.\n\n"
+    "Output ONLY two numbers on one line: width_pct height_pct\n"
+    "Each is a percentage of the full screen dimension (1-100).\n"
     "Examples:\n"
-    "  1.0 1.0  (keep current size)\n"
-    "  1.5 1.0  (50% wider, same height)\n"
-    "  0.5 0.5  (half size)\n"
-    "  2.0 1.5  (double width, 50% taller)\n\n"
+    "  40 15   (40% of screen width, 15% of screen height — compact)\n"
+    "  30 100  (narrow column, full height)\n"
+    "  100 30  (full width, short strip)\n"
+    "  50 50   (half the screen in each dimension)\n"
+    "  20 20   (small overlay)\n\n"
     "Output ONLY the two numbers. Nothing else."
 )
 
@@ -430,13 +431,21 @@ def _pick_center(screenshot_b64: str, utterance: str, content_desc: str, mode: s
 
 
 def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str,
-               center_region: str) -> tuple[float, float]:
-    """Step 2: Pick width/height multipliers given the center and screen image."""
+               center_region: str,
+               current_overlay: dict | None = None) -> tuple[float, float]:
+    """Step 2: Pick width/height as screen fractions given the center and screen image.
+
+    Returns (width_frac, height_frac) as fractions of screen (0-1).
+    """
+    cur_w_pct = int((current_overlay or {}).get("width", 0.4) * 100)
+    cur_h_pct = int((current_overlay or {}).get("height", 0.4) * 100)
+
     user_text = (
         f"User request: {utterance}\n"
         f"Mode: {mode}\n"
         f"Content: {content_desc}\n"
-        f"Overlay center: {center_region}"
+        f"Overlay center: {center_region}\n"
+        f"Current overlay size: {cur_w_pct}% of screen width, {cur_h_pct}% of screen height"
     )
 
     resp = requests.post(
@@ -460,14 +469,14 @@ def _pick_size(screenshot_b64: str, utterance: str, content_desc: str, mode: str
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"].strip()
 
-    # Parse "width_mult height_mult"
+    # Parse "width_pct height_pct"
     parts = raw.split()
     try:
-        w_mult = max(0.3, min(3.0, float(parts[0])))
-        h_mult = max(0.3, min(3.0, float(parts[1]))) if len(parts) > 1 else w_mult
+        w_pct = max(5, min(100, float(parts[0])))
+        h_pct = max(5, min(100, float(parts[1]))) if len(parts) > 1 else w_pct
     except (ValueError, IndexError):
-        w_mult, h_mult = 1.0, 1.0
-    return w_mult, h_mult
+        w_pct, h_pct = 40.0, 40.0
+    return w_pct / 100.0, h_pct / 100.0
 
 
 def reposition_twostep(
@@ -513,18 +522,13 @@ def reposition_twostep(
         f"Center: {center_region} → ({center_x:.2f}, {center_y:.2f}) ({t_center - t_intent:.1f}s)"
     )
 
-    # Step 2: pick size (VLM, same image)
-    w_mult, h_mult = _pick_size(screenshot_b64, utterance, content_desc, mode, center_region)
+    # Step 2: pick size (VLM, same image — returns screen fractions directly)
+    new_w, new_h = _pick_size(screenshot_b64, utterance, content_desc, mode,
+                              center_region, current_overlay)
     t_size = time.time()
     reposition_twostep._last_debug.append(
-        f"Size: {w_mult:.1f}× width, {h_mult:.1f}× height ({t_size - t_center:.1f}s)"
+        f"Size: {new_w:.0%} width, {new_h:.0%} height ({t_size - t_center:.1f}s)"
     )
-
-    # Compute final rect
-    cur_w = current_overlay["width"]
-    cur_h = current_overlay["height"]
-    new_w = min(1.0, cur_w * w_mult)
-    new_h = min(1.0, cur_h * h_mult)
 
     # Clamp so overlay stays on screen
     new_x = max(0.0, min(1.0 - new_w, center_x - new_w / 2))
@@ -542,8 +546,6 @@ def reposition_twostep(
         "utterance": utterance,
         "elapsed_s": elapsed,
         "center_region": center_region,
-        "w_mult": w_mult,
-        "h_mult": h_mult,
     }
 
 
