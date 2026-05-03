@@ -115,14 +115,24 @@ def _get_api_key():
     return os.environ.get("OMLX_SERVER_API_KEY", "1234")
 
 
-def _api_headers(step: str = "positioning") -> dict[str, str]:
+def _api_headers(
+    step: str = "positioning",
+    *,
+    mode: str | None = None,
+    iteration: int | None = None,
+) -> dict[str, str]:
     """Standard headers for positioning API calls, including Grapheus X-Spoke-* metadata."""
-    return {
+    headers = {
         "Authorization": f"Bearer {_get_api_key()}",
         "Content-Type": "application/json",
         "X-Spoke-Pathway": "positioning",
         "X-Spoke-Step": step,
     }
+    if mode:
+        headers["X-Spoke-Positioning-Mode"] = mode
+    if iteration is not None:
+        headers["X-Spoke-Positioning-Iteration"] = str(iteration)
+    return headers
 
 
 def _detect_thinking_enabled() -> bool:
@@ -846,6 +856,31 @@ GRIDPOINT_RESIZE_SYSTEM = (
     "Output ONLY 'width height' or 'NONE'. Nothing else."
 )
 
+AXIS_AUDIT_SYSTEM = (
+    "You are correcting a proposed overlay rectangle.\n\n"
+    "The red dashed outline is the current proposed overlay. The user request "
+    "is the desired final result.\n\n"
+    "Audit the proposal dimension by dimension. A dimension may be kept only if "
+    "it already satisfies the request in the visible screen context.\n\n"
+    "Check:\n"
+    "- horizontal center: does the overlay need to move left or right?\n"
+    "- vertical center: does the overlay need to move up or down?\n"
+    "- width: is the overlay too narrow, too wide, or correct?\n"
+    "- height: is the overlay too short, too tall, or correct?\n\n"
+    "If the proposal already satisfies the request in position and size, output "
+    "done: YES and KEEP for every dimension.\n\n"
+    "If the proposal does not satisfy the request, change every dimension that "
+    "is part of the mismatch. Do not fix only one axis when the request implies "
+    "both axes. Do not output KEEP for width or height if the current outline "
+    "is the wrong size or shape for the request.\n\n"
+    "Output exactly:\n"
+    "x: KEEP or <center_x_px>\n"
+    "y: KEEP or <center_y_px>\n"
+    "width: KEEP or <width_px>\n"
+    "height: KEEP or <height_px>\n"
+    "done: YES or NO\n"
+)
+
 
 def _pick_gridpoint(screenshot_b64: str, utterance: str,
                     screen_w: int, screen_h: int,
@@ -939,6 +974,154 @@ def _pick_gridpoint_resize(screenshot_b64: str, utterance: str,
         return w, h
     except (ValueError, IndexError):
         return None
+
+
+def _parse_axis_audit_response(
+    raw: str,
+    *,
+    screen_w: int,
+    screen_h: int,
+) -> dict[str, int | str | bool]:
+    """Parse an axis-audit response into clamped pixel edits."""
+
+    result: dict[str, int | str | bool] = {
+        "x": "KEEP",
+        "y": "KEEP",
+        "width": "KEEP",
+        "height": "KEEP",
+        "done": False,
+    }
+    limits = {
+        "x": screen_w,
+        "y": screen_h,
+        "width": screen_w,
+        "height": screen_h,
+    }
+    for raw_line in raw.splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "done":
+            result["done"] = value.upper().startswith("Y")
+            continue
+        if key not in limits:
+            continue
+        if value.upper().startswith("KEEP"):
+            result[key] = "KEEP"
+            continue
+        match = re.search(r"-?\d+(?:\.\d+)?", value)
+        if not match:
+            continue
+        parsed = int(float(match.group(0)))
+        if key in {"width", "height"}:
+            parsed = max(1, min(limits[key], parsed))
+        else:
+            parsed = max(0, min(limits[key], parsed))
+        result[key] = parsed
+    return result
+
+
+def _pick_axis_audit(
+    screenshot_b64: str,
+    utterance: str,
+    screen_w: int,
+    screen_h: int,
+    candidate_overlay: dict,
+    *,
+    iteration: int,
+    bearing: str | None = None,
+) -> dict[str, int | str | bool]:
+    """Ask the VLM to edit the current candidate dimension by dimension."""
+
+    bx = int(candidate_overlay["x"] * screen_w)
+    by = int(candidate_overlay["y"] * screen_h)
+    bw = int(candidate_overlay["width"] * screen_w)
+    bh = int(candidate_overlay["height"] * screen_h)
+    cx = bx + bw // 2
+    cy = by + bh // 2
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Candidate overlay: center=({cx}, {cy}) width={bw} height={bh}\n"
+        f"Audit iteration: {iteration}"
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers(
+            "axis-audit",
+            mode="gridpoint-iterative",
+            iteration=iteration,
+        ),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": AXIS_AUDIT_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=64),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+    _pick_axis_audit._last_raw = raw
+    return _parse_axis_audit_response(raw, screen_w=screen_w, screen_h=screen_h)
+
+
+def _candidate_from_center(
+    cx: int,
+    cy: int,
+    width: int,
+    height: int,
+    *,
+    screen_w: int,
+    screen_h: int,
+) -> dict[str, float]:
+    width = max(1, min(screen_w, int(width)))
+    height = max(1, min(screen_h, int(height)))
+    bx = max(0, min(screen_w - width, int(cx) - width // 2))
+    by = max(0, min(screen_h - height, int(cy) - height // 2))
+    return {
+        "x": bx / screen_w,
+        "y": by / screen_h,
+        "width": width / screen_w,
+        "height": height / screen_h,
+    }
+
+
+def _apply_axis_audit(
+    candidate_overlay: dict,
+    audit: dict[str, int | str | bool],
+    *,
+    screen_w: int,
+    screen_h: int,
+) -> dict[str, float]:
+    bx = int(candidate_overlay["x"] * screen_w)
+    by = int(candidate_overlay["y"] * screen_h)
+    bw = int(candidate_overlay["width"] * screen_w)
+    bh = int(candidate_overlay["height"] * screen_h)
+    cx = bx + bw // 2
+    cy = by + bh // 2
+
+    if isinstance(audit.get("width"), int):
+        bw = int(audit["width"])
+    if isinstance(audit.get("height"), int):
+        bh = int(audit["height"])
+    if isinstance(audit.get("x"), int):
+        cx = int(audit["x"])
+    if isinstance(audit.get("y"), int):
+        cy = int(audit["y"])
+
+    return _candidate_from_center(cx, cy, bw, bh, screen_w=screen_w, screen_h=screen_h)
 
 
 def reposition_gridpoint(
@@ -1078,6 +1261,130 @@ def reposition_gridpoint(
         "y": by / screen_h,
         "width": new_w / screen_w,
         "height": new_h / screen_h,
+        "content_desc": utterance,
+        "utterance": utterance,
+        "elapsed_s": elapsed,
+        "_screenshot_b64": screenshot_b64,
+    }
+
+
+def reposition_gridpoint_iterative(
+    utterance: str,
+    screenshot: Image.Image,
+    current_overlay: dict | None = None,
+    screen_w: int = 1920,
+    screen_h: int = 1080,
+    on_step: "callable | None" = None,
+    bearing: str | None = None,
+) -> dict | None:
+    """Grid-point seed followed by bounded cheap axis-audit correction rounds."""
+
+    reposition_gridpoint_iterative._last_debug = []
+    t0 = time.time()
+
+    def _report(intermediate=None):
+        if on_step:
+            on_step(list(reposition_gridpoint_iterative._last_debug), intermediate)
+
+    if current_overlay is None:
+        current_overlay = {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
+
+    if bearing:
+        reposition_gridpoint_iterative._last_debug.append(f"Bearing: {bearing[:200]}")
+        _report()
+
+    annotated = _draw_overlay_outline(screenshot, current_overlay)
+    annotated = _draw_grid_points(annotated)
+    screenshot_b64 = _encode_image(annotated)
+
+    cur_w = max(1, int(current_overlay["width"] * screen_w))
+    cur_h = max(1, int(current_overlay["height"] * screen_h))
+    cur_cx = int(current_overlay["x"] * screen_w) + cur_w // 2
+    cur_cy = int(current_overlay["y"] * screen_h) + cur_h // 2
+
+    cx, cy = cur_cx, cur_cy
+    label = None
+    for attempt in range(3):
+        label = _pick_gridpoint(
+            screenshot_b64,
+            utterance,
+            screen_w,
+            screen_h,
+            current_overlay,
+            bearing,
+        )
+        t_attempt = time.time()
+        if label is not None:
+            cx, cy = _gridpoint_coords(label, screen_w, screen_h)
+            reposition_gridpoint_iterative._last_debug.append(
+                f"GridPoint: {label} → ({cx}, {cy}) "
+                f"(attempt {attempt + 1}, {t_attempt - t0:.1f}s)"
+            )
+            break
+        raw = getattr(_pick_gridpoint, "_last_raw", "?")
+        reposition_gridpoint_iterative._last_debug.append(
+            f"GridPoint: parse fail (attempt {attempt + 1}, {t_attempt - t0:.1f}s) raw={raw!r}"
+        )
+        _report()
+
+    if label is None:
+        reposition_gridpoint_iterative._last_debug.append(
+            "GridPoint: no parse after 3 attempts, auditing current center"
+        )
+
+    candidate = _candidate_from_center(cx, cy, cur_w, cur_h, screen_w=screen_w, screen_h=screen_h)
+    max_rounds = max(1, int(os.environ.get("SPOKE_POSITIONING_AUDIT_ROUNDS", "3")))
+
+    for iteration in range(1, max_rounds + 1):
+        annotated = _draw_overlay_outline(screenshot, candidate)
+        candidate_b64 = _encode_image(annotated)
+        audit = _pick_axis_audit(
+            candidate_b64,
+            utterance,
+            screen_w,
+            screen_h,
+            candidate,
+            iteration=iteration,
+            bearing=bearing,
+        )
+        raw = getattr(_pick_axis_audit, "_last_raw", None)
+        reposition_gridpoint_iterative._last_debug.append(
+            "Audit %d: x=%s y=%s width=%s height=%s done=%s"
+            % (
+                iteration,
+                audit.get("x"),
+                audit.get("y"),
+                audit.get("width"),
+                audit.get("height"),
+                audit.get("done"),
+            )
+        )
+        if raw:
+            reposition_gridpoint_iterative._last_debug.append(f"Audit {iteration} raw: {raw}")
+        if audit.get("done") is True:
+            break
+        updated = _apply_axis_audit(candidate, audit, screen_w=screen_w, screen_h=screen_h)
+        if updated == candidate:
+            reposition_gridpoint_iterative._last_debug.append(
+                f"Audit {iteration}: no material candidate change"
+            )
+            break
+        candidate = updated
+        intermediate = {
+            **candidate,
+            "content_desc": utterance,
+            "utterance": utterance,
+            "elapsed_s": round(time.time() - t0, 2),
+            "_intermediate": True,
+        }
+        _report(intermediate)
+
+    elapsed = round(time.time() - t0, 2)
+    reposition_gridpoint_iterative._last_debug.append(f"Total: {elapsed:.1f}s")
+    _report()
+
+    return {
+        **candidate,
         "content_desc": utterance,
         "utterance": utterance,
         "elapsed_s": elapsed,

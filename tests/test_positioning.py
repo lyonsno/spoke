@@ -179,6 +179,104 @@ def test_target_system_prompt_has_grid_layout():
     assert "center" in TARGET_SYSTEM
 
 
+def test_axis_audit_prompt_forces_dimension_by_dimension_candidate_review():
+    """Iterative audit prompt should make KEEP mean the current outline is correct."""
+    from spoke.positioning.reposition import AXIS_AUDIT_SYSTEM
+
+    assert "red dashed outline is the current proposed overlay" in AXIS_AUDIT_SYSTEM
+    assert "horizontal center" in AXIS_AUDIT_SYSTEM
+    assert "vertical center" in AXIS_AUDIT_SYSTEM
+    assert "A dimension may be kept only if it already satisfies" in AXIS_AUDIT_SYSTEM
+    assert "Do not fix only one axis" in AXIS_AUDIT_SYSTEM
+    assert "done: YES or NO" in AXIS_AUDIT_SYSTEM
+
+
+def test_axis_audit_headers_are_round_addressable():
+    """Grapheus logs need enough header structure to reconstruct loop behavior."""
+    from spoke.positioning.reposition import _api_headers
+
+    headers = _api_headers("axis-audit", mode="gridpoint-iterative", iteration=2)
+
+    assert headers["X-Spoke-Pathway"] == "positioning"
+    assert headers["X-Spoke-Step"] == "axis-audit"
+    assert headers["X-Spoke-Positioning-Mode"] == "gridpoint-iterative"
+    assert headers["X-Spoke-Positioning-Iteration"] == "2"
+
+
+def test_parse_axis_audit_response_keeps_and_clamps_dimensions():
+    """Axis audit parser accepts KEEP and clamps pixel edits to the screen."""
+    from spoke.positioning.reposition import _parse_axis_audit_response
+
+    audit = _parse_axis_audit_response(
+        "x: KEEP\ny: 900\nwidth: 2600\nheight: KEEP\ndone: NO",
+        screen_w=1920,
+        screen_h=1080,
+    )
+
+    assert audit == {
+        "x": "KEEP",
+        "y": 900,
+        "width": 1920,
+        "height": "KEEP",
+        "done": False,
+    }
+
+
+def test_iterative_axis_audit_rerenders_candidate_until_done(monkeypatch):
+    """Each cheap audit round should inspect the latest candidate outline."""
+    import importlib
+
+    reposition = importlib.import_module("spoke.positioning.reposition")
+
+    image = Image.new("RGB", (100, 100), "white")
+    outlined = []
+    encoded = []
+    audits = [
+        {"x": 75, "y": "KEEP", "width": "KEEP", "height": "KEEP", "done": False},
+        {"x": "KEEP", "y": 25, "width": 40, "height": "KEEP", "done": False},
+        {"x": "KEEP", "y": "KEEP", "width": "KEEP", "height": "KEEP", "done": True},
+    ]
+
+    monkeypatch.setattr(reposition, "_draw_grid_points", lambda img: img)
+    monkeypatch.setattr(reposition, "_pick_gridpoint", lambda *args, **kwargs: "B2")
+
+    def fake_outline(_screenshot, overlay):
+        outlined.append(dict(overlay))
+        return image
+
+    def fake_encode(_image):
+        token = f"image-{len(encoded)}"
+        encoded.append(token)
+        return token
+
+    def fake_audit(screenshot_b64, *args, **kwargs):
+        assert screenshot_b64 == encoded[-1]
+        return audits.pop(0)
+
+    monkeypatch.setattr(reposition, "_draw_overlay_outline", fake_outline)
+    monkeypatch.setattr(reposition, "_encode_image", fake_encode)
+    monkeypatch.setattr(reposition, "_pick_axis_audit", fake_audit)
+
+    result = reposition.reposition_gridpoint_iterative(
+        "upper right but compact",
+        image,
+        current_overlay={"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        screen_w=100,
+        screen_h=100,
+    )
+
+    assert result["x"] == pytest.approx(0.55)
+    assert result["y"] == pytest.approx(0.05)
+    assert result["width"] == pytest.approx(0.4)
+    assert result["height"] == pytest.approx(0.4)
+    assert len(encoded) == 4  # initial grid pick plus three candidate audits
+    assert outlined[-3:] == [
+        {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        {"x": 0.55, "y": 0.3, "width": 0.4, "height": 0.4},
+        {"x": 0.55, "y": 0.05, "width": 0.4, "height": 0.4},
+    ]
+
+
 def test_largest_rectangle_target_picks_yes_cells():
     """largest_rectangle_target finds rect in YES (occupy) cells."""
     from spoke.positioning.reposition import largest_rectangle_target
