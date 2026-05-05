@@ -154,6 +154,17 @@ When changing or resetting local smoke hotkeys:
 - if a launcher needs a known-good interpreter because a fresh worktree venv crashes, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path into the shared launcher
 - record any durable remap or reset rule in repo docs and `spoke` Epistaxis rather than leaving it only in thread history
 
+## Grapheus headers (`X-Spoke-*`)
+
+Every LLM call through Grapheus must send these headers:
+
+- `X-Spoke-Pathway`: which pathway is making the call (e.g. `command`, `narrator`, `positioning`)
+- `X-Spoke-Utterance-ID`: a stable ID tying all calls from one user action together
+
+Without `Utterance-ID`, Grapheus cannot group calls into logical requests.
+`X-Spoke-Turn` (round number) and `X-Spoke-Step` (pipeline stage) are
+optional but recommended for multi-round or multi-step pathways.
+
 ## Launch target registry policy
 
 When the launch-target menu feature is in play:
