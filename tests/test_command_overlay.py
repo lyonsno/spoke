@@ -581,6 +581,26 @@ class TestOpticalShellMaterialization:
         overlay._start_fade_out.assert_called_once()
         assert overlay._cancel_timer_anim is None
 
+    def test_toggle_cancel_dismiss_cleans_invisible_pending_optical_entrance(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = True
+        overlay._streaming = True
+        overlay._window.alphaValue.return_value = 0.0
+        overlay._start_fade_out = MagicMock()
+
+        overlay.cancel_dismiss()
+
+        assert overlay._visible is False
+        assert overlay._streaming is False
+        overlay._start_fade_out.assert_not_called()
+        compositor.stop.assert_called_once()
+        overlay._window.orderOut_.assert_called_once_with(None)
+        overlay._window.setAlphaValue_.assert_any_call(0.0)
+
     def test_materialization_choreographs_core_magnification_overshoot(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
         base = {
@@ -3101,6 +3121,53 @@ class TestAdaptiveCompositing:
         overlay.brightnessResample_(None)
 
         assert overlay._brightness_target == pytest.approx(0.16)
+
+    def test_visual_ready_brightness_sync_rebuilds_compositor_fill_for_entrance(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._materialization_progress = 1.0
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 624.0, 208.0)
+        events = []
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        overlay._apply_ridge_masks = MagicMock(
+            side_effect=lambda width, height: events.append(
+                (
+                    "fill",
+                    getattr(overlay, "_fullscreen_compositor", None) is not None,
+                    width,
+                    height,
+                    overlay._brightness,
+                )
+            )
+        )
+        overlay._start_entrance_animation = MagicMock(
+            side_effect=lambda: events.append(("entrance",))
+        )
+
+        class PresentedCompositor:
+            presented_count = 1
+            sampled_brightness = 0.04
+
+            def refresh_brightness(self):
+                events.append(("brightness",))
+
+        overlay._fullscreen_compositor = PresentedCompositor()
+
+        overlay.visualReadyStep_(timer)
+
+        overlay._apply_ridge_masks.assert_called_once_with(624.0, 208.0)
+        assert events[:3] == [
+            ("brightness",),
+            ("fill", True, 624.0, 208.0, 0.04),
+            ("entrance",),
+        ]
+        assert overlay._brightness == pytest.approx(0.04)
+        assert overlay._brightness_target == pytest.approx(0.04)
 
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)

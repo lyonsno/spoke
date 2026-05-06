@@ -2351,6 +2351,8 @@ class CommandOverlay(NSObject):
         self._streaming = False
         if getattr(self, "_fullscreen_compositor", None) is not None:
             self._visible = False
+            if self._cancel_pending_optical_entrance_if_invisible():
+                return
             self._window.setAlphaValue_(1.0)
             self._set_overlay_scale(1.0)
             self._start_fade_out()
@@ -2397,6 +2399,8 @@ class CommandOverlay(NSObject):
         # response ranges and may rebuild optical masks/backdrop state; doing
         # that during dismiss competes with the fade and preview overlay.
         self._cancel_pulse()
+        if self._cancel_pending_optical_entrance_if_invisible():
+            return
         self._start_fade_out()
 
     def set_recording_load_shed(self, active: bool) -> None:
@@ -3471,6 +3475,28 @@ class CommandOverlay(NSObject):
         self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
 
+    def _cancel_pending_optical_entrance_if_invisible(self) -> bool:
+        """Tear down an alpha-zero optical entrance without playing dismiss."""
+        if getattr(self, "_fullscreen_compositor", None) is None or self._window is None:
+            return False
+        try:
+            alpha = float(self._window.alphaValue())
+        except Exception:
+            alpha = 1.0
+        if alpha > 0.001:
+            return False
+        self._cancel_visual_ready_start()
+        self._cancel_entrance_pop()
+        self._cancel_materialization_animation()
+        self._cancel_dismiss_pucker_tail_animation()
+        self._stop_fullscreen_compositor()
+        self._window.setAlphaValue_(0.0)
+        self._set_overlay_scale(1.0)
+        self._reset_backdrop_layer()
+        self._window.orderOut_(None)
+        self._cancel_pulse()
+        return True
+
     def _start_entrance_animation(self) -> None:
         """Start the visible entrance once first-paint dependencies are ready."""
         self._cancel_entrance_pop()
@@ -3861,7 +3887,10 @@ class CommandOverlay(NSObject):
         self._cancel_visual_ready_start()
         self._visual_ready_brightness_synced = False
         if self._optical_compositor_has_presented():
-            self._sync_optical_compositor_brightness(hide_stale_fill=True)
+            self._sync_optical_compositor_brightness(
+                hide_stale_fill=True,
+                refresh_fill=True,
+            )
             self._visual_ready_brightness_synced = True
             if self._optical_entrance_ready():
                 self._start_entrance_animation()
@@ -3889,7 +3918,10 @@ class CommandOverlay(NSObject):
         )
         compositor_ready = self._optical_compositor_has_presented()
         if compositor_ready and not getattr(self, "_visual_ready_brightness_synced", False):
-            self._sync_optical_compositor_brightness(hide_stale_fill=True)
+            self._sync_optical_compositor_brightness(
+                hide_stale_fill=True,
+                refresh_fill=True,
+            )
             self._visual_ready_brightness_synced = True
         if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
             return
@@ -3923,7 +3955,12 @@ class CommandOverlay(NSObject):
     def _optical_fill_ready(self) -> bool:
         return getattr(self, "_fill_hidden_until_signature", None) is None
 
-    def _sync_optical_compositor_brightness(self, *, hide_stale_fill: bool = False) -> None:
+    def _sync_optical_compositor_brightness(
+        self,
+        *,
+        hide_stale_fill: bool = False,
+        refresh_fill: bool = False,
+    ) -> None:
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
             return
@@ -3948,6 +3985,12 @@ class CommandOverlay(NSObject):
         if hide_stale_fill:
             self._suppress_stale_fill_until_ready = True
         try:
+            if refresh_fill and self._content_view is not None:
+                content_frame = self._content_view.frame()
+                self._apply_ridge_masks(
+                    content_frame.size.width,
+                    content_frame.size.height,
+                )
             self._apply_surface_theme()
         finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
