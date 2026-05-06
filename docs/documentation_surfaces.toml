@@ -15,3 +15,12 @@ reason = "Smoke-only launch-target and HUD affordances belong on the local opera
 revisit_when = "Revisit if these affordances become part of ordinary end-user workflow instead of smoke/runtime verification."
 canonical_markers = ["Smoke-Surface Runtime Affordances"]
 public_readme_absent_markers = ["launch-target switching", "source/branch visibility", "Terror Form"]
+
+[capabilities.optical_field_primitive_contract]
+audience = "developer"
+canonical_surface = "docs/optical-field-contract.md"
+public_readme = "omit"
+reason = "The optical field primitive contract is an agent/developer integration boundary for shared overlay consumers, not public product copy."
+revisit_when = "Revisit if optical field profiles become user-configurable or part of ordinary end-user documentation."
+canonical_markers = ["Optical Field Primitive Contract"]
+public_readme_absent_markers = ["OpticalFieldRequest", "OpticalFieldPlaceholderBackend"]
