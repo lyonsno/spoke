@@ -675,6 +675,34 @@ def _schedule_command_overlay_reopen(callback, delay_s: float) -> None:
     threading.Timer(delay, _run_on_main).start()
 
 
+def _dismiss_command_overlay_for_positioning(app, command_overlay, screen_frame=None) -> None:
+    """Run the command overlay's dismiss path while preserving semantic lifecycle."""
+    if command_overlay is None:
+        return
+
+    request = _explicit_attr(app, "_positioning_field_request", None)
+    if isinstance(request, OpticalFieldRequest):
+        dismissing = _request_with_lifecycle(request, state="dismiss", visible=False)
+        app._positioning_field_request = dismissing
+        _apply_request_to_command_overlay(command_overlay, dismissing)
+        if screen_frame is not None:
+            _push_request_to_command_overlay_compositor(
+                command_overlay,
+                dismissing,
+                screen_frame,
+            )
+
+    dismiss = (
+        _explicit_attr(command_overlay, "_positioning_original_cancel_dismiss", None)
+        or _explicit_attr(command_overlay, "cancel_dismiss", None)
+    )
+    if callable(dismiss):
+        try:
+            dismiss()
+        except Exception:
+            logger.debug("Failed to dismiss command overlay before repositioning", exc_info=True)
+
+
 def _present_request_on_command_overlay(
     app,
     command_overlay,
@@ -689,12 +717,7 @@ def _present_request_on_command_overlay(
     if not callable(show) or not callable(applier):
         return False
 
-    cancel = _explicit_attr(command_overlay, "cancel_dismiss", None)
-    if callable(cancel):
-        try:
-            cancel()
-        except Exception:
-            logger.debug("Failed to dismiss command overlay before repositioning", exc_info=True)
+    _dismiss_command_overlay_for_positioning(app, command_overlay, screen_frame)
 
     def _materialize_at_new_bounds():
         app._positioning_field_request = request
@@ -1399,6 +1422,11 @@ def install_positioning_hook(app) -> None:
     original = app._command_transcribe_worker
 
     def patched_worker(wav_bytes, token):
+        _dismiss_command_overlay_for_positioning(
+            app,
+            _explicit_attr(app, "_command_overlay", None),
+            _get_main_screen_frame(),
+        )
         positioning_transcribe_worker(app, wav_bytes, token)
 
     app._command_transcribe_worker = patched_worker

@@ -359,6 +359,52 @@ def test_iterative_split_audit_combines_center_and_size_before_rerender(monkeypa
     ]
 
 
+def test_iterative_split_audit_treats_need_flags_as_advisory(monkeypatch):
+    """A false size flag must not suppress the only useful actuator."""
+    import importlib
+
+    reposition = importlib.import_module("spoke.positioning.reposition")
+
+    image = Image.new("RGB", (100, 100), "white")
+    suitability = [
+        {
+            "done": False,
+            "needs_position": True,
+            "needs_size": False,
+            "reason": "candidate leaves empty space uncovered",
+        },
+        {"done": True, "needs_position": False, "needs_size": False, "reason": "filled"},
+    ]
+    centers = [{"center_x": 50, "center_y": 50, "reason": "center already right"}]
+    sizes = [{"width": 80, "height": 80, "reason": "fill the empty space"}]
+
+    monkeypatch.setattr(reposition, "_draw_grid_points", lambda img: img)
+    monkeypatch.setattr(reposition, "_draw_overlay_outline", lambda _screenshot, _overlay: image)
+    monkeypatch.setattr(reposition, "_encode_image", lambda _image: "image")
+    monkeypatch.setattr(reposition, "_pick_gridpoint", lambda *args, **kwargs: "B2")
+    monkeypatch.setattr(
+        reposition,
+        "_pick_suitability_audit",
+        lambda *args, **kwargs: suitability.pop(0),
+    )
+    monkeypatch.setattr(reposition, "_pick_center_audit", lambda *args, **kwargs: centers.pop(0))
+    monkeypatch.setattr(reposition, "_pick_size_audit", lambda *args, **kwargs: sizes.pop(0))
+
+    result = reposition.reposition_gridpoint_iterative(
+        "fill the empty space",
+        image,
+        current_overlay={"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        screen_w=100,
+        screen_h=100,
+    )
+
+    assert result["x"] == pytest.approx(0.10)
+    assert result["y"] == pytest.approx(0.10)
+    assert result["width"] == pytest.approx(0.80)
+    assert result["height"] == pytest.approx(0.80)
+    assert sizes == []
+
+
 def test_largest_rectangle_target_picks_yes_cells():
     """largest_rectangle_target finds rect in YES (occupy) cells."""
     from spoke.positioning.reposition import largest_rectangle_target
@@ -774,6 +820,154 @@ def test_positioning_applies_semantic_bounds_to_real_command_overlay_when_compos
     show_smoke.assert_not_called()
 
 
+def test_positioning_hook_dismisses_command_overlay_when_command_is_accepted(mock_pyobjc):
+    """Accepting semantic positioning should immediately start the normal dismiss flow."""
+    import spoke.positioning.smoke_hook as smoke_hook
+    from spoke.positioning.smoke_hook import install_positioning_hook
+
+    events = []
+
+    class CommandOverlay:
+        def cancel_dismiss(self):
+            events.append("dismiss")
+
+    app = MagicMock()
+    app._command_transcribe_worker = MagicMock()
+    app._command_overlay = CommandOverlay()
+    app._positioning_field_request = None
+
+    install_positioning_hook(app)
+
+    with patch.object(
+        smoke_hook,
+        "positioning_transcribe_worker",
+        side_effect=lambda *_args: events.append("worker"),
+    ):
+        app._command_transcribe_worker(b"wav", 12)
+
+    assert events == ["dismiss", "worker"]
+
+
+def test_positioning_intermediate_materializes_real_command_overlay_with_debug_text():
+    """Draft positioning updates should use the command overlay, not the smoke rect."""
+    import spoke.positioning.smoke_hook as smoke_hook
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    class CommandOverlay:
+        def __init__(self):
+            self._fullscreen_compositor = MagicMock()
+            self._screen = MagicMock()
+            self._screen.backingScaleFactor.return_value = 2.0
+            self._brightness = 0.42
+            self.applied_requests = []
+            self.cancel_dismiss = MagicMock()
+            self.show = MagicMock()
+
+        def apply_semantic_positioning_request(self, request):
+            self.applied_requests.append(request)
+            return True
+
+    command_overlay = CommandOverlay()
+    app = MagicMock()
+    app._command_overlay = command_overlay
+    app._positioning_field_request = None
+
+    result = {
+        "_intermediate": True,
+        "x": 0.20,
+        "y": 0.10,
+        "width": 0.40,
+        "height": 0.30,
+        "utterance": "move upper left",
+        "content_desc": "draft candidate",
+        "_debug_lines": ["Suitability 1: needs_position", "Center 1: upper-left"],
+    }
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=Frame()), \
+         patch.object(smoke_hook, "_schedule_command_overlay_reopen", side_effect=lambda fn, delay_s: fn()), \
+         patch.object(smoke_hook, "_show_smoke_rect") as show_smoke:
+        smoke_hook._finish_on_main_immediate(app, result)
+
+    assert len(command_overlay.applied_requests) == 1
+    assert command_overlay.applied_requests[0].state == "materialize"
+    command_overlay.show.assert_called_once()
+    show_kwargs = command_overlay.show.call_args.kwargs
+    assert "move upper left" in show_kwargs["initial_response"]
+    assert "Suitability 1: needs_position" in show_kwargs["initial_response"]
+    assert "Center 1: upper-left" in show_kwargs["initial_response"]
+    show_smoke.assert_not_called()
+
+
+def test_positioning_intermediate_candidate_dismisses_old_request_before_materializing_new():
+    """Successive drafts should animate the old placement out before applying the new one."""
+    import spoke.positioning.smoke_hook as smoke_hook
+    from spoke.optical_field import OpticalFieldBounds, OpticalFieldRequest
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    events = []
+
+    class CommandOverlay:
+        def __init__(self):
+            self._fullscreen_compositor = MagicMock()
+            self._screen = MagicMock()
+            self._screen.backingScaleFactor.return_value = 2.0
+            self._brightness = 0.42
+
+        def cancel_dismiss(self):
+            events.append("dismiss-flow")
+
+        def apply_semantic_positioning_request(self, request):
+            events.append(f"apply:{request.state}:{request.bounds.x:.0f}")
+            return True
+
+        def show(self, **kwargs):
+            events.append("show")
+
+    app = MagicMock()
+    app._command_overlay = CommandOverlay()
+    app._positioning_field_request = OpticalFieldRequest(
+        caller_id="semantic_positioning",
+        bounds=OpticalFieldBounds(x=40.0, y=50.0, width=320.0, height=120.0),
+        role="assistant",
+        state="rest",
+        visible=True,
+    )
+
+    result = {
+        "_intermediate": True,
+        "x": 0.25,
+        "y": 0.25,
+        "width": 0.5,
+        "height": 0.5,
+        "utterance": "try the middle",
+        "_debug_lines": ["candidate 2"],
+    }
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=Frame()), \
+         patch.object(smoke_hook, "_schedule_command_overlay_reopen", side_effect=lambda fn, delay_s: fn()), \
+         patch.object(smoke_hook, "_show_smoke_rect"):
+        smoke_hook._finish_on_main_immediate(app, result)
+
+    assert events[:4] == [
+        "apply:dismiss:40",
+        "dismiss-flow",
+        "apply:materialize:360",
+        "show",
+    ]
+
+
 def test_positioning_dismisses_old_command_overlay_before_materializing_new_bounds():
     """Each accepted move should close at the old position before reopening at the new one."""
     import spoke.positioning.smoke_hook as smoke_hook
@@ -836,9 +1030,10 @@ def test_positioning_dismisses_old_command_overlay_before_materializing_new_boun
             },
         )
 
-    assert events[0] == "dismiss"
-    assert events[1].startswith("apply:materialize:")
-    assert events[2] == "show"
+    assert events[0] == "apply:dismiss:40"
+    assert events[1] == "dismiss"
+    assert events[2].startswith("apply:materialize:")
+    assert events[3] == "show"
 
 
 def test_positioning_waits_for_command_overlay_dismiss_before_reopening():

@@ -1635,11 +1635,8 @@ def reposition_gridpoint_iterative(
             "reason": "",
         }
         size_audit: dict[str, int | str] = {"width": "KEEP", "height": "KEEP", "reason": ""}
-        run_center = bool(suitability.get("needs_position", True))
-        run_size = bool(suitability.get("needs_size", True))
-        if not run_center and not run_size:
-            run_center = True
-            run_size = True
+        run_center = True
+        run_size = True
 
         if run_center:
             center_audit = _pick_center_audit(
