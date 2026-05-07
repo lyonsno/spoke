@@ -13,8 +13,40 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 
-OpticalFieldState = Literal["rest", "materialize", "dismiss"]
+OpticalFieldState = Literal[
+    "hidden",
+    "materialize",
+    "rest",
+    "resize",
+    "recenter",
+    "retarget",
+    "dismiss",
+]
 OpticalFieldDisturbanceMode = Literal["persistent", "ephemeral"]
+OpticalFieldCoordinateSpace = Literal[
+    "display_local",
+    "screen_points",
+    "backing_pixels",
+    "parent_local",
+    "content_local",
+    "recipe_local",
+]
+OpticalFieldMotionStrategy = Literal[
+    "auto",
+    "continuous",
+    "morph",
+    "squirt",
+    "dematerialize_rematerialize",
+    "snap",
+]
+
+_FORBIDDEN_CONSUMER_ANIMATION_NAMES = {
+    "progress",
+    "phase",
+    "transition.phase",
+    "animation_progress",
+    "animation_phase",
+}
 
 
 @dataclass(frozen=True)
@@ -41,6 +73,14 @@ class OpticalFieldBounds:
     @property
     def min_dimension(self) -> float:
         return min(self.width, self.height)
+
+    def to_payload(self) -> dict[str, float]:
+        return {
+            "x": float(self.x),
+            "y": float(self.y),
+            "width": float(self.width),
+            "height": float(self.height),
+        }
 
 
 @dataclass(frozen=True)
@@ -74,7 +114,6 @@ class OpticalFieldDisturbance:
     kind: str
     mode: OpticalFieldDisturbanceMode = "ephemeral"
     strength: float = 1.0
-    phase: float = 0.0
     params: Mapping[str, float | str | bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -82,9 +121,63 @@ class OpticalFieldDisturbance:
             raise ValueError("disturbance_id must be non-empty")
         if not self.kind:
             raise ValueError("disturbance kind must be non-empty")
+        if _is_forbidden_animation_name(self.kind):
+            raise ValueError("consumer-authored progress/phase is not a production field")
         if self.strength < 0.0:
             raise ValueError("disturbance strength must be non-negative")
         object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+
+@dataclass(frozen=True)
+class OpticalFieldMotionIntent:
+    """Consumer motion intent as data; House still owns execution curves."""
+
+    strategy: OpticalFieldMotionStrategy = "auto"
+    urgency: str = "normal"
+    latency_mask: str = "none"
+    params: Mapping[str, float | str | bool] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.strategy:
+            raise ValueError("motion strategy must be non-empty")
+        if not self.urgency:
+            raise ValueError("motion urgency must be non-empty")
+        if not self.latency_mask:
+            raise ValueError("motion latency_mask must be non-empty")
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "strategy": self.strategy,
+            "urgency": self.urgency,
+            "latency_mask": self.latency_mask,
+            "params": dict(self.params),
+        }
+
+
+@dataclass(frozen=True)
+class OpticalFieldSignal:
+    """Finite consumer signal routed into House-owned recipes/profiles."""
+
+    name: str
+    value: float | str | bool
+    freshness_epoch: str | int | None = None
+    params: Mapping[str, float | str | bool] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("signal name must be non-empty")
+        if _is_forbidden_animation_name(self.name):
+            raise ValueError("consumer-authored progress/phase is not a production field")
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "value": self.value,
+            "freshness_epoch": self.freshness_epoch,
+            "params": dict(self.params),
+        }
 
 
 @dataclass(frozen=True)
@@ -94,7 +187,20 @@ class OpticalFieldRequest:
     caller_id: str
     bounds: OpticalFieldBounds
     role: str
+    continuity_key: str | None = None
     state: OpticalFieldState = "rest"
+    content_frame: OpticalFieldBounds | None = None
+    coordinate_space: OpticalFieldCoordinateSpace = "display_local"
+    display_epoch: str | int | None = None
+    source_epoch: str | int | None = None
+    freshness_epoch: str | int | None = None
+    presentation_layer: str = "default"
+    layout_recipe: str = "direct_positioned"
+    motion: OpticalFieldMotionIntent = field(default_factory=OpticalFieldMotionIntent)
+    continuity: str = "preserve_identity"
+    signals: tuple[OpticalFieldSignal, ...] = ()
+    provisional: bool = False
+    confidence: float | None = None
     profile: OpticalFieldProfileRef = field(default_factory=OpticalFieldProfileRef)
     disturbances: tuple[OpticalFieldDisturbance, ...] = ()
     visible: bool = True
@@ -105,7 +211,30 @@ class OpticalFieldRequest:
             raise ValueError("caller_id must be non-empty")
         if not self.role:
             raise ValueError("role must be non-empty")
+        if self.continuity_key is None:
+            object.__setattr__(self, "continuity_key", self.caller_id)
+        elif not self.continuity_key:
+            raise ValueError("continuity_key must be non-empty when provided")
+        if self.content_frame is None:
+            object.__setattr__(self, "content_frame", self.bounds)
+        if not self.coordinate_space:
+            raise ValueError("coordinate_space must be non-empty")
+        if not self.presentation_layer:
+            raise ValueError("presentation_layer must be non-empty")
+        if not self.layout_recipe:
+            raise ValueError("layout_recipe must be non-empty")
+        if not self.continuity:
+            raise ValueError("continuity must be non-empty")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0.0 and 1.0")
+        object.__setattr__(self, "signals", tuple(self.signals))
         object.__setattr__(self, "disturbances", tuple(self.disturbances))
+
+
+def _is_forbidden_animation_name(name: str) -> bool:
+    normalized = name.strip().lower().replace("-", "_")
+    dotted = normalized.replace("_", ".")
+    return normalized in _FORBIDDEN_CONSUMER_ANIMATION_NAMES or dotted in _FORBIDDEN_CONSUMER_ANIMATION_NAMES
 
 
 _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
@@ -216,9 +345,27 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
         "mip_blur_strength": _float_param(params, "mip_blur_strength"),
         "optical_field": {
             "caller_id": request.caller_id,
+            "continuity_key": request.continuity_key,
             "profile": request.profile.base,
             "state": request.state,
+            "lifecycle": request.state,
             "slot": slot_name,
+            "bounds": request.bounds.to_payload(),
+            "content_frame": request.content_frame.to_payload()
+            if request.content_frame is not None
+            else request.bounds.to_payload(),
+            "coordinate_space": request.coordinate_space,
+            "display_epoch": request.display_epoch,
+            "source_epoch": request.source_epoch,
+            "freshness_epoch": request.freshness_epoch,
+            "presentation_layer": request.presentation_layer,
+            "layout_recipe": request.layout_recipe,
+            "motion": request.motion.to_payload(),
+            "continuity": request.continuity,
+            "signals": tuple(signal.to_payload() for signal in request.signals),
+            "provisional": bool(request.provisional),
+            "final": not bool(request.provisional),
+            "confidence": request.confidence,
             "disturbances": tuple(
                 disturbance.disturbance_id for disturbance in request.disturbances
             ),
