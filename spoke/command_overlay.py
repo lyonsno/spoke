@@ -444,7 +444,7 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 # Dark on dark, light on light — the overlay is a surface, not a glow.
 _COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
-_COMPOSITOR_LIGHT_FILL_ALPHA_BOOST = 1.50
+_COMPOSITOR_FILL_INTERIOR_FLOOR = 0.72
 _PUNCHTHROUGH_BOOST_DARK = (0.0, 0.0, 0.0)
 _PUNCHTHROUGH_BOOST_LIGHT = (1.0, 1.0, 1.0)
 _PUNCHTHROUGH_BOOST_OPACITY_DARK = 0.42
@@ -468,13 +468,7 @@ def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, flo
 
 
 def _compositor_fill_alpha_multiplier_for_brightness(brightness: float) -> float:
-    # Only boost the light material used on dark backgrounds. The dark material
-    # on light backgrounds is already visually dense enough and should not drift.
-    return _lerp(
-        _COMPOSITOR_LIGHT_FILL_ALPHA_BOOST,
-        1.0,
-        _compositor_fill_choice_for_brightness(brightness),
-    )
+    return 1.0
 
 
 def _gpu_material_shell_fields(brightness: float, scale: float) -> dict[str, float]:
@@ -4434,7 +4428,7 @@ class CommandOverlay(NSObject):
                 cached_fill_alpha = None
                 sdf_appearance_b = -1.0
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
-                    _ifloor = _lerp(0.60, 0.85, _clamp01(_b))
+                    _ifloor = _COMPOSITOR_FILL_INTERIOR_FLOOR
                     interior = (_ifloor + (1.0 - _ifloor) * raw_interior)
                     interior = np.clip(
                         interior + edge_ridge * 0.50,

@@ -169,6 +169,18 @@ def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     assert "warpedColor = composeShellMaterial" in source
 
 
+def test_metal_material_alpha_is_not_locally_brightness_dependent():
+    source = metal_warp._metal_shader_source()
+    alpha_fn = source.split("float shellMaterialAlphaForSdf", 1)[1].split(
+        "float4 composeShellMaterial",
+        1,
+    )[0]
+
+    assert "gpuMaterialBrightness" not in alpha_fn
+    assert "shellMaterialAlphaMultiplierForBrightness" not in alpha_fn
+    assert "mix(0.60f, 0.85f" not in alpha_fn
+
+
 def test_metal_shader_can_rotate_seam_scar_axis_for_pucker_tuning():
     source = metal_warp._metal_shader_source()
     seam_branch = source.split("Seam-tension scar:", 1)[1].split(

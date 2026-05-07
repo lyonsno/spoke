@@ -216,10 +216,6 @@ float3 shellMaterialColorForBrightness(float brightness) {{
     return mix(darkBackgroundFill, lightBackgroundFill, choice);
 }}
 
-float shellMaterialAlphaMultiplierForBrightness(float brightness) {{
-    return mix(1.50f, 1.0f, shellMaterialChoiceForBrightness(brightness));
-}}
-
 float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
     float opacity = clamp(params.gpuMaterialOpacity, 0.0f, 1.0f);
     if (opacity <= 0.0f) return 0.0f;
@@ -244,14 +240,13 @@ float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
     float fillSdf = baseSdf - max(params.gpuMaterialFillOverscan, 0.0f);
     float feather = max(params.gpuMaterialFeather, 1.0f);
     float materialScale = max(feather / 140.0f, 1.0f);
-    float brightness = clamp(params.gpuMaterialBrightness, 0.0f, 1.0f);
     if (fillSdf <= 0.0f) {{
         float insideD = max(-fillSdf, 0.0f);
         float edgeRidge = exp(-pow(insideD / max(1.5f * materialScale, 1e-6f), 2.0f));
         float rawInterior = exp(sqrt(abs(fillSdf) / max(2.0f * materialScale, 1e-6f)) * -1.0f);
-        float interiorFloor = mix(0.60f, 0.85f, brightness);
+        float interiorFloor = 0.72f;
         float interior = clamp(interiorFloor + (1.0f - interiorFloor) * rawInterior + edgeRidge * 0.50f, 0.0f, 1.0f);
-        return clamp(interior * shellMaterialAlphaMultiplierForBrightness(brightness) * opacity, 0.0f, 1.0f);
+        return clamp(interior * opacity, 0.0f, 1.0f);
     }}
 
     float sigma = feather / 3.0f;
