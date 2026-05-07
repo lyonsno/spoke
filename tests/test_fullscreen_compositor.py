@@ -207,6 +207,40 @@ def test_snapshot_round_trip_preserves_shell_mip_blur_strength():
     assert round_trip["mip_blur_strength"] == pytest.approx(0.0)
 
 
+def test_snapshot_round_trip_preserves_presentation_arbitration_fields():
+    from spoke.fullscreen_compositor import (
+        _snapshot_from_shell_config,
+        _snapshot_to_shell_config,
+    )
+
+    identity = _identity("preview.transcription", role="preview")
+    snapshot = _snapshot_from_shell_config(
+        identity,
+        {
+            "center_x": 123.0,
+            "center_y": 456.0,
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 11.3,
+            "tail_width_points": 8.5,
+            "initial_brightness": 0.37,
+            "presentation_layer": "user_preview",
+            "presentation_order": 40,
+            "visibility_scope": "independent",
+        },
+        generation=7,
+    )
+
+    assert snapshot.presentation_layer == "user_preview"
+    assert snapshot.presentation_order == 40
+    assert snapshot.visibility_scope == "independent"
+    round_trip = _snapshot_to_shell_config(snapshot)
+    assert round_trip["presentation_layer"] == "user_preview"
+    assert round_trip["presentation_order"] == 40
+    assert round_trip["visibility_scope"] == "independent"
+
+
 def test_snapshot_round_trip_preserves_scar_warp_controls():
     from spoke.fullscreen_compositor import (
         _snapshot_from_shell_config,
@@ -287,6 +321,63 @@ def test_registry_reuses_one_host_per_display_for_distinct_clients(monkeypatch):
     assert [config["client_id"] for config in _FakeFullScreenCompositor.instances[0].updated_configs[-1]] == [
         "preview.transcription",
         "assistant.command",
+    ]
+
+
+def test_host_arbitrates_sibling_surfaces_by_presentation_order_then_z_index(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(211),
+        content_view=object(),
+    )
+    preview = host.register_client(
+        _identity("preview.transcription", host.display_id, "preview"),
+        window=_FakeWindow(212),
+        content_view=object(),
+    )
+    card = host.register_client(
+        _identity("agent.card.codex-1", host.display_id, "assistant"),
+        window=_FakeWindow(213),
+        content_view=object(),
+    )
+
+    assert assistant.update_shell_config(
+        {
+            "center_x": 10.0,
+            "presentation_layer": "assistant_shell",
+            "presentation_order": 20,
+            "z_index": 99,
+        }
+    )
+    assert preview.update_shell_config(
+        {
+            "center_x": 20.0,
+            "presentation_layer": "user_preview",
+            "presentation_order": 40,
+            "z_index": 0,
+        }
+    )
+    assert card.update_shell_config(
+        {
+            "center_x": 30.0,
+            "presentation_layer": "agent_card",
+            "presentation_order": 20,
+            "z_index": 5,
+        }
+    )
+
+    assert [snapshot.identity.client_id for snapshot in host.render_snapshots()] == [
+        "agent.card.codex-1",
+        "assistant.command",
+        "preview.transcription",
+    ]
+    compositor_configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    assert [config["client_id"] for config in compositor_configs] == [
+        "agent.card.codex-1",
+        "assistant.command",
+        "preview.transcription",
     ]
 
 

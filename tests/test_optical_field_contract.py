@@ -51,6 +51,10 @@ def test_placeholder_backend_preserves_contract_identity_and_profile_slot_metada
     assert shell_config["core_magnification"] == pytest.approx(1.08)
     assert shell_config["optical_field"] == {
         "caller_id": "agent.card.codex-1",
+        "role": "agent_card",
+        "presentation_layer": "agent_card",
+        "presentation_order": 20,
+        "visibility_scope": "independent",
         "profile": "agent_card",
         "state": "rest",
         "slot": "rest",

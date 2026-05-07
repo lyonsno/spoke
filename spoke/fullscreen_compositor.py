@@ -89,6 +89,9 @@ class OverlayRenderSnapshot:
     material: OpticalShellMaterialSnapshot
     excluded_window_ids: tuple[int, ...] = ()
     z_index: int = 0
+    presentation_layer: str | None = None
+    presentation_order: int = 0
+    visibility_scope: str = "independent"
     optical_field: Mapping[str, Any] | None = None
 
 
@@ -1270,6 +1273,10 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "debug_visualize": snapshot.material.debug_visualize,
         "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
     }
+    if snapshot.presentation_layer is not None:
+        config["presentation_layer"] = snapshot.presentation_layer
+        config["presentation_order"] = int(snapshot.presentation_order)
+        config["visibility_scope"] = snapshot.visibility_scope
     for key in (
         "bleed_zone_frac",
         "exterior_mix_width_points",
@@ -1344,6 +1351,13 @@ def _snapshot_from_shell_config(
         material=material,
         excluded_window_ids=tuple(int(v) for v in config.get("excluded_window_ids", excluded_window_ids)),
         z_index=int(config.get("z_index", 0)),
+        presentation_layer=(
+            str(config["presentation_layer"])
+            if config.get("presentation_layer") is not None
+            else None
+        ),
+        presentation_order=int(config.get("presentation_order", 0)),
+        visibility_scope=str(config.get("visibility_scope", "independent")),
         optical_field=optical_field,
     )
 
@@ -1503,7 +1517,16 @@ class OverlayCompositorHost:
 
     def render_snapshots(self) -> tuple[OverlayRenderSnapshot, ...]:
         snapshots = [entry["snapshot"] for entry in self._clients.values() if entry.get("snapshot") is not None]
-        return tuple(sorted(snapshots, key=lambda snapshot: (snapshot.z_index, snapshot.identity.client_id)))
+        return tuple(
+            sorted(
+                snapshots,
+                key=lambda snapshot: (
+                    int(snapshot.presentation_order) if snapshot.presentation_layer else 0,
+                    int(snapshot.z_index),
+                    snapshot.identity.client_id,
+                ),
+            )
+        )
 
     def sample_brightness(self, client_id: str) -> float:
         entry = self._clients.get(client_id)
