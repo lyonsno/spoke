@@ -451,6 +451,7 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_client = None
         self._preview_compositor_identity = None
         self._preview_compositor_generation = 0
+        self._last_preview_visible_geometry = None
         self._preview_warp_tuning_overrides: dict[str, float] = {}
 
         # Recovery mode state
@@ -507,7 +508,7 @@ class TranscriptionOverlay(NSObject):
             and not getattr(self, "_tray_mode", False)
             and not getattr(self, "_recovery_mode", False)
         ):
-            self._publish_preview_compositor_snapshot(visible=True)
+            self._publish_preview_compositor_snapshot(visible=True, state="rest")
 
     def setup(self) -> None:
         """Create the overlay window."""
@@ -702,6 +703,53 @@ class TranscriptionOverlay(NSObject):
             debug_grid_spacing_points=18.0,
         )
 
+    def _preview_optical_field_request(
+        self,
+        *,
+        visible: bool,
+        geometry=None,
+        state: str | None = None,
+    ):
+        from spoke.optical_field import (
+            OpticalFieldBounds,
+            OpticalFieldProfileRef,
+            OpticalFieldRequest,
+            OpticalFieldSlotOverride,
+        )
+
+        if geometry is None:
+            geometry = self._preview_compositor_geometry_snapshot()
+        state = state or ("materialize" if visible else "dismiss")
+        if state not in {"rest", "materialize", "dismiss"}:
+            raise ValueError(f"unknown preview optical field state: {state}")
+        profile = OpticalFieldProfileRef(
+            base="preview_pill",
+            slots={
+                "materialize": OpticalFieldSlotOverride(
+                    params={"duration_ms": _FADE_IN_S * 1000.0}
+                ),
+                "dismiss": OpticalFieldSlotOverride(
+                    params={"duration_ms": _FADE_OUT_S * 1000.0}
+                ),
+                "rest": OpticalFieldSlotOverride(params={"duration_ms": 0.0}),
+            },
+        )
+        bounds = OpticalFieldBounds(
+            x=float(geometry.center_x - geometry.content_width_points * 0.5),
+            y=float(geometry.center_y - geometry.content_height_points * 0.5),
+            width=float(geometry.content_width_points),
+            height=float(geometry.content_height_points),
+        )
+        return OpticalFieldRequest(
+            caller_id="preview.transcription",
+            bounds=bounds,
+            role="preview",
+            state=state,
+            profile=profile,
+            visible=bool(visible),
+            z_index=0,
+        )
+
     def _preview_compositor_excluded_window_ids(self) -> tuple[int, ...]:
         try:
             return (int(self._window.windowNumber()),)
@@ -734,24 +782,46 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_identity = identity
         return client
 
-    def _publish_preview_compositor_snapshot(self, *, visible: bool) -> bool:
+    def _publish_preview_compositor_snapshot(
+        self,
+        *,
+        visible: bool,
+        state: str | None = None,
+    ) -> bool:
         client = self._ensure_preview_compositor_client()
         identity = getattr(self, "_preview_compositor_identity", None)
         if client is None or identity is None:
             return False
         from spoke.fullscreen_compositor import OverlayRenderSnapshot
+        from spoke.optical_field import compile_placeholder_shell_config
 
+        current_geometry = self._preview_compositor_geometry_snapshot()
+        if visible:
+            geometry = current_geometry
+            self._last_preview_visible_geometry = geometry
+        else:
+            geometry = getattr(self, "_last_preview_visible_geometry", None) or current_geometry
+        request = self._preview_optical_field_request(
+            visible=visible,
+            geometry=geometry,
+            state=state,
+        )
+        shell_config = compile_placeholder_shell_config(request)
         self._preview_compositor_generation += 1
         snapshot = OverlayRenderSnapshot(
             identity=identity,
             generation=self._preview_compositor_generation,
             visible=bool(visible),
-            geometry=self._preview_compositor_geometry_snapshot(),
+            geometry=geometry,
             material=self._preview_compositor_material_snapshot(),
             excluded_window_ids=self._preview_compositor_excluded_window_ids(),
             z_index=0,
+            optical_field=shell_config.get("optical_field"),
         )
-        return bool(client.publish(snapshot))
+        published = bool(client.publish(snapshot))
+        if published and not visible:
+            self._last_preview_visible_geometry = geometry
+        return published
 
     def _release_preview_compositor_client(self) -> None:
         client = getattr(self, "_preview_compositor_client", None)
@@ -818,7 +888,7 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
-        self._publish_preview_compositor_snapshot(visible=True)
+        self._publish_preview_compositor_snapshot(visible=True, state="materialize")
         self._window.orderFrontRegardless()
 
         # Fade in using stepped timer
@@ -1482,7 +1552,7 @@ class TranscriptionOverlay(NSObject):
                 and not getattr(self, "_tray_mode", False)
                 and not getattr(self, "_recovery_mode", False)
             ):
-                self._publish_preview_compositor_snapshot(visible=True)
+                self._publish_preview_compositor_snapshot(visible=True, state="rest")
         except Exception:
             pass
 

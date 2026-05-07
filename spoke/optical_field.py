@@ -824,43 +824,48 @@ def compile_placeholder_shell_config(
     )
     exterior_mix = scale * _float_param(params, "exterior_mix_frac")
 
-    optical_field = _with_transition_metadata(
-        {
-            "caller_id": request.caller_id,
-            "continuity_key": request.continuity_key,
-            "role": request.role,
-            "resolved_presentation_layer": presentation.layer,
-            "presentation_order": int(presentation.order),
-            "visibility_scope": request.visibility_scope,
-            "profile": request.profile.base,
-            "state": request.state,
-            "lifecycle": request.state,
-            "slot": slot_name,
-            "bounds": request.bounds.to_payload(),
-            "content_frame": request.content_frame.to_payload()
-            if request.content_frame is not None
-            else request.bounds.to_payload(),
-            "coordinate_space": request.coordinate_space,
-            "display_epoch": request.display_epoch,
-            "source_epoch": request.source_epoch,
-            "freshness_epoch": request.freshness_epoch,
-            "presentation_layer": request.presentation_layer,
-            "layout_recipe": request.layout_recipe,
-            "motion": request.motion.to_payload(),
-            "continuity": request.continuity,
-            "signals": tuple(signal.to_payload() for signal in request.signals),
-            "provisional": bool(request.provisional),
-            "final": not bool(request.provisional),
-            "confidence": request.confidence,
-            "disturbances": tuple(
-                disturbance.disturbance_id for disturbance in request.disturbances
-            ),
-            **_coordinate_metadata(request, bounds, content_frame),
-            **({"selected_handoff": selected_handoff} if selected_handoff is not None else {}),
-        },
-        request,
-        transition,
-    )
+    timing_ms = {
+        key: float(params[key])
+        for key in ("duration_ms", "attack_ms", "release_ms")
+        if key in params
+    }
+    metadata: dict[str, Any] = {
+        "caller_id": request.caller_id,
+        "continuity_key": request.continuity_key,
+        "role": request.role,
+        "resolved_presentation_layer": presentation.layer,
+        "presentation_order": int(presentation.order),
+        "visibility_scope": request.visibility_scope,
+        "profile": request.profile.base,
+        "state": request.state,
+        "lifecycle": request.state,
+        "slot": slot_name,
+        "bounds": request.bounds.to_payload(),
+        "content_frame": request.content_frame.to_payload()
+        if request.content_frame is not None
+        else request.bounds.to_payload(),
+        "coordinate_space": request.coordinate_space,
+        "display_epoch": request.display_epoch,
+        "source_epoch": request.source_epoch,
+        "freshness_epoch": request.freshness_epoch,
+        "presentation_layer": request.presentation_layer,
+        "layout_recipe": request.layout_recipe,
+        "motion": request.motion.to_payload(),
+        "continuity": request.continuity,
+        "signals": tuple(signal.to_payload() for signal in request.signals),
+        "provisional": bool(request.provisional),
+        "final": not bool(request.provisional),
+        "confidence": request.confidence,
+        "disturbances": tuple(
+            disturbance.disturbance_id for disturbance in request.disturbances
+        ),
+        **_coordinate_metadata(request, bounds, content_frame),
+        **({"selected_handoff": selected_handoff} if selected_handoff is not None else {}),
+    }
+    if timing_ms:
+        metadata["timing_ms"] = timing_ms
+
+    optical_field = _with_transition_metadata(metadata, request, transition)
     optical_field = _with_motion_metadata(optical_field, request, transition)
 
     config = {

@@ -289,6 +289,93 @@ def test_preview_adapter_publishes_preview_transcription_snapshot_without_starti
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
 
 
+def test_preview_materialize_snapshot_uses_finite_optical_field_contract_without_progress(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    optical_field = dict(snapshot.optical_field)
+    assert optical_field["caller_id"] == "preview.transcription"
+    assert optical_field["profile"] == "preview_pill"
+    assert optical_field["state"] == "materialize"
+    assert optical_field["slot"] == "materialize"
+    assert optical_field["timing_ms"]["duration_ms"] == pytest.approx(
+        overlay_module._FADE_IN_S * 1000.0
+    )
+    assert "progress" not in optical_field
+    assert "phase" not in optical_field
+
+
+def test_preview_dismiss_keeps_last_visible_geometry_instead_of_hidden_origin(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+    visible_snapshot = host.clients["preview.transcription"].published[-1]
+
+    overlay._window.setFrame_display_animate_(
+        _make_rect(0.0, 0.0, 1040.0, 520.0),
+        True,
+        False,
+    )
+    overlay._content_view.setFrame_(_make_rect(0.0, 0.0, 600.0, 80.0))
+
+    assert overlay._publish_preview_compositor_snapshot(visible=False) is True
+    dismiss_snapshot = host.clients["preview.transcription"].published[-1]
+
+    assert dismiss_snapshot.visible is False
+    assert dismiss_snapshot.geometry.center_x == pytest.approx(
+        visible_snapshot.geometry.center_x
+    )
+    assert dismiss_snapshot.geometry.center_y == pytest.approx(
+        visible_snapshot.geometry.center_y
+    )
+    optical_field = dict(dismiss_snapshot.optical_field)
+    assert optical_field["state"] == "dismiss"
+    assert optical_field["slot"] == "dismiss"
+    assert optical_field["timing_ms"]["duration_ms"] == pytest.approx(
+        overlay_module._FADE_OUT_S * 1000.0
+    )
+    assert "progress" not in optical_field
+    assert "phase" not in optical_field
+
+
+def test_preview_show_has_fill_ready_before_first_materialize_request(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    overlay._fill_layer.contents = None
+
+    monkeypatch.setattr(
+        overlay_module,
+        "_fill_field_to_image",
+        lambda _alpha, _r, _g, _b: ("first-fill-image", b"payload"),
+    )
+
+    overlay.set_compositor_registry(registry)
+    overlay.show()
+
+    assert overlay._fill_layer.contents == "first-fill-image"
+    snapshot = host.clients["preview.transcription"].published[-1]
+    assert snapshot.visible is True
+    assert dict(snapshot.optical_field)["state"] == "materialize"
+
+
 def test_preview_warp_tuning_updates_visible_shared_snapshot(
     mock_pyobjc, monkeypatch
 ):
@@ -311,6 +398,7 @@ def test_preview_warp_tuning_updates_visible_shared_snapshot(
 
     snapshot = host.clients["preview.transcription"].published[-1]
     assert snapshot.generation == 2
+    assert dict(snapshot.optical_field)["state"] == "rest"
     assert snapshot.material.x_squeeze == pytest.approx(3.25)
     assert snapshot.material.y_squeeze == pytest.approx(1.2)
     assert snapshot.material.ring_amplitude_points == pytest.approx(13.5)
