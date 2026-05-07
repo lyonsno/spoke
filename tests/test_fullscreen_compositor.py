@@ -90,7 +90,15 @@ def _identity(client_id, display_id="display-1", role="assistant"):
     return OverlayClientIdentity(client_id=client_id, display_id=display_id, role=role)
 
 
-def _snapshot(client_id, generation=1, *, role="assistant", brightness=0.25, z_index=0):
+def _snapshot(
+    client_id,
+    generation=1,
+    *,
+    role="assistant",
+    brightness=0.25,
+    z_index=0,
+    optical_field=None,
+):
     from spoke.fullscreen_compositor import (
         OpticalShellGeometrySnapshot,
         OpticalShellMaterialSnapshot,
@@ -112,6 +120,7 @@ def _snapshot(client_id, generation=1, *, role="assistant", brightness=0.25, z_i
         ),
         material=OpticalShellMaterialSnapshot(initial_brightness=brightness),
         z_index=z_index,
+        optical_field=optical_field,
     )
 
 
@@ -701,6 +710,62 @@ def test_shared_host_and_client_expose_residency_diagnostics(monkeypatch):
     assert diagnostics["avg_warp_to_drawable_ms"] == pytest.approx(0.4)
     assert client_diagnostics == diagnostics
     assert host.debug_snapshot()["diagnostics"] == diagnostics
+
+
+def test_debug_snapshot_emits_frame_strip_manifest_with_transition_phase(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(431),
+        content_view=object(),
+    )
+    assert assistant.publish(
+        _snapshot(
+            "assistant.command",
+            brightness=0.17,
+            optical_field={
+                "caller_id": "assistant.command",
+                "profile": "assistant_shell",
+                "state": "materialize",
+                "slot": "materialize",
+                "disturbances": (),
+            },
+        )
+    )
+
+    frame_strips = host.debug_snapshot()["frame_strips"]
+
+    assert frame_strips == [
+        {
+            "client_id": "assistant.command",
+            "frame_index": 1,
+            "generation": 1,
+            "visible": True,
+            "z_index": 0,
+            "transition": {
+                "phase": "materialize",
+                "state": "materialize",
+                "slot": "materialize",
+            },
+            "optical_field": {
+                "caller_id": "assistant.command",
+                "profile": "assistant_shell",
+                "state": "materialize",
+                "slot": "materialize",
+                "disturbances": (),
+            },
+            "geometry": {
+                "center_x": pytest.approx(11.0),
+                "center_y": pytest.approx(20.0),
+                "content_width_points": pytest.approx(300.0),
+                "content_height_points": pytest.approx(80.0),
+                "corner_radius_points": pytest.approx(16.0),
+                "band_width_points": pytest.approx(8.0),
+                "tail_width_points": pytest.approx(12.0),
+            },
+        }
+    ]
 
 
 def test_duplicate_client_id_on_same_display_replaces_snapshot_without_second_host(monkeypatch):

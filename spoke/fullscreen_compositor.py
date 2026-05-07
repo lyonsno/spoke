@@ -1407,6 +1407,34 @@ def _snapshot_from_shell_config(
     )
 
 
+def _frame_strip_manifest_from_snapshot(snapshot: OverlayRenderSnapshot) -> dict[str, Any]:
+    config = _snapshot_to_shell_config(snapshot)
+    optical_field = dict(config.get("optical_field", {}))
+    transition_phase = optical_field.get("transition_phase", optical_field.get("state", "rest"))
+    return {
+        "client_id": snapshot.identity.client_id,
+        "frame_index": snapshot.generation,
+        "generation": snapshot.generation,
+        "visible": bool(snapshot.visible),
+        "z_index": int(snapshot.z_index),
+        "transition": {
+            "phase": transition_phase,
+            "state": optical_field.get("state", "rest"),
+            "slot": optical_field.get("slot", "rest"),
+        },
+        "optical_field": optical_field,
+        "geometry": {
+            "center_x": config["center_x"],
+            "center_y": config["center_y"],
+            "content_width_points": config["content_width_points"],
+            "content_height_points": config["content_height_points"],
+            "corner_radius_points": config["corner_radius_points"],
+            "band_width_points": config["band_width_points"],
+            "tail_width_points": config["tail_width_points"],
+        },
+    }
+
+
 class OverlayCompositorRegistry:
     def host_for_screen(self, screen) -> "OverlayCompositorHost":
         registry_key = _screen_registry_key(screen)
@@ -1634,13 +1662,16 @@ class OverlayCompositorHost:
 
     def debug_snapshot(self) -> dict:
         clients = []
+        frame_strips = []
         for snapshot in self.render_snapshots():
             client_snapshot = {"client_id": snapshot.identity.client_id}
             client_snapshot.update(_snapshot_to_shell_config(snapshot))
             clients.append(client_snapshot)
+            frame_strips.append(_frame_strip_manifest_from_snapshot(snapshot))
         return {
             "client_count": len(clients),
             "clients": clients,
+            "frame_strips": frame_strips,
             "diagnostics": self.diagnostics_snapshot(),
         }
 

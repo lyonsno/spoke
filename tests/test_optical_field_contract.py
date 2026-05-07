@@ -66,6 +66,8 @@ def test_placeholder_backend_preserves_contract_identity_and_profile_slot_metada
     assert shell_config["optical_field"]["state"] == "rest"
     assert shell_config["optical_field"]["slot"] == "rest"
     assert shell_config["optical_field"]["disturbances"] == ("ready-pulse",)
+    assert "phase" not in shell_config["optical_field"]
+    assert "progress" not in shell_config["optical_field"]
 
 
 def test_profile_slots_override_independently_without_leaking_between_lifecycle_states():
