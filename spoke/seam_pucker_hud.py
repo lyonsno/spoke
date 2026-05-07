@@ -43,7 +43,7 @@ _NSWindowStyleMaskResizable = 1 << 3
 _NSWindowStyleMaskUtilityWindow = 1 << 4
 
 _SLIDER_SPECS = [
-    ("Preview Progress", "preview_progress", 0.0, 0.42, "{:.3f}"),
+    ("Transition Phase", "preview_progress", 0.0, 0.42, "{:.3f}"),
     ("Latch Start", "seam_latch_start", 0.0, 1.0, "{:.2f}"),
     ("Intensity", "seam_latch_intensity", 0.0, 2.0, "{:.2f}"),
     ("Seam Length", "scar_seam_length_frac", 0.05, 1.0, "{:.2f}"),
@@ -127,7 +127,7 @@ class SeamPuckerHUD(NSObject):
         )
         content.addSubview_(
             _make_label(
-                "Holds the horizontal dismiss seam so the missing pucker can be tuned.",
+                "Holds the diagnostic transition phase so the missing pucker can be tuned.",
                 NSMakeRect(_PADDING_X, _PANEL_HEIGHT - 58.0, _PANEL_WIDTH - 2 * _PADDING_X, 16.0),
                 size=10.5,
                 color=NSColor.colorWithWhite_alpha_(0.28, 1.0),
