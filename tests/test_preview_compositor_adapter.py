@@ -412,6 +412,9 @@ def test_preview_show_starts_shared_house_materialization_runner(
     assert shell_config["client_id"] == "preview.transcription"
     assert shell_config["role"] == "preview"
     assert shell_config["optical_field"]["state"] == "materialize"
+    assert shell_config["mip_blur_inset_points"] == pytest.approx(
+        overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0 * 0.5 * 2.0
+    )
 
 
 def test_preview_hide_starts_shared_house_dismiss_runner_before_release(
@@ -582,6 +585,7 @@ def test_preview_fill_sdf_body_matches_preview_rect_without_growing_warp(
 
     overlay._apply_ridge_masks(600.0, 80.0)
     geometry = overlay._preview_compositor_geometry_snapshot()
+    material = overlay._preview_compositor_material_snapshot()
 
     assert observed_sdf[-1][2] == pytest.approx(600.0)
     assert observed_sdf[-1][3] == pytest.approx(80.0)
@@ -593,6 +597,9 @@ def test_preview_fill_sdf_body_matches_preview_rect_without_growing_warp(
     )
     assert geometry.content_height_points == pytest.approx(
         (80.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0) * 2.0
+    )
+    assert material.mip_blur_inset_points == pytest.approx(
+        overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0 * 0.5 * 2.0
     )
 
 

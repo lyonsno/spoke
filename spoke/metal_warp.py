@@ -190,6 +190,7 @@ struct WarpParams {{
     float gpuMaterialHeightFrac; // 0..1 vertical reveal of the final material field
     float gpuMaterialTextContrastBias; // finite text contrast basis signal
     float gpuMaterialRidgeEmphasis; // finite ridge emphasis signal
+    float mipBlurInset; // pixels inside shell before material blur starts ramping
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -459,7 +460,8 @@ kernel void opticalShellWarp(
     // The warp shell is inflated by capsuleRadius beyond the fill boundary,
     // so blur should only start ramping once we're past that inflation zone
     // (i.e., inside the visible rounded shell).
-    float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f, 0.0f);
+    float mipBlurInset = params.mipBlurInset > 0.0f ? params.mipBlurInset : capsuleRadius * 0.5f;
+    float pixelsInside = max(-capsuleSdf - mipBlurInset, 0.0f);
     float baseMipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
     float warpAliasOctaves = max(
         abs(log2(max(abs(scaleX), 1e-4f))),
@@ -529,7 +531,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "40f"
+_WARP_PARAMS_FORMAT = "41f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -581,6 +583,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("gpu_material_height_frac", 1.0)),
         float(shell_config.get("gpu_material_text_contrast_bias", 0.5)),
         float(shell_config.get("gpu_material_ridge_emphasis", 0.5)),
+        float(shell_config.get("mip_blur_inset_points", 0.0)),
     )
 
 

@@ -704,10 +704,23 @@ class TranscriptionOverlay(NSObject):
             exterior_mix_width_points=tuning["exterior_mix_width_points"],
             x_squeeze=tuning["x_squeeze"],
             y_squeeze=tuning["y_squeeze"],
+            mip_blur_inset_points=self._preview_mip_blur_inset_points(),
             cleanup_blur_radius_points=tuning["cleanup_blur_radius_points"],
             debug_visualize=False,
             debug_grid_spacing_points=18.0,
         )
+
+    def _preview_mip_blur_inset_points(self) -> float:
+        scale = (
+            self._screen.backingScaleFactor()
+            if hasattr(self._screen, "backingScaleFactor")
+            else 2.0
+        )
+        content_frame = self._content_view.frame()
+        visible_height = float(content_frame.size.height)
+        shell_body_corner_r = min(_OVERLAY_CORNER_RADIUS, visible_height * 0.5)
+        tuning = self.preview_warp_tuning_snapshot()
+        return tuning["inflation_y_radii"] * shell_body_corner_r * 0.5 * scale
 
     def _preview_optical_field_request(
         self,
@@ -730,6 +743,7 @@ class TranscriptionOverlay(NSObject):
             raise ValueError(f"unknown preview optical field state: {state}")
         profile = OpticalFieldProfileRef(
             base="preview_pill",
+            params={"mip_blur_inset_points": self._preview_mip_blur_inset_points()},
             slots={
                 "materialize": OpticalFieldSlotOverride(
                     params={"duration_ms": _FADE_IN_S * 1000.0}

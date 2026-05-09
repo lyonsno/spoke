@@ -80,6 +80,21 @@ def test_pack_warp_params_uses_shell_specific_mip_blur_strength():
     assert values[20] == pytest.approx(0.0)
 
 
+def test_pack_warp_params_uses_shell_specific_mip_blur_inset_points():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "mip_blur_inset_points": 73.5,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+    assert values[40] == pytest.approx(73.5)
+
+
 def test_pack_warp_params_uses_shell_specific_scar_mode_controls():
     payload = metal_warp._pack_warp_params(
         1440.0,
@@ -173,6 +188,13 @@ def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     assert "shellMaterialAlphaForSdf" in source
     assert "composeShellMaterial" in source
     assert "warpedColor = composeShellMaterial" in source
+
+
+def test_metal_shader_uses_shell_specific_mip_blur_inset_before_lod_ramp():
+    source = metal_warp._metal_shader_source()
+    assert "mipBlurInset" in source
+    assert "params.mipBlurInset > 0.0f ? params.mipBlurInset : capsuleRadius * 0.5f" in source
+    assert "float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f" not in source
 
 
 def test_metal_material_alpha_is_not_locally_brightness_dependent():

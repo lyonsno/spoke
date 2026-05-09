@@ -917,6 +917,10 @@ def compile_placeholder_shell_config(
         "mip_blur_strength": _float_param(params, "mip_blur_strength"),
         "optical_field": optical_field,
     }
+    if "mip_blur_inset_points" in params:
+        config["mip_blur_inset_points"] = float(params["mip_blur_inset_points"])
+    elif "mip_blur_inset_frac" in params:
+        config["mip_blur_inset_points"] = scale * float(params["mip_blur_inset_frac"])
     if signals:
         config.update(
             {

@@ -73,6 +73,7 @@ class OpticalShellMaterialSnapshot:
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
     mip_blur_strength: float = 1.0
+    mip_blur_inset_points: float = 0.0
     warp_mode: float = 0.0
     scar_amount: float = 0.0
     scar_seam_length_frac: float = 0.70
@@ -1282,6 +1283,7 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
         "mip_blur_strength": snapshot.material.mip_blur_strength,
+        "mip_blur_inset_points": snapshot.material.mip_blur_inset_points,
         "warp_mode": snapshot.material.warp_mode,
         "scar_amount": snapshot.material.scar_amount,
         "scar_seam_length_frac": snapshot.material.scar_seam_length_frac,
@@ -1368,6 +1370,7 @@ def _snapshot_from_shell_config(
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),
         mip_blur_strength=float(config.get("mip_blur_strength", 1.0)),
+        mip_blur_inset_points=float(config.get("mip_blur_inset_points", 0.0)),
         warp_mode=float(config.get("warp_mode", 0.0)),
         scar_amount=float(config.get("scar_amount", 0.0)),
         scar_seam_length_frac=float(config.get("scar_seam_length_frac", 0.70)),
