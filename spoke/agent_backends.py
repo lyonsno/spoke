@@ -9,6 +9,7 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -19,6 +20,7 @@ _CODEX_CANDIDATE_PATHS = (
     "/usr/local/bin/codex",
     os.path.expanduser("~/.local/bin/codex"),
 )
+_CODEX_SESSION_LOG_SCAN_LIMIT = 250_000
 
 
 class AgentBackendUnavailable(RuntimeError):
@@ -164,6 +166,177 @@ def _event_from_codex_item(item: dict[str, Any]) -> AgentBackendEvent | None:
     return AgentBackendEvent(kind=item_type, text=text, data=item)
 
 
+def _text_from_codex_response_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
+def _percent_for_window(rate_limits: dict[str, Any], window_minutes: int) -> float | None:
+    for value in rate_limits.values():
+        if not isinstance(value, dict):
+            continue
+        if value.get("window_minutes") != window_minutes:
+            continue
+        percent = value.get("used_percent")
+        if isinstance(percent, (int, float)):
+            return float(percent)
+    return None
+
+
+def _events_from_codex_stream_event(event: dict[str, Any]) -> list[AgentBackendEvent]:
+    event_type = event.get("type")
+    payload = event.get("payload")
+    if event_type in {"session_meta", "turn_context"} and isinstance(payload, dict):
+        data: dict[str, Any] = {}
+        session_id = payload.get("id")
+        if isinstance(session_id, str) and session_id:
+            data["provider_session_id"] = session_id
+        cwd = payload.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            data["cwd"] = cwd
+        model = payload.get("model")
+        if isinstance(model, str) and model:
+            data["model"] = model
+        cli_version = payload.get("cli_version")
+        if isinstance(cli_version, str) and cli_version:
+            data["cli_version"] = cli_version
+        model_provider = payload.get("model_provider")
+        if isinstance(model_provider, str) and model_provider:
+            data["model_provider"] = model_provider
+        if data:
+            return [
+                AgentBackendEvent(
+                    kind="session_metadata",
+                    text=data.get("cwd", ""),
+                    data=data,
+                )
+            ]
+        return []
+
+    if event_type == "event_msg" and isinstance(payload, dict):
+        payload_type = payload.get("type")
+        if payload_type == "token_count":
+            rate_limits = payload.get("rate_limits")
+            if not isinstance(rate_limits, dict):
+                return []
+            data: dict[str, Any] = {}
+            five_hour = _percent_for_window(rate_limits, 300)
+            seven_day = _percent_for_window(rate_limits, 10080)
+            if five_hour is not None:
+                data["five_hour_percent"] = five_hour
+            if seven_day is not None:
+                data["seven_day_percent"] = seven_day
+            plan_type = rate_limits.get("plan_type")
+            if isinstance(plan_type, str) and plan_type:
+                data["plan_type"] = plan_type
+            limit_id = rate_limits.get("limit_id")
+            if isinstance(limit_id, str) and limit_id:
+                data["limit_id"] = limit_id
+            if data:
+                return [AgentBackendEvent(kind="usage_limits", data=data)]
+            return []
+
+    if event_type == "response_item" and isinstance(payload, dict):
+        item_type = payload.get("type")
+        role = payload.get("role")
+        if item_type == "message" and role == "assistant":
+            text = _text_from_codex_response_content(payload.get("content"))
+            if text:
+                data = {
+                    "id": payload.get("id", ""),
+                    "type": "agent_message",
+                    "text": text,
+                }
+                return [AgentBackendEvent(kind="agent_message", text=text, data=data)]
+    return []
+
+
+def _codex_sessions_root(
+    env: dict[str, str] | None = None,
+    codex_home: Path | None = None,
+) -> Path:
+    if codex_home is not None:
+        return codex_home / "sessions"
+    env = env or os.environ
+    configured = env.get("CODEX_HOME")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser() / "sessions"
+    return Path.home() / ".codex" / "sessions"
+
+
+def _codex_session_log_path(
+    session_id: str,
+    *,
+    env: dict[str, str] | None = None,
+    codex_home: Path | None = None,
+) -> Path | None:
+    session_id = session_id.strip()
+    if not session_id:
+        return None
+    root = _codex_sessions_root(env=env, codex_home=codex_home)
+    if not root.exists():
+        return None
+    matches = list(root.rglob(f"*{session_id}.jsonl"))
+    if not matches:
+        return None
+    return max(matches, key=lambda path: path.stat().st_mtime)
+
+
+def _events_from_codex_session_log(
+    session_id: str,
+    *,
+    env: dict[str, str] | None = None,
+    codex_home: Path | None = None,
+) -> list[AgentBackendEvent]:
+    path = _codex_session_log_path(session_id, env=env, codex_home=codex_home)
+    if path is None:
+        return []
+    session_meta_event: AgentBackendEvent | None = None
+    turn_context_event: AgentBackendEvent | None = None
+    usage_event: AgentBackendEvent | None = None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for index, line in enumerate(handle):
+                if index >= _CODEX_SESSION_LOG_SCAN_LIMIT:
+                    break
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    event = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                parsed = _events_from_codex_stream_event(event)
+                if not parsed:
+                    continue
+                event_type = event.get("type")
+                if event_type == "session_meta" and session_meta_event is None:
+                    session_meta_event = parsed[0]
+                elif event_type == "turn_context":
+                    turn_context_event = parsed[0]
+                elif event_type == "event_msg":
+                    usage_event = parsed[0]
+    except OSError:
+        return []
+    return [
+        event
+        for event in (session_meta_event, turn_context_event, usage_event)
+        if event is not None
+    ]
+
+
 def _append_event(
     events: list[AgentBackendEvent],
     event: AgentBackendEvent,
@@ -263,6 +436,13 @@ def _run_codex_cli(
                 message = event.get("message")
                 if isinstance(message, str):
                     stream_error = message
+            for backend_event in _events_from_codex_stream_event(event):
+                session_id = backend_event.data.get("provider_session_id")
+                if isinstance(session_id, str) and session_id:
+                    provider_session_id = session_id
+                _append_event(events, backend_event, event_sink)
+                if backend_event.kind == "agent_message" and backend_event.text:
+                    final_response = backend_event.text
     finally:
         if process.stdout is not None:
             process.stdout.close()
@@ -282,6 +462,9 @@ def _run_codex_cli(
     if return_code != 0:
         detail = stream_error or stderr.strip() or f"exit status {return_code}"
         raise RuntimeError(f"Codex CLI failed: {detail}")
+    if provider_session_id:
+        for backend_event in _events_from_codex_session_log(provider_session_id, env=env):
+            _append_event(events, backend_event, event_sink)
     return AgentBackendRunResult(
         provider="codex",
         session_id=provider_session_id,

@@ -4750,8 +4750,33 @@ class TestCommandOverlayToggle:
 
         d._toggle_command_overlay()
 
-        d._command_overlay.show.assert_not_called()
+        d._command_overlay.show.assert_called_once()
+        assert d._command_overlay.show.call_args.kwargs["initial_utterance"] == ""
+        assert "Codex Agent Shell selected" in d._command_overlay.show.call_args.kwargs[
+            "initial_response"
+        ]
+        assert "local answer" not in d._command_overlay.show.call_args.kwargs[
+            "initial_response"
+        ]
         assert d._pending_command_approval_active is not True
+
+    def test_toggle_command_overlay_works_for_agent_shell_without_local_command_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = None
+        d._command_overlay = MagicMock(_visible=False)
+        d._agent_shell_provider = "codex"
+        d._agent_backend_manager = MagicMock()
+        d._agent_shell_sessions = {}
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.show.assert_called_once()
+        assert d._command_overlay.show.call_args.kwargs["initial_utterance"] == ""
+        assert "Codex Agent Shell selected" in d._command_overlay.show.call_args.kwargs[
+            "initial_response"
+        ]
 
     def test_toggle_command_overlay_recalls_agent_shell_snapshot_when_active(
         self, main_module, monkeypatch
@@ -4778,6 +4803,24 @@ class TestCommandOverlayToggle:
             initial_utterance="codex question",
             initial_response="codex answer",
         )
+        d._command_overlay.finish.assert_called_once()
+
+    def test_agent_shell_provider_switch_repaints_visible_overlay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
+        d._menubar = MagicMock()
+        d._agent_backend_manager = MagicMock()
+        d._agent_shell_sessions = {}
+        d._save_preference = MagicMock()
+
+        d._apply_agent_shell_selection("codex")
+
+        d._command_overlay.set_utterance.assert_called_once_with("")
+        response = d._command_overlay.set_response_text.call_args.args[0]
+        assert "Codex Agent Shell selected" in response
+        assert "local answer" not in response
         d._command_overlay.finish.assert_called_once()
 
 
@@ -5660,7 +5703,7 @@ class _RemovedCommandOverlayDismissRecallCycle:
 class TestOverlayRecallSnapshots:
     """Recall should prefer the delegate snapshot over stale ring history."""
 
-    def test_agent_shell_snapshot_ignores_local_assistant_history_when_empty(
+    def test_agent_shell_snapshot_uses_placeholder_when_empty(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -5672,7 +5715,10 @@ class TestOverlayRecallSnapshots:
         d._agent_backend_manager = MagicMock()
         d._agent_shell_sessions = {}
 
-        assert d._last_command_overlay_snapshot() is None
+        assert d._last_command_overlay_snapshot() == (
+            "",
+            "Codex Agent Shell selected.\nSend a message to continue with Codex.",
+        )
 
     def test_agent_shell_snapshot_prefers_provider_transcript_over_local_history(
         self, main_module, monkeypatch
@@ -5707,11 +5753,149 @@ class TestOverlayRecallSnapshots:
         d._command_turn_route = "agent_shell"
         d._command_turn_provider = "codex"
         d._agent_shell_sessions = {}
+        d._save_preference = MagicMock()
 
         d.commandComplete_({"token": 7, "response": "codex answer"})
 
         assert d._agent_shell_sessions["codex"]["last_utterance"] == "codex question"
         assert d._agent_shell_sessions["codex"]["last_response"] == "codex answer"
+        d._save_preference.assert_called_once_with(
+            "agent_shell_overlay_snapshots",
+            {
+                "codex": {
+                    "last_utterance": "codex question",
+                    "last_response": "codex answer",
+                }
+            },
+        )
+
+    def test_agent_shell_sessions_load_persisted_provider_snapshot(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_preference = MagicMock(
+            return_value={
+                "codex": {
+                    "provider_session_id": "codex-thread-1",
+                    "last_utterance": "persisted codex question",
+                    "last_response": "persisted codex answer",
+                }
+            }
+        )
+        d._agent_shell_sessions = None
+        d._agent_shell_provider = "codex"
+        d._agent_backend_manager = MagicMock()
+
+        assert d._last_command_overlay_snapshot() == (
+            "persisted codex question",
+            "persisted codex answer",
+        )
+
+    def test_agent_shell_sessions_load_persisted_provider_catalog(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_preference = MagicMock(
+            return_value={
+                "codex": {
+                    "provider_session_id": "codex-thread-2",
+                    "sessions": [
+                        {
+                            "provider_session_id": "codex-thread-1",
+                            "last_utterance": "first codex question",
+                            "last_response": "first codex answer",
+                        },
+                        {
+                            "provider_session_id": "codex-thread-2",
+                            "last_utterance": "second codex question",
+                            "last_response": "second codex answer",
+                        },
+                    ],
+                }
+            }
+        )
+        d._agent_shell_sessions = None
+
+        record = d._agent_shell_session_record("codex")
+
+        assert record["provider_session_id"] == "codex-thread-2"
+        assert record["sessions"] == [
+            {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "first codex question",
+                "last_response": "first codex answer",
+            },
+            {
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+            },
+        ]
+
+    def test_agent_shell_catalog_keeps_prior_sessions_when_current_changes(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._agent_shell_sessions = {}
+        d._save_preference = MagicMock()
+
+        d._remember_agent_shell_session(
+            "codex",
+            {"id": "spoke-1", "provider_session_id": "codex-thread-1"},
+        )
+        d._remember_agent_shell_overlay_snapshot(
+            "codex",
+            "first codex question",
+            "first codex answer",
+        )
+        d._remember_agent_shell_session(
+            "codex",
+            {"id": "spoke-2", "provider_session_id": "codex-thread-2"},
+        )
+        d._remember_agent_shell_overlay_snapshot(
+            "codex",
+            "second codex question",
+            "second codex answer",
+        )
+
+        record = d._agent_shell_sessions["codex"]
+        assert record["provider_session_id"] == "codex-thread-2"
+        assert record["last_utterance"] == "second codex question"
+        assert record["last_response"] == "second codex answer"
+        assert record["sessions"] == [
+            {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "first codex question",
+                "last_response": "first codex answer",
+            },
+            {
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+            },
+        ]
+        assert d._save_preference.call_args_list[-1].args == (
+            "agent_shell_overlay_snapshots",
+            {
+                "codex": {
+                    "provider_session_id": "codex-thread-2",
+                    "last_utterance": "second codex question",
+                    "last_response": "second codex answer",
+                    "sessions": [
+                        {
+                            "provider_session_id": "codex-thread-1",
+                            "last_utterance": "first codex question",
+                            "last_response": "first codex answer",
+                        },
+                        {
+                            "provider_session_id": "codex-thread-2",
+                            "last_utterance": "second codex question",
+                            "last_response": "second codex answer",
+                        },
+                    ],
+                }
+            },
+        )
 
     def test_last_command_overlay_snapshot_prefers_client_overlay_snapshot_over_flat_history(
         self, main_module, monkeypatch
