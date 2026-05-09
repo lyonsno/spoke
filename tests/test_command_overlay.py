@@ -2245,6 +2245,27 @@ class TestShowFinishHide:
         )
         overlay._agent_shell_footer_label.setHidden_.assert_called_once_with(False)
 
+    def test_agent_shell_chrome_theme_uses_neutral_gray_not_glow_purple(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._agent_shell_header_label = MagicMock()
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label = MagicMock()
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+
+        overlay._apply_agent_shell_chrome_theme()
+
+        calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            red, green, blue, alpha = call.args
+            assert red == pytest.approx(green)
+            assert green == pytest.approx(blue)
+            assert red == pytest.approx(0.56)
+            assert alpha == pytest.approx(0.82)
+
 
 class TestWindowLayering:
     """Command overlay should stack independently from the preview overlay."""
@@ -4308,6 +4329,36 @@ class TestGeometryCaps:
         draw_rect = storage.drawInRect_.call_args_list[0].args[0]
         assert draw_rect.origin.y == pytest.approx(236.0 - 850.0)
         assert draw_rect.size.height == pytest.approx(1400.0)
+
+    def test_update_layout_gives_agent_shell_chrome_top_and_bottom_headroom(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(120.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        content_frame = overlay._content_view.setFrame_.call_args[0][0]
+        scroll_frame = overlay._scroll_view.setFrame_.call_args[0][0]
+        header_frame = overlay._agent_shell_header_label.setFrame_.call_args[0][0]
+        footer_frame = overlay._agent_shell_footer_label.setFrame_.call_args[0][0]
+
+        assert content_frame.size.height == pytest.approx(180.0)
+        assert footer_frame.origin.y >= 8.0
+        assert (
+            header_frame.origin.y + header_frame.size.height
+            <= content_frame.size.height - 8.0
+        )
+        assert scroll_frame.origin.y >= footer_frame.origin.y + footer_frame.size.height
+        assert scroll_frame.origin.y + scroll_frame.size.height <= header_frame.origin.y
 
 
 class TestToolState:

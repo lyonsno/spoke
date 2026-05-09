@@ -243,6 +243,21 @@ _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _NARRATOR_OVERLAP_TEXT_HEIGHT = 48.0
+_AGENT_SHELL_CHROME_GRAY = 0.56
+_AGENT_SHELL_CHROME_ALPHA = 0.82
+_AGENT_SHELL_HEADER_HEIGHT = 18.0
+_AGENT_SHELL_FOOTER_HEIGHT = 16.0
+_AGENT_SHELL_HEADER_TOP_INSET = 8.0
+_AGENT_SHELL_FOOTER_BOTTOM_INSET = 8.0
+_AGENT_SHELL_TRANSCRIPT_GAP = 5.0
+_AGENT_SHELL_VERTICAL_PAD = (
+    _AGENT_SHELL_HEADER_TOP_INSET
+    + _AGENT_SHELL_HEADER_HEIGHT
+    + _AGENT_SHELL_TRANSCRIPT_GAP
+    + _AGENT_SHELL_FOOTER_BOTTOM_INSET
+    + _AGENT_SHELL_FOOTER_HEIGHT
+    + _AGENT_SHELL_TRANSCRIPT_GAP
+)
 _USER_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MIN", 0.85)
 _USER_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MAX", 0.95)
 _ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.85)
@@ -2105,7 +2120,14 @@ class CommandOverlay(NSObject):
 
         header_w = _OVERLAY_WIDTH - timer_w - 34.0
         self._agent_shell_header_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(14.0, _OVERLAY_HEIGHT - 22.0, header_w, 16.0)
+            NSMakeRect(
+                14.0,
+                _OVERLAY_HEIGHT
+                - _AGENT_SHELL_HEADER_TOP_INSET
+                - _AGENT_SHELL_HEADER_HEIGHT,
+                header_w,
+                _AGENT_SHELL_HEADER_HEIGHT,
+            )
         )
         self._agent_shell_header_label.setEditable_(False)
         self._agent_shell_header_label.setSelectable_(False)
@@ -2119,7 +2141,10 @@ class CommandOverlay(NSObject):
         )
         self._agent_shell_header_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(
-                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.72
+                _AGENT_SHELL_CHROME_GRAY,
+                _AGENT_SHELL_CHROME_GRAY,
+                _AGENT_SHELL_CHROME_GRAY,
+                _AGENT_SHELL_CHROME_ALPHA,
             )
         )
         self._agent_shell_header_label.setStringValue_("")
@@ -2127,7 +2152,12 @@ class CommandOverlay(NSObject):
         content.addSubview_(self._agent_shell_header_label)
 
         self._agent_shell_footer_label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(14.0, 4.0, _OVERLAY_WIDTH - 28.0, 14.0)
+            NSMakeRect(
+                14.0,
+                _AGENT_SHELL_FOOTER_BOTTOM_INSET,
+                _OVERLAY_WIDTH - 28.0,
+                _AGENT_SHELL_FOOTER_HEIGHT,
+            )
         )
         self._agent_shell_footer_label.setEditable_(False)
         self._agent_shell_footer_label.setSelectable_(False)
@@ -2141,7 +2171,10 @@ class CommandOverlay(NSObject):
         )
         self._agent_shell_footer_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(
-                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.68
+                _AGENT_SHELL_CHROME_GRAY,
+                _AGENT_SHELL_CHROME_GRAY,
+                _AGENT_SHELL_CHROME_GRAY,
+                _AGENT_SHELL_CHROME_ALPHA,
             )
         )
         self._agent_shell_footer_label.setStringValue_("")
@@ -2754,6 +2787,7 @@ class CommandOverlay(NSObject):
             label.setStringValue_(text)
             label.setHidden_(not bool(text))
             self._apply_agent_shell_chrome_theme()
+            self._update_layout()
 
     def set_agent_shell_footer(self, text: str) -> None:
         """Set the Agent Shell metadata line below the transcript."""
@@ -2762,6 +2796,7 @@ class CommandOverlay(NSObject):
             label.setStringValue_(text)
             label.setHidden_(not bool(text))
             self._apply_agent_shell_chrome_theme()
+            self._update_layout()
 
     def _make_collapsed_attributed(self, text: str):
         """Build an attributed string for collapsed thinking text."""
@@ -4506,7 +4541,10 @@ class CommandOverlay(NSObject):
                 continue
             label.setTextColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.72
+                    _AGENT_SHELL_CHROME_GRAY,
+                    _AGENT_SHELL_CHROME_GRAY,
+                    _AGENT_SHELL_CHROME_GRAY,
+                    _AGENT_SHELL_CHROME_ALPHA,
                 )
             )
 
@@ -5511,6 +5549,13 @@ class CommandOverlay(NSObject):
         if container is not None and hasattr(container, "setContainerSize_"):
             container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
 
+    def _agent_shell_chrome_visible(self) -> bool:
+        labels = (
+            getattr(self, "_agent_shell_header_label", None),
+            getattr(self, "_agent_shell_footer_label", None),
+        )
+        return any(label is not None and not label.isHidden() for label in labels)
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -5524,7 +5569,9 @@ class CommandOverlay(NSObject):
                 text_height = _OVERLAY_HEIGHT - 16
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
-            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
+            chrome_visible = self._agent_shell_chrome_visible()
+            vertical_pad = _AGENT_SHELL_VERTICAL_PAD if chrome_visible else 24.0
+            new_height = min(max(_OVERLAY_HEIGHT, text_height + vertical_pad), max_height)
 
             self._sync_narrator_visibility(text_height)
 
@@ -5537,16 +5584,30 @@ class CommandOverlay(NSObject):
                 self._content_view.setFrame_(
                     NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
                 )
+                if chrome_visible:
+                    footer_y = _AGENT_SHELL_FOOTER_BOTTOM_INSET
+                    footer_h = _AGENT_SHELL_FOOTER_HEIGHT
+                    header_h = _AGENT_SHELL_HEADER_HEIGHT
+                    header_y = new_height - _AGENT_SHELL_HEADER_TOP_INSET - header_h
+                    scroll_y = footer_y + footer_h + _AGENT_SHELL_TRANSCRIPT_GAP
+                    scroll_h = max(1.0, header_y - _AGENT_SHELL_TRANSCRIPT_GAP - scroll_y)
+                else:
+                    footer_y = 4.0
+                    footer_h = 14.0
+                    header_h = 16.0
+                    header_y = new_height - 22.0
+                    scroll_y = 20.0
+                    scroll_h = new_height - 44.0
                 self._scroll_view.setFrame_(
-                    NSMakeRect(12, 20, _OVERLAY_WIDTH - 24, new_height - 44)
+                    NSMakeRect(12, scroll_y, _OVERLAY_WIDTH - 24, scroll_h)
                 )
                 if self._agent_shell_header_label is not None:
                     self._agent_shell_header_label.setFrame_(
-                        NSMakeRect(14.0, new_height - 22.0, _OVERLAY_WIDTH - 106.0, 16.0)
+                        NSMakeRect(14.0, header_y, _OVERLAY_WIDTH - 106.0, header_h)
                     )
                 if self._agent_shell_footer_label is not None:
                     self._agent_shell_footer_label.setFrame_(
-                        NSMakeRect(14.0, 4.0, _OVERLAY_WIDTH - 28.0, 14.0)
+                        NSMakeRect(14.0, footer_y, _OVERLAY_WIDTH - 28.0, footer_h)
                     )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()

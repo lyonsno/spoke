@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .agent_shell_identity import AgentShellIdentity, resolve_agent_shell_identity
+
 
 _ALLOWED_PROVIDERS = {"codex"}
 _BILLING_CREDENTIAL_ENV = ("OPENAI_" + "API_KEY", "CODEX_" + "API_KEY")
@@ -347,6 +349,41 @@ def _append_event(
         event_sink(event)
 
 
+def _agent_shell_identity_event(
+    *,
+    provider: str,
+    provider_session_id: str | None,
+    cwd: str,
+    final_response: str,
+    events: list[AgentBackendEvent],
+    identity_resolver: Callable[..., AgentShellIdentity | None] = resolve_agent_shell_identity,
+) -> AgentBackendEvent | None:
+    transcript_parts = [final_response]
+    transcript_parts.extend(event.text for event in events if event.text)
+    identity = identity_resolver(
+        provider=provider,
+        provider_session_id=provider_session_id,
+        cwd=cwd,
+        transcript_text="\n".join(part for part in transcript_parts if part),
+    )
+    if identity is None:
+        return None
+    data = {
+        "name": identity.topos_name,
+        "source": identity.source,
+        "confidence": identity.confidence,
+    }
+    if provider_session_id:
+        data["provider_session_id"] = provider_session_id
+    if cwd:
+        data["cwd"] = cwd
+    return AgentBackendEvent(
+        kind="topos_identity",
+        text=identity.topos_name,
+        data=data,
+    )
+
+
 def _run_codex_cli(
     *,
     prompt: str,
@@ -465,6 +502,15 @@ def _run_codex_cli(
     if provider_session_id:
         for backend_event in _events_from_codex_session_log(provider_session_id, env=env):
             _append_event(events, backend_event, event_sink)
+    identity_event = _agent_shell_identity_event(
+        provider="codex",
+        provider_session_id=provider_session_id,
+        cwd=cwd,
+        final_response=final_response,
+        events=events,
+    )
+    if identity_event is not None:
+        _append_event(events, identity_event, event_sink)
     return AgentBackendRunResult(
         provider="codex",
         session_id=provider_session_id,
