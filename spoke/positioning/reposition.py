@@ -13,11 +13,13 @@ from __future__ import annotations
 import base64
 import contextlib
 import contextvars
+import concurrent.futures
 import functools
 import io
 import json
 import os
 import re
+import statistics
 import time
 import uuid
 from pathlib import Path
@@ -843,19 +845,36 @@ GRIDPOINT_LABELS = [
     for c in ["1", "2", "3"]
 ]
 
+GRIDPOINT_LATTICES = {
+    "A": (0.25, 0.50, 0.75),
+    "B": (0.3125, 0.5625, 0.8125),
+}
+
 
 def _gridpoint_coords(label: str, screen_w: int, screen_h: int) -> tuple[int, int]:
     """Convert a grid-point label (e.g. 'B2') to pixel center coordinates."""
+    return _gridpoint_lattice_coords("A", label, screen_w, screen_h)
+
+
+def _gridpoint_lattice_coords(
+    lattice: str,
+    label: str,
+    screen_w: int,
+    screen_h: int,
+) -> tuple[int, int]:
+    """Convert a grid-point label through a named offset lattice."""
+
     row = ord(label[0]) - ord("A")  # 0-2
     col = int(label[1]) - 1          # 0-2
-    # Interior points of a 4×4 grid: at 25%, 50%, 75%
-    cx = int(screen_w * (col + 1) / 4)
-    cy = int(screen_h * (row + 1) / 4)
+    positions = GRIDPOINT_LATTICES.get(lattice, GRIDPOINT_LATTICES["A"])
+    cx = int(screen_w * positions[col])
+    cy = int(screen_h * positions[row])
     return cx, cy
 
 
-def _draw_grid_points(img: Image.Image) -> Image.Image:
-    """Draw 3×3 interior intersection points with labels on the image."""
+def _draw_grid_points(img: Image.Image, lattice: str = "A") -> Image.Image:
+    """Draw 3×3 lattice points with labels on the image."""
+
     img = img.copy()
     draw = ImageDraw.Draw(img)
     w, h = img.size
@@ -869,7 +888,7 @@ def _draw_grid_points(img: Image.Image) -> Image.Image:
         font = None
 
     for label in GRIDPOINT_LABELS:
-        cx, cy = _gridpoint_coords(label, w, h)
+        cx, cy = _gridpoint_lattice_coords(lattice, label, w, h)
         # Crosshair
         cross_len = marker_r * 2
         draw.line([(cx - cross_len, cy), (cx + cross_len, cy)],
@@ -881,6 +900,86 @@ def _draw_grid_points(img: Image.Image) -> Image.Image:
                   fill=(200, 200, 200), font=font)
 
     return img
+
+
+def _positioning_gridpoint_ensemble_enabled() -> bool:
+    return os.environ.get("SPOKE_POSITIONING_GRIDPOINT_ENSEMBLE", "0") == "1"
+
+
+def _gridpoint_ensemble_workers() -> int:
+    raw = os.environ.get("SPOKE_POSITIONING_GRIDPOINT_ENSEMBLE_WORKERS", "4")
+    try:
+        return max(1, int(float(raw)))
+    except (TypeError, ValueError):
+        return 4
+
+
+def _gridpoint_ensemble_lattice_sequence(workers: int) -> list[str]:
+    names = list(GRIDPOINT_LATTICES.keys())
+    return [names[index % len(names)] for index in range(max(1, workers))]
+
+
+def _parse_gridpoint_label(raw: str) -> str | None:
+    normalized = raw.strip().upper()
+    for label in GRIDPOINT_LABELS:
+        if label in normalized:
+            return label
+    return None
+
+
+def _median(values: list[float]) -> float:
+    return float(statistics.median(values))
+
+
+def _aggregate_gridpoint_ensemble_samples(
+    samples: list[dict],
+    *,
+    screen_w: int,
+    screen_h: int,
+) -> dict | None:
+    """Aggregate lattice-tagged grid-point labels into a coordinate estimate."""
+
+    successes = []
+    for sample in samples:
+        label = sample.get("label")
+        lattice = str(sample.get("lattice") or "A")
+        if label not in GRIDPOINT_LABELS:
+            continue
+        cx, cy = _gridpoint_lattice_coords(lattice, label, screen_w, screen_h)
+        successes.append({
+            "lattice": lattice,
+            "label": label,
+            "center_x": cx,
+            "center_y": cy,
+        })
+    if not successes:
+        return None
+
+    xs = [float(sample["center_x"]) for sample in successes]
+    ys = [float(sample["center_y"]) for sample in successes]
+    labels = [str(sample["label"]) for sample in successes]
+    lattices = [str(sample["lattice"]) for sample in successes]
+    winner_count = max(labels.count(label) for label in set(labels))
+    total = max(1, len(samples))
+    schema_success_fraction = len(successes) / total
+    winner_fraction = winner_count / max(1, len(successes))
+    spread_x = (max(xs) - min(xs)) / max(1, screen_w)
+    spread_y = (max(ys) - min(ys)) / max(1, screen_h)
+    spread_confidence = max(0.0, 1.0 - max(spread_x, spread_y))
+    confidence = min(schema_success_fraction, winner_fraction, spread_confidence)
+
+    return {
+        "center_x": _median(xs),
+        "center_y": _median(ys),
+        "confidence": confidence,
+        "schema_success_fraction": schema_success_fraction,
+        "winner_fraction": winner_fraction,
+        "spread_x": spread_x,
+        "spread_y": spread_y,
+        "labels": labels,
+        "lattices": lattices,
+        "samples": successes,
+    }
 
 
 GRIDPOINT_SYSTEM = (
@@ -896,6 +995,19 @@ GRIDPOINT_SYSTEM = (
     "The user's request was transcribed from speech and may contain phonetic "
     "errors. Interpret phonetically.\n\n"
     "Pick the ONE point where the overlay's center should move to.\n\n"
+    "Output ONLY the point label (e.g. A3). Nothing else."
+)
+
+GRIDPOINT_ENSEMBLE_SYSTEM = (
+    "You are a screen layout system. The user wants to reposition an overlay.\n\n"
+    "The image shows the current screen with 9 labeled candidate center points "
+    "(gray crosshairs with labels A1-C3). A red dashed outline shows the "
+    "overlay's current position.\n\n"
+    "The user's request was transcribed from speech and may contain phonetic "
+    "errors. Interpret phonetically.\n\n"
+    "Pick the ONE visible point where the overlay's center should move to. "
+    "Use the labels drawn in this image; do not assume every image uses the "
+    "same exact point positions.\n\n"
     "Output ONLY the point label (e.g. A3). Nothing else."
 )
 
@@ -1004,6 +1116,107 @@ def _pick_gridpoint(screenshot_b64: str, utterance: str,
     # Store raw for diagnostics
     _pick_gridpoint._last_raw = raw
     return None
+
+
+def _pick_gridpoint_on_lattice(
+    screenshot_b64: str,
+    utterance: str,
+    screen_w: int,
+    screen_h: int,
+    current_overlay: dict | None = None,
+    bearing: str | None = None,
+    *,
+    lattice: str,
+    worker_index: int,
+) -> dict:
+    """Pick one labeled point on a specific lattice image."""
+
+    cur_w = int((current_overlay or {}).get("width", 0.4) * screen_w)
+    cur_h = int((current_overlay or {}).get("height", 0.4) * screen_h)
+    cur_cx = int((current_overlay or {}).get("x", 0.3) * screen_w) + cur_w // 2
+    cur_cy = int((current_overlay or {}).get("y", 0.3) * screen_h) + cur_h // 2
+    positions = GRIDPOINT_LATTICES.get(lattice, GRIDPOINT_LATTICES["A"])
+
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Current overlay: center=({cur_cx}, {cur_cy}) width={cur_w} height={cur_h}\n"
+        f"Grid lattice: {lattice}\n"
+        f"Rows and columns are at normalized positions: {positions}\n"
+        "Choose one visible label from this image."
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers(
+            f"gridpoint-ensemble-{lattice}",
+            mode="gridpoint-ensemble",
+            iteration=worker_index,
+        ),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": GRIDPOINT_ENSEMBLE_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=8),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+    label = _parse_gridpoint_label(raw)
+    return {"lattice": lattice, "label": label, "raw": raw, "worker": worker_index}
+
+
+def _pick_gridpoint_ensemble(
+    screenshot: Image.Image,
+    utterance: str,
+    screen_w: int,
+    screen_h: int,
+    current_overlay: dict | None = None,
+    bearing: str | None = None,
+) -> dict | None:
+    """Run offset-grid point pickers in parallel and aggregate coordinates."""
+
+    worker_count = _gridpoint_ensemble_workers()
+    lattices = _gridpoint_ensemble_lattice_sequence(worker_count)
+    encoded_by_lattice: dict[str, str] = {}
+    for lattice in sorted(set(lattices)):
+        annotated = _draw_overlay_outline(screenshot, current_overlay)
+        annotated = _draw_grid_points(annotated, lattice=lattice)
+        encoded_by_lattice[lattice] = _encode_image(annotated)
+
+    samples: list[dict] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = []
+        for index, lattice in enumerate(lattices, start=1):
+            futures.append(
+                executor.submit(
+                    _pick_gridpoint_on_lattice,
+                    encoded_by_lattice[lattice],
+                    utterance,
+                    screen_w,
+                    screen_h,
+                    current_overlay,
+                    bearing,
+                    lattice=lattice,
+                    worker_index=index,
+                )
+            )
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                samples.append(future.result())
+            except Exception as exc:
+                samples.append({"lattice": "?", "label": None, "raw": repr(exc), "worker": -1})
+
+    _pick_gridpoint_ensemble._last_samples = samples
+    return _aggregate_gridpoint_ensemble_samples(samples, screen_w=screen_w, screen_h=screen_h)
 
 
 def _pick_gridpoint_resize(screenshot_b64: str, utterance: str,
@@ -1661,28 +1874,67 @@ def reposition_gridpoint_iterative(
 
     cx, cy = cur_cx, cur_cy
     label = None
-    for attempt in range(3):
-        label = _pick_gridpoint(
-            screenshot_b64,
+    ensemble = None
+    if _positioning_gridpoint_ensemble_enabled():
+        ensemble = _pick_gridpoint_ensemble(
+            screenshot,
             utterance,
             screen_w,
             screen_h,
             current_overlay,
             bearing,
         )
-        t_attempt = time.time()
-        if label is not None:
-            cx, cy = _gridpoint_coords(label, screen_w, screen_h)
+        t_ensemble = time.time()
+        if ensemble is not None:
+            cx = int(ensemble["center_x"])
+            cy = int(ensemble["center_y"])
+            label = "ENSEMBLE"
+            labels = ",".join(str(value) for value in ensemble.get("labels", []))
+            lattices = ",".join(str(value) for value in ensemble.get("lattices", []))
             reposition_gridpoint_iterative._last_debug.append(
-                f"GridPoint: {label} → ({cx}, {cy}) "
-                f"(attempt {attempt + 1}, {t_attempt - t0:.1f}s)"
+                "GridEnsemble: labels=%s lattices=%s center=(%d, %d) "
+                "confidence=%.2f spread=(%.3f, %.3f) (%.1fs)"
+                % (
+                    labels,
+                    lattices,
+                    cx,
+                    cy,
+                    float(ensemble.get("confidence", 0.0)),
+                    float(ensemble.get("spread_x", 0.0)),
+                    float(ensemble.get("spread_y", 0.0)),
+                    t_ensemble - t0,
+                )
             )
-            break
-        raw = getattr(_pick_gridpoint, "_last_raw", "?")
-        reposition_gridpoint_iterative._last_debug.append(
-            f"GridPoint: parse fail (attempt {attempt + 1}, {t_attempt - t0:.1f}s) raw={raw!r}"
-        )
-        _report()
+        else:
+            samples = getattr(_pick_gridpoint_ensemble, "_last_samples", [])
+            reposition_gridpoint_iterative._last_debug.append(
+                f"GridEnsemble: no parseable samples, falling back to single grid raw={samples!r}"
+            )
+            _report()
+
+    if label is None:
+        for attempt in range(3):
+            label = _pick_gridpoint(
+                screenshot_b64,
+                utterance,
+                screen_w,
+                screen_h,
+                current_overlay,
+                bearing,
+            )
+            t_attempt = time.time()
+            if label is not None:
+                cx, cy = _gridpoint_coords(label, screen_w, screen_h)
+                reposition_gridpoint_iterative._last_debug.append(
+                    f"GridPoint: {label} → ({cx}, {cy}) "
+                    f"(attempt {attempt + 1}, {t_attempt - t0:.1f}s)"
+                )
+                break
+            raw = getattr(_pick_gridpoint, "_last_raw", "?")
+            reposition_gridpoint_iterative._last_debug.append(
+                f"GridPoint: parse fail (attempt {attempt + 1}, {t_attempt - t0:.1f}s) raw={raw!r}"
+            )
+            _report()
 
     if label is None:
         reposition_gridpoint_iterative._last_debug.append(

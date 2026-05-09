@@ -462,6 +462,87 @@ def test_iterative_split_audit_passes_suitability_context_to_actuators(monkeypat
     assert all("needs_size=True" in context for context in seen_contexts)
 
 
+def test_gridpoint_ensemble_aggregates_offset_lattice_coordinates():
+    """Offset-grid votes should combine labels through lattice-specific coordinates."""
+    from spoke.positioning.reposition import (
+        _aggregate_gridpoint_ensemble_samples,
+        _gridpoint_lattice_coords,
+    )
+
+    samples = [
+        {"lattice": "A", "label": "A3"},
+        {"lattice": "B", "label": "A3"},
+        {"lattice": "A", "label": "A3"},
+        {"lattice": "B", "label": "A3"},
+    ]
+
+    result = _aggregate_gridpoint_ensemble_samples(samples, screen_w=1600, screen_h=1000)
+
+    ax, ay = _gridpoint_lattice_coords("A", "A3", 1600, 1000)
+    bx, by = _gridpoint_lattice_coords("B", "A3", 1600, 1000)
+    assert result["center_x"] == pytest.approx((ax + bx) / 2)
+    assert result["center_y"] == pytest.approx((ay + by) / 2)
+    assert result["spread_x"] == pytest.approx(abs(bx - ax) / 1600)
+    assert result["spread_y"] == pytest.approx(abs(by - ay) / 1000)
+    assert result["confidence"] > 0.90
+    assert result["labels"] == ["A3", "A3", "A3", "A3"]
+
+
+def test_iterative_positioning_uses_ensemble_seed_when_enabled(monkeypatch):
+    """The smoke flag should seed iterative positioning from the ensemble estimate."""
+    import importlib
+
+    reposition = importlib.import_module("spoke.positioning.reposition")
+
+    image = Image.new("RGB", (100, 100), "white")
+    audited_candidates = []
+
+    monkeypatch.setenv("SPOKE_POSITIONING_GRIDPOINT_ENSEMBLE", "1")
+    monkeypatch.setattr(
+        reposition,
+        "_pick_gridpoint_ensemble",
+        lambda *args, **kwargs: {
+            "center_x": 75,
+            "center_y": 25,
+            "confidence": 0.94,
+            "schema_success_fraction": 1.0,
+            "winner_fraction": 1.0,
+            "spread_x": 0.0625,
+            "spread_y": 0.0625,
+            "labels": ["A3", "A3", "A3", "A3"],
+            "lattices": ["A", "B", "A", "B"],
+        },
+    )
+    monkeypatch.setattr(
+        reposition,
+        "_pick_gridpoint",
+        lambda *args, **kwargs: pytest.fail("single gridpoint fallback should not run"),
+    )
+    monkeypatch.setattr(reposition, "_draw_overlay_outline", lambda _screenshot, _overlay: image)
+    monkeypatch.setattr(reposition, "_encode_image", lambda _image: "image")
+
+    def fake_suitability(_image_b64, _utterance, _screen_w, _screen_h, candidate, **_kwargs):
+        audited_candidates.append(dict(candidate))
+        return {"done": True, "needs_position": False, "needs_size": False, "reason": "clear"}
+
+    monkeypatch.setattr(reposition, "_pick_suitability_audit", fake_suitability)
+
+    result = reposition.reposition_gridpoint_iterative(
+        "move to the upper right",
+        image,
+        current_overlay={"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        screen_w=100,
+        screen_h=100,
+    )
+
+    assert audited_candidates == [
+        {"x": pytest.approx(0.55), "y": pytest.approx(0.05), "width": 0.4, "height": 0.4}
+    ]
+    assert result["x"] == pytest.approx(0.55)
+    assert result["y"] == pytest.approx(0.05)
+    assert "GridEnsemble: labels=A3,A3,A3,A3" in "\n".join(result["_debug_lines"])
+
+
 def test_positioning_field_margin_sanitizes_presented_candidate_without_menu_bar_guard(monkeypatch):
     """Output geometry should leave a small optical-field edge margin, not reserve the menu bar."""
     import importlib
