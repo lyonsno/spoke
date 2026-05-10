@@ -3785,12 +3785,14 @@ class TestAdaptiveCompositing:
 
             def __init__(self):
                 self.clients = {}
+                self.identities = {}
 
             def register_client(self, identity, *, window, content_view):
                 client = self.clients.get(identity.client_id)
                 if client is None:
                     client = FakeClient(identity.client_id)
                     self.clients[identity.client_id] = client
+                self.identities[identity.client_id] = identity
                 return client
 
         class FakeCompositor:
@@ -3808,6 +3810,7 @@ class TestAdaptiveCompositing:
         overlay._push_agent_shell_payload()
 
         card_client = compositor._host.clients["agent.card.codex-thread-1"]
+        assert compositor._host.identities["agent.card.codex-thread-1"].role == "agent_card"
         assert card_client.configs[-1]["client_id"] == "agent.card.codex-thread-1"
         assert card_client.configs[-1]["surface_attachment"] == "sibling"
         assert card_client.configs[-1]["visibility_scope"] == "independent"

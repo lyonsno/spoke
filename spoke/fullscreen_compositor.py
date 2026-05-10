@@ -1558,6 +1558,7 @@ def _snapshot_from_shell_config(
             "display_width_points",
             "display_height_points",
             "surface_kind",
+            "text",
         )
         if key in config
     }
@@ -1967,18 +1968,25 @@ class OverlayCompositorHost:
         for entry in self._clients.values():
             overlay_window_ids.extend(self._window_ids_for_entry(entry))
         snapshots = self.render_snapshots()
+        embedded_card_surfaces: dict[str, dict] = {}
         for snapshot in snapshots:
             config = _snapshot_to_shell_config(snapshot)
             if "agent_shell_card_optical_fields" in config:
-                self._agent_shell_card_surfaces = _agent_shell_card_surface_configs(
+                embedded_card_surfaces.update(_agent_shell_card_surface_configs(
                     config,
                     previous=self._agent_shell_card_surfaces,
-                )
+                ))
+        self._agent_shell_card_surfaces = embedded_card_surfaces
         parent_shell_configs = [
             _snapshot_to_shell_config(snapshot) for snapshot in snapshots if snapshot.visible
         ]
+        registered_client_ids = {snapshot.identity.client_id for snapshot in snapshots}
         card_shell_configs = sorted(
-            self._agent_shell_card_surfaces.values(),
+            (
+                config
+                for surface_id, config in self._agent_shell_card_surfaces.items()
+                if surface_id not in registered_client_ids
+            ),
             key=lambda config: (
                 int(config.get("presentation_order", 0)),
                 int(config.get("z_index", 0)),

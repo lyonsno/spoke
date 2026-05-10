@@ -517,6 +517,100 @@ def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_visibility(m
     ]
 
 
+def test_host_drops_stale_embedded_card_surfaces_when_registered_cards_take_over(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(253),
+        content_view=object(),
+    )
+    card = host.register_client(
+        _identity("agent.card.codex-thread-1", host.display_id, "agent_card"),
+        window=_FakeWindow(254),
+        content_view=object(),
+    )
+
+    embedded_parent_config = {
+        "client_id": "assistant.command",
+        "center_x": 300.0,
+        "center_y": 200.0,
+        "visible": True,
+        "content_width_points": 420.0,
+        "content_height_points": 160.0,
+        "corner_radius_points": 16.0,
+        "band_width_points": 8.0,
+        "tail_width_points": 12.0,
+        "agent_shell_card_optical_fields": {
+            "surface_kind": "agent_shell_card_optical_fields",
+            "requests": [
+                {
+                    "caller_id": "agent.card.codex-thread-1",
+                    "text": {"primary": "Stale embedded", "secondary": "ready"},
+                    "compiled_shell_config": {
+                        "client_id": "agent.card.codex-thread-1",
+                        "role": "agent_card",
+                        "presentation_layer": "agent_card",
+                        "presentation_order": 20,
+                        "visibility_scope": "independent",
+                        "center_x": 162.0,
+                        "center_y": 48.0,
+                        "content_width_points": 300.0,
+                        "content_height_points": 72.0,
+                        "corner_radius_points": 8.0,
+                        "band_width_points": 3.0,
+                        "tail_width_points": 2.0,
+                    },
+                }
+            ],
+        },
+    }
+    assert assistant.update_shell_config(embedded_parent_config)
+    assert [config["client_id"] for config in _FakeFullScreenCompositor.instances[0].updated_configs[-1]] == [
+        "assistant.command",
+        "agent.card.codex-thread-1",
+    ]
+
+    assert assistant.update_shell_config(
+        {
+            "client_id": "assistant.command",
+            "center_x": 300.0,
+            "center_y": 200.0,
+            "visible": True,
+            "content_width_points": 420.0,
+            "content_height_points": 160.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 8.0,
+            "tail_width_points": 12.0,
+        }
+    )
+    assert card.update_shell_config(
+        {
+            "client_id": "agent.card.codex-thread-1",
+            "role": "agent_card",
+            "presentation_layer": "agent_card",
+            "presentation_order": 20,
+            "visibility_scope": "independent",
+            "center_x": 900.0,
+            "center_y": 420.0,
+            "content_width_points": 360.0,
+            "content_height_points": 96.0,
+            "corner_radius_points": 18.0,
+            "band_width_points": 6.0,
+            "tail_width_points": 3.0,
+            "text": {"primary": "Registered card", "secondary": "ready"},
+        }
+    )
+
+    configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    card_configs = [
+        config for config in configs if config["client_id"] == "agent.card.codex-thread-1"
+    ]
+    assert len(card_configs) == 1
+    assert card_configs[0]["text"]["primary"] == "Registered card"
+    assert card_configs[0]["center_x"] == pytest.approx(900.0)
+
+
 def test_agent_shell_card_surfaces_are_clamped_inside_display_bounds(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
 

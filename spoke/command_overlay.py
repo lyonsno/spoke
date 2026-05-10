@@ -2399,7 +2399,7 @@ class CommandOverlay(NSObject):
             identity = OverlayClientIdentity(
                 client_id=client_id,
                 display_id=getattr(host, "display_id", "unknown"),
-                role="assistant",
+                role="agent_card",
             )
             client = clients.get(client_id)
             if client is None or identities.get(client_id) != identity:
