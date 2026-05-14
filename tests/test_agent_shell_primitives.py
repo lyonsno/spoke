@@ -86,8 +86,8 @@ def test_inactive_primitives_hide_response_without_provider_specific_special_cas
     primitives = build_agent_shell_primitives(
         [
             {
-                "thread_id": "gemini-session-1",
-                "provider": "gemini-cli",
+                "thread_id": "external-session-1",
+                "provider": "external-cli",
                 "title": "inactive lane",
                 "readiness": "ready",
                 "bearing": "Session: inactive lane",
@@ -109,13 +109,13 @@ def test_inactive_primitives_hide_response_without_provider_specific_special_cas
     )
 
     assert [primitive["kind"] for primitive in primitives] == ["thread_card", "thread_card"]
-    assert [primitive["provider"] for primitive in primitives] == ["gemini-cli", ""]
+    assert [primitive["provider"] for primitive in primitives] == ["external-cli", ""]
     assert [primitive["provider_session_id"] for primitive in primitives] == [
-        "gemini-session-1",
+        "external-session-1",
         "generated-stable-id",
     ]
     assert [primitive["id"] for primitive in primitives] == [
-        "gemini-session-1",
+        "external-session-1",
         "generated-stable-id",
     ]
     assert all(primitive["latest_response"] == "" for primitive in primitives)

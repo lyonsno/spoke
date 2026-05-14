@@ -203,17 +203,17 @@ class _PreemptiveAgentBackendManager:
         if session_id.endswith("-old"):
             return {
                 "id": session_id,
-                "provider": "gemini-cli",
+                "provider": "claude-code",
                 "state": "running",
-                "provider_session_id": "gemini-provider-old",
+                "provider_session_id": "claude-provider-old",
                 "result": None,
                 "error": None,
             }
         return {
             "id": session_id,
-            "provider": "gemini-cli",
+            "provider": "claude-code",
             "state": "completed",
-            "provider_session_id": "gemini-provider-new",
+            "provider_session_id": "claude-provider-new",
             "result": "replacement complete",
             "error": None,
         }
@@ -257,7 +257,6 @@ class _FakeAcpClient:
             mode_map = {
                 "codex": "full-access",
                 "claude-code": "bypassPermissions",
-                "gemini-cli": "default",
             }
             mode_id = mode_map[self.provider]
             return {
@@ -548,92 +547,11 @@ class TestAgentBackendManager:
             "@zed-industries/codex-acp",
         )
 
-    def test_gemini_stream_events_preserve_session_tool_and_stats_shape(self):
-        from spoke.agent_backends import _events_from_gemini_stream_event
-
-        init_events = _events_from_gemini_stream_event(
-            {
-                "type": "init",
-                "session_id": "gemini-thread-1",
-                "model": "auto-gemini-3",
-            },
-            cwd="/tmp/spoke",
-        )
-        assistant_events = _events_from_gemini_stream_event(
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": "Gemini docked.",
-                "delta": True,
-            },
-            cwd="/tmp/spoke",
-        )
-        tool_events = _events_from_gemini_stream_event(
-            {
-                "type": "tool_use",
-                "tool_name": "run_shell_command",
-                "tool_id": "tool-1",
-                "parameters": {"command": "pwd", "description": "Print cwd."},
-            },
-            cwd="/tmp/spoke",
-        )
-        result_events = _events_from_gemini_stream_event(
-            {
-                "type": "result",
-                "status": "success",
-                "stats": {
-                    "duration_ms": 3116,
-                    "tool_calls": 1,
-                    "models": {"gemini-3-flash-preview": {"total_tokens": 10}},
-                },
-            },
-            cwd="/tmp/spoke",
-        )
-
-        assert [(event.kind, event.text, event.data) for event in init_events] == [
-            (
-                "session_metadata",
-                "/tmp/spoke",
-                {
-                    "provider_session_id": "gemini-thread-1",
-                    "cwd": "/tmp/spoke",
-                    "model": "auto-gemini-3",
-                },
-            )
-        ]
-        assert [(event.kind, event.text) for event in assistant_events] == [
-            ("agent_message", "Gemini docked.")
-        ]
-        assert [(event.kind, event.text, event.data["tool_name"]) for event in tool_events] == [
-            ("tool_use", "run_shell_command: pwd", "run_shell_command")
-        ]
-        assert [(event.kind, event.data["tool_calls"]) for event in result_events] == [
-            ("usage_limits", 1)
-        ]
-
-    def test_gemini_command_wraps_prompt_for_compact_operator_shell(self):
-        from spoke.agent_backends import _gemini_command
-
-        command = _gemini_command(
-            gemini_path="/usr/local/bin/gemini",
-            prompt="Inspect the Agent Shell backend.",
-            resume_id=None,
-        )
-
-        prompt = command[2]
-        assert "compact operator shell" in prompt
-        assert "do not print an implementation plan" in prompt.lower()
-        assert "Inspect the Agent Shell backend." in prompt
-        assert "--approval-mode" in command
-        assert command[command.index("--approval-mode") + 1] == "plan"
-        assert "yolo" not in command
-
     @pytest.mark.parametrize(
         ("provider", "mode_id"),
         [
             ("codex", "full-access"),
             ("claude-code", "bypassPermissions"),
-            ("gemini-cli", "default"),
         ],
     )
     def test_acp_backend_sets_provider_default_mode(self, provider, mode_id):
@@ -1099,50 +1017,27 @@ class TestAgentBackendManager:
         assert result["thread_card"]["provider"] == "claude-code"
         assert result["thread_card"]["latest_response"] == "Claude plan complete."
 
-    def test_launch_accepts_gemini_cli_through_shared_session_contract(self, tmp_path):
-        from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
-
-        calls = []
-        _DeferredThread.created = []
-
-        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
-            calls.append((provider, prompt, cwd, resume_id, cancel_check()))
-            return AgentBackendRunResult(
-                provider=provider,
-                session_id="gemini-thread-123",
-                final_response="Gemini plan complete.",
-            )
+    def test_launch_rejects_gemini_cli_until_agent_shell_authority_exists(self, tmp_path):
+        from spoke.agent_backends import AgentBackendManager
 
         manager = AgentBackendManager(
-            backend_runner=fake_runner,
+            backend_runner=MagicMock(),
             thread_factory=_DeferredThread,
         )
 
-        launched = manager.launch(
-            provider="gemini-cli",
-            prompt="inspect the failing tests",
-            cwd=str(tmp_path),
-            resume_id="prior-gemini-session",
-        )
-        assert launched["id"] == "agent-backend-gemini-cli-1"
-        assert launched["provider"] == "gemini-cli"
-
-        _DeferredThread.created[-1].run_now()
-
-        result = manager.get_session(launched["id"])
-        assert calls == [
-            (
-                "gemini-cli",
-                "inspect the failing tests",
-                str(tmp_path),
-                "prior-gemini-session",
-                False,
+        with pytest.raises(ValueError, match="Unsupported agent backend"):
+            manager.launch(
+                provider="gemini-cli",
+                prompt="inspect the failing tests",
+                cwd=str(tmp_path),
+                resume_id="prior-gemini-session",
             )
-        ]
-        assert result["state"] == "completed"
-        assert result["provider_session_id"] == "gemini-thread-123"
-        assert result["thread_card"]["provider"] == "gemini-cli"
-        assert result["thread_card"]["latest_response"] == "Gemini plan complete."
+
+    def test_backend_module_does_not_expose_gemini_cli_runner(self):
+        import spoke.agent_backends as agent_backends
+
+        assert not hasattr(agent_backends, "_gemini_command")
+        assert not hasattr(agent_backends, "_run_gemini_cli")
 
     def test_backend_unavailable_is_visible_without_looking_like_terminal_failure(self):
         from spoke.agent_backends import (
@@ -1249,14 +1144,14 @@ class TestAgentBackendManager:
                 pass
             return AgentBackendRunResult(
                 provider=provider,
-                session_id="gemini-thread-123",
+                session_id="claude-thread-123",
                 final_response="Should be discarded",
             )
 
         manager = AgentBackendManager(backend_runner=fake_runner)
 
         launched = manager.launch(
-            provider="gemini-cli",
+            provider="claude-code",
             prompt="run recon",
             cwd="/tmp/project",
         )
@@ -1682,36 +1577,37 @@ class TestAgentShellRouting:
         assert decision.control_action == "switch_provider"
         assert decision.provider == "claude-code"
 
-    def test_active_agent_shell_recognizes_gemini_cli_as_distinct_cli_backend(self):
+    def test_active_agent_shell_does_not_switch_to_gemini_cli(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
         state = AgentShellState(active=True, provider="codex", cwd="/tmp/project")
 
         decision = route_agent_shell_input("switch to Gemini CLI", state)
 
-        assert decision.kind == "mode_control"
-        assert decision.control_action == "switch_provider"
-        assert decision.provider == "gemini-cli"
+        assert decision.kind == "provider_message"
+        assert decision.control_action is None
+        assert decision.provider == "codex"
+        assert decision.text == "switch to Gemini CLI"
 
     def test_active_agent_shell_cancel_text_stays_with_selected_provider(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
         decision = route_agent_shell_input(
             "cancel agent",
-            AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
+            AgentShellState(active=True, provider="claude-code", cwd="/tmp/project"),
         )
 
         assert decision.kind == "provider_message"
         assert decision.control_action is None
         assert decision.text == "cancel agent"
-        assert decision.provider == "gemini-cli"
+        assert decision.provider == "claude-code"
 
     def test_active_agent_shell_cancel_words_inside_message_do_not_trigger_control(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
         decision = route_agent_shell_input(
             "stop using backend jargon and explain the run loop plainly",
-            AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
+            AgentShellState(active=True, provider="claude-code", cwd="/tmp/project"),
         )
 
         assert decision.kind == "provider_message"
@@ -1768,8 +1664,6 @@ class TestAgentShellMenuState:
                 ("codex-new-session", "Codex: New Session", False, True),
                 ("claude-code", "Claude Code", False, True),
                 ("claude-code-new-session", "Claude Code: New Session", False, True),
-                ("gemini-cli", "Gemini CLI", False, True),
-                ("gemini-cli-new-session", "Gemini CLI: New Session", False, True),
             ],
         }
 
@@ -1826,8 +1720,6 @@ class TestAgentShellMenuState:
                 True,
                 True,
             ),
-            ("gemini-cli", "Gemini CLI", False, True),
-            ("gemini-cli-new-session", "Gemini CLI: New Session", False, True),
         ]
 
     def test_agent_shell_new_provider_session_clears_active_record_but_keeps_catalog(
@@ -2081,19 +1973,16 @@ class TestAgentShellMenuState:
         assert [card["provider"] for card in cards] == [
             "codex",
             "claude-code",
-            "gemini-cli",
         ]
         assert [card["provider_session_id"] for card in cards] == [
             "codex-thread-1",
             "claude-thread-1",
-            "gemini-thread-1",
         ]
-        assert [card["selected"] for card in cards] == [False, True, False]
+        assert [card["selected"] for card in cards] == [False, True]
         assert cards[0]["display"]["display_state"] == "inactive"
         assert cards[0]["display"]["show_latest_response"] is False
         assert cards[1]["display"]["display_state"] == "selected_resting"
         assert cards[1]["display"]["primary_text"] == "claude restart answer"
-        assert cards[2]["display"]["display_state"] == "inactive"
 
     def test_agent_shell_thread_cards_snapshot_merges_live_backend_public_sessions(
         self, main_module
@@ -2115,15 +2004,15 @@ class TestAgentShellMenuState:
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_backend_manager.list_sessions.return_value = [
             {
-                "id": "agent-backend-gemini-cli-1",
-                "provider": "gemini-cli",
+                "id": "agent-backend-claude-code-1",
+                "provider": "claude-code",
                 "state": "running",
-                "provider_session_id": "gemini-thread-live",
+                "provider_session_id": "claude-thread-live",
                 "thread_card": {
-                    "thread_id": "agent-backend-gemini-cli-1",
-                    "provider": "gemini-cli",
-                    "provider_session_id": "gemini-thread-live",
-                    "title": "live gemini work",
+                    "thread_id": "agent-backend-claude-code-1",
+                    "provider": "claude-code",
+                    "provider_session_id": "claude-thread-live",
+                    "title": "live claude work",
                     "readiness": "working",
                     "bearing": "Session: live backend work",
                     "activity_line": "Running focused tests",
@@ -2137,10 +2026,10 @@ class TestAgentShellMenuState:
 
         assert [card["provider_session_id"] for card in cards] == [
             "codex-thread-1",
-            "gemini-thread-live",
+            "claude-thread-live",
         ]
         assert cards[0]["selected"] is True
-        assert cards[1]["provider"] == "gemini-cli"
+        assert cards[1]["provider"] == "claude-code"
         assert cards[1]["selected"] is False
         assert cards[1]["readiness"] == "working"
         assert cards[1]["display"]["display_state"] == "inactive"
@@ -2164,13 +2053,13 @@ class TestAgentShellMenuState:
                     },
                 ],
             },
-            "gemini-cli": {
-                "provider_session_id": "gemini-thread-1",
+            "claude-code": {
+                "provider_session_id": "claude-thread-1",
                 "sessions": [
                     {
-                        "provider_session_id": "gemini-thread-1",
-                        "last_utterance": "gemini question",
-                        "last_response": "gemini answer",
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "claude question",
+                        "last_response": "claude answer",
                     },
                 ],
             },
@@ -2179,12 +2068,12 @@ class TestAgentShellMenuState:
         delegate._save_preference = MagicMock()
         delegate._menubar = MagicMock()
 
-        delegate._apply_agent_shell_selection("gemini-cli-session:gemini-thread-1")
-        cards = delegate._agent_shell_thread_cards_snapshot("gemini-cli")
+        delegate._apply_agent_shell_selection("claude-code-session:claude-thread-1")
+        cards = delegate._agent_shell_thread_cards_snapshot("claude-code")
 
         assert [card["provider_session_id"] for card in cards] == [
             "codex-thread-1",
-            "gemini-thread-1",
+            "claude-thread-1",
         ]
         assert [card["selected"] for card in cards] == [False, True]
         assert cards[0]["display"]["display_state"] == "inactive"
@@ -2674,13 +2563,13 @@ class TestAgentShellDelegateDispatch:
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
-        delegate._agent_shell_provider = "gemini-cli"
+        delegate._agent_shell_provider = "claude-code"
         delegate._agent_backend_manager = _PreemptiveAgentBackendManager()
         delegate._agent_shell_sessions = {
-            "gemini-cli": {
-                "spoke_session_id": "agent-backend-gemini-cli-old",
-                "active_spoke_session_id": "agent-backend-gemini-cli-old",
-                "provider_session_id": "gemini-provider-old",
+            "claude-code": {
+                "spoke_session_id": "agent-backend-claude-code-old",
+                "active_spoke_session_id": "agent-backend-claude-code-old",
+                "provider_session_id": "claude-provider-old",
                 "sessions": [],
             }
         }
@@ -2688,14 +2577,14 @@ class TestAgentShellDelegateDispatch:
         delegate._send_text_as_command("cancel this agent run")
 
         assert delegate._agent_backend_manager.cancelled == [
-            "agent-backend-gemini-cli-old"
+            "agent-backend-claude-code-old"
         ]
         assert delegate._agent_backend_manager.launched == [
             {
-                "provider": "gemini-cli",
+                "provider": "claude-code",
                 "prompt": "cancel this agent run",
                 "cwd": str(Path.cwd()),
-                "resume_id": "gemini-provider-old",
+                "resume_id": "claude-provider-old",
             }
         ]
 
@@ -2704,13 +2593,13 @@ class TestAgentShellDelegateDispatch:
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
         delegate = _make_agent_shell_delegate(main_module)
-        delegate._agent_shell_provider = "gemini-cli"
+        delegate._agent_shell_provider = "claude-code"
         delegate._agent_backend_manager = _PreemptiveAgentBackendManager()
         delegate._agent_shell_sessions = {
-            "gemini-cli": {
-                "spoke_session_id": "agent-backend-gemini-cli-old",
-                "active_spoke_session_id": "agent-backend-gemini-cli-old",
-                "provider_session_id": "gemini-provider-old",
+            "claude-code": {
+                "spoke_session_id": "agent-backend-claude-code-old",
+                "active_spoke_session_id": "agent-backend-claude-code-old",
+                "provider_session_id": "claude-provider-old",
                 "sessions": [],
             }
         }
@@ -2718,13 +2607,13 @@ class TestAgentShellDelegateDispatch:
         delegate._send_text_as_command("look at the next file")
 
         assert delegate._agent_backend_manager.cancelled == [
-            "agent-backend-gemini-cli-old"
+            "agent-backend-claude-code-old"
         ]
         assert delegate._agent_backend_manager.launched == [
             {
-                "provider": "gemini-cli",
+                "provider": "claude-code",
                 "prompt": "look at the next file",
                 "cwd": str(Path.cwd()),
-                "resume_id": "gemini-provider-old",
+                "resume_id": "claude-provider-old",
             }
         ]

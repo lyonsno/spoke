@@ -44,8 +44,8 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
-_AGENT_SHELL_PROVIDERS = {"codex", "claude-code", "gemini-cli"}
-_AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex", "claude-code", "gemini-cli"}
+_AGENT_SHELL_PROVIDERS = {"codex", "claude-code"}
+_AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex", "claude-code"}
 _AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF = "agent_shell_overlay_snapshots"
 _AGENT_SHELL_SESSION_CATALOG_LIMIT = 12
 
@@ -104,8 +104,6 @@ def _format_command_http_error(exc) -> str:
 def _agent_shell_provider_label(provider: str | None) -> str:
     if provider == "claude-code":
         return "Claude Code"
-    if provider == "gemini-cli":
-        return "Gemini CLI"
     if provider == "codex":
         return "Codex"
     return "Agent Shell"
@@ -3905,7 +3903,7 @@ class SpokeAppDelegate(NSObject):
             selected_provider_session_id = None
         cards: list[dict] = []
         index_by_key: dict[tuple[str, str], int] = {}
-        for catalog_provider in ("codex", "claude-code", "gemini-cli"):
+        for catalog_provider in ("codex", "claude-code"):
             catalog_record = self._agent_shell_session_record(catalog_provider)
             catalog = self._sanitize_agent_shell_catalog(catalog_record.get("sessions"))
             for entry in catalog:
@@ -5713,12 +5711,12 @@ class SpokeAppDelegate(NSObject):
 
     def _agent_shell_menu_state(self) -> dict:
         selected = getattr(self, "_agent_shell_provider", "off") or "off"
-        if selected not in {"off", "codex", "claude-code", "gemini-cli"}:
+        if selected not in {"off", "codex", "claude-code"}:
             selected = "off"
         items = [
             ("off", "Off", selected == "off", True),
         ]
-        for provider in ("codex", "claude-code", "gemini-cli"):
+        for provider in ("codex", "claude-code"):
             label = _agent_shell_provider_label(provider)
             record = self._agent_shell_session_record(provider)
             current_session = record.get("provider_session_id")
@@ -5858,7 +5856,7 @@ class SpokeAppDelegate(NSObject):
                     self._menubar.set_status_text(f"Agent Shell: {label}")
                 self._repaint_visible_command_overlay_for_current_route()
                 return
-        provider = provider if provider in {"off", "codex", "claude-code", "gemini-cli"} else "off"
+        provider = provider if provider in {"off", "codex", "claude-code"} else "off"
         self._agent_shell_provider = provider
         self._save_preference("agent_shell_provider", provider)
         if self._menubar is not None:

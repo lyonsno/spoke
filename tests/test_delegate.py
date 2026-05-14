@@ -4817,8 +4817,9 @@ class TestCommandOverlayToggle:
 
         d._apply_agent_shell_selection("codex")
 
-        d._command_overlay.set_utterance.assert_called_once_with("")
-        response = d._command_overlay.set_response_text.call_args.args[0]
+        d._command_overlay.replace_transcript.assert_called_once()
+        response = d._command_overlay.replace_transcript.call_args.kwargs["response"]
+        assert d._command_overlay.replace_transcript.call_args.kwargs["utterance"] == ""
         assert "Codex Agent Shell selected" in response
         assert "local answer" not in response
         d._command_overlay.finish.assert_called_once()

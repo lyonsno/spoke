@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 
 PROTOCOL_VERSION = 1
-_KNOWN_PROVIDERS = {"codex", "claude-code", "gemini-cli"}
+_KNOWN_PROVIDERS = {"codex", "claude-code"}
 
 
 class AcpProbeError(RuntimeError):
@@ -64,8 +64,6 @@ class JsonRpcLineCodec:
 def provider_command(provider: str) -> tuple[str, ...]:
     """Return the default ACP command for a known provider."""
     normalized = provider.strip().casefold()
-    if normalized == "gemini-cli":
-        return ("gemini", "--acp")
     if normalized == "codex":
         return ("codex-acp",)
     if normalized == "claude-code":
@@ -80,8 +78,6 @@ def provider_default_mode(provider: str) -> str:
         return "full-access"
     if normalized == "claude-code":
         return "bypassPermissions"
-    if normalized == "gemini-cli":
-        return "default"
     raise ValueError(f"unknown ACP provider: {provider}")
 
 

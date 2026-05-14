@@ -93,12 +93,19 @@ def test_summarize_session_update_marks_bearing_relevant_events():
 
 
 def test_provider_command_prefers_known_acp_transports():
-    assert provider_command("gemini-cli") == ("gemini", "--acp")
     assert provider_command("codex") == ("codex-acp",)
     assert provider_command("claude-code") == ("claude-agent-acp",)
 
 
-def test_provider_default_modes_fence_gemini_git_mutation():
+def test_provider_default_modes_for_active_agent_shell_backends():
     assert provider_default_mode("codex") == "full-access"
     assert provider_default_mode("claude-code") == "bypassPermissions"
-    assert provider_default_mode("gemini-cli") == "default"
+
+
+def test_gemini_cli_is_not_an_agent_shell_acp_provider():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown ACP provider"):
+        provider_command("gemini-cli")
+    with pytest.raises(ValueError, match="unknown ACP provider"):
+        provider_default_mode("gemini-cli")
