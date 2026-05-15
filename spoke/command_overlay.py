@@ -2270,7 +2270,7 @@ class CommandOverlay(NSObject):
                 NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
             )
             self._scroll_view.setFrame_(
-                NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
+                NSMakeRect(32, 10, _OVERLAY_WIDTH - 64, _OVERLAY_HEIGHT - 20)
             )
             self._reset_text_geometry(self._scroll_view.frame().size.height)
             if not has_initial_transcript:

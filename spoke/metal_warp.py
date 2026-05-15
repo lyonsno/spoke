@@ -467,7 +467,10 @@ kernel void opticalShellWarp(
     //
     // The band width is narrow and the easing makes it read as a designed
     // material edge rather than an artifact of the blur kernel.
-    float pixelsInside = -capsuleSdf;
+    // Crisp warp margin: ~1mm of un-blurred warped backdrop inside
+    // the capsule boundary before the mip band begins.
+    float crispMarginPixels = 6.0f;
+    float pixelsInside = max(-capsuleSdf - crispMarginPixels, 0.0f);
     float bandPixels = max(params.bandWidth * 0.8f, 8.0f);
     float bandT = clamp(pixelsInside / bandPixels, 0.0f, 1.0f);
     // Ease-in / ease-out for the band transition
