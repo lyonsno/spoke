@@ -19,3 +19,57 @@ Optical witness frame-strip manifests are developer-facing debug records, not
 consumer request payloads. They may carry internal `transition.phase` metadata
 and lifecycle snapshots for race correlation, but production requests must keep
 `progress` out of the public contract.
+
+## Modal Agent Shell Sessions
+
+`spoke` carries subscription-auth local coding-agent transport, but those
+backends are not generic tools for the default assistant to call. The
+operator-facing contract is **Agent Shell**: a modal route destination where
+input goes to the selected agent backend session, while explicit Spoke-owned
+mode-control input remains under the operator shell.
+
+The menubar exposes an `Agent Shell` provider selector (`Off`, `Codex`, `Claude
+Code`). This is intentionally separate from `Assistant Backend`: the local
+assistant remains the fuzzy-intent resolver and router, while local coding
+agents are modal worker shells selected by route/mode state.
+
+Epistaxis-shaped utterances are not intercepted by Agent Shell today. The
+previous keyword-based interception was removed because it could not distinguish
+between "run this Epistaxis command" and "talk to the current agent about
+Epistaxis", and there is no dedicated Epistaxis command executor seated behind
+that route yet.
+
+The lower-level provider contract currently wires `codex` through the local
+Codex CLI JSON event stream and requires `codex login` to report ChatGPT
+subscription auth. Billing-backed credentials are stripped from the child
+environment and are not a fallback path. `claude-code` is a reserved backend id
+for the Claude Code CLI transport, but it is disabled in the menu until that
+CLI contract is measured.
+
+Provider sessions are asynchronous, keep Spoke-owned ids distinct from
+provider session/thread ids, carry the requested working directory, preserve
+structured backend events for future command/tool-loop rendering, and surface
+backend-unavailable failures as operator-visible state rather than as raw
+terminal-command failures.
+
+Backend event presentation is a shared policy layer, not Codex-specific UI
+glue. `spoke.agent_backend_presenter` maps provider events into compact actions
+such as response deltas, tool start/end, status lines, narrator summaries, and
+errors. Raw command/tool output remains hidden by default; operator surfaces
+should show liveness and status first, with scrollback or expansion built on
+the stored structured events later.
+
+### Perceptasia Selection Context
+
+Agent Shell consumes Perceptasia's shared visual selection file at
+`~/.local/state/perceptasia/selection.json` when a modal backend turn is
+routed. If the file contains an active `selected` primitive, Spoke prepends a
+compact "Perceptasia visual selection context" block to the backend prompt and
+then preserves the operator's original utterance under an `Operator utterance`
+heading. The selection is routing context only; it does not grant Perceptasia
+or the backend direct Epistaxis write authority.
+
+Absent or cleared selection is explicit state, not an error. A missing file
+means Perceptasia has not published selection on this machine. A present file
+with `selected: null` means there is no current visual selection. Neither case
+adds prompt context.

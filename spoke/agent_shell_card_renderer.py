@@ -1,0 +1,469 @@
+"""Renderer-owned payloads for Agent Shell primitive cards."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .optical_field import (
+    OpticalFieldBounds,
+    OpticalFieldDisturbance,
+    OpticalFieldPlaceholderBackend,
+    OpticalFieldPresentation,
+    OpticalFieldProfileRef,
+    OpticalFieldRequest,
+    OpticalFieldSignal,
+)
+
+_CARD_MARGIN_POINTS = 12.0
+_CARD_GAP_POINTS = 8.0
+_CARD_MIN_WIDTH_POINTS = 160.0
+_CARD_MIN_HEIGHT_POINTS = 56.0
+_CARD_READABLE_MIN_WIDTH_POINTS = 300.0
+_CARD_READABLE_MIN_HEIGHT_POINTS = 72.0
+_SELECTED_CARD_READABLE_MIN_WIDTH_POINTS = 420.0
+_SELECTED_CARD_READABLE_MIN_HEIGHT_POINTS = 120.0
+_CARD_MAX_WIDTH_POINTS = 560.0
+_MAX_VISIBLE_CARDS = 4
+
+_MATERIAL_STYLE_TO_OPTICAL_PROFILE = {
+    "assistant_shell": "assistant_shell",
+    "thread_card": "agent_card",
+    "quiet_chip": "quiet_chip",
+}
+
+
+def _string(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _number(value: Any, fallback: float = 0.0) -> float:
+    return float(value) if isinstance(value, (int, float)) else fallback
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _primitive_id(primitive: dict[str, Any]) -> str:
+    return (
+        _string(primitive.get("id"))
+        or _string(primitive.get("provider_session_id"))
+        or _string(primitive.get("thread_id"))
+    )
+
+
+def _is_card_primitive(primitive: dict[str, Any]) -> bool:
+    return _string(primitive.get("kind")) in {"thread_card", "selected_thread"}
+
+
+def _priority(primitive: dict[str, Any]) -> int:
+    geometry = _mapping(primitive.get("geometry"))
+    value = geometry.get("priority", primitive.get("priority", 0))
+    return int(value) if isinstance(value, int) else 0
+
+
+def _selected(primitive: dict[str, Any]) -> bool:
+    return bool(primitive.get("selected"))
+
+
+def _should_render_card_surface(primitive: dict[str, Any]) -> bool:
+    if not _selected(primitive):
+        return True
+    display = _mapping(primitive.get("display"))
+    return not bool(display.get("show_latest_response"))
+
+
+def _anchor(primitive: dict[str, Any]) -> str:
+    geometry = _mapping(primitive.get("geometry"))
+    anchor = _string(geometry.get("anchor"))
+    if anchor == "semantic":
+        semantic = _mapping(geometry.get("semantic_placement"))
+        anchor = _string(semantic.get("fallback_anchor"))
+    if anchor in {"right", "bottom"}:
+        return anchor
+    return "right" if _selected(primitive) else "bottom"
+
+
+def _max_cards_for_width(width: float) -> int:
+    usable = width - 2 * _CARD_MARGIN_POINTS
+    if usable < _CARD_READABLE_MIN_WIDTH_POINTS:
+        return 1
+    return max(
+        1,
+        min(
+            _MAX_VISIBLE_CARDS,
+            int(
+                (usable + _CARD_GAP_POINTS)
+                // (_CARD_READABLE_MIN_WIDTH_POINTS + _CARD_GAP_POINTS)
+            ),
+        ),
+    )
+
+
+def _visible_primitives(
+    primitives: list[dict[str, Any]], max_count: int
+) -> list[dict[str, Any]]:
+    selected = [primitive for primitive in primitives if _selected(primitive)]
+    inactive = [primitive for primitive in primitives if not _selected(primitive)]
+    inactive.sort(key=_priority)
+    selected_card = [
+        primitive
+        for primitive in selected[:1]
+        if _should_render_card_surface(primitive)
+    ]
+    inactive_limit = max(0, max_count - len(selected_card))
+    return inactive[:inactive_limit] + selected_card
+
+
+def _preferred_size(primitive: dict[str, Any]) -> tuple[float, float, float, float]:
+    geometry = _mapping(primitive.get("geometry"))
+    selected = _selected(primitive)
+    display = _mapping(primitive.get("display"))
+    text_width_hint = _text_width_hint(
+        _string(display.get("primary_text")),
+        _string(display.get("secondary_text")),
+        selected=selected,
+    )
+    min_width = max(
+        _CARD_MIN_WIDTH_POINTS,
+        _SELECTED_CARD_READABLE_MIN_WIDTH_POINTS
+        if selected
+        else _CARD_READABLE_MIN_WIDTH_POINTS,
+        _number(geometry.get("min_width"), _CARD_MIN_WIDTH_POINTS),
+    )
+    min_height = max(
+        _CARD_MIN_HEIGHT_POINTS,
+        _SELECTED_CARD_READABLE_MIN_HEIGHT_POINTS
+        if selected
+        else _CARD_READABLE_MIN_HEIGHT_POINTS,
+        _number(geometry.get("min_height"), _CARD_MIN_HEIGHT_POINTS),
+    )
+    preferred_width = max(
+        min_width,
+        text_width_hint,
+        _number(geometry.get("preferred_width"), min_width),
+    )
+    preferred_height = max(min_height, _number(geometry.get("preferred_height"), min_height))
+    return min_width, min_height, preferred_width, preferred_height
+
+
+def _text_width_hint(primary: str, secondary: str, *, selected: bool) -> float:
+    longest = max(len(primary), len(secondary))
+    char_width = 8.8 if selected else 7.6
+    padding = 48.0 if selected else 36.0
+    return padding + min(float(longest), 64.0) * char_width
+
+
+def _frame_for_index(
+    primitive: dict[str, Any],
+    *,
+    index: int,
+    count: int,
+    content_width: float,
+    content_height: float,
+) -> dict[str, float]:
+    min_width, min_height, preferred_width, preferred_height = _preferred_size(primitive)
+    usable_width = max(1.0, content_width - 2 * _CARD_MARGIN_POINTS)
+    usable_height = max(1.0, content_height - 2 * _CARD_MARGIN_POINTS)
+    total_gap = _CARD_GAP_POINTS * max(0, count - 1)
+    equal_width = max(1.0, (usable_width - total_gap) / max(1, count))
+    anchor = _anchor(primitive)
+    if anchor == "right":
+        max_width = min(
+            usable_width,
+            max(_CARD_MIN_WIDTH_POINTS, content_width * 0.78),
+        )
+        width = max(
+            1.0,
+            min(
+                _CARD_MAX_WIDTH_POINTS,
+                preferred_width,
+                max_width,
+            ),
+        )
+        height_budget = max(
+            min_height,
+            min(usable_height, max(min_height, content_height * 0.62)),
+        )
+    else:
+        width = max(
+            1.0,
+            min(
+                _CARD_MAX_WIDTH_POINTS,
+                preferred_width,
+                max(min_width, equal_width),
+                usable_width,
+            ),
+        )
+        height_budget = max(
+            min_height,
+            min(usable_height, max(min_height, content_height * 0.42)),
+        )
+    height = max(1.0, min(preferred_height, height_budget))
+    if anchor == "right":
+        x = min(
+            max(_CARD_MARGIN_POINTS, content_width - width - _CARD_MARGIN_POINTS),
+            max(0.0, content_width - width),
+        )
+        y = min(
+            max(_CARD_MARGIN_POINTS, (content_height * 0.5) - (height * 0.5)),
+            max(0.0, content_height - height),
+        )
+    else:
+        x = min(
+            _CARD_MARGIN_POINTS + index * (width + _CARD_GAP_POINTS),
+            max(0.0, content_width - width),
+        )
+        y = min(_CARD_MARGIN_POINTS, max(0.0, content_height - height))
+    return {
+        "x": round(x, 3),
+        "y": round(y, 3),
+        "width": round(width, 3),
+        "height": round(height, 3),
+    }
+
+
+def _transcript_frame(content_width: float, content_height: float) -> dict[str, float]:
+    height = max(0.0, content_height - 2 * _CARD_MARGIN_POINTS)
+    return {
+        "x": _CARD_MARGIN_POINTS,
+        "y": _CARD_MARGIN_POINTS,
+        "width": round(
+            max(_CARD_MIN_WIDTH_POINTS, content_width - 2 * _CARD_MARGIN_POINTS),
+            3,
+        ),
+        "height": round(height, 3),
+    }
+
+
+def _material(primitive: dict[str, Any]) -> dict[str, Any]:
+    material = _mapping(primitive.get("material"))
+    selected = _selected(primitive)
+    return {
+        "style": _string(material.get("style")) or "quiet_chip",
+        "prominence": _string(material.get("prominence"))
+        or ("selected" if selected else "inactive"),
+        "optical_displacement": _number(material.get("optical_displacement"), 0.0),
+        "corner_radius": _number(material.get("corner_radius"), 8.0),
+    }
+
+
+def _optical_profile_for_material(material: dict[str, Any]) -> str:
+    return _MATERIAL_STYLE_TO_OPTICAL_PROFILE.get(
+        _string(material.get("style")),
+        "agent_card",
+    )
+
+
+def _disturbances_for_card(card: dict[str, Any]) -> tuple[OpticalFieldDisturbance, ...]:
+    readiness = _string(card.get("readiness"))
+    if readiness not in {"working", "waiting", "failed"}:
+        return ()
+    primitive_id = _string(card.get("primitive_id"))
+    material = _mapping(card.get("material"))
+    strength = max(0.05, _number(material.get("optical_displacement"), 0.08))
+    kind = "blocked_shudder" if readiness == "failed" else "readiness_pulse"
+    return (
+        OpticalFieldDisturbance(
+            disturbance_id=f"readiness.{primitive_id}",
+            kind=kind,
+            mode="persistent",
+            strength=strength,
+            params={"readiness": readiness},
+        ),
+    )
+
+
+def _material_signals_for_card(card: dict[str, Any]) -> tuple[OpticalFieldSignal, ...]:
+    material = _mapping(card.get("material"))
+    selected = bool(card.get("selected"))
+    brightness = _number(
+        material.get("background_luminance"),
+        0.46 if selected else 0.38,
+    )
+    text_contrast = _number(
+        material.get("text_contrast_bias"),
+        0.78 if selected else 0.66,
+    )
+    ridge_emphasis = _number(
+        material.get("ridge_emphasis"),
+        0.62 if selected else 0.48,
+    )
+    return (
+        OpticalFieldSignal(name="background_luminance", value=brightness),
+        OpticalFieldSignal(name="text_contrast_bias", value=text_contrast),
+        OpticalFieldSignal(name="ridge_emphasis", value=ridge_emphasis),
+    )
+
+
+def _request_dict(request: OpticalFieldRequest) -> dict[str, Any]:
+    backend = OpticalFieldPlaceholderBackend()
+    result = backend.upsert(request)
+    compiled = backend.compile_shell_configs()[0] if result.accepted else {}
+    optical_field = _mapping(compiled.get("optical_field"))
+    return {
+        "caller_id": request.caller_id,
+        "role": request.role,
+        "state": request.state,
+        "profile": request.profile.base,
+        "presentation_layer": request.presentation_layer,
+        "layout_recipe": request.layout_recipe,
+        "visibility_scope": request.visibility_scope,
+        "visible": request.visible,
+        "z_index": request.z_index,
+        "bounds": {
+            "x": request.bounds.x,
+            "y": request.bounds.y,
+            "width": request.bounds.width,
+            "height": request.bounds.height,
+        },
+        "disturbances": [
+            {
+                "disturbance_id": disturbance.disturbance_id,
+                "kind": disturbance.kind,
+                "mode": disturbance.mode,
+                "strength": disturbance.strength,
+                "params": dict(disturbance.params),
+            }
+            for disturbance in request.disturbances
+        ],
+        "text": {},
+        "compiled_shell_config": compiled,
+        "transition": _mapping(optical_field.get("transition")),
+        "resolved_motion": _mapping(optical_field.get("resolved_motion")),
+    }
+
+
+def _surface_for_primitive(
+    primitive: dict[str, Any],
+    *,
+    index: int,
+    count: int,
+    content_width: float,
+    content_height: float,
+) -> dict[str, Any]:
+    display = _mapping(primitive.get("display"))
+    show_latest_response = bool(display.get("show_latest_response"))
+    return {
+        "primitive_id": _primitive_id(primitive),
+        "provider": _string(primitive.get("provider")),
+        "provider_session_id": _string(primitive.get("provider_session_id")),
+        "role": "selected_thread" if _selected(primitive) else "inactive_thread",
+        "selected": _selected(primitive),
+        "readiness": _string(primitive.get("readiness")),
+        "primary_text": _string(display.get("primary_text")),
+        "secondary_text": _string(display.get("secondary_text")),
+        "show_latest_response": show_latest_response,
+        "latest_response": _string(primitive.get("latest_response")) if show_latest_response else "",
+        "frame": _frame_for_index(
+            primitive,
+            index=index,
+            count=count,
+            content_width=content_width,
+            content_height=content_height,
+        ),
+        "material": _material(primitive),
+        "clip": True,
+        "movable": True,
+        "surface_attachment": "sibling",
+    }
+
+
+def build_agent_shell_card_render_payload(
+    primitives: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    content_width_points: float,
+    content_height_points: float,
+) -> dict[str, Any]:
+    """Build quiet card render surfaces from provider-agnostic primitives."""
+    normalized = [
+        dict(primitive)
+        for primitive in primitives
+        if isinstance(primitive, dict) and _is_card_primitive(primitive)
+    ]
+    content_width = max(
+        _CARD_MIN_WIDTH_POINTS,
+        _number(content_width_points, _CARD_MIN_WIDTH_POINTS),
+    )
+    content_height = max(
+        _CARD_MIN_HEIGHT_POINTS + 2 * _CARD_MARGIN_POINTS,
+        _number(content_height_points, 0.0),
+    )
+    visible = _visible_primitives(normalized, _max_cards_for_width(content_width))
+    cards = [
+        _surface_for_primitive(
+            primitive,
+            index=index,
+            count=len(visible),
+            content_width=content_width,
+            content_height=content_height,
+        )
+        for index, primitive in enumerate(visible)
+    ]
+    selected = next((primitive for primitive in normalized if _selected(primitive)), None)
+    selected_display = _mapping(selected.get("display")) if selected is not None else {}
+    show_latest_response = bool(selected_display.get("show_latest_response"))
+    return {
+        "surface_kind": "agent_shell_card_primitives",
+        "selected_primitive_id": _primitive_id(selected or {}),
+        "main_transcript": {
+            "primitive_id": _primitive_id(selected or {}),
+            "show_latest_response": show_latest_response,
+            "text": _string((selected or {}).get("latest_response")) if show_latest_response else "",
+        },
+        "transcript_frame": _transcript_frame(content_width, content_height),
+        "cards": cards,
+    }
+
+
+def build_agent_shell_card_optical_field_payload(
+    render_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Build placeholder optical-field requests for rendered Agent Shell cards."""
+    cards = render_payload.get("cards") if isinstance(render_payload, dict) else None
+    requests: list[dict[str, Any]] = []
+    if not isinstance(cards, list):
+        cards = []
+    for index, card in enumerate(cards):
+        if not isinstance(card, dict):
+            continue
+        primitive_id = _string(card.get("primitive_id"))
+        frame = _mapping(card.get("frame"))
+        try:
+            bounds = OpticalFieldBounds(
+                x=_number(frame.get("x")),
+                y=_number(frame.get("y")),
+                width=_number(frame.get("width")),
+                height=_number(frame.get("height")),
+            )
+        except ValueError:
+            continue
+        material = _mapping(card.get("material"))
+        profile = _optical_profile_for_material(material)
+        selected = bool(card.get("selected"))
+        request = OpticalFieldRequest(
+            caller_id=f"agent.card.{primitive_id}",
+            bounds=bounds,
+            content_frame=bounds,
+            role="agent_card",
+            presentation_layer="agent_card",
+            layout_recipe="agent-thread-card",
+            profile=OpticalFieldProfileRef(base=profile),
+            signals=_material_signals_for_card(card),
+            disturbances=_disturbances_for_card(card),
+            presentation=OpticalFieldPresentation(layer="agent_card", order=20),
+            visibility_scope="independent",
+            z_index=(200 + index) if selected else (100 + index),
+        )
+        requests.append(_request_dict(request))
+        requests[-1]["text"] = {
+            "primary": _string(card.get("primary_text")),
+            "secondary": _string(card.get("secondary_text")),
+            "latest_response": _string(card.get("latest_response"))
+            if bool(card.get("show_latest_response"))
+            else "",
+        }
+    return {
+        "surface_kind": "agent_shell_card_optical_fields",
+        "requests": requests,
+    }

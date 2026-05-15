@@ -15,3 +15,12 @@ reason = "Smoke-only launch-target and HUD affordances belong on the local opera
 revisit_when = "Revisit if these affordances become part of ordinary end-user workflow instead of smoke/runtime verification."
 canonical_markers = ["Smoke-Surface Runtime Affordances"]
 public_readme_absent_markers = ["launch-target switching", "source/branch visibility", "Terror Form"]
+
+[capabilities.perceptasia_selection_context]
+audience = "developer"
+canonical_surface = "docs/developer-operator-surfaces.md"
+public_readme = "omit"
+reason = "The Perceptasia selection bridge is a developer/operator routing context for modal Agent Shell backends, not a public product promise."
+revisit_when = "Revisit if Perceptasia-Spoke bidirectional selection becomes an ordinary user-facing workflow."
+canonical_markers = ["Perceptasia Selection Context"]
+public_readme_absent_markers = ["Perceptasia visual selection context"]

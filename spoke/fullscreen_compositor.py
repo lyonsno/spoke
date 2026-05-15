@@ -103,6 +103,7 @@ class OverlayRenderSnapshot:
     presentation_layer: str | None = None
     presentation_order: int = 0
     visibility_scope: str = "independent"
+    payload: dict | None = None
     optical_field: Mapping[str, Any] | None = None
 
 
@@ -302,6 +303,8 @@ class FullScreenCompositor:
         self._rendered_config_generation = 0
         self._window = None
         self._metal_layer = None
+        self._card_text_container_layer = None
+        self._card_text_layers: dict[str, Any] = {}
         self._display_link = None
         self._stream = None
         self._stream_output = None
@@ -362,6 +365,7 @@ class FullScreenCompositor:
             if self._pipeline is not None:
                 self._pipeline.reset_temporal_state()
             self._create_fullscreen_window()
+            self._sync_agent_shell_card_text_layers(self._shell_configs)
             self._start_display_link()
             self._running = True
             self._start_capture_async()
@@ -426,6 +430,7 @@ class FullScreenCompositor:
                 return
             self._shell_configs = normalized
             self._config_generation += 1
+        self._sync_agent_shell_card_text_layers(normalized)
 
     def update_shell_config_key(self, key: str, value) -> None:
         """Update a single key in the shell config without replacing."""
@@ -435,6 +440,81 @@ class FullScreenCompositor:
                     return
                 self._shell_configs[0][key] = value
                 self._config_generation += 1
+
+    def _sync_agent_shell_card_text_layers(self, shell_configs: list[dict]) -> None:
+        container = getattr(self, "_card_text_container_layer", None)
+        if container is None:
+            return
+        try:
+            screen_frame = self._screen.frame()
+            screen_width = float(screen_frame.size.width)
+            screen_height = float(screen_frame.size.height)
+            scale = (
+                float(self._screen.backingScaleFactor())
+                if hasattr(self._screen, "backingScaleFactor")
+                else 2.0
+            )
+        except Exception:
+            return
+        specs = _agent_shell_card_text_overlay_specs(
+            shell_configs,
+            screen_width_points=screen_width,
+            screen_height_points=screen_height,
+            scale=scale,
+        )
+        active_ids = {spec["client_id"] for spec in specs}
+        layers = getattr(self, "_card_text_layers", {})
+        for client_id, layer in list(layers.items()):
+            if client_id in active_ids:
+                continue
+            try:
+                layer.removeFromSuperlayer()
+            except Exception:
+                pass
+            layers.pop(client_id, None)
+        for spec in specs:
+            client_id = spec["client_id"]
+            layer = layers.get(client_id)
+            if layer is None:
+                try:
+                    from Quartz import CATextLayer
+
+                    layer = CATextLayer.alloc().init()
+                    layer.setWrapped_(True)
+                    layer.setAlignmentMode_("left")
+                    layer.setTruncationMode_("end")
+                    layer.setContentsScale_(scale)
+                    if hasattr(layer, "setZPosition_"):
+                        layer.setZPosition_(10000.0)
+                    if hasattr(layer, "setShadowOpacity_"):
+                        layer.setShadowOpacity_(0.35)
+                    if hasattr(layer, "setShadowRadius_"):
+                        layer.setShadowRadius_(1.5)
+                    if hasattr(layer, "setShadowOffset_"):
+                        layer.setShadowOffset_((0.0, -1.0))
+                    container.addSublayer_(layer)
+                except Exception:
+                    logger.debug("Failed to create Agent Shell smoke text layer", exc_info=True)
+                    continue
+                layers[client_id] = layer
+            frame = spec["frame"]
+            try:
+                try:
+                    from Quartz import CGColorCreateSRGB
+
+                    layer.setForegroundColor_(
+                        CGColorCreateSRGB(*spec.get("foreground_color", (0.92, 0.95, 1.0, 0.98)))
+                    )
+                except Exception:
+                    logger.debug("Failed to update Agent Shell smoke text color", exc_info=True)
+                layer.setFrame_(((frame["x"], frame["y"]), (frame["width"], frame["height"])))
+                layer.setString_(spec["text"])
+                layer.setFontSize_(spec["font_size"])
+                if hasattr(layer, "setHidden_"):
+                    layer.setHidden_(False)
+            except Exception:
+                logger.debug("Failed to update Agent Shell smoke text layer", exc_info=True)
+        self._card_text_layers = layers
 
     @property
     def sampled_brightness(self) -> float:
@@ -767,6 +847,22 @@ class FullScreenCompositor:
         self._metal_layer.setFrame_(((0, 0), (frame.size.width, frame.size.height)))
 
         content.layer().addSublayer_(self._metal_layer)
+        try:
+            from Quartz import CALayer
+
+            self._card_text_container_layer = CALayer.alloc().init()
+            self._card_text_container_layer.setFrame_(
+                ((0, 0), (frame.size.width, frame.size.height))
+            )
+            if hasattr(self._card_text_container_layer, "setGeometryFlipped_"):
+                self._card_text_container_layer.setGeometryFlipped_(True)
+            if hasattr(self._card_text_container_layer, "setZPosition_"):
+                self._card_text_container_layer.setZPosition_(10000.0)
+            content.layer().addSublayer_(self._card_text_container_layer)
+        except Exception:
+            logger.debug("Agent Shell smoke text layer unavailable", exc_info=True)
+            self._card_text_container_layer = None
+            self._card_text_layers = {}
         self._window.setContentView_(content)
         self._window.orderFrontRegardless()
         # Register in class-level set so other compositors exclude us
@@ -794,6 +890,8 @@ class FullScreenCompositor:
                 pass
             self._window = None
         self._metal_layer = None
+        self._card_text_container_layer = None
+        self._card_text_layers = {}
 
     # ------------------------------------------------------------------
     # SCK full-display capture
@@ -1251,6 +1349,67 @@ def _display_id_from_registry_key(registry_key: tuple[str, int]) -> int | str:
     return f"{kind}:{value}"
 
 
+def _string(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _agent_shell_card_text_payload(config: dict) -> dict[str, str]:
+    payload = config.get("text")
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "primary": _string(payload.get("primary")).strip(),
+        "secondary": _string(payload.get("secondary")).strip(),
+        "latest_response": _string(payload.get("latest_response")).strip(),
+    }
+
+
+def _agent_shell_card_text_overlay_specs(
+    shell_configs: list[dict] | tuple[dict, ...],
+    *,
+    screen_width_points: float,
+    screen_height_points: float,
+    scale: float,
+) -> list[dict]:
+    specs: list[dict] = []
+    layer_scale = max(float(scale), 1e-6)
+    for config in shell_configs:
+        if not isinstance(config, dict) or config.get("role") != "agent_card":
+            continue
+        text = _agent_shell_card_text_payload(config)
+        primary = text.get("primary", "")
+        secondary = text.get("secondary", "")
+        if secondary == primary:
+            secondary = ""
+        if not primary and not secondary:
+            continue
+        try:
+            width = max(float(config.get("content_width_points", 0.0)) / layer_scale, 1.0)
+            height = max(float(config.get("content_height_points", 0.0)) / layer_scale, 1.0)
+            center_x = float(config.get("center_x", 0.0)) / layer_scale
+            center_y = float(config.get("center_y", 0.0)) / layer_scale
+        except (TypeError, ValueError):
+            continue
+        left = max(0.0, min(max(screen_width_points - width, 0.0), center_x - width * 0.5))
+        top = max(0.0, min(max(screen_height_points - height, 0.0), center_y - height * 0.5))
+        inset = max(8.0, min(16.0, width * 0.05))
+        specs.append(
+            {
+                "client_id": _string(config.get("client_id")),
+                "text": "\n".join(part for part in (primary, secondary) if part),
+                "font_size": 13.0,
+                "foreground_color": (0.92, 0.95, 1.0, 0.98),
+                "frame": {
+                    "x": round(left + inset, 3),
+                    "y": round(top + inset, 3),
+                    "width": round(max(1.0, width - inset * 2.0), 3),
+                    "height": round(max(1.0, height - inset * 2.0), 3),
+                },
+            }
+        )
+    return specs
+
+
 def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
     config = {
         "client_id": snapshot.identity.client_id,
@@ -1310,6 +1469,8 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
             config[key] = value
     if snapshot.excluded_window_ids:
         config["excluded_window_ids"] = tuple(snapshot.excluded_window_ids)
+    if isinstance(snapshot.payload, dict):
+        config.update(snapshot.payload)
     if snapshot.optical_field is not None:
         config["optical_field"] = dict(snapshot.optical_field)
     return config
@@ -1388,6 +1549,21 @@ def _snapshot_from_shell_config(
     optical_field = None
     if isinstance(config.get("optical_field"), dict):
         optical_field = MappingProxyType(dict(config["optical_field"]))
+    payload = {
+        key: config[key]
+        for key in (
+            "agent_shell_card_optical_fields",
+            "agent_shell_card_renderer",
+            "agent_shell_primitives",
+            "agent_thread_cards",
+            "agent_thread_hud",
+            "display_width_points",
+            "display_height_points",
+            "surface_kind",
+            "text",
+        )
+        if key in config
+    }
     return OverlayRenderSnapshot(
         identity=identity,
         generation=generation,
@@ -1403,8 +1579,107 @@ def _snapshot_from_shell_config(
         ),
         presentation_order=int(config.get("presentation_order", 0)),
         visibility_scope=str(config.get("visibility_scope", "independent")),
+        payload=payload,
         optical_field=optical_field,
     )
+
+
+def _clamp_agent_shell_card_to_display(surface: dict, source_config: dict) -> None:
+    try:
+        display_width = float(source_config.get("display_width_points", 0.0))
+        display_height = float(source_config.get("display_height_points", 0.0))
+        width = float(surface.get("content_width_points", 0.0))
+        height = float(surface.get("content_height_points", 0.0))
+        center_x = float(surface.get("center_x", 0.0))
+        center_y = float(surface.get("center_y", 0.0))
+    except (TypeError, ValueError):
+        return
+    if display_width <= 0.0 or display_height <= 0.0 or width <= 0.0 or height <= 0.0:
+        return
+    margin = 12.0
+    half_width = width * 0.5
+    half_height = height * 0.5
+    if width + margin * 2.0 >= display_width:
+        center_x = display_width * 0.5
+    else:
+        center_x = min(max(center_x, half_width + margin), display_width - half_width - margin)
+    if height + margin * 2.0 >= display_height:
+        center_y = display_height * 0.5
+    else:
+        center_y = min(max(center_y, half_height + margin), display_height - half_height - margin)
+    surface["center_x"] = center_x
+    surface["center_y"] = center_y
+
+
+def _agent_shell_card_surface_configs(
+    source_config: dict,
+    *,
+    previous: Mapping[str, dict] | None = None,
+) -> dict[str, dict]:
+    optical_fields = source_config.get("agent_shell_card_optical_fields")
+    if not isinstance(optical_fields, dict):
+        return {}
+    requests = optical_fields.get("requests")
+    if not isinstance(requests, list):
+        return {}
+    previous = previous or {}
+    surfaces: dict[str, dict] = {}
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        child_config = request.get("compiled_shell_config")
+        if not isinstance(child_config, dict):
+            continue
+        caller_id = request.get("caller_id")
+        client_id = caller_id if isinstance(caller_id, str) and caller_id else child_config.get("client_id")
+        if not isinstance(client_id, str) or not client_id:
+            continue
+        surface = dict(child_config)
+        surface["client_id"] = client_id
+        surface["surface_attachment"] = "sibling"
+        surface["movable"] = True
+        surface["visibility_scope"] = "independent"
+        try:
+            source_width = float(
+                source_config.get(
+                    "_materialization_base_width_points",
+                    source_config.get("content_width_points", 0.0),
+                )
+            )
+            source_height = float(
+                source_config.get(
+                    "_materialization_base_height_points",
+                    source_config.get("content_height_points", 0.0),
+                )
+            )
+            source_left = float(source_config.get("center_x", 0.0)) - (source_width * 0.5)
+            source_bottom = float(source_config.get("center_y", 0.0)) - (source_height * 0.5)
+            surface["center_x"] = source_left + float(surface.get("center_x", 0.0))
+            surface["center_y"] = source_bottom + float(surface.get("center_y", 0.0))
+        except (TypeError, ValueError):
+            pass
+        existing = previous.get(client_id)
+        if isinstance(existing, dict):
+            existing_field = existing.get("optical_field")
+            surface_field = surface.get("optical_field")
+            existing_bounds = existing_field.get("bounds") if isinstance(existing_field, dict) else None
+            surface_bounds = surface_field.get("bounds") if isinstance(surface_field, dict) else None
+            if existing_bounds is not None and existing_bounds == surface_bounds:
+                for key in ("center_x", "center_y"):
+                    if key in existing:
+                        surface[key] = existing[key]
+        _clamp_agent_shell_card_to_display(surface, source_config)
+        text = request.get("text")
+        if isinstance(text, dict):
+            surface["text"] = {
+                "primary": _string(text.get("primary")),
+                "secondary": _string(text.get("secondary")),
+                "latest_response": _string(text.get("latest_response")),
+            }
+        surface["source_client_id"] = source_config.get("client_id", "")
+        surface.setdefault("visible", True)
+        surfaces[client_id] = surface
+    return surfaces
 
 
 def _frame_strip_manifest_from_snapshot(snapshot: OverlayRenderSnapshot) -> dict[str, Any]:
@@ -1457,6 +1732,7 @@ class OverlayCompositorHost:
         self._display_id = _display_id_from_registry_key(registry_key)
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
+        self._agent_shell_card_surfaces: dict[str, dict] = {}
         self._started = False
 
     @property
@@ -1577,6 +1853,11 @@ class OverlayCompositorHost:
 
     def release_client(self, client_id: str) -> None:
         self._clients.pop(client_id, None)
+        self._agent_shell_card_surfaces = {
+            surface_id: config
+            for surface_id, config in self._agent_shell_card_surfaces.items()
+            if config.get("source_client_id") != client_id
+        }
         if self._clients:
             self._sync_host()
             return
@@ -1689,7 +1970,32 @@ class OverlayCompositorHost:
         for entry in self._clients.values():
             overlay_window_ids.extend(self._window_ids_for_entry(entry))
         snapshots = self.render_snapshots()
-        shell_configs = [_snapshot_to_shell_config(snapshot) for snapshot in snapshots if snapshot.visible]
+        embedded_card_surfaces: dict[str, dict] = {}
+        for snapshot in snapshots:
+            config = _snapshot_to_shell_config(snapshot)
+            if "agent_shell_card_optical_fields" in config:
+                embedded_card_surfaces.update(_agent_shell_card_surface_configs(
+                    config,
+                    previous=self._agent_shell_card_surfaces,
+                ))
+        self._agent_shell_card_surfaces = embedded_card_surfaces
+        parent_shell_configs = [
+            _snapshot_to_shell_config(snapshot) for snapshot in snapshots if snapshot.visible
+        ]
+        registered_client_ids = {snapshot.identity.client_id for snapshot in snapshots}
+        card_shell_configs = sorted(
+            (
+                config
+                for surface_id, config in self._agent_shell_card_surfaces.items()
+                if surface_id not in registered_client_ids
+            ),
+            key=lambda config: (
+                int(config.get("presentation_order", 0)),
+                int(config.get("z_index", 0)),
+                str(config.get("client_id", "")),
+            ),
+        )
+        shell_configs = [*parent_shell_configs, *card_shell_configs]
         set_excluded = getattr(self._compositor, "set_excluded_window_ids", None)
         if callable(set_excluded):
             set_excluded(overlay_window_ids)

@@ -110,6 +110,10 @@ def _make_overlay(mock_pyobjc):
     overlay._thinking_label = MagicMock()
     overlay._thinking_label.isHidden.return_value = False
     overlay._narrator_label = MagicMock()
+    overlay._agent_shell_header_label = MagicMock()
+    overlay._agent_shell_header_label.isHidden.return_value = True
+    overlay._agent_shell_footer_label = MagicMock()
+    overlay._agent_shell_footer_label.isHidden.return_value = True
     overlay._screen = MagicMock()
     overlay._screen.frame.return_value = MagicMock(
         size=MagicMock(width=1920, height=1080)
@@ -2252,6 +2256,84 @@ class TestShowFinishHide:
         assert overlay._streaming is False
         assert overlay._thinking_timer is None
 
+    def test_agent_shell_header_and_footer_set_explicit_chrome(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._agent_shell_header_label = MagicMock()
+        overlay._agent_shell_footer_label = MagicMock()
+
+        overlay.set_agent_shell_header("Topos: codex-spoke-spinal-tap")
+        overlay.set_agent_shell_footer("model gpt-5.5 | cwd /tmp/spoke | 5h 19% | 7d 18%")
+
+        overlay._agent_shell_header_label.setStringValue_.assert_called_once_with(
+            "Topos: codex-spoke-spinal-tap"
+        )
+        overlay._agent_shell_header_label.setHidden_.assert_called_once_with(False)
+        overlay._agent_shell_footer_label.setStringValue_.assert_called_once_with(
+            "model gpt-5.5 | cwd /tmp/spoke | 5h 19% | 7d 18%"
+        )
+        overlay._agent_shell_footer_label.setHidden_.assert_called_once_with(False)
+
+    def test_show_can_seed_agent_shell_chrome_for_reconstructed_transcript(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._agent_shell_header_label = MagicMock()
+        overlay._agent_shell_footer_label = MagicMock()
+        overlay.set_agent_shell_header = MagicMock()
+        overlay.set_agent_shell_footer = MagicMock()
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="hello codex",
+            initial_response="hello from codex",
+            agent_shell_header="Worktree: codex-spinal-tap",
+            agent_shell_footer="model gpt-5.5 | cwd /tmp/spoke",
+        )
+
+        overlay.set_agent_shell_header.assert_called_once_with("Worktree: codex-spinal-tap")
+        overlay.set_agent_shell_footer.assert_called_once_with("model gpt-5.5 | cwd /tmp/spoke")
+
+    def test_show_can_seed_agent_shell_primitives_for_reconstructed_transcript(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        primitive = {
+            "id": "codex-thread-1",
+            "kind": "selected_thread",
+            "provider_session_id": "codex-thread-1",
+            "display": {"primary_text": "Codex lane"},
+        }
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="hello codex",
+            initial_response="hello from codex",
+            agent_shell_primitives=[primitive],
+        )
+
+        assert overlay._agent_shell_primitives == [primitive]
+
+    def test_agent_shell_chrome_theme_uses_neutral_gray_not_glow_purple(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._agent_shell_header_label = MagicMock()
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label = MagicMock()
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+
+        overlay._apply_agent_shell_chrome_theme()
+
+        calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            red, green, blue, alpha = call.args
+            assert red == pytest.approx(green)
+            assert green == pytest.approx(blue)
+            assert red == pytest.approx(0.56)
+            assert alpha == pytest.approx(0.82)
+
 
 class TestWindowLayering:
     """Command overlay should stack independently from the preview overlay."""
@@ -2274,11 +2356,22 @@ class TestWindowLayering:
         thinking_builder = MagicMock()
         thinking_label = MagicMock()
         thinking_builder.initWithFrame_.return_value = thinking_label
+        header_builder = MagicMock()
+        header_label = MagicMock()
+        header_builder.initWithFrame_.return_value = header_label
+        footer_builder = MagicMock()
+        footer_label = MagicMock()
+        footer_builder.initWithFrame_.return_value = footer_label
         narrator_builder = MagicMock()
         narrator_label = MagicMock()
         narrator_builder.initWithFrame_.return_value = narrator_label
         text_field_cls = MagicMock()
-        text_field_cls.alloc.side_effect = [thinking_builder, narrator_builder]
+        text_field_cls.alloc.side_effect = [
+            thinking_builder,
+            header_builder,
+            footer_builder,
+            narrator_builder,
+        ]
         monkeypatch.setattr(sys.modules["AppKit"], "NSTextField", text_field_cls)
         monkeypatch.setattr(sys.modules["AppKit"], "NSTextAlignmentRight", 2, raising=False)
         monkeypatch.setattr(sys.modules["AppKit"], "NSTextAlignmentLeft", 0, raising=False)
@@ -2291,7 +2384,13 @@ class TestWindowLayering:
 
         overlay.setup()
 
+        header_frame = header_builder.initWithFrame_.call_args[0][0]
+        footer_frame = footer_builder.initWithFrame_.call_args[0][0]
         narrator_frame = narrator_builder.initWithFrame_.call_args[0][0]
+        header_label.setMaximumNumberOfLines_.assert_called_once_with(1)
+        footer_label.setMaximumNumberOfLines_.assert_called_once_with(1)
+        assert footer_frame.origin.y >= 0.0
+        assert header_frame.origin.y + header_frame.size.height <= mod._OVERLAY_HEIGHT
         narrator_label.setMaximumNumberOfLines_.assert_called_once_with(3)
         assert narrator_frame.size.height == pytest.approx(45.0)
         assert narrator_frame.origin.y >= 0.0
@@ -2902,6 +3001,31 @@ class TestWindowLayering:
         assert "User prompt\n\nThought for 2s" in combined
         assert "User prompt\nThought for 2s" not in combined
 
+    def test_set_utterance_uses_same_user_font_as_recalled_transcript(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_utterance("Live prompt")
+        live = overlay._text_view.textStorage().setAttributedString_.call_args[0][0]
+
+        overlay._utterance_text = "Live prompt"
+        overlay.set_response_text("")
+        recalled = overlay._text_view.textStorage().setAttributedString_.call_args[0][0]
+
+        font_name = sys.modules["AppKit"].NSFontAttributeName
+        live_font = [value for name, value, _ in live.attributes if name == font_name]
+        recalled_font = [value for name, value, _ in recalled.attributes if name == font_name]
+        assert live_font
+        assert live_font == recalled_font
+        assert live_font[-1] == mod.NSFont.systemFontOfSize_weight_(
+            mod._USER_FONT_SIZE,
+            0.0,
+        )
+
     def test_append_token_keeps_breathing_room_after_collapsed_thinking(
         self, mock_pyobjc, monkeypatch
     ):
@@ -2926,7 +3050,8 @@ class TestWindowLayering:
             .appendAttributedString_.call_args_list[0][0][0]
             .text
         )
-        assert first_append == "\n\n"
+        assert first_append == overlay._leading_response_separator()
+        assert "─" in first_append
 
     def test_set_thinking_collapsed_starts_below_utterance(
         self, mock_pyobjc, monkeypatch
@@ -3589,6 +3714,228 @@ class TestAdaptiveCompositing:
         shell_config = captured["shell_config"]
         assert shell_config["center_x"] == pytest.approx(640.0)
         assert shell_config["center_y"] == pytest.approx(1160.0)
+        assert shell_config["display_width_points"] == pytest.approx(2560.0)
+        assert shell_config["display_height_points"] == pytest.approx(1440.0)
+
+    def test_current_optical_shell_config_consumes_agent_shell_primitives(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "latest_response": "",
+                "display": {
+                    "primary_text": "Codex lane",
+                    "secondary_text": "ready",
+                    "show_latest_response": False,
+                },
+                "geometry": {
+                    "anchor": "bottom",
+                    "preferred_width": 180.0,
+                    "preferred_height": 44.0,
+                },
+                "material": {"style": "quiet_chip"},
+            }
+        ]
+
+        overlay.set_agent_shell_primitives(primitives)
+        config = overlay._current_optical_shell_config()
+
+        assert config["surface_kind"] == "agent_shell"
+        assert config["agent_shell_primitives"] == primitives
+        assert config["agent_shell_card_renderer"]["surface_kind"] == "agent_shell_card_primitives"
+        rendered = config["agent_shell_card_renderer"]["cards"][0]
+        assert rendered["primitive_id"] == "codex-thread-1"
+        assert rendered["frame"]["width"] == pytest.approx(300.0)
+        request = config["agent_shell_card_optical_fields"]["requests"][0]
+        assert request["caller_id"] == "agent.card.codex-thread-1"
+        assert request["text"]["primary"] == "Codex lane"
+        assert request["compiled_shell_config"]["presentation_layer"] == "agent_card"
+
+    def test_display_local_optical_shell_config_scales_agent_shell_card_requests(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        overlay._agent_shell_primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "display": {
+                    "primary_text": "Codex lane",
+                    "secondary_text": "ready",
+                },
+                "geometry": {"preferred_width": 180.0, "preferred_height": 44.0},
+                "material": {"style": "quiet_chip"},
+            }
+        ]
+
+        config = overlay._display_local_optical_shell_config()
+        request = config["agent_shell_card_optical_fields"]["requests"][0]
+        child = request["compiled_shell_config"]
+
+        assert request["bounds"]["x"] == pytest.approx(24.0)
+        assert request["bounds"]["y"] == pytest.approx(24.0)
+        assert request["bounds"]["width"] == pytest.approx(600.0)
+        assert child["center_x"] == pytest.approx(324.0)
+        assert child["center_y"] == pytest.approx(96.0)
+        assert child["content_width_points"] == pytest.approx(600.0)
+        assert child["content_height_points"] == pytest.approx(144.0)
+
+    def test_agent_shell_payload_publishes_cards_as_registered_sibling_clients(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        overlay._agent_shell_primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "display": {
+                    "primary_text": "Codex lane",
+                    "secondary_text": "ready",
+                },
+                "geometry": {"preferred_width": 180.0, "preferred_height": 44.0},
+                "material": {"style": "quiet_chip"},
+            }
+        ]
+
+        class FakeClient:
+            def __init__(self, client_id):
+                self.client_id = client_id
+                self.configs = []
+                self.released = False
+
+            def update_shell_config(self, config):
+                self.configs.append(dict(config))
+                return True
+
+            def release(self):
+                self.released = True
+
+        class FakeHost:
+            display_id = "display-1"
+
+            def __init__(self):
+                self.clients = {}
+                self.identities = {}
+
+            def register_client(self, identity, *, window, content_view):
+                client = self.clients.get(identity.client_id)
+                if client is None:
+                    client = FakeClient(identity.client_id)
+                    self.clients[identity.client_id] = client
+                self.identities[identity.client_id] = identity
+                return client
+
+        class FakeCompositor:
+            def __init__(self):
+                self._host = FakeHost()
+                self.parent_configs = []
+
+            def update_shell_config(self, config):
+                self.parent_configs.append(dict(config))
+                return True
+
+        compositor = FakeCompositor()
+        overlay._fullscreen_compositor = compositor
+
+        overlay._push_agent_shell_payload()
+
+        card_client = compositor._host.clients["agent.card.codex-thread-1"]
+        assert compositor._host.identities["agent.card.codex-thread-1"].role == "agent_card"
+        assert card_client.configs[-1]["client_id"] == "agent.card.codex-thread-1"
+        assert card_client.configs[-1]["surface_attachment"] == "sibling"
+        assert card_client.configs[-1]["visibility_scope"] == "independent"
+        assert card_client.configs[-1]["text"]["primary"] == "Codex lane"
+        assert "agent_shell_card_optical_fields" not in compositor.parent_configs[-1]
+
+    def test_stop_fullscreen_compositor_can_preserve_agent_shell_card_clients(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _mod = _make_overlay(mock_pyobjc)
+
+        class FakeAssistantClient:
+            def __init__(self):
+                self.configs = []
+                self.stopped = False
+
+            def update_shell_config(self, config):
+                self.configs.append(dict(config))
+                return True
+
+            def stop(self):
+                self.stopped = True
+
+        class FakeCardClient:
+            def __init__(self):
+                self.released = False
+
+            def release(self):
+                self.released = True
+
+        assistant = FakeAssistantClient()
+        card = FakeCardClient()
+        overlay._fullscreen_compositor = assistant
+        overlay._agent_shell_card_clients = {"agent.card.codex-thread-1": card}
+        overlay._agent_shell_card_client_identities = {"agent.card.codex-thread-1": object()}
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value={
+                "client_id": "assistant.command",
+                "visible": True,
+                "content_width_points": 600.0,
+                "content_height_points": 140.0,
+            }
+        )
+
+        overlay._stop_fullscreen_compositor(preserve_agent_shell_cards=True)
+
+        assert assistant.configs[-1]["visible"] is False
+        assert not assistant.stopped
+        assert not card.released
+        assert overlay._agent_shell_card_clients == {"agent.card.codex-thread-1": card}
+        assert overlay._fullscreen_compositor is None
+
+    def test_replace_transcript_updates_agent_shell_primitives(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = False
+        primitives = [
+            {
+                "id": "claude-thread-1",
+                "kind": "selected_thread",
+                "provider_session_id": "claude-thread-1",
+                "display": {"primary_text": "Claude lane"},
+            }
+        ]
+
+        overlay.replace_transcript(
+            utterance="hello",
+            response="world",
+            agent_shell_primitives=primitives,
+        )
+
+        assert overlay._agent_shell_primitives == primitives
 
     def test_fullscreen_compositor_start_arms_brightness_startup_grace(
         self, mock_pyobjc, monkeypatch
@@ -4112,7 +4459,7 @@ class TestGeometryCaps:
 
         overlay._apply_ridge_masks.assert_called_once_with(
             mod._OVERLAY_WIDTH,
-            pytest.approx(304.0),
+            pytest.approx(320.0),
         )
 
     def test_update_layout_sends_display_local_shell_center_to_compositor(
@@ -4185,8 +4532,9 @@ class TestGeometryCaps:
 
         doc_frame = overlay._text_view.setFrame_.call_args[0][0]
         assert doc_frame.size.width == pytest.approx(mod._OVERLAY_WIDTH - 24)
-        assert doc_frame.size.height == pytest.approx(304.0 - 16)
+        assert doc_frame.size.height == pytest.approx(296.0)
         assert container.size == (mod._OVERLAY_WIDTH - 24, 1.0e7)
+        overlay._text_view.setTextContainerInset_.assert_called()
 
     def test_punchthrough_mask_clips_tall_document_to_visible_shell(
         self, mock_pyobjc, monkeypatch
@@ -4241,8 +4589,188 @@ class TestGeometryCaps:
         assert clip_rect.size.width == pytest.approx(552.0)
         assert clip_rect.size.height == pytest.approx(328.0)
         draw_rect = storage.drawInRect_.call_args_list[0].args[0]
-        assert draw_rect.origin.y == pytest.approx(236.0 - 850.0)
+        assert draw_rect.origin.y == pytest.approx(
+            236.0 + mod._TRANSCRIPT_TEXT_VERTICAL_INSET - 850.0
+        )
         assert draw_rect.size.height == pytest.approx(1400.0)
+
+    def test_update_layout_gives_agent_shell_chrome_top_and_bottom_headroom(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(120.0)
+        container = _FakeTextContainer()
+        overlay._text_view.textContainer.return_value = container
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        content_frame = overlay._content_view.setFrame_.call_args[0][0]
+        scroll_frame = overlay._scroll_view.setFrame_.call_args[0][0]
+        header_frame = overlay._agent_shell_header_label.setFrame_.call_args[0][0]
+        footer_frame = overlay._agent_shell_footer_label.setFrame_.call_args[0][0]
+
+        assert content_frame.size.height == pytest.approx(244.0)
+        assert footer_frame.origin.y >= 8.0
+        assert (
+            header_frame.origin.y + header_frame.size.height
+            <= content_frame.size.height - 8.0
+        )
+        assert scroll_frame.origin.y >= footer_frame.origin.y + footer_frame.size.height
+        assert scroll_frame.origin.y + scroll_frame.size.height <= header_frame.origin.y
+        assert header_frame.origin.x >= 28.0
+        assert footer_frame.origin.x >= 28.0
+        assert scroll_frame.origin.x >= 28.0
+        doc_frame = overlay._text_view.setFrame_.call_args[0][0]
+        assert doc_frame.size.width == pytest.approx(scroll_frame.size.width)
+        assert container.size == (scroll_frame.size.width, 1.0e7)
+        overlay._text_view.setTextContainerInset_.assert_called()
+        assert (
+            scroll_frame.origin.y
+            >= footer_frame.origin.y + footer_frame.size.height + 24.0
+        )
+        assert (
+            scroll_frame.origin.y + scroll_frame.size.height
+            <= header_frame.origin.y - 24.0
+        )
+
+    def test_update_layout_does_not_hide_stale_fill_during_resized_geometry_rebuild(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._visible = True
+        overlay._suppress_stale_fill_until_ready = False
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        observed = []
+
+        def _capture_suppression(_width, _height):
+            observed.append(getattr(overlay, "_suppress_stale_fill_until_ready", None))
+
+        overlay._apply_ridge_masks = MagicMock(side_effect=_capture_suppression)
+
+        overlay._update_layout()
+
+        assert observed == [False]
+
+    def test_punchthrough_mask_uses_scroll_view_frame_for_text_origin(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._text_punchthrough = True
+        overlay._punchthrough_mask_dirty = True
+        overlay._content_view.frame.return_value = ((140.0, 140.0), (600.0, 244.0))
+        overlay._scroll_view.frame.return_value = _make_rect(28.0, 52.0, 544.0, 140.0)
+        overlay._scroll_view.contentView.return_value.bounds.return_value = _make_rect(
+            0.0,
+            7.0,
+            544.0,
+            140.0,
+        )
+        overlay._text_view.frame.return_value = _make_rect(0.0, 0.0, 544.0, 156.0)
+        overlay._fill_layer.frame.return_value = ((0.0, 0.0), (880.0, 524.0))
+        overlay._fill_layer.mask.return_value = None
+        overlay._boost_layer.mask.return_value = None
+
+        class _DrawableStorage:
+            def __init__(self):
+                self.rects = []
+
+            def length(self):
+                return 12
+
+            def drawInRect_(self, rect):
+                self.rects.append(rect)
+
+        storage = _DrawableStorage()
+        overlay._text_view.textStorage.return_value = storage
+
+        quartz = sys.modules["Quartz"]
+        monkeypatch.setattr(quartz, "CGColorSpaceCreateDeviceRGB", lambda: "cs", raising=False)
+        monkeypatch.setattr(quartz, "CGBitmapContextCreate", lambda *args: "ctx", raising=False)
+        monkeypatch.setattr(quartz, "CGBitmapContextCreateImage", lambda _ctx: "image", raising=False)
+        monkeypatch.setattr(quartz, "CGRectMake", lambda *args: args, raising=False)
+        for name in (
+            "CGContextSetRGBFillColor",
+            "CGContextFillRect",
+            "CGContextSetBlendMode",
+            "CGContextSaveGState",
+            "CGContextRestoreGState",
+            "CGContextTranslateCTM",
+            "CGContextScaleCTM",
+            "CGContextClipToRect",
+        ):
+            monkeypatch.setattr(quartz, name, MagicMock(), raising=False)
+        monkeypatch.setattr(quartz, "kCGImageAlphaPremultipliedLast", 1, raising=False)
+        monkeypatch.setattr(quartz, "kCGBlendModeDestinationOut", 1, raising=False)
+        monkeypatch.setattr(sys.modules["Foundation"], "NSMakeRect", _make_rect, raising=False)
+
+        graphics_context = SimpleNamespace(
+            graphicsContextWithCGContext_flipped_=MagicMock(return_value="nsctx"),
+            saveGraphicsState=MagicMock(),
+            setCurrentContext_=MagicMock(),
+            restoreGraphicsState=MagicMock(),
+        )
+        monkeypatch.setattr(
+            sys.modules["AppKit"],
+            "NSGraphicsContext",
+            graphics_context,
+            raising=False,
+        )
+
+        overlay._update_punchthrough_mask()
+
+        assert storage.rects
+        rect = storage.rects[0]
+        content_top = 524.0 - 140.0 - 244.0
+        expected_y = content_top + (244.0 - 52.0 - 140.0) + mod._TRANSCRIPT_TEXT_VERTICAL_INSET - 7.0
+        assert rect.origin.x == pytest.approx(168.0)
+        assert rect.origin.y == pytest.approx(expected_y)
+
+    def test_update_layout_reframes_agent_shell_chrome_even_at_same_height(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        feather = (
+            mod._OPTICAL_SHELL_FEATHER
+            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else mod._OUTER_FEATHER
+        )
+        overlay._window.frame.return_value = _make_rect(
+            0.0,
+            260.0,
+            680.0,
+            mod._OVERLAY_HEIGHT + 2 * feather,
+        )
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(8.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        overlay._scroll_view.setFrame_.reset_mock()
+        overlay._agent_shell_header_label.setFrame_.reset_mock()
+        overlay._agent_shell_footer_label.setFrame_.reset_mock()
+
+        overlay._update_layout()
+
+        overlay._scroll_view.setFrame_.assert_called()
+        overlay._agent_shell_header_label.setFrame_.assert_called()
+        overlay._agent_shell_footer_label.setFrame_.assert_called()
 
 
 class TestToolState:

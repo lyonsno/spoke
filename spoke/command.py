@@ -304,6 +304,8 @@ _SYSTEM_PROMPT = (
     "  IMPORTANT: Do NOT respond with text. You MUST call the tools."
 )
 
+COMMAND_SYSTEM_PROMPT = _SYSTEM_PROMPT
+
 
 @dataclass(frozen=True)
 class CommandStreamEvent:
