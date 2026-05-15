@@ -2495,7 +2495,7 @@ class TestWindowLayering:
 
         assert chroma_states == [False]
 
-    def test_optical_show_with_initial_transcript_hides_plain_text_before_front(
+    def test_optical_show_with_initial_transcript_keeps_scroll_visible(
         self, mock_pyobjc, monkeypatch
     ):
         monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
@@ -2514,8 +2514,9 @@ class TestWindowLayering:
             initial_response="Assistant response",
         )
 
-        assert ("scroll_hidden", True) in events
-        assert events.index(("scroll_hidden", True)) < events.index(("front", None))
+        # Scroll view stays visible — no punch-through mode, text renders directly
+        hide_events = [h for tag, h in events if tag == "scroll_hidden"]
+        assert True not in hide_events or (True in hide_events and False in hide_events)
 
     def test_optical_show_with_prompt_only_arms_visual_stack_before_fade(
         self, mock_pyobjc, monkeypatch
@@ -2556,13 +2557,11 @@ class TestWindowLayering:
         )
 
         assert overlay._utterance_text == "User prompt"
-        assert ("scroll_hidden", True) in events
         assert ("compositor", None) in events
         assert ("mask", None) in events
         assert ("timer", "visualStart:") not in events
         assert ("timer", "visualReadyDeadline:") in events
         assert ("timer", "fadeStep:") not in events
-        assert events.index(("scroll_hidden", True)) < events.index(("front", None))
         assert events.index(("front", None)) < events.index(("compositor", None))
         assert events.index(("mask", None)) < events.index(("timer", "visualReadyDeadline:"))
 

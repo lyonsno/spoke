@@ -2286,16 +2286,6 @@ class CommandOverlay(NSObject):
             self._update_backdrop_capture_geometry()
             self._apply_backdrop_pulse_style(1.0)
             self._reset_backdrop_layer()
-            if (
-                known_content_optical_start
-                and self._scroll_view is not None
-            ):
-                # Initial text should not expose the ordinary attributed-text
-                # layer before the compositor switches to punch-through text.
-                # The fallback path unhides it again if the compositor is
-                # unavailable.
-                self._scroll_view.setHidden_(True)
-
             if initial_response:
                 self._utterance_text = initial_utterance
                 self.set_response_text(initial_response)
@@ -4970,7 +4960,10 @@ class CommandOverlay(NSObject):
                     except Exception:
                         pass
                     self._metal_display_link_renderer = None
-                self._enable_text_punchthrough(True)
+                # Fill layer is hidden during compositor mode, so punch-through
+                # text (which renders via the fill mask) would be invisible.
+                # Keep the live NSTextView visible for direct text rendering.
+                self._enable_text_punchthrough(False)
                 # Force one compositor-owned fill image rebuild with the
                 # current geometry. Brightness-only updates skip this path
                 # while the compositor owns live optical sampling.
