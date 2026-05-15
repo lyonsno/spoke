@@ -3526,6 +3526,8 @@ class CommandOverlay(NSObject):
         self._stop_dismiss_seam_compositor()
         if not preserve_radial_pucker:
             self._stop_dismiss_radial_pucker_compositor()
+        # Remove text clipping mask when materialization ends
+        self._update_scroll_materialization_mask(1.0)
 
     def _cancel_dismiss_pucker_tail_animation(
         self,
@@ -3991,6 +3993,52 @@ class CommandOverlay(NSObject):
                     getattr(self, layer_name, None),
                     0.0,
                 )
+        # Clip text to the slit opening so it appears revealed/covered by the warp
+        self._update_scroll_materialization_mask(state["height_frac"])
+
+    def _update_scroll_materialization_mask(self, height_frac: float) -> None:
+        """Clip the scroll view to the materialization slit geometry."""
+        scroll = getattr(self, "_scroll_view", None)
+        if scroll is None or not hasattr(scroll, "layer"):
+            return
+        layer = scroll.layer() if callable(getattr(scroll, "layer", None)) else getattr(scroll, "layer", None)
+        if layer is None:
+            return
+        hf = _clamp01(height_frac)
+        if hf >= 0.99:
+            # Fully open — remove mask for clean rendering
+            if hasattr(layer, "setMask_"):
+                layer.setMask_(None)
+            self._scroll_materialization_mask = None
+            return
+        try:
+            frame = scroll.frame()
+            w = float(frame.size.width)
+            h = float(frame.size.height)
+        except Exception:
+            return
+        visible_h = max(h * hf, 0.0)
+        y_offset = (h - visible_h) * 0.5
+        corner_r = min(12.0, visible_h * 0.5, w * 0.5)
+        mask = getattr(self, "_scroll_materialization_mask", None)
+        if mask is None:
+            mask = CAShapeLayer.alloc().init()
+            self._scroll_materialization_mask = mask
+        try:
+            path = CGPathCreateWithRoundedRect(
+                ((0, y_offset), (w, visible_h)), corner_r, corner_r, None
+            )
+            transaction = CATransaction
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            mask.setPath_(path)
+            if hasattr(layer, "setMask_"):
+                layer.setMask_(mask)
+            if transaction is not None:
+                transaction.commit()
+        except Exception:
+            logger.debug("Failed to update scroll materialization mask", exc_info=True)
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
