@@ -313,6 +313,9 @@ class FullScreenCompositor:
         self._capture_content = None
         self._capture_display = None
 
+        # First-present callback (called once from render thread on 0→1 transition)
+        self._on_first_present = None
+
         # Diagnostics
         self._frame_count = 0
         self._presented_count = 0
@@ -1128,8 +1131,17 @@ class FullScreenCompositor:
                 )
 
             if did_present:
+                was_first = self._presented_count == 0
                 self._presented_count += 1
                 self._interval_presented += 1
+                if was_first:
+                    cb = getattr(self, "_on_first_present", None)
+                    self._on_first_present = None
+                    if cb is not None:
+                        try:
+                            cb()
+                        except Exception:
+                            pass
                 present_end = time.monotonic()
                 with self._lock:
                     self._total_presented_frame_ms += max(
@@ -1786,6 +1798,18 @@ class OverlayCompositorClient:
             return int(count)
         except (TypeError, ValueError):
             return 0
+
+    def set_on_first_present(self, callback) -> None:
+        """Register a callback invoked once when the compositor first presents.
+
+        The callback fires on the compositor render thread. Callers that need
+        main-thread delivery should post from inside the callback.
+        """
+        if self._host is None:
+            return
+        compositor = getattr(self._host, "_compositor", None)
+        if compositor is not None:
+            compositor._on_first_present = callback
 
     def diagnostics_snapshot(self) -> dict[str, float | int]:
         if self._host is None:

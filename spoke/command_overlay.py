@@ -3689,8 +3689,15 @@ class CommandOverlay(NSObject):
         )
         raw = _clamp01(elapsed / duration)
         progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
+        prev_progress = getattr(self, "_materialization_progress", 0.0)
         self._materialization_progress = progress
         self._apply_materialization_fill_state(progress)
+        if (
+            getattr(self, "_materialization_direction", 1) > 0
+            and prev_progress < _OPTICAL_MATERIALIZATION_BODY_READY
+            and progress >= _OPTICAL_MATERIALIZATION_BODY_READY
+        ):
+            self._check_optical_entrance_readiness()
         try:
             shell_config = _materialized_optical_shell_config(final_config, progress)
             compositor_updates: list[tuple[object, dict]] = []
@@ -4019,9 +4026,16 @@ class CommandOverlay(NSObject):
             self._start_backdrop_refresh_timer()
 
     def _schedule_visual_ready_start(self) -> None:
-        """Hold alpha-zero entrance until the optical compositor is coherent."""
+        """Hold alpha-zero entrance until the optical compositor is coherent.
+
+        Uses push-based readiness: the compositor, fill pipeline, and
+        materialization timer each call _check_optical_entrance_readiness()
+        when their condition becomes true.  A hard-deadline safety timer
+        forces the entrance if all three haven't arrived in time.
+        """
         self._cancel_visual_ready_start()
         self._visual_ready_brightness_synced = False
+        self._entrance_started = False
         if self._optical_compositor_has_presented():
             self._sync_optical_compositor_brightness(
                 hide_stale_fill=True,
@@ -4029,58 +4043,99 @@ class CommandOverlay(NSObject):
             )
             self._visual_ready_brightness_synced = True
             if self._optical_entrance_ready():
+                self._entrance_started = True
                 self._start_entrance_animation()
                 return
+        else:
+            compositor = getattr(self, "_fullscreen_compositor", None)
+            if compositor is not None and hasattr(compositor, "set_on_first_present"):
+                def _on_first_present():
+                    _post_overlay_result_to_main(
+                        self, "compositorDidPresent:", {}
+                    )
+                compositor.set_on_first_present(_on_first_present)
         self._visual_ready_wait_started_at = time.perf_counter()
         self._visual_ready_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _OPTICAL_ENTRANCE_READY_POLL_S,
+            _OPTICAL_ENTRANCE_HARD_DEADLINE_S,
             self,
-            "visualReadyStep:",
+            "visualReadyDeadline:",
             None,
-            True,
+            False,
         )
         _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
 
-    def visualReadyStep_(self, timer) -> None:
-        if getattr(self, "_visual_ready_timer", None) is not timer:
+    def compositorDidPresent_(self, payload) -> None:
+        """Called on main thread when the compositor presents its first frame."""
+        if getattr(self, "_entrance_started", False):
             return
         if not getattr(self, "_visible", False):
-            self._cancel_visual_ready_start()
             return
-        elapsed = time.perf_counter() - getattr(
-            self,
-            "_visual_ready_wait_started_at",
-            time.perf_counter(),
-        )
-        compositor_ready = self._optical_compositor_has_presented()
-        if compositor_ready and not getattr(self, "_visual_ready_brightness_synced", False):
+        if not getattr(self, "_visual_ready_brightness_synced", False):
             self._sync_optical_compositor_brightness(
                 hide_stale_fill=True,
                 refresh_fill=True,
             )
             self._visual_ready_brightness_synced = True
-        if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
+        self._check_optical_entrance_readiness()
+
+    def _check_optical_entrance_readiness(self) -> None:
+        """Check all three readiness conditions; start entrance if met."""
+        if getattr(self, "_entrance_started", False):
             return
-        if self._optical_entrance_ready():
+        if not getattr(self, "_visible", False):
+            return
+        if not self._optical_entrance_ready():
+            return
+        self._entrance_started = True
+        self._cancel_visual_ready_start()
+        record_command_overlay_trace(
+            "overlay.visual_ready.push",
+            elapsed=time.perf_counter() - getattr(
+                self, "_visual_ready_wait_started_at", time.perf_counter()
+            ),
+            fill_ready=self._optical_fill_ready(),
+            materialization_progress=getattr(
+                self, "_materialization_progress", None
+            ),
+        )
+        self._start_entrance_animation()
+
+    def visualReadyDeadline_(self, timer) -> None:
+        """Hard deadline — force entrance if push notifications didn't arrive."""
+        if getattr(self, "_entrance_started", False):
+            return
+        if getattr(self, "_visual_ready_timer", None) is not timer:
+            return
+        if not getattr(self, "_visible", False):
             self._cancel_visual_ready_start()
-            self._start_entrance_animation()
             return
-        if elapsed >= _OPTICAL_ENTRANCE_HARD_DEADLINE_S:
-            record_command_overlay_trace(
-                "overlay.visual_ready.hard_deadline",
-                elapsed=elapsed,
-                compositor_ready=compositor_ready,
-                fill_ready=self._optical_fill_ready(),
-                materialization_progress=getattr(
-                    self, "_materialization_progress", None
-                ),
+        compositor_ready = self._optical_compositor_has_presented()
+        elapsed = time.perf_counter() - getattr(
+            self,
+            "_visual_ready_wait_started_at",
+            time.perf_counter(),
+        )
+        record_command_overlay_trace(
+            "overlay.visual_ready.hard_deadline",
+            elapsed=elapsed,
+            compositor_ready=compositor_ready,
+            fill_ready=self._optical_fill_ready(),
+            materialization_progress=getattr(
+                self, "_materialization_progress", None
+            ),
+        )
+        self._entrance_started = True
+        self._cancel_visual_ready_start()
+        if not compositor_ready:
+            self._stop_fullscreen_compositor()
+            self._thaw_local_shell_layers()
+            self._start_backdrop_refresh_timer()
+        elif not getattr(self, "_visual_ready_brightness_synced", False):
+            self._sync_optical_compositor_brightness(
+                hide_stale_fill=True,
+                refresh_fill=True,
             )
-            self._cancel_visual_ready_start()
-            if not compositor_ready:
-                self._stop_fullscreen_compositor()
-                self._thaw_local_shell_layers()
-                self._start_backdrop_refresh_timer()
-            self._start_entrance_animation()
+        self._start_entrance_animation()
 
     def _optical_entrance_ready(self) -> bool:
         return (
@@ -4661,6 +4716,8 @@ class CommandOverlay(NSObject):
         if queued is not None:
             self._queued_fill_request = None
             self._apply_ridge_masks(*queued)
+
+        self._check_optical_entrance_readiness()
 
     def _update_backdrop_capture_geometry(self):
         if self._window is None or self._content_view is None or self._screen is None:
