@@ -502,8 +502,8 @@ class TestStreamCommand:
             ],
         }
 
-    def test_local_step_model_remains_text_only_without_capability_signal(self):
-        """Local Step by name alone should not be treated as a multimodal backend."""
+    def test_local_step_model_sends_multimodal_when_executor_supports_it(self):
+        """Local backends should receive multimodal capture output when supported."""
         from spoke.command import CommandClient
         from spoke.tool_dispatch import get_tool_schemas
 
@@ -558,11 +558,17 @@ class TestStreamCommand:
                 )
             )
 
-        assert tool_calls[0]["tool_output_mode"] == "text"
+        assert tool_calls[0]["tool_output_mode"] == "multimodal"
         assert request_bodies[1]["messages"][-1] == {
             "role": "tool",
             "tool_call_id": "call_1",
-            "content": '{"scene_ref":"scene-test"}',
+            "content": [
+                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
         }
 
     def test_stream_tool_round_accepts_legacy_tool_executor_signature(self):

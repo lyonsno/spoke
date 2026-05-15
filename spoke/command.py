@@ -680,17 +680,6 @@ class CommandClient:
         messages.append({"role": "user", "content": utterance})
         return messages
 
-    def _supports_multimodal_tool_content(self) -> bool:
-        """Whether the current backend is likely to accept image tool content."""
-        model = self._model.lower()
-        base_url = self._base_url.lower()
-        return (
-            "googleapis.com" in base_url
-            or "gemini" in model
-            or "gpt-4.1" in model
-            or "gpt-4o" in model
-        )
-
     def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:
         """Return (message_content, log_preview_text) for a tool result."""
         if isinstance(tool_result, dict) and "content" in tool_result:
@@ -749,11 +738,7 @@ class CommandClient:
             "arguments": fn_args,
         }
         if self._tool_executor_supports_output_mode(tool_executor):
-            tool_kwargs["tool_output_mode"] = (
-                "multimodal"
-                if self._supports_multimodal_tool_content()
-                else "text"
-            )
+            tool_kwargs["tool_output_mode"] = "multimodal"
         if approval_granted and self._tool_executor_supports_kwarg(
             tool_executor, "approval_granted"
         ):
