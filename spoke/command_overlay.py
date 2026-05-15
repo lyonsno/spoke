@@ -4000,9 +4000,10 @@ class CommandOverlay(NSObject):
                     0.0,
                 )
         # Clip text to the slit opening so it appears revealed/covered by the warp
-        self._update_scroll_materialization_mask(state["height_frac"])
+        direction = getattr(self, "_materialization_direction", 1)
+        self._update_scroll_materialization_mask(state["height_frac"], direction=direction)
 
-    def _update_scroll_materialization_mask(self, height_frac: float) -> None:
+    def _update_scroll_materialization_mask(self, height_frac: float, *, direction: int = 1) -> None:
         """Clip the scroll view to the materialization slit geometry."""
         scroll = getattr(self, "_scroll_view", None)
         if scroll is None or not hasattr(scroll, "layer"):
@@ -4012,9 +4013,11 @@ class CommandOverlay(NSObject):
             return
         hf = _clamp01(height_frac)
         if hf >= 0.99:
-            # Fully open — remove mask for clean rendering
+            # Fully open — remove mask and restore full alpha
             if hasattr(layer, "setMask_"):
                 layer.setMask_(None)
+            if hasattr(scroll, "setAlphaValue_"):
+                scroll.setAlphaValue_(1.0)
             self._scroll_materialization_mask = None
             return
         try:
@@ -4023,12 +4026,22 @@ class CommandOverlay(NSObject):
             h = float(frame.size.height)
         except Exception:
             return
-        visible_h = max(h * hf, 0.0)
-        # Width also narrows, but less aggressively — use sqrt so it
-        # converges to a point, not a horizontal line.
-        wf = _clamp01(hf ** 0.5)
-        visible_w = max(w * wf, 0.0)
-        x_offset = (w - visible_w) * 0.5
+        if direction >= 0:
+            # Entrance: start full width, thin horizontal slit, expand vertically.
+            # Width is always full. Height ramps with height_frac.
+            visible_w = w
+            visible_h = max(h * hf, 0.0)
+            x_offset = 0.0
+            # Also fade the scroll view in quickly during the initial squeeze
+            if hasattr(scroll, "setAlphaValue_"):
+                alpha = min(hf * 5.0, 1.0)  # fade in over first 20% of height_frac
+                scroll.setAlphaValue_(alpha)
+        else:
+            # Dismiss: collapse both axes, width slower via sqrt
+            wf = _clamp01(hf ** 0.5)
+            visible_w = max(w * wf, 0.0)
+            visible_h = max(h * hf, 0.0)
+            x_offset = (w - visible_w) * 0.5
         y_offset = (h - visible_h) * 0.5
         corner_r = min(12.0, visible_h * 0.5, visible_w * 0.5)
         mask = getattr(self, "_scroll_materialization_mask", None)
