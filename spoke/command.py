@@ -110,6 +110,11 @@ _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 _XML_CONTENT_MARKERS = ("<function=", "<tool_call>")
 
 
+def _normalize_max_history(value: int) -> int | None:
+    """Return None for append-only history, otherwise a positive turn cap."""
+    return value if value > 0 else None
+
+
 def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
@@ -370,11 +375,12 @@ class CommandClient:
             or os.environ.get("SPOKE_COMMAND_API_KEY")
             or os.environ.get("OMLX_SERVER_API_KEY", "")
         )
-        self._max_history = (
+        raw_max_history = (
             max_history
             if max_history is not None
             else int(os.environ.get("SPOKE_COMMAND_HISTORY", str(_DEFAULT_RING_BUFFER_SIZE)))
         )
+        self._max_history = _normalize_max_history(raw_max_history)
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
         self._system_prompt = system_prompt or _SYSTEM_PROMPT
@@ -618,7 +624,7 @@ class CommandClient:
                 if normalized:
                     normalized[0] = {**normalized[0], "_overlay_response": overlay_response}
         self._history.append(normalized)
-        while len(self._history) > self._max_history:
+        while self._max_history is not None and len(self._history) > self._max_history:
             # Evict the oldest non-summary turn.  Summary turns
             # (produced by compact_history) are the highest-value
             # context in the buffer and should survive until the

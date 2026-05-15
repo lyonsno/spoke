@@ -219,6 +219,22 @@ class TestCommandClient:
         assert client._api_key == "env-key"
         assert client._max_history == 20
 
+    def test_zero_history_env_disables_ring_eviction(self, monkeypatch):
+        """SPOKE_COMMAND_HISTORY=0 should keep history append-only for cache smoke."""
+        monkeypatch.setenv("SPOKE_COMMAND_HISTORY", "0")
+        from spoke.command import CommandClient
+
+        client = CommandClient(history_path=None)
+        for i in range(25):
+            client.append_history_pair(f"q{i}", f"a{i}")
+
+        assert client._max_history is None
+        assert len(client._history) == 25
+        assert client._history[0] == [
+            {"role": "user", "content": "q0"},
+            {"role": "assistant", "content": "a0"},
+        ]
+
     def test_custom_system_prompt_override(self):
         """Subagents should be able to supply a distinct system prompt."""
         from spoke.command import CommandClient
