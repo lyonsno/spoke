@@ -4118,6 +4118,10 @@ class CommandOverlay(NSObject):
                         self, "compositorDidPresent:", {}
                     )
                 compositor.set_on_first_present(_on_first_present)
+                if self._optical_compositor_has_presented():
+                    self.compositorDidPresent_({})
+                    if getattr(self, "_entrance_started", False):
+                        return
         self._visual_ready_wait_started_at = time.perf_counter()
         self._visual_ready_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _OPTICAL_ENTRANCE_HARD_DEADLINE_S,
@@ -4150,6 +4154,12 @@ class CommandOverlay(NSObject):
             return
         if not self._optical_entrance_ready():
             return
+        if not getattr(self, "_visual_ready_brightness_synced", False):
+            self._sync_optical_compositor_brightness(
+                hide_stale_fill=True,
+                refresh_fill=True,
+            )
+            self._visual_ready_brightness_synced = True
         self._entrance_started = True
         self._cancel_visual_ready_start()
         record_command_overlay_trace(

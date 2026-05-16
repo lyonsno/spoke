@@ -3443,6 +3443,89 @@ class TestAdaptiveCompositing:
         assert overlay._brightness == pytest.approx(0.04)
         assert overlay._brightness_target == pytest.approx(0.04)
 
+    def test_visual_ready_registration_handles_first_present_race(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._materialization_progress = 1.0
+        overlay._fill_hidden_until_signature = None
+        overlay._start_entrance_animation = MagicMock()
+
+        class RacedCompositor:
+            sampled_brightness = 0.04
+
+            def __init__(self):
+                self.reads = 0
+                self.callbacks = []
+
+            @property
+            def presented_count(self):
+                self.reads += 1
+                return 0 if self.reads == 1 else 1
+
+            def set_on_first_present(self, callback):
+                self.callbacks.append(callback)
+
+            def refresh_brightness(self):
+                pass
+
+        overlay._fullscreen_compositor = RacedCompositor()
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock()
+
+        overlay._schedule_visual_ready_start()
+
+        overlay._start_entrance_animation.assert_called_once()
+
+    def test_materialization_ready_syncs_brightness_before_starting_entrance(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._visual_ready_brightness_synced = False
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._materialization_progress = 0.75
+        overlay._fill_hidden_until_signature = None
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 624.0, 208.0)
+        events = []
+        overlay._apply_ridge_masks = MagicMock(
+            side_effect=lambda width, height: events.append(
+                (
+                    "fill",
+                    width,
+                    height,
+                    overlay._brightness,
+                )
+            )
+        )
+        overlay._start_entrance_animation = MagicMock(
+            side_effect=lambda: events.append(("entrance",))
+        )
+
+        class PresentedCompositor:
+            presented_count = 1
+            sampled_brightness = 0.04
+
+            def refresh_brightness(self):
+                events.append(("brightness",))
+
+        overlay._fullscreen_compositor = PresentedCompositor()
+
+        overlay._check_optical_entrance_readiness()
+
+        overlay._apply_ridge_masks.assert_called_once_with(624.0, 208.0)
+        assert events[:3] == [
+            ("brightness",),
+            ("fill", 624.0, 208.0, 0.04),
+            ("entrance",),
+        ]
+        assert overlay._brightness == pytest.approx(0.04)
+        assert overlay._brightness_target == pytest.approx(0.04)
+        assert overlay._visual_ready_brightness_synced is True
+
     def test_compositor_did_present_triggers_entrance_when_all_ready(
         self, mock_pyobjc
     ):
