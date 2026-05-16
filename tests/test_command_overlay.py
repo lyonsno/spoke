@@ -1445,8 +1445,9 @@ class TestOpticalShellMaterialization:
         overlay._start_fullscreen_compositor()
 
         overlay._start_materialization_animation.assert_not_called()
-        assert overlay._materialization_progress == pytest.approx(0.0)
-        assert overlay._deferred_materialization_shell_config is not None
+        # When materialization can't start immediately, the compositor gets
+        # the full config as a fallback so the warp is visible while waiting.
+        assert overlay._materialization_progress == pytest.approx(1.0)
 
     def test_optical_start_prepares_fill_geometry_before_materialization(
         self, mock_pyobjc, monkeypatch

@@ -5144,6 +5144,19 @@ class CommandOverlay(NSObject):
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
                 self._start_deferred_materialization_if_ready()
+                # If materialization didn't start (fill still pending),
+                # push the full shell config so the warp is at least visible
+                # while we wait. The materialization will override this when
+                # it starts.
+                if (
+                    getattr(self, "_deferred_materialization_shell_config", None) is not None
+                    and getattr(self, "_materialization_timer", None) is None
+                ):
+                    try:
+                        compositor.update_shell_config(dict(final_shell_config))
+                        self._materialization_progress = 1.0
+                    except Exception:
+                        pass
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
