@@ -4156,6 +4156,12 @@ class CommandOverlay(NSObject):
         comp_window_visible = False
         comp_window_alpha = 0.0
         comp_window_frame = None
+        comp_shell_config = None
+        if comp_inner is not None:
+            configs = getattr(comp_inner, "_shell_configs", [])
+            if configs:
+                c = configs[0]
+                comp_shell_config = f"cx={c.get('center_x',0):.0f},cy={c.get('center_y',0):.0f},w={c.get('content_width_points',0):.0f},h={c.get('content_height_points',0):.0f},mag={c.get('core_magnification',0):.1f}"
         if comp_window is not None:
             try:
                 comp_window_visible = bool(comp_window.isVisible())
@@ -4176,6 +4182,7 @@ class CommandOverlay(NSObject):
             comp_capture_frames=comp_capture_frames,
             comp_frame_gen=comp_frame_gen,
             overlay_window=self._window is not None,
+            comp_shell_config=comp_shell_config,
         )
         if self._window is not None:
             self._window.orderFrontRegardless()
