@@ -14,6 +14,7 @@ from spoke.coordination_surfaces import (
     SurfaceRenderer,
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
+    text_surface_from_str,
 )
 
 
@@ -295,6 +296,35 @@ class TestCoordinationStack:
         stack = CoordinationStack()
         stack.push(_agent_entry())
         assert stack.action_vocabulary() == []
+
+
+class TestLegacyBridge:
+    def test_text_surface_from_str(self):
+        entry = text_surface_from_str("hello world")
+        assert entry.kind == SurfaceKind.TEXT
+        assert entry.payload["text"] == "hello world"
+        assert entry.payload["owner"] == "user"
+        assert entry.acknowledged is True
+        assert entry.label == "hello world"
+
+    def test_text_surface_from_str_assistant(self):
+        entry = text_surface_from_str("response", owner="assistant")
+        assert entry.payload["owner"] == "assistant"
+        assert entry.acknowledged is False
+
+    def test_text_surface_unique_ids(self):
+        e1 = text_surface_from_str("a")
+        e2 = text_surface_from_str("a")
+        assert e1.surface_id != e2.surface_id
+
+    def test_text_surface_in_stack(self):
+        stack = CoordinationStack()
+        stack.push(text_surface_from_str("first"))
+        stack.push(text_surface_from_str("second"))
+        stack.activate()
+        assert stack.primary.payload["text"] == "second"
+        stack.rock_down()
+        assert stack.primary.payload["text"] == "first"
 
 
 class TestRendererIntegration:

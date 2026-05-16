@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
+from uuid import uuid4
 
 
 class SurfaceKind(str, Enum):
@@ -297,3 +298,21 @@ class CoordinationStack:
         if not primary:
             return []
         return self._registry.actions_for(primary.kind)
+
+
+# ---------------------------------------------------------------------------
+# Legacy bridge: convert old TrayEntry/str items to SurfaceEntry
+# ---------------------------------------------------------------------------
+
+
+def text_surface_from_str(text: str, *, owner: str = "user") -> SurfaceEntry:
+    """Create a TEXT surface entry from a raw string (legacy tray compat)."""
+    return SurfaceEntry(
+        identity=SurfaceIdentity(
+            kind=SurfaceKind.TEXT,
+            surface_id=f"text-{uuid4().hex[:8]}",
+            label=text[:60] if text else "",
+        ),
+        payload={"text": text, "owner": owner},
+        acknowledged=(owner != "assistant"),
+    )

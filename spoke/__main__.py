@@ -152,6 +152,13 @@ from .handsfree import (
 )
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
+from .coordination_surfaces import (
+    CoordinationStack,
+    SurfaceEntry,
+    SurfaceKind,
+    SurfaceTypeRegistry,
+    text_surface_from_str,
+)
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -1181,6 +1188,9 @@ class SpokeAppDelegate(NSObject):
         self._tray_index: int = 0
         self._tray_active: bool = False
         self._tray_tool_result: dict | None = None
+        # Typed coordination surface stack (new backing store, coexists during migration)
+        self._surface_registry = SurfaceTypeRegistry()
+        self._coordination_stack = CoordinationStack(registry=self._surface_registry)
 
         # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
