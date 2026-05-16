@@ -80,7 +80,7 @@ _APPROVAL_HEADER_TEXT = "Approval needed"
 _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
 # Branch-local smoke aid: keep every command-overlay materialization/dismiss
 # timeline coupled while tuning toward the final pressure-slit cadence.
-_PRESSURE_SLIT_SMOKE_TIME_SCALE = 2.0 / 3.0
+_PRESSURE_SLIT_SMOKE_TIME_SCALE = 1.0 / 3.0
 _FADE_IN_S = 0.16 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
@@ -189,7 +189,7 @@ _OPTICAL_ENTRANCE_HARD_DEADLINE_S = max(
     _OPTICAL_ENTRANCE_READY_TIMEOUT_S * 2,
     _env(
         "SPOKE_COMMAND_OPTICAL_ENTRANCE_HARD_DEADLINE_S",
-        0.5,
+        0.25,
     ),
 )
 _FADE_OUT_S = 0.5 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
@@ -2207,23 +2207,6 @@ class CommandOverlay(NSObject):
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
             return
-        # If a dismiss animation is in flight, queue this show and let
-        # the dismiss finish cleanly before reopening.
-        dismiss_in_flight = (
-            (getattr(self, "_fade_timer", None) is not None and getattr(self, "_fade_direction", 0) == -1)
-            or getattr(self, "_cancel_timer_anim", None) is not None
-            or getattr(self, "_pucker_tail_timer", None) is not None
-        )
-        if dismiss_in_flight:
-            self._queued_show_args = {
-                "initial_utterance": initial_utterance,
-                "initial_response": initial_response,
-                "start_thinking_timer": start_thinking_timer,
-                "preserve_thinking_timer": preserve_thinking_timer,
-            }
-            record_command_overlay_trace("overlay.show.queued_during_dismiss")
-            return
-        self._queued_show_args = None
         record_command_overlay_trace(
             "overlay.show.begin",
             was_visible=bool(getattr(self, "_visible", False)),
@@ -2483,7 +2466,6 @@ class CommandOverlay(NSObject):
             self._window.orderOut_(None)
             self._visible = False
             self._cancel_pulse()
-            self._fire_queued_show_if_pending()
 
     def hide(self) -> None:
         """Fade out without competing pulse work during the dismiss animation."""
@@ -3007,7 +2989,6 @@ class CommandOverlay(NSObject):
                 self._stop_fullscreen_compositor(reveal_local_shell=False)
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
-                self._fire_queued_show_if_pending()
             else:
                 self._window.setAlphaValue_(1.0)
 
@@ -3621,7 +3602,6 @@ class CommandOverlay(NSObject):
         self._reset_backdrop_layer()
         self._window.orderOut_(None)
         self._cancel_pulse()
-        self._fire_queued_show_if_pending()
         return True
 
     def _start_entrance_animation(self) -> None:
@@ -3858,7 +3838,6 @@ class CommandOverlay(NSObject):
         self._publish_dismiss_pucker_tail_frame(progress)
         if progress >= 1.0:
             self._cancel_dismiss_pucker_tail_animation()
-            self._fire_queued_show_if_pending()
 
     def _set_materialization_layer_scale(
         self,
@@ -4155,15 +4134,6 @@ class CommandOverlay(NSObject):
         )
         _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
 
-    def _fire_queued_show_if_pending(self) -> None:
-        """If a show was queued during dismiss, fire it now that dismiss is done."""
-        args = getattr(self, "_queued_show_args", None)
-        if args is None:
-            return
-        self._queued_show_args = None
-        record_command_overlay_trace("overlay.show.dequeued_after_dismiss")
-        self.show(**args)
-
     def _enforce_compositor_window_order(self) -> None:
         """Ensure compositor window is visible and overlay is on top of it."""
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -4188,10 +4158,13 @@ class CommandOverlay(NSObject):
         comp_window_frame = None
         comp_shell_config = None
         if comp_inner is not None:
-            configs = getattr(comp_inner, "_shell_configs", [])
-            if configs:
+            configs = getattr(comp_inner, "_shell_configs", None)
+            if configs and isinstance(configs, list) and len(configs) > 0:
                 c = configs[0]
-                comp_shell_config = f"cx={c.get('center_x',0):.0f},cy={c.get('center_y',0):.0f},w={c.get('content_width_points',0):.0f},h={c.get('content_height_points',0):.0f},mag={c.get('core_magnification',0):.1f}"
+                try:
+                    comp_shell_config = f"cx={c.get('center_x',0):.0f},cy={c.get('center_y',0):.0f},w={c.get('content_width_points',0):.0f},h={c.get('content_height_points',0):.0f},mag={c.get('core_magnification',0):.1f}"
+                except (TypeError, AttributeError):
+                    pass
         if comp_window is not None:
             try:
                 comp_window_visible = bool(comp_window.isVisible())
