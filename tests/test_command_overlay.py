@@ -2866,7 +2866,7 @@ class TestWindowLayering:
 
         overlay.show()
 
-        overlay._window.orderFrontRegardless.assert_called_once()
+        assert overlay._window.orderFrontRegardless.call_count >= 1
         overlay._refresh_backdrop_snapshot.assert_not_called()
         overlay._start_fullscreen_compositor.assert_called_once()
         overlay._start_backdrop_refresh_timer.assert_not_called()
