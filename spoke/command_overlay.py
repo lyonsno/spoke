@@ -53,6 +53,14 @@ from .overlay import (
     _start_overlay_fill_worker,
 )
 from . import optical_transition as _house_transition
+from .optical_field import (
+    OpticalFieldBounds,
+    OpticalFieldMotionIntent,
+    OpticalFieldPresentation,
+    OpticalFieldProfileRef,
+    OpticalFieldRequest,
+)
+from .optical_lifecycle import OpticalLifecycleAdapter
 from .optical_shell_metrics import OpticalShellMetrics
 
 logger = logging.getLogger(__name__)
@@ -73,6 +81,8 @@ def _env_bool(name: str, default: bool) -> bool:
 _OVERLAY_WIDTH = _env("SPOKE_COMMAND_OVERLAY_WIDTH", 600.0)
 _OVERLAY_HEIGHT = _env("SPOKE_COMMAND_OVERLAY_HEIGHT", 80.0)
 _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
+_STACK_SPECULUM_SMOKE_ENABLED = _env_bool("SPOKE_STACK_SPECULUM_SMOKE", False)
+_STACK_SPECULUM_CLIENT_ID = "stack.speculum.demo"
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 230.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 100.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
@@ -1486,6 +1496,135 @@ class CommandOverlay(NSObject):
                 client.update_shell_config(config)
             except Exception:
                 logger.debug("Failed to update command compositor client", exc_info=True)
+
+    def _stack_speculum_smoke_enabled(self) -> bool:
+        return bool(_STACK_SPECULUM_SMOKE_ENABLED)
+
+    def _stack_speculum_smoke_request(
+        self,
+        final_shell_config: dict,
+        *,
+        state: str,
+    ) -> OpticalFieldRequest:
+        screen_frame = self._screen.frame()
+        screen_w = float(getattr(screen_frame.size, "width", 1440.0))
+        screen_h = float(getattr(screen_frame.size, "height", 900.0))
+        width = 360.0
+        height = 96.0
+        margin = 44.0
+        x = max(24.0, screen_w - width - margin)
+        y = max(24.0, screen_h - height - 180.0)
+        bounds = OpticalFieldBounds(x=x, y=y, width=width, height=height)
+        content_frame = OpticalFieldBounds(
+            x=x + 16.0,
+            y=y + 12.0,
+            width=width - 32.0,
+            height=height - 24.0,
+        )
+        return OpticalFieldRequest(
+            caller_id=_STACK_SPECULUM_CLIENT_ID,
+            bounds=bounds,
+            content_frame=content_frame,
+            role="tray",
+            state=state,
+            presentation=OpticalFieldPresentation(layer="hud", order=50),
+            profile=OpticalFieldProfileRef(base="quiet_chip"),
+            layout_recipe="deck",
+            motion=OpticalFieldMotionIntent(strategy="auto"),
+            z_index=int(final_shell_config.get("z_index", 0)) + 20,
+        )
+
+    def _start_stack_speculum_smoke_lifecycle(
+        self,
+        final_shell_config: dict,
+        *,
+        direction: int,
+    ) -> None:
+        if not self._stack_speculum_smoke_enabled():
+            self._stop_stack_speculum_smoke_compositors()
+            return
+        adapter = OpticalLifecycleAdapter()
+        request = self._stack_speculum_smoke_request(
+            final_shell_config,
+            state="materialize" if direction >= 0 else "dismiss",
+        )
+        result = adapter.upsert(request)
+        if not result.accepted:
+            return
+        self._stack_speculum_smoke_adapter = adapter
+        self._stack_speculum_smoke_base_config = dict(final_shell_config)
+        updates = self._stack_speculum_smoke_compositor_updates(0.0)
+        if updates:
+            if not self._publish_shared_compositor_configs(updates):
+                self._publish_individual_compositor_configs(updates)
+
+    def _ensure_stack_speculum_smoke_compositor(self, config: dict):
+        clients = getattr(self, "_stack_speculum_smoke_compositors", None)
+        if not isinstance(clients, dict):
+            clients = {}
+            self._stack_speculum_smoke_compositors = clients
+        client_id = str(config.get("client_id", _STACK_SPECULUM_CLIENT_ID))
+        compositor = clients.get(client_id)
+        if compositor is not None:
+            return compositor
+        try:
+            from spoke.fullscreen_compositor import start_overlay_compositor
+
+            compositor = start_overlay_compositor(
+                screen=self._screen,
+                window=self._window,
+                content_view=self._content_view,
+                shell_config=config,
+                client_id=client_id,
+                role="tray",
+                registry=getattr(self, "_compositor_registry", None),
+            )
+        except Exception:
+            logger.debug("Failed to start Stack Speculum smoke compositor", exc_info=True)
+            return None
+        if compositor is not None:
+            clients[client_id] = compositor
+        return compositor
+
+    def _stack_speculum_smoke_compositor_updates(
+        self,
+        elapsed_s: float,
+    ) -> list[tuple[object, dict]]:
+        adapter = getattr(self, "_stack_speculum_smoke_adapter", None)
+        if adapter is None:
+            return []
+        frame = adapter.frame_at(_STACK_SPECULUM_CLIENT_ID, elapsed_s)
+        if frame is None:
+            return []
+        updates: list[tuple[object, dict]] = []
+        active_client_ids = set()
+        for config in frame.shell_configs:
+            client_id = str(config.get("client_id", _STACK_SPECULUM_CLIENT_ID))
+            active_client_ids.add(client_id)
+            compositor = self._ensure_stack_speculum_smoke_compositor(config)
+            if compositor is not None:
+                updates.append((compositor, config))
+        for client_id, compositor in list(
+            getattr(self, "_stack_speculum_smoke_compositors", {}).items()
+        ):
+            if client_id in active_client_ids:
+                continue
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop stale Stack Speculum smoke client", exc_info=True)
+            getattr(self, "_stack_speculum_smoke_compositors", {}).pop(client_id, None)
+        return updates
+
+    def _stop_stack_speculum_smoke_compositors(self) -> None:
+        for compositor in list(getattr(self, "_stack_speculum_smoke_compositors", {}).values()):
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop Stack Speculum smoke compositor", exc_info=True)
+        self._stack_speculum_smoke_compositors = {}
+        self._stack_speculum_smoke_adapter = None
+        self._stack_speculum_smoke_base_config = None
 
     def _stop_dismiss_radial_pucker_compositor(self) -> None:
         compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)
@@ -3345,6 +3484,10 @@ class CommandOverlay(NSObject):
                 )
             except Exception:
                 logger.debug("Failed to seed command materialization shell", exc_info=True)
+        self._start_stack_speculum_smoke_lifecycle(
+            self._materialization_final_shell_config,
+            direction=self._materialization_direction,
+        )
         if self._materialization_direction > 0:
             self._apply_materialization_fill_state(self._materialization_progress)
         self._materialization_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -3408,6 +3551,9 @@ class CommandOverlay(NSObject):
                 else:
                     self._stop_dismiss_seam_compositor()
             compositor_updates.append((compositor, frame.main_config))
+            compositor_updates.extend(
+                self._stack_speculum_smoke_compositor_updates(elapsed)
+            )
             if not self._publish_shared_compositor_configs(compositor_updates):
                 self._publish_individual_compositor_configs(compositor_updates)
         except Exception:
@@ -5061,6 +5207,7 @@ class CommandOverlay(NSObject):
     def _stop_fullscreen_compositor(self, *, reveal_local_shell: bool = True):
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
+        self._stop_stack_speculum_smoke_compositors()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)

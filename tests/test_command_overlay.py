@@ -205,6 +205,82 @@ def _install_fake_attributed_string(monkeypatch):
     )
 
 
+def test_stack_speculum_smoke_request_is_tray_hud_consumer(mock_pyobjc, monkeypatch):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "_STACK_SPECULUM_SMOKE_ENABLED", True)
+
+    request = overlay._stack_speculum_smoke_request(
+        {
+            "z_index": 4,
+            "initial_brightness": 0.37,
+        },
+        state="materialize",
+    )
+
+    assert request.caller_id == "stack.speculum.demo"
+    assert request.role == "tray"
+    assert request.state == "materialize"
+    assert request.presentation.layer == "hud"
+    assert request.presentation.order == 50
+    assert request.profile.base == "quiet_chip"
+    assert request.layout_recipe == "deck"
+    assert request.z_index == 24
+
+
+def test_stack_speculum_smoke_harness_registers_visible_tray_client(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "_STACK_SPECULUM_SMOKE_ENABLED", True)
+    overlay._compositor_registry = object()
+
+    registered = []
+
+    class FakeClient:
+        def __init__(self, client_id, role):
+            self._client_id = client_id
+            self.role = role
+            self._host = object()
+            self.configs = []
+
+        def update_shell_config(self, config):
+            self.configs.append(config)
+            return True
+
+        def stop(self):
+            self.stopped = True
+
+    def fake_start_overlay_compositor(**kwargs):
+        client = FakeClient(kwargs["client_id"], kwargs["role"])
+        client.configs.append(kwargs["shell_config"])
+        registered.append(client)
+        return client
+
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "start_overlay_compositor",
+        fake_start_overlay_compositor,
+    )
+
+    overlay._start_stack_speculum_smoke_lifecycle({"z_index": 0}, direction=1)
+    updates = overlay._stack_speculum_smoke_compositor_updates(0.0)
+
+    assert registered
+    assert registered[0]._client_id == "stack.speculum.demo"
+    assert registered[0].role == "tray"
+    assert updates[0][0] is registered[0]
+    config = updates[0][1]
+    assert config["client_id"] == "stack.speculum.demo"
+    assert config["role"] == "tray"
+    assert config["presentation_layer"] == "hud"
+    assert config["optical_field"]["caller_id"] == "stack.speculum.demo"
+    assert "progress" not in config["optical_field"]
+    assert "phase" not in config["optical_field"]
+
+
 def test_quartz_backdrop_renderer_blurs_snapshot_before_render(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
