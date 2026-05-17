@@ -170,6 +170,18 @@ class TestCoordinationStack:
         assert stack.entries[1].priority == 5
         assert stack.entries[2].surface_id == "low"
 
+    def test_push_by_priority_inactive_resets_index(self):
+        """When inactive, push_by_priority should reset index to 0."""
+        stack = CoordinationStack()
+        e1 = _agent_entry("s1")
+        e1.priority = 5
+        stack.push(e1)
+        # Not activated — index should be 0 after priority push
+        e2 = _finding_entry("f1")
+        e2.priority = 1
+        stack.push_by_priority(e2)
+        assert stack.index == 0
+
     def test_activate_and_deactivate(self):
         stack = CoordinationStack()
         stack.push(_agent_entry())
@@ -299,8 +311,18 @@ class TestCoordinationStack:
         assert vocab[0].name == "dismiss"
 
     def test_action_vocabulary_empty_when_inactive(self):
-        stack = CoordinationStack()
+        """Active guard: vocabulary must be empty when stack is not active,
+        even if entries exist and a registry has actions for their kind."""
+        reg = build_default_registry()
+        stack = CoordinationStack(registry=reg)
         stack.push(_agent_entry())
+        # Not activated — should return empty despite registered actions
+        assert stack.action_vocabulary() == []
+        # Activate — now actions should appear
+        stack.activate()
+        assert len(stack.action_vocabulary()) > 0
+        # Deactivate — empty again
+        stack.deactivate()
         assert stack.action_vocabulary() == []
 
 

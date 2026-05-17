@@ -11,3 +11,6 @@ wheels/
 
 # macOS
 .DS_Store
+
+# Epistaxis session state (tooling artifact, not repo content)
+.epistaxis-session.json

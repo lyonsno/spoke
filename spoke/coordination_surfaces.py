@@ -35,11 +35,11 @@ class SurfaceKind(str, Enum):
 class SurfaceIdentity:
     """Stable identity for a coordination surface.
 
-    Enough to address the surface across sessions: kind + a kind-scoped id.
+    Enough to address the surface across sessions: kind + a globally unique id.
     """
 
     kind: SurfaceKind
-    surface_id: str  # kind-scoped unique id (e.g. provider_session_id, finding path)
+    surface_id: str  # globally unique across the stack (e.g. provider_session_id, finding path)
     label: str = ""  # short human-readable label for compact display
 
 
@@ -203,8 +203,11 @@ class CoordinationStack:
             else:
                 break
         self._entries.insert(insert_at, entry)
-        if self._active and insert_at <= self._index:
-            self._index += 1
+        if self._active:
+            if insert_at <= self._index:
+                self._index += 1
+        else:
+            self._index = 0
 
     def rock_up(self) -> SurfaceEntry | None:
         """Navigate toward index 0 (newer/higher priority)."""
@@ -295,7 +298,13 @@ class CoordinationStack:
         return entry.label
 
     def action_vocabulary(self) -> list[SurfaceAction]:
-        """Get the action vocabulary for the current primary surface type."""
+        """Get the action vocabulary for the current primary surface type.
+
+        Returns empty when the stack is inactive — voice routing should
+        not resolve against a surface the operator isn't looking at.
+        """
+        if not self._active:
+            return []
         primary = self.primary
         if not primary:
             return []

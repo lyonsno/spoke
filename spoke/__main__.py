@@ -3278,9 +3278,15 @@ class SpokeAppDelegate(NSObject):
 
         This is the new primary entry point for adding surfaces. Legacy
         text entries should use _add_tray_entry which delegates here.
+
+        Note: during migration, the coordination stack is append-only —
+        removals on the legacy _tray_stack are not mirrored here. Full
+        removal mirroring happens when the legacy tray is cut over.
         """
-        to_top = (position == "top")
-        self._coordination_stack.push(surface, to_top=to_top)
+        if position == "priority":
+            self._coordination_stack.push_by_priority(surface)
+        else:
+            self._coordination_stack.push(surface, to_top=(position == "top"))
         if activate:
             self._coordination_stack.activate()
         return surface
