@@ -1,6 +1,8 @@
 SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE=1
 SPOKE_PERCEPTASIA_THROUGHGLASS_URL=http://localhost:8753
 SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED=1
+SPOKE_COMMAND_OVERLAY_WIDTH=1200.0
+SPOKE_COMMAND_OVERLAY_HEIGHT=160.0
 SPOKE_COMMAND_OVERLAY_TRACE_PATH=/tmp/spoke-perceptasia-throughglass-graft-command-overlay-trace.jsonl
 SPOKE_WITNESS_CONTROL_PATH=/tmp/spoke-perceptasia-throughglass-graft-witness-control.jsonl
 SPOKE_RETINA_LASSO_TOGGLE_CONTROL_PATH=/tmp/spoke-perceptasia-throughglass-graft-witness-control.jsonl

@@ -59,6 +59,8 @@ def test_throughglass_smoke_env_preserves_command_optical_shell():
 
     assert env.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE") == "1"
     assert env.get("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED") == "1"
+    assert env.get("SPOKE_COMMAND_OVERLAY_WIDTH") == "1200.0"
+    assert env.get("SPOKE_COMMAND_OVERLAY_HEIGHT") == "160.0"
 
 
 # ── Registry reading ────────────────────────────────────────────
