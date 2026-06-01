@@ -56,6 +56,32 @@ _THROUGHGLASS_WINDOW_LEVEL = 25
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
+_THROUGHGLASS_MEDIA_CAPTURE_BLOCKER_SCRIPT = r"""
+(() => {
+  const deny = () => Promise.reject(new DOMException(
+    "Spoke Throughglass disables embedded media capture",
+    "NotAllowedError"
+  ));
+  const install = () => {
+    const mediaDevices = navigator.mediaDevices || {};
+    try {
+      Object.defineProperty(navigator, "mediaDevices", {
+        value: mediaDevices,
+        configurable: true
+      });
+    } catch (_error) {}
+    try {
+      Object.defineProperty(mediaDevices, "getUserMedia", {
+        value: deny,
+        configurable: true
+      });
+    } catch (_error) {
+      mediaDevices.getUserMedia = deny;
+    }
+  };
+  install();
+})();
+"""
 _THROUGHGLASS_MEDIA_CAPTURE_SELECTOR = (
     b"webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:"
 )
@@ -688,8 +714,17 @@ def _make_content_view(url: str, width: float, height: float):
         from WebKit import WKWebView
 
         logger.info("Perceptasia Throughglass: creating WKWebView")
-        view = WKWebView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
-        if hasattr(view, "setUIDelegate_"):
+        rect = NSMakeRect(0, 0, width, height)
+        webview_alloc = WKWebView.alloc()
+        configuration = _make_webview_configuration()
+        configured_init = getattr(webview_alloc, "initWithFrame_configuration_", None)
+        if configuration is not None and callable(configured_init):
+            view = configured_init(rect, configuration)
+        else:
+            view = webview_alloc.initWithFrame_(rect)
+        if _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_INSTALL_MEDIA_DELEGATE") and hasattr(
+            view, "setUIDelegate_"
+        ):
             view.setUIDelegate_(_throughglass_ui_delegate())
         _set_view_autoresizing(view)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
@@ -708,6 +743,33 @@ def _make_content_view(url: str, width: float, height: float):
         label.setSelectable_(True)
         _set_view_autoresizing(label)
         return label, "webkit-fallback"
+
+
+def _make_webview_configuration():
+    try:
+        from WebKit import (
+            WKUserContentController,
+            WKUserScript,
+            WKUserScriptInjectionTimeAtDocumentStart,
+            WKWebViewConfiguration,
+        )
+
+        configuration = WKWebViewConfiguration.alloc().init()
+        controller = WKUserContentController.alloc().init()
+        script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+            _THROUGHGLASS_MEDIA_CAPTURE_BLOCKER_SCRIPT,
+            WKUserScriptInjectionTimeAtDocumentStart,
+            False,
+        )
+        controller.addUserScript_(script)
+        configuration.setUserContentController_(controller)
+        return configuration
+    except Exception:
+        logger.warning(
+            "Perceptasia Throughglass: media-capture blocker injection unavailable",
+            exc_info=True,
+        )
+        return None
 
 
 def _make_provider_unavailable_view(url: str, width: float, height: float):

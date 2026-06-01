@@ -255,16 +255,31 @@ def test_throughglass_ui_delegate_registers_decision_handler_block_metadata(mock
     assert handler["callable"]["arguments"][1]["type"] == b"q"
 
 
-def test_throughglass_webview_installs_media_permission_delegate(mock_pyobjc, monkeypatch):
+def test_throughglass_webview_blocks_media_capture_before_webkit_permission_delegate(
+    mock_pyobjc, monkeypatch
+):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     foundation = sys.modules["Foundation"]
     foundation.NSURL = SimpleNamespace(URLWithString_=MagicMock(return_value="url"))
     foundation.NSURLRequest = SimpleNamespace(requestWithURL_=MagicMock(return_value="request"))
 
     view = MagicMock()
+    config = MagicMock()
+    controller = MagicMock()
+    script = MagicMock()
     webkit = types.ModuleType("WebKit")
+    webkit.WKUserScriptInjectionTimeAtDocumentStart = 0
+    webkit.WKWebViewConfiguration = MagicMock()
+    webkit.WKWebViewConfiguration.alloc.return_value.init.return_value = config
+    webkit.WKUserContentController = MagicMock()
+    webkit.WKUserContentController.alloc.return_value.init.return_value = controller
+    webkit.WKUserScript = MagicMock()
+    webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.return_value = (
+        script
+    )
     webkit.WKWebView = MagicMock()
     webkit.WKWebView.alloc.return_value.initWithFrame_.return_value = view
+    webkit.WKWebView.alloc.return_value.initWithFrame_configuration_.return_value = view
     monkeypatch.setitem(sys.modules, "WebKit", webkit)
     module = importlib.import_module("spoke.perceptasia_throughglass")
 
@@ -272,10 +287,19 @@ def test_throughglass_webview_installs_media_permission_delegate(mock_pyobjc, mo
 
     assert content is view
     assert kind == "webview"
-    view.setUIDelegate_.assert_called_once()
-    delegate = view.setUIDelegate_.call_args.args[0]
-    assert isinstance(delegate, module._ThroughglassUIDelegate)
-    assert module._throughglass_ui_delegate() is delegate
+    webkit.WKWebView.alloc.return_value.initWithFrame_configuration_.assert_called_once_with(
+        foundation.NSMakeRect.return_value,
+        config,
+    )
+    config.setUserContentController_.assert_called_once_with(controller)
+    controller.addUserScript_.assert_called_once_with(script)
+    source = webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.call_args.args[
+        0
+    ]
+    assert "navigator.mediaDevices" in source
+    assert "getUserMedia" in source
+    assert "NotAllowedError" in source
+    view.setUIDelegate_.assert_not_called()
 
 
 def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):
