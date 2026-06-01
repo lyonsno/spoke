@@ -56,32 +56,7 @@ _THROUGHGLASS_WINDOW_LEVEL = 25
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
-_THROUGHGLASS_MEDIA_CAPTURE_BLOCKER_SCRIPT = r"""
-(() => {
-  const deny = () => Promise.reject(new DOMException(
-    "Spoke Throughglass disables embedded media capture",
-    "NotAllowedError"
-  ));
-  const install = () => {
-    const mediaDevices = navigator.mediaDevices || {};
-    try {
-      Object.defineProperty(navigator, "mediaDevices", {
-        value: mediaDevices,
-        configurable: true
-      });
-    } catch (_error) {}
-    try {
-      Object.defineProperty(mediaDevices, "getUserMedia", {
-        value: deny,
-        configurable: true
-      });
-    } catch (_error) {
-      mediaDevices.getUserMedia = deny;
-    }
-  };
-  install();
-})();
-"""
+_THROUGHGLASS_MEDIA_DECISION_BLOCK_SIGNATURE = b"v@?q"
 _THROUGHGLASS_MEDIA_CAPTURE_SELECTOR = (
     b"webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:"
 )
@@ -125,17 +100,17 @@ class _ThroughglassUIDelegate(NSObject):
         decision_handler,
     ) -> None:
         try:
-            from WebKit import WKPermissionDecisionDeny
+            from WebKit import WKPermissionDecisionGrant
 
-            decision = WKPermissionDecisionDeny
+            decision = WKPermissionDecisionGrant
         except Exception:
-            decision = 2
-        logger.info("Perceptasia Throughglass: denied WebKit media capture request type=%s", media_type)
-        _deny_webkit_media_capture(decision_handler, decision)
+            decision = 1
+        logger.info("Perceptasia Throughglass: granting WebKit media capture request type=%s", media_type)
+        _decide_webkit_media_capture(decision_handler, decision)
 
 
-def _deny_webkit_media_capture(decision_handler, decision: int) -> None:
-    """Deny WebKit media capture without letting opaque PyObjC blocks abort Spoke."""
+def _decide_webkit_media_capture(decision_handler, decision: int) -> None:
+    """Call WebKit's media-capture completion handler even when PyObjC omitted its block signature."""
 
     try:
         decision_handler(decision)
@@ -143,26 +118,18 @@ def _deny_webkit_media_capture(decision_handler, decision: int) -> None:
     except TypeError as exc:
         if "block without a signature" not in str(exc):
             raise
-        logger.warning(
-            "Perceptasia Throughglass: media capture decision handler lacks signature; trying explicit block call"
-        )
+        logger.warning("Perceptasia Throughglass: media capture decision handler lacks signature; seating it")
 
-    block_call = getattr(objc, "_block_call", None)
-    if not callable(block_call):
-        logger.warning(
-            "Perceptasia Throughglass: media capture decision handler denied but PyObjC block_call is unavailable"
-        )
+    try:
+        setattr(decision_handler, "__block_signature__", _THROUGHGLASS_MEDIA_DECISION_BLOCK_SIGNATURE)
+        decision_handler(decision)
         return
-    for signature in (b"v@?q", b"vq"):
-        try:
-            block_call(decision_handler, signature, (decision,), {})
-            return
-        except Exception as exc:
-            logger.warning(
-                "Perceptasia Throughglass: media capture decision handler block_call failed signature=%r error=%r",
-                signature,
-                exc,
-            )
+    except Exception as exc:
+        logger.error(
+            "Perceptasia Throughglass: media capture decision handler could not be called after signature seating",
+            exc_info=True,
+        )
+        raise exc
 
 
 objc.registerMetaDataForSelector(
@@ -722,9 +689,7 @@ def _make_content_view(url: str, width: float, height: float):
             view = configured_init(rect, configuration)
         else:
             view = webview_alloc.initWithFrame_(rect)
-        if _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_INSTALL_MEDIA_DELEGATE") and hasattr(
-            view, "setUIDelegate_"
-        ):
+        if hasattr(view, "setUIDelegate_"):
             view.setUIDelegate_(_throughglass_ui_delegate())
         _set_view_autoresizing(view)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
@@ -747,26 +712,13 @@ def _make_content_view(url: str, width: float, height: float):
 
 def _make_webview_configuration():
     try:
-        from WebKit import (
-            WKUserContentController,
-            WKUserScript,
-            WKUserScriptInjectionTimeAtDocumentStart,
-            WKWebViewConfiguration,
-        )
+        from WebKit import WKWebViewConfiguration
 
         configuration = WKWebViewConfiguration.alloc().init()
-        controller = WKUserContentController.alloc().init()
-        script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
-            _THROUGHGLASS_MEDIA_CAPTURE_BLOCKER_SCRIPT,
-            WKUserScriptInjectionTimeAtDocumentStart,
-            False,
-        )
-        controller.addUserScript_(script)
-        configuration.setUserContentController_(controller)
         return configuration
     except Exception:
         logger.warning(
-            "Perceptasia Throughglass: media-capture blocker injection unavailable",
+            "Perceptasia Throughglass: WKWebView configuration unavailable",
             exc_info=True,
         )
         return None

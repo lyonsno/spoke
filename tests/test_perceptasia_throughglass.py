@@ -166,7 +166,7 @@ def test_throughglass_real_pyobjc_import_accepts_private_helpers():
     assert "PerceptasiaThroughglassGraft" in result.stdout
 
 
-def test_throughglass_ui_delegate_denies_webkit_media_capture_permission(mock_pyobjc):
+def test_throughglass_ui_delegate_grants_webkit_media_capture_permission(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
     decisions = []
@@ -180,7 +180,7 @@ def test_throughglass_ui_delegate_denies_webkit_media_capture_permission(mock_py
         decisions.append,
     )
 
-    assert decisions == [2]
+    assert decisions == [1]
 
 
 def test_throughglass_ui_delegate_uses_explicit_block_call_for_opaque_webkit_handler(
@@ -188,16 +188,17 @@ def test_throughglass_ui_delegate_uses_explicit_block_call_for_opaque_webkit_han
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
-    block_calls = []
 
     class OpaqueDecisionHandler:
+        def __init__(self):
+            self.__block_signature__ = None
+            self.decisions = []
+
         def __call__(self, _decision):
-            raise TypeError("cannot call block without a signature")
+            if self.__block_signature__ is None:
+                raise TypeError("cannot call block without a signature")
+            self.decisions.append(_decision)
 
-    def fake_block_call(block, signature, args, kwds):
-        block_calls.append((block, signature, args, kwds))
-
-    monkeypatch.setattr(module.objc, "_block_call", fake_block_call, raising=False)
     handler = OpaqueDecisionHandler()
 
     delegate = module._ThroughglassUIDelegate.alloc().init()
@@ -209,10 +210,11 @@ def test_throughglass_ui_delegate_uses_explicit_block_call_for_opaque_webkit_han
         handler,
     )
 
-    assert block_calls == [(handler, b"v@?q", (2,), {})]
+    assert handler.__block_signature__ == b"v@?q"
+    assert handler.decisions == [1]
 
 
-def test_throughglass_ui_delegate_quarantines_uncallable_webkit_handler(
+def test_throughglass_ui_delegate_fails_loud_when_webkit_handler_still_uncallable(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -222,19 +224,15 @@ def test_throughglass_ui_delegate_quarantines_uncallable_webkit_handler(
         def __call__(self, _decision):
             raise TypeError("cannot call block without a signature")
 
-    def fake_block_call(_block, _signature, _args, _kwds):
-        raise TypeError("cannot call block without a signature")
-
-    monkeypatch.setattr(module.objc, "_block_call", fake_block_call, raising=False)
-
     delegate = module._ThroughglassUIDelegate.alloc().init()
-    delegate.webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
-        MagicMock(),
-        MagicMock(),
-        MagicMock(),
-        0,
-        UncallableDecisionHandler(),
-    )
+    with pytest.raises(TypeError, match="cannot call block without a signature"):
+        delegate.webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            0,
+            UncallableDecisionHandler(),
+        )
 
 
 def test_throughglass_ui_delegate_registers_decision_handler_block_metadata(mock_pyobjc):
@@ -255,9 +253,7 @@ def test_throughglass_ui_delegate_registers_decision_handler_block_metadata(mock
     assert handler["callable"]["arguments"][1]["type"] == b"q"
 
 
-def test_throughglass_webview_blocks_media_capture_before_webkit_permission_delegate(
-    mock_pyobjc, monkeypatch
-):
+def test_throughglass_webview_allows_media_capture_through_permission_delegate(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     foundation = sys.modules["Foundation"]
     foundation.NSURL = SimpleNamespace(URLWithString_=MagicMock(return_value="url"))
@@ -265,18 +261,9 @@ def test_throughglass_webview_blocks_media_capture_before_webkit_permission_dele
 
     view = MagicMock()
     config = MagicMock()
-    controller = MagicMock()
-    script = MagicMock()
     webkit = types.ModuleType("WebKit")
-    webkit.WKUserScriptInjectionTimeAtDocumentStart = 0
     webkit.WKWebViewConfiguration = MagicMock()
     webkit.WKWebViewConfiguration.alloc.return_value.init.return_value = config
-    webkit.WKUserContentController = MagicMock()
-    webkit.WKUserContentController.alloc.return_value.init.return_value = controller
-    webkit.WKUserScript = MagicMock()
-    webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.return_value = (
-        script
-    )
     webkit.WKWebView = MagicMock()
     webkit.WKWebView.alloc.return_value.initWithFrame_.return_value = view
     webkit.WKWebView.alloc.return_value.initWithFrame_configuration_.return_value = view
@@ -291,15 +278,11 @@ def test_throughglass_webview_blocks_media_capture_before_webkit_permission_dele
         foundation.NSMakeRect.return_value,
         config,
     )
-    config.setUserContentController_.assert_called_once_with(controller)
-    controller.addUserScript_.assert_called_once_with(script)
-    source = webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.call_args.args[
-        0
-    ]
-    assert "navigator.mediaDevices" in source
-    assert "getUserMedia" in source
-    assert "NotAllowedError" in source
-    view.setUIDelegate_.assert_not_called()
+    assert not hasattr(webkit, "WKUserScript") or not webkit.WKUserScript.called
+    view.setUIDelegate_.assert_called_once()
+    delegate = view.setUIDelegate_.call_args.args[0]
+    assert isinstance(delegate, module._ThroughglassUIDelegate)
+    assert module._throughglass_ui_delegate() is delegate
 
 
 def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):
