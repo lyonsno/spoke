@@ -52,6 +52,15 @@ def _launcher_apply_env_file():
     raise AssertionError("launch-main.sh must define _apply_env_file")
 
 
+def test_throughglass_smoke_env_preserves_command_optical_shell():
+    """Throughglass smokes must not regress the assistant overlay to AppKit fallback."""
+    env_file = Path(__file__).resolve().parent.parent / ".spoke-smoke-env"
+    env = parse_env_overrides(env_file)
+
+    assert env.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE") == "1"
+    assert env.get("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED") == "1"
+
+
 # ── Registry reading ────────────────────────────────────────────
 
 
