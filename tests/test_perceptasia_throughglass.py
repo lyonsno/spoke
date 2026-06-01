@@ -183,6 +183,60 @@ def test_throughglass_ui_delegate_denies_webkit_media_capture_permission(mock_py
     assert decisions == [2]
 
 
+def test_throughglass_ui_delegate_uses_explicit_block_call_for_opaque_webkit_handler(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    block_calls = []
+
+    class OpaqueDecisionHandler:
+        def __call__(self, _decision):
+            raise TypeError("cannot call block without a signature")
+
+    def fake_block_call(block, signature, args, kwds):
+        block_calls.append((block, signature, args, kwds))
+
+    monkeypatch.setattr(module.objc, "_block_call", fake_block_call, raising=False)
+    handler = OpaqueDecisionHandler()
+
+    delegate = module._ThroughglassUIDelegate.alloc().init()
+    delegate.webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        0,
+        handler,
+    )
+
+    assert block_calls == [(handler, b"v@?q", (2,), {})]
+
+
+def test_throughglass_ui_delegate_quarantines_uncallable_webkit_handler(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    class UncallableDecisionHandler:
+        def __call__(self, _decision):
+            raise TypeError("cannot call block without a signature")
+
+    def fake_block_call(_block, _signature, _args, _kwds):
+        raise TypeError("cannot call block without a signature")
+
+    monkeypatch.setattr(module.objc, "_block_call", fake_block_call, raising=False)
+
+    delegate = module._ThroughglassUIDelegate.alloc().init()
+    delegate.webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        0,
+        UncallableDecisionHandler(),
+    )
+
+
 def test_throughglass_ui_delegate_registers_decision_handler_block_metadata(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

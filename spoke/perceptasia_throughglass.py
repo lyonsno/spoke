@@ -105,7 +105,38 @@ class _ThroughglassUIDelegate(NSObject):
         except Exception:
             decision = 2
         logger.info("Perceptasia Throughglass: denied WebKit media capture request type=%s", media_type)
+        _deny_webkit_media_capture(decision_handler, decision)
+
+
+def _deny_webkit_media_capture(decision_handler, decision: int) -> None:
+    """Deny WebKit media capture without letting opaque PyObjC blocks abort Spoke."""
+
+    try:
         decision_handler(decision)
+        return
+    except TypeError as exc:
+        if "block without a signature" not in str(exc):
+            raise
+        logger.warning(
+            "Perceptasia Throughglass: media capture decision handler lacks signature; trying explicit block call"
+        )
+
+    block_call = getattr(objc, "_block_call", None)
+    if not callable(block_call):
+        logger.warning(
+            "Perceptasia Throughglass: media capture decision handler denied but PyObjC block_call is unavailable"
+        )
+        return
+    for signature in (b"v@?q", b"vq"):
+        try:
+            block_call(decision_handler, signature, (decision,), {})
+            return
+        except Exception as exc:
+            logger.warning(
+                "Perceptasia Throughglass: media capture decision handler block_call failed signature=%r error=%r",
+                signature,
+                exc,
+            )
 
 
 objc.registerMetaDataForSelector(
