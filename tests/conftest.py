@@ -163,6 +163,27 @@ def _make_fake_objc():
     o.super = super  # Python super is fine for testing
     o.IBAction = lambda func: func
     o.arch = "arm64"
+    o._registered_selector_metadata = {}
+
+    def typed_selector(signature):
+        def decorator(func):
+            func.__objc_signature__ = signature
+            return func
+
+        return decorator
+
+    def register_metadata_for_selector(class_name, selector, metadata):
+        o._registered_selector_metadata[(class_name, selector)] = metadata
+
+    def registered_metadata_for_selector(class_object, selector):
+        class_name = getattr(class_object, "__name__", class_object)
+        if isinstance(class_name, str):
+            class_name = class_name.encode()
+        return o._registered_selector_metadata.get((class_name, selector))
+
+    o.typedSelector = typed_selector
+    o.registerMetaDataForSelector = register_metadata_for_selector
+    o._registeredMetadataForSelector = registered_metadata_for_selector
     return o
 
 

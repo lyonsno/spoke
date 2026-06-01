@@ -183,6 +183,24 @@ def test_throughglass_ui_delegate_denies_webkit_media_capture_permission(mock_py
     assert decisions == [2]
 
 
+def test_throughglass_ui_delegate_registers_decision_handler_block_metadata(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    objc = sys.modules["objc"]
+
+    metadata = objc._registeredMetadataForSelector(
+        module._ThroughglassUIDelegate,
+        b"webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:",
+    )
+
+    assert metadata is not None
+    assert metadata["arguments"][5]["type"] == b"q"
+    handler = metadata["arguments"][6]
+    assert handler["type"] == b"@?"
+    assert handler["callable"]["retval"]["type"] == b"v"
+    assert handler["callable"]["arguments"][1]["type"] == b"q"
+
+
 def test_throughglass_webview_installs_media_permission_delegate(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     foundation = sys.modules["Foundation"]

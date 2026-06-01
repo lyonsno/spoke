@@ -56,6 +56,30 @@ _THROUGHGLASS_WINDOW_LEVEL = 25
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
+_THROUGHGLASS_MEDIA_CAPTURE_SELECTOR = (
+    b"webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:"
+)
+_THROUGHGLASS_MEDIA_CAPTURE_SIGNATURE = b"v@:@@@q@?"
+_THROUGHGLASS_MEDIA_CAPTURE_METADATA = {
+    "retval": {"type": b"v"},
+    "arguments": {
+        2: {"type": b"@"},
+        3: {"type": b"@"},
+        4: {"type": b"@"},
+        5: {"type": b"q"},
+        6: {
+            "type": b"@?",
+            "callable": {
+                "retval": {"type": b"v"},
+                "arguments": {
+                    0: {"type": b"^v", "null_accepted": True},
+                    1: {"type": b"q"},
+                },
+            },
+            "callable_retained": False,
+        },
+    },
+}
 
 
 def _env_flag(name: str) -> bool:
@@ -65,6 +89,7 @@ def _env_flag(name: str) -> bool:
 class _ThroughglassUIDelegate(NSObject):
     """Keep embedded Perceptasia WebKit prompts out of the visual proof surface."""
 
+    @objc.typedSelector(_THROUGHGLASS_MEDIA_CAPTURE_SIGNATURE)
     def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
         self,
         _webview,
@@ -81,6 +106,13 @@ class _ThroughglassUIDelegate(NSObject):
             decision = 2
         logger.info("Perceptasia Throughglass: denied WebKit media capture request type=%s", media_type)
         decision_handler(decision)
+
+
+objc.registerMetaDataForSelector(
+    b"_ThroughglassUIDelegate",
+    _THROUGHGLASS_MEDIA_CAPTURE_SELECTOR,
+    _THROUGHGLASS_MEDIA_CAPTURE_METADATA,
+)
 
 
 def _throughglass_ui_delegate():
