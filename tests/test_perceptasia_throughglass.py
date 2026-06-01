@@ -253,7 +253,9 @@ def test_throughglass_ui_delegate_registers_decision_handler_block_metadata(mock
     assert handler["callable"]["arguments"][1]["type"] == b"q"
 
 
-def test_throughglass_webview_allows_media_capture_through_permission_delegate(mock_pyobjc, monkeypatch):
+def test_throughglass_webview_leaves_media_capture_on_native_webkit_path_by_default(
+    mock_pyobjc, monkeypatch
+):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     foundation = sys.modules["Foundation"]
     foundation.NSURL = SimpleNamespace(URLWithString_=MagicMock(return_value="url"))
@@ -279,10 +281,7 @@ def test_throughglass_webview_allows_media_capture_through_permission_delegate(m
         config,
     )
     assert not hasattr(webkit, "WKUserScript") or not webkit.WKUserScript.called
-    view.setUIDelegate_.assert_called_once()
-    delegate = view.setUIDelegate_.call_args.args[0]
-    assert isinstance(delegate, module._ThroughglassUIDelegate)
-    assert module._throughglass_ui_delegate() is delegate
+    view.setUIDelegate_.assert_not_called()
 
 
 def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):

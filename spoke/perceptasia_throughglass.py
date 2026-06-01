@@ -689,7 +689,13 @@ def _make_content_view(url: str, width: float, height: float):
             view = configured_init(rect, configuration)
         else:
             view = webview_alloc.initWithFrame_(rect)
-        if hasattr(view, "setUIDelegate_"):
+        # Do not install the Python media UIDelegate by default. WebKit's
+        # camera permission completion block can arrive without a PyObjC method
+        # signature, and failing to call it synchronously aborts the process.
+        # The live graft should leave getUserMedia on WebKit's native path.
+        if _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_MEDIA_DELEGATE") and hasattr(
+            view, "setUIDelegate_"
+        ):
             view.setUIDelegate_(_throughglass_ui_delegate())
         _set_view_autoresizing(view)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
