@@ -102,6 +102,85 @@ def test_witness_control_poll_toggles_command_overlay(main_module, monkeypatch, 
     assert delegate._witness_control_offset == delegate._witness_control_path.stat().st_size
 
 
+def test_witness_control_poll_can_show_and_hide_command_overlay_idempotently(
+    main_module, monkeypatch, tmp_path
+):
+    delegate = _make_delegate(main_module, monkeypatch)
+    delegate._command_overlay = MagicMock(_visible=False)
+    delegate._witness_control_path = tmp_path / "witness-control.jsonl"
+    delegate._witness_control_offset = 0
+    delegate._toggle_command_overlay = MagicMock()
+    delegate._witness_control_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "schema": "spoke.witness_control.v1",
+                        "timestamp": "2026-06-01T00:00:00Z",
+                        "action": "show_command_overlay",
+                        "nonce": "show",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema": "spoke.witness_control.v1",
+                        "timestamp": "2026-06-01T00:00:01Z",
+                        "action": "show_command_overlay",
+                        "nonce": "show-again",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "schema": "spoke.witness_control.v1",
+                        "timestamp": "2026-06-01T00:00:02Z",
+                        "action": "hide_command_overlay",
+                        "nonce": "hide",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def mark_visible():
+        delegate._command_overlay._visible = True
+
+    delegate._toggle_command_overlay.side_effect = mark_visible
+
+    delegate._poll_witness_control()
+
+    assert delegate._toggle_command_overlay.call_count == 2
+
+
+def test_witness_control_poll_can_show_throughglass_without_launching(
+    main_module, monkeypatch, tmp_path
+):
+    delegate = _make_delegate(main_module, monkeypatch)
+    graft = MagicMock(_visible=False)
+    delegate._perceptasia_throughglass = graft
+    delegate._ensure_perceptasia_throughglass = MagicMock(return_value=graft)
+    delegate._witness_control_path = tmp_path / "witness-control.jsonl"
+    delegate._witness_control_offset = 0
+    delegate._witness_control_path.write_text(
+        json.dumps(
+            {
+                "schema": "spoke.witness_control.v1",
+                "timestamp": "2026-06-01T00:00:00Z",
+                "action": "show_perceptasia_throughglass",
+                "nonce": "show-throughglass",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    delegate._poll_witness_control()
+
+    delegate._ensure_perceptasia_throughglass.assert_called_once_with()
+    graft.show.assert_called_once_with()
+
+
 class TestOperatorPingTokenSmokeHook:
     def test_smoke_hook_is_quiet_without_env(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

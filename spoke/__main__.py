@@ -1493,6 +1493,16 @@ class SpokeAppDelegate(NSObject):
             )
             if action == "toggle_command_overlay":
                 self._toggle_command_overlay()
+            elif action == "show_command_overlay":
+                self._set_command_overlay_visible_for_witness(True)
+            elif action == "hide_command_overlay":
+                self._set_command_overlay_visible_for_witness(False)
+            elif action == "toggle_perceptasia_throughglass":
+                self._toggle_perceptasia_throughglass()
+            elif action == "show_perceptasia_throughglass":
+                self._set_perceptasia_throughglass_visible_for_witness(True)
+            elif action == "hide_perceptasia_throughglass":
+                self._set_perceptasia_throughglass_visible_for_witness(False)
             else:
                 record_command_overlay_trace(
                     "witness.control.ignored",
@@ -1500,6 +1510,70 @@ class SpokeAppDelegate(NSObject):
                     action=action,
                     nonce=payload.get("nonce"),
                 )
+
+    def _command_overlay_visible_for_witness(self) -> bool:
+        overlay = getattr(self, "_command_overlay", None)
+        if overlay is None:
+            return False
+        if hasattr(overlay, "_visible"):
+            return bool(getattr(overlay, "_visible"))
+        visible = getattr(overlay, "isVisible", None)
+        if callable(visible):
+            try:
+                return bool(visible())
+            except Exception:
+                return False
+        return False
+
+    def _set_command_overlay_visible_for_witness(self, visible: bool) -> None:
+        is_visible = self._command_overlay_visible_for_witness()
+        if is_visible == visible:
+            record_command_overlay_trace(
+                "witness.control.command_overlay.noop",
+                desired_visible=visible,
+                current_visible=is_visible,
+            )
+            return
+        record_command_overlay_trace(
+            "witness.control.command_overlay.set",
+            desired_visible=visible,
+            current_visible=is_visible,
+        )
+        self._toggle_command_overlay()
+
+    def _perceptasia_throughglass_visible_for_witness(self) -> bool:
+        graft = getattr(self, "_perceptasia_throughglass", None)
+        if graft is None:
+            return False
+        return bool(getattr(graft, "_visible", False))
+
+    def _set_perceptasia_throughglass_visible_for_witness(self, visible: bool) -> None:
+        graft = self._ensure_perceptasia_throughglass() if visible else getattr(
+            self, "_perceptasia_throughglass", None
+        )
+        if graft is None:
+            record_command_overlay_trace(
+                "witness.control.throughglass.missing",
+                desired_visible=visible,
+            )
+            return
+        is_visible = self._perceptasia_throughglass_visible_for_witness()
+        if is_visible == visible:
+            record_command_overlay_trace(
+                "witness.control.throughglass.noop",
+                desired_visible=visible,
+                current_visible=is_visible,
+            )
+            return
+        record_command_overlay_trace(
+            "witness.control.throughglass.set",
+            desired_visible=visible,
+            current_visible=is_visible,
+        )
+        if visible:
+            graft.show()
+        else:
+            graft.hide()
 
     def _request_mic_permission(self) -> None:
         """Check mic permission via AVCaptureDevice (no PortAudio allocation).
