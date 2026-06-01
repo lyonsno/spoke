@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from spoke import visual_witness
+from spoke import perceptasia_throughglass_witness
 
 
 def _instant(second: int) -> datetime:
@@ -174,3 +175,68 @@ def test_run_visual_witness_recipe_fails_loud_when_capture_writes_no_frames(tmp_
     assert payload["status"] == "failed"
     assert payload["failure_phase"] == "capture_frames"
     assert payload["frame_count"] == 0
+
+
+def test_run_visual_witness_recipe_fails_loud_when_throughglass_contract_fails(tmp_path, monkeypatch):
+    repo_root = tmp_path / "spoke"
+    repo_root.mkdir()
+    control_path = tmp_path / "control.jsonl"
+    trace_path = tmp_path / "trace.jsonl"
+    output_dir = tmp_path / "out" / "contract-failure"
+    repo_root.joinpath(".spoke-smoke-env").write_text(
+        "\n".join(
+            [
+                f"SPOKE_WITNESS_CONTROL_PATH={control_path}",
+                f"SPOKE_COMMAND_OVERLAY_TRACE_PATH={trace_path}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeCapture:
+        def __init__(self, command, cwd=None):
+            output = Path(command[command.index("--output-dir") + 1])
+            output.mkdir(parents=True, exist_ok=True)
+            output.joinpath("manifest.json").write_text(
+                json.dumps({"frames": [{"path": "frame-000.png"}]}) + "\n",
+                encoding="utf-8",
+            )
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    def annotate_failure(index_path, *, log_paths):
+        payload = json.loads(Path(index_path).read_text(encoding="utf-8"))
+        payload["throughglass_contract"] = {
+            "passed": False,
+            "content_verified": True,
+            "visual_content": {"passed": False, "failure_reason": "captured_pixels_do_not_show_throughglass_content"},
+        }
+        Path(index_path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return payload["throughglass_contract"]
+
+    monkeypatch.setattr(perceptasia_throughglass_witness, "annotate_throughglass_contract", annotate_failure)
+    times = iter([_instant(0), _instant(1), _instant(2), _instant(3)])
+
+    with pytest.raises(visual_witness.VisualWitnessError, match="Throughglass contract failed"):
+        visual_witness.run_visual_witness_recipe(
+            "throughglass-live",
+            repo_root=repo_root,
+            output_dir=output_dir,
+            duration_seconds=1.0,
+            fps=1.0,
+            pre_stimulus_delay_seconds=0.0,
+            settle_seconds=0.0,
+            capture_command="/usr/local/bin/global-witness-capture",
+            popen=FakeCapture,
+            sleep=lambda _seconds: None,
+            now=lambda: next(times),
+        )
+
+    payload = json.loads(output_dir.joinpath("witness-index.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["failure_phase"] == "throughglass_contract"

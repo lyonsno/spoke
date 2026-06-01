@@ -73,6 +73,28 @@ def _perceptasia_like_frame(path: Path) -> None:
     _write_rgb_png(path, width, height, pixels)
 
 
+def _perceptasia_graph_frame_without_material_slab(path: Path) -> None:
+    width, height = 220, 150
+    pixels: list[tuple[int, int, int]] = []
+    for y in range(height):
+        for x in range(width):
+            color = (16, 18, 20)
+            if 24 <= x <= 194 and 18 <= y <= 130:
+                color = (12, 14, 16)
+                if (x + y * 2) % 19 == 0:
+                    color = (55, 178, 142)
+                if (x * 3 - y * 2) % 31 == 0:
+                    color = (76, 132, 226)
+                if abs((x - 34) - (y - 22) * 2) < 2:
+                    color = (214, 96, 136)
+                if abs((x - 185) + (y - 116) * 3) < 2:
+                    color = (218, 178, 72)
+                if (x - 110) ** 2 + (y - 76) ** 2 < 11**2:
+                    color = (62, 166, 220) if (x + y) % 4 else (225, 236, 240)
+            pixels.append(color)
+    _write_rgb_png(path, width, height, pixels)
+
+
 def _good_throughglass_log(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -198,6 +220,25 @@ def test_throughglass_contract_accepts_visible_perceptasia_like_pixels(tmp_path)
     contract = witness.annotate_throughglass_contract(index, log_paths=[log])
 
     assert contract["visual_content"]["passed"] is True
+    assert contract["passed"] is True
+
+
+def test_throughglass_contract_accepts_visible_graph_pixels_without_material_slab(tmp_path):
+    index = tmp_path / "witness-index.json"
+    frame = tmp_path / "screen-capture-000.png"
+    log = tmp_path / "spoke.log"
+    _perceptasia_graph_frame_without_material_slab(frame)
+    _good_throughglass_log(log)
+    index.write_text(json.dumps({"frame_count": 1}) + "\n", encoding="utf-8")
+
+    contract = witness.annotate_throughglass_contract(index, log_paths=[log])
+
+    visual = contract["visual_content"]
+    assert visual["passed"] is True
+    assert visual["best_metrics"]["panel_material_fraction"] < witness._VISUAL_PASS_THRESHOLDS[
+        "panel_material_fraction"
+    ]
+    assert visual["best_metrics"]["pass_reason"] == "colored_graph_content"
     assert contract["passed"] is True
 
 

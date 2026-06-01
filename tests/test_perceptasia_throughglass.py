@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import subprocess
 import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -163,6 +164,46 @@ def test_throughglass_real_pyobjc_import_accepts_private_helpers():
 
     assert result.returncode == 0, result.stderr
     assert "PerceptasiaThroughglassGraft" in result.stdout
+
+
+def test_throughglass_ui_delegate_denies_webkit_media_capture_permission(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    decisions = []
+
+    delegate = module._ThroughglassUIDelegate.alloc().init()
+    delegate.webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        0,
+        decisions.append,
+    )
+
+    assert decisions == [2]
+
+
+def test_throughglass_webview_installs_media_permission_delegate(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    foundation = sys.modules["Foundation"]
+    foundation.NSURL = SimpleNamespace(URLWithString_=MagicMock(return_value="url"))
+    foundation.NSURLRequest = SimpleNamespace(requestWithURL_=MagicMock(return_value="request"))
+
+    view = MagicMock()
+    webkit = types.ModuleType("WebKit")
+    webkit.WKWebView = MagicMock()
+    webkit.WKWebView.alloc.return_value.initWithFrame_.return_value = view
+    monkeypatch.setitem(sys.modules, "WebKit", webkit)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    content, kind = module._make_content_view("http://localhost:8753", 900.0, 520.0)
+
+    assert content is view
+    assert kind == "webview"
+    view.setUIDelegate_.assert_called_once()
+    delegate = view.setUIDelegate_.call_args.args[0]
+    assert isinstance(delegate, module._ThroughglassUIDelegate)
+    assert module._throughglass_ui_delegate() is delegate
 
 
 def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):

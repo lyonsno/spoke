@@ -286,6 +286,38 @@ def _write_visual_index(
     return index_path
 
 
+def _mark_visual_index_failed(index_path: Path, *, failure_phase: str, failure_detail: str | None = None) -> dict:
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    payload["status"] = "failed"
+    payload["failure_phase"] = failure_phase
+    if failure_detail:
+        payload["failure_detail"] = failure_detail
+    index_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def _apply_recipe_contracts(plan: VisualWitnessPlan, index_path: Path) -> dict:
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    if not plan.recipe.annotate_throughglass:
+        return payload
+
+    from .perceptasia_throughglass_witness import annotate_throughglass_contract
+
+    contract = annotate_throughglass_contract(index_path, log_paths=list(DEFAULT_LOG_PATHS))
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    if contract.get("passed") is not True:
+        detail = None
+        visual = contract.get("visual_content")
+        if isinstance(visual, dict):
+            detail = visual.get("failure_reason")
+        return _mark_visual_index_failed(
+            index_path,
+            failure_phase="throughglass_contract",
+            failure_detail=detail or "throughglass_contract_failed",
+        )
+    return payload
+
+
 def run_visual_witness_recipe(
     recipe_name: str,
     *,
@@ -373,10 +405,11 @@ def run_visual_witness_recipe(
         raise VisualWitnessError(
             f"visual witness produced no captured frames; failure index: {index_path}"
         )
-    if plan.recipe.annotate_throughglass:
-        from .perceptasia_throughglass_witness import annotate_throughglass_contract
-
-        annotate_throughglass_contract(index_path, log_paths=list(DEFAULT_LOG_PATHS))
+    index_payload = _apply_recipe_contracts(plan, index_path)
+    if index_payload.get("status") != "passed":
+        if index_payload.get("failure_phase") == "throughglass_contract":
+            raise VisualWitnessError(f"Throughglass contract failed; failure index: {index_path}")
+        raise VisualWitnessError(f"visual witness failed; failure index: {index_path}")
     return index_path
 
 

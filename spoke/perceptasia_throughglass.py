@@ -55,10 +55,39 @@ _NSWindowStyleMaskUtilityWindow = 1 << 4
 _THROUGHGLASS_WINDOW_LEVEL = 25
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
+_THROUGHGLASS_UI_DELEGATE = None
 
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() not in {"", "0", "false", "False", "no", "off"}
+
+
+class _ThroughglassUIDelegate(NSObject):
+    """Keep embedded Perceptasia WebKit prompts out of the visual proof surface."""
+
+    def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+        self,
+        _webview,
+        _origin,
+        _frame,
+        media_type,
+        decision_handler,
+    ) -> None:
+        try:
+            from WebKit import WKPermissionDecisionDeny
+
+            decision = WKPermissionDecisionDeny
+        except Exception:
+            decision = 2
+        logger.info("Perceptasia Throughglass: denied WebKit media capture request type=%s", media_type)
+        decision_handler(decision)
+
+
+def _throughglass_ui_delegate():
+    global _THROUGHGLASS_UI_DELEGATE
+    if _THROUGHGLASS_UI_DELEGATE is None:
+        _THROUGHGLASS_UI_DELEGATE = _ThroughglassUIDelegate.alloc().init()
+    return _THROUGHGLASS_UI_DELEGATE
 
 
 @dataclass(frozen=True)
@@ -597,6 +626,8 @@ def _make_content_view(url: str, width: float, height: float):
 
         logger.info("Perceptasia Throughglass: creating WKWebView")
         view = WKWebView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+        if hasattr(view, "setUIDelegate_"):
+            view.setUIDelegate_(_throughglass_ui_delegate())
         _set_view_autoresizing(view)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
         view.loadRequest_(request)

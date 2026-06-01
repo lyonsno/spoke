@@ -36,6 +36,8 @@ _VISUAL_PASS_THRESHOLDS = {
     "panel_material_fraction": 0.07,
     "saturated_pixel_fraction": 0.04,
     "edge_density": 0.09,
+    "graph_saturated_pixel_fraction": 0.04,
+    "graph_edge_density": 0.09,
 }
 
 
@@ -380,11 +382,22 @@ def _frame_visual_metrics(path: Path, *, panel_rect_points: dict | None = None) 
         + visual["bright_detail_fraction"] * 2.0,
         5,
     )
-    visual["passed"] = bool(
+    material_panel_content = bool(
         visual["panel_material_fraction"] >= _VISUAL_PASS_THRESHOLDS["panel_material_fraction"]
         and visual["saturated_pixel_fraction"] >= _VISUAL_PASS_THRESHOLDS["saturated_pixel_fraction"]
         and visual["edge_density"] >= _VISUAL_PASS_THRESHOLDS["edge_density"]
     )
+    colored_graph_content = bool(
+        visual["saturated_pixel_fraction"] >= _VISUAL_PASS_THRESHOLDS["graph_saturated_pixel_fraction"]
+        and visual["edge_density"] >= _VISUAL_PASS_THRESHOLDS["graph_edge_density"]
+    )
+    if material_panel_content:
+        visual["pass_reason"] = "material_panel_content"
+    elif colored_graph_content:
+        visual["pass_reason"] = "colored_graph_content"
+    else:
+        visual["pass_reason"] = None
+    visual["passed"] = bool(visual["pass_reason"])
     return visual
 
 
