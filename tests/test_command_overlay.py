@@ -4443,6 +4443,10 @@ class TestAdaptiveCompositing:
         compositor = MagicMock()
         compositor.presented_count = 1
         compositor.sampled_brightness = 0.04
+        compositor_window = MagicMock()
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
         overlay._fullscreen_compositor = compositor
         overlay._start_entrance_animation = MagicMock()
         overlay._visual_ready_wait_started_at = (
@@ -4463,6 +4467,30 @@ class TestAdaptiveCompositing:
         assert overlay._brightness_target == pytest.approx(0.91)
         compositor.refresh_brightness.assert_not_called()
         enforce_compositor_window_order.assert_not_called()
+        compositor_window.orderFrontRegardless.assert_not_called()
+        compositor_window.setAlphaValue_.assert_any_call(0.0)
+
+    def test_entrance_reveals_compositor_only_after_body_ready(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._fill_hidden_until_signature = None
+        overlay._visual_ready_brightness_synced = True
+        overlay._materialization_progress = mod._optical_text_release_progress()
+        compositor_window = MagicMock()
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+
+        overlay._check_optical_entrance_readiness()
+
+        overlay._start_entrance_animation.assert_called_once()
+        compositor_window.setAlphaValue_.assert_called_with(1.0)
+        compositor_window.orderFrontRegardless.assert_called_once()
 
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)

@@ -4005,6 +4005,7 @@ class CommandOverlay(NSObject):
 
     def _start_entrance_animation(self) -> None:
         """Start the visible entrance once first-paint dependencies are ready."""
+        self._set_fullscreen_compositor_human_visible(True)
         record_command_overlay_trace(
             "overlay.entrance.start",
             materialization_progress=getattr(self, "_materialization_progress", None),
@@ -4672,6 +4673,26 @@ class CommandOverlay(NSObject):
         if self._window is not None:
             self._window.orderFrontRegardless()
 
+    def _fullscreen_compositor_window(self):
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return None
+        host = getattr(compositor, "_host", None)
+        comp_inner = getattr(host, "_compositor", None) if host else None
+        return getattr(comp_inner, "_window", None) if comp_inner is not None else None
+
+    def _set_fullscreen_compositor_human_visible(self, visible: bool) -> None:
+        comp_window = self._fullscreen_compositor_window()
+        if comp_window is None:
+            return
+        try:
+            if hasattr(comp_window, "setAlphaValue_"):
+                comp_window.setAlphaValue_(1.0 if visible else 0.0)
+            if visible and hasattr(comp_window, "orderFrontRegardless"):
+                comp_window.orderFrontRegardless()
+        except Exception:
+            logger.debug("Failed to update full-screen compositor visibility", exc_info=True)
+
     def compositorDidPresent_(self, payload) -> None:
         """Called on main thread when the compositor presents its first frame."""
         self._acknowledge_current_optical_presentation()
@@ -4704,6 +4725,7 @@ class CommandOverlay(NSObject):
             self._visual_ready_brightness_synced = True
         self._entrance_started = True
         self._cancel_visual_ready_start()
+        self._set_fullscreen_compositor_human_visible(True)
         record_command_overlay_trace(
             "overlay.visual_ready.push",
             elapsed=time.perf_counter() - getattr(
@@ -4745,6 +4767,7 @@ class CommandOverlay(NSObject):
         )
         if compositor_ready and not self._optical_body_content_ready():
             self._cancel_visual_ready_start()
+            self._set_fullscreen_compositor_human_visible(False)
             # This deadline is observational only while materialization catches
             # up; it must not order, certify, or repaint the body over a slit.
             record_command_overlay_trace(
@@ -5722,6 +5745,7 @@ class CommandOverlay(NSObject):
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor
+                self._set_fullscreen_compositor_human_visible(False)
                 if generation is not None:
                     try:
                         setattr(compositor, "presentation_generation", generation)
