@@ -167,6 +167,9 @@ _OPTICAL_MATERIAL_FILL_FULL_AT = (
     )
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 ) / _OPTICAL_MATERIALIZATION_S
+_OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS = (
+    _OPTICAL_MATERIALIZATION_SPREAD_END * 0.75
+)
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
 _OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC = 1.0 / 3.0
 _OPTICAL_DISMISS_TEXT_BLOB_FRAC = 0.025
@@ -4168,6 +4171,11 @@ class CommandOverlay(NSObject):
             compositor_updates.append((compositor, shell_config))
             if not self._publish_shared_compositor_configs(compositor_updates):
                 self._publish_individual_compositor_configs(compositor_updates)
+            if (
+                getattr(self, "_materialization_direction", 1) > 0
+                and self._optical_compositor_publication_ready()
+            ):
+                self._set_fullscreen_compositor_human_visible(True)
         except Exception:
             logger.debug("Failed to update command materialization shell", exc_info=True)
         if raw >= 1.0:
@@ -4767,7 +4775,10 @@ class CommandOverlay(NSObject):
         )
         if compositor_ready and not self._optical_body_content_ready():
             self._cancel_visual_ready_start()
-            self._set_fullscreen_compositor_human_visible(False)
+            if self._optical_compositor_publication_ready():
+                self._set_fullscreen_compositor_human_visible(True)
+            else:
+                self._set_fullscreen_compositor_human_visible(False)
             # This deadline is observational only while materialization catches
             # up; it must not order, certify, or repaint the body over a slit.
             record_command_overlay_trace(
@@ -4805,6 +4816,12 @@ class CommandOverlay(NSObject):
     def _optical_body_content_ready(self) -> bool:
         return _optical_entrance_text_ready(
             getattr(self, "_materialization_progress", 1.0)
+        )
+
+    def _optical_compositor_publication_ready(self) -> bool:
+        return (
+            float(getattr(self, "_materialization_progress", 0.0) or 0.0)
+            >= _OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS
         )
 
     def _optical_compositor_has_presented(self) -> bool:
