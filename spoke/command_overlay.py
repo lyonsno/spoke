@@ -167,9 +167,8 @@ _OPTICAL_MATERIAL_FILL_FULL_AT = (
     )
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 ) / _OPTICAL_MATERIALIZATION_S
-_OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS = (
-    _OPTICAL_MATERIALIZATION_SPREAD_END * 0.75
-)
+_OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS = _OPTICAL_MATERIALIZATION_BODY_READY
+_OPTICAL_APPKIT_ENTRANCE_MIN_PROGRESS = 0.999
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
 _OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC = 1.0 / 3.0
 _OPTICAL_DISMISS_TEXT_BLOB_FRAC = 0.025
@@ -4186,6 +4185,7 @@ class CommandOverlay(NSObject):
                 self._materialization_progress = 1.0
                 self._optical_lifecycle_trajectory = "idle_open"
                 self._apply_materialization_fill_state(1.0)
+                self._check_optical_entrance_readiness()
                 if float(final_config.get("gpu_material_enabled", 0.0)) >= 0.5:
                     self._enable_text_punchthrough(False)
                     self._set_layer_opacity_without_actions(
@@ -4810,12 +4810,18 @@ class CommandOverlay(NSObject):
         return (
             self._optical_compositor_has_presented()
             and self._optical_fill_ready()
-            and self._optical_body_content_ready()
+            and self._optical_appkit_entrance_ready()
         )
 
     def _optical_body_content_ready(self) -> bool:
         return _optical_entrance_text_ready(
             getattr(self, "_materialization_progress", 1.0)
+        )
+
+    def _optical_appkit_entrance_ready(self) -> bool:
+        return (
+            float(getattr(self, "_materialization_progress", 0.0) or 0.0)
+            >= _OPTICAL_APPKIT_ENTRANCE_MIN_PROGRESS
         )
 
     def _optical_compositor_publication_ready(self) -> bool:

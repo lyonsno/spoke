@@ -503,6 +503,11 @@ class TestOpticalShellMaterialization:
 
         overlay._materialization_progress = mod._optical_text_release_progress()
 
+        assert overlay._optical_body_content_ready() is True
+        assert overlay._optical_entrance_ready() is False
+
+        overlay._materialization_progress = 1.0
+
         assert overlay._optical_entrance_ready() is True
 
     def test_stale_compositor_generation_cannot_certify_current_frame(
@@ -4300,7 +4305,7 @@ class TestAdaptiveCompositing:
         overlay._visual_ready_brightness_synced = False
         overlay._brightness = 0.91
         overlay._brightness_target = 0.91
-        overlay._materialization_progress = mod._optical_text_release_progress()
+        overlay._materialization_progress = 1.0
         overlay._fill_hidden_until_signature = None
         overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 624.0, 208.0)
         events = []
@@ -4339,13 +4344,32 @@ class TestAdaptiveCompositing:
         assert overlay._brightness_target == pytest.approx(0.04)
         assert overlay._visual_ready_brightness_synced is True
 
+    def test_text_release_progress_does_not_start_appkit_entrance_mid_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._visual_ready_brightness_synced = True
+        overlay._materialization_progress = mod._optical_text_release_progress()
+        overlay._fill_hidden_until_signature = None
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+
+        overlay._check_optical_entrance_readiness()
+
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+
     def test_compositor_did_present_triggers_entrance_when_all_ready(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._entrance_started = False
-        overlay._materialization_progress = mod._optical_text_release_progress()
+        overlay._materialization_progress = 1.0
         overlay._fill_hidden_until_signature = None
         compositor = MagicMock()
         compositor.presented_count = 1
@@ -4384,10 +4408,10 @@ class TestAdaptiveCompositing:
         compositor.presented_count = 1
         overlay._fullscreen_compositor = compositor
         overlay._start_entrance_animation = MagicMock()
-        overlay._materialization_progress = mod._optical_text_release_progress() - 0.05
+        overlay._materialization_progress = mod._OPTICAL_APPKIT_ENTRANCE_MIN_PROGRESS - 0.05
 
-        # Simulate a materialization step that crosses the threshold
-        overlay._materialization_progress = mod._optical_text_release_progress()
+        # Simulate a materialization step that crosses the full-entrance threshold.
+        overlay._materialization_progress = 1.0
         overlay._check_optical_entrance_readiness()
 
         overlay._start_entrance_animation.assert_called_once()
@@ -4470,13 +4494,13 @@ class TestAdaptiveCompositing:
         compositor_window.orderFrontRegardless.assert_not_called()
         compositor_window.setAlphaValue_.assert_any_call(0.0)
 
-    def test_entrance_reveals_compositor_only_after_body_ready(self, mock_pyobjc):
+    def test_entrance_reveals_compositor_only_after_appkit_gate_ready(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._entrance_started = False
         overlay._fill_hidden_until_signature = None
         overlay._visual_ready_brightness_synced = True
-        overlay._materialization_progress = mod._optical_text_release_progress()
+        overlay._materialization_progress = 1.0
         compositor_window = MagicMock()
         compositor = MagicMock()
         compositor.presented_count = 1
@@ -4492,7 +4516,7 @@ class TestAdaptiveCompositing:
         compositor_window.setAlphaValue_.assert_called_with(1.0)
         compositor_window.orderFrontRegardless.assert_called_once()
 
-    def test_materializing_body_can_publish_warp_before_text_release(
+    def test_seed_slit_does_not_publish_fullscreen_compositor_before_body_ready(
         self, mock_pyobjc
     ):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -4502,6 +4526,38 @@ class TestAdaptiveCompositing:
         overlay._brightness_target = 0.91
         overlay._visual_ready_brightness_synced = False
         overlay._materialization_progress = 0.20
+        overlay._fill_hidden_until_signature = None
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        compositor.sampled_brightness = 0.04
+        compositor_window = MagicMock()
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = time.perf_counter() - 0.5
+
+        overlay.visualReadyDeadline_(timer)
+
+        assert overlay._entrance_started is False
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._fullscreen_compositor is compositor
+        compositor_window.setAlphaValue_.assert_called_with(0.0)
+        compositor_window.orderFrontRegardless.assert_not_called()
+
+    def test_materialized_body_can_publish_warp_before_text_release(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._visual_ready_brightness_synced = False
+        overlay._materialization_progress = mod._OPTICAL_MATERIALIZATION_BODY_READY
         overlay._fill_hidden_until_signature = None
         timer = MagicMock()
         overlay._visual_ready_timer = timer
