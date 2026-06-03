@@ -4186,6 +4186,12 @@ class CommandOverlay(NSObject):
                 self._optical_lifecycle_trajectory = "idle_open"
                 self._apply_materialization_fill_state(1.0)
                 self._check_optical_entrance_readiness()
+                if (
+                    not getattr(self, "_entrance_started", False)
+                    and getattr(self, "_visual_ready_timer", None) is not None
+                    and self._optical_appkit_entrance_ready()
+                ):
+                    self.visualReadyDeadline_(self._visual_ready_timer)
                 if float(final_config.get("gpu_material_enabled", 0.0)) >= 0.5:
                     self._enable_text_punchthrough(False)
                     self._set_layer_opacity_without_actions(
@@ -4784,6 +4790,21 @@ class CommandOverlay(NSObject):
             record_command_overlay_trace(
                 "overlay.visual_ready.hard_deadline.body_not_ready",
                 elapsed=elapsed,
+                materialization_progress=getattr(
+                    self, "_materialization_progress", None
+                ),
+                **self._optical_presentation_frame_bundle().to_trace_fields(),
+            )
+            return
+        if not self._optical_appkit_entrance_ready():
+            if self._optical_compositor_publication_ready():
+                self._set_fullscreen_compositor_human_visible(compositor_ready)
+            else:
+                self._set_fullscreen_compositor_human_visible(False)
+            record_command_overlay_trace(
+                "overlay.visual_ready.hard_deadline.appkit_not_ready",
+                elapsed=elapsed,
+                compositor_ready=compositor_ready,
                 materialization_progress=getattr(
                     self, "_materialization_progress", None
                 ),

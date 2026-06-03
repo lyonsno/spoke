@@ -4416,7 +4416,7 @@ class TestAdaptiveCompositing:
 
         overlay._start_entrance_animation.assert_called_once()
 
-    def test_hard_deadline_forces_entrance_when_compositor_not_presented(
+    def test_hard_deadline_does_not_force_entrance_before_appkit_gate(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -4446,10 +4446,46 @@ class TestAdaptiveCompositing:
 
         overlay.visualReadyDeadline_(timer)
 
-        overlay._start_entrance_animation.assert_called_once()
-        assert overlay._fullscreen_compositor is None
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+        assert overlay._fullscreen_compositor is compositor
         assert hidden_state["value"] is True
         assert alpha_state["value"] == pytest.approx(0.0)
+
+    def test_hard_deadline_can_fall_back_after_appkit_gate_without_compositor(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._materialization_progress = 1.0
+        hidden_state = {"value": True}
+        alpha_state = {"value": 0.0}
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: hidden_state.__setitem__("value", bool(hidden))
+        )
+        overlay._scroll_view.isHidden.side_effect = lambda: hidden_state["value"]
+        overlay._scroll_view.setAlphaValue_.side_effect = (
+            lambda alpha: alpha_state.__setitem__("value", float(alpha))
+        )
+        overlay._scroll_view.alphaValue.side_effect = lambda: alpha_state["value"]
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 0
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
+        )
+
+        overlay.visualReadyDeadline_(timer)
+
+        overlay._start_entrance_animation.assert_called_once()
+        assert overlay._fullscreen_compositor is None
+        assert hidden_state["value"] is False
+        assert alpha_state["value"] == pytest.approx(1.0)
 
     def test_hard_deadline_does_not_certify_semantic_content_over_tiny_slit(
         self, mock_pyobjc
