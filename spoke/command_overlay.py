@@ -1972,6 +1972,7 @@ class CommandOverlay(NSObject):
         return generation
 
     def _quarantine_appkit_presentation_for_optical_retarget(self) -> None:
+        self._set_fullscreen_compositor_human_visible(False)
         window = getattr(self, "_window", None)
         if window is not None and hasattr(window, "setAlphaValue_"):
             try:

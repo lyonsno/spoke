@@ -1144,6 +1144,51 @@ class TestOpticalShellMaterialization:
         assert event_names.index("compositor_seed") < event_names.index("mask_reset")
         assert event_names.index("cancel_all") < event_names.index("materialize")
 
+    def test_dismiss_retarget_hides_inherited_compositor_before_seed(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        events = []
+        compositor_window = MagicMock()
+        compositor_window.setAlphaValue_.side_effect = (
+            lambda alpha: events.append(("comp-alpha", float(alpha)))
+        )
+        compositor = MagicMock()
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
+        compositor.update_shell_config.side_effect = (
+            lambda config: events.append(("compositor_seed", dict(config))) or True
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = False
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.47
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock()
+
+        overlay.show(
+            initial_utterance="ask again",
+            initial_response="answer again",
+            start_thinking_timer=False,
+        )
+
+        event_names = [event[0] for event in events]
+        assert ("comp-alpha", 0.0) in events
+        assert event_names.index("comp-alpha") < event_names.index("compositor_seed")
+
     def test_pucker_tail_retarget_does_not_start_materialization_before_cancel_all(
         self, mock_pyobjc, monkeypatch
     ):
