@@ -4821,6 +4821,17 @@ class CommandOverlay(NSObject):
                 **self._optical_presentation_frame_bundle().to_trace_fields(),
             )
             return
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and not compositor_ready:
+            self._set_fullscreen_compositor_human_visible(False)
+            record_command_overlay_trace(
+                "overlay.visual_ready.hard_deadline.compositor_not_ready",
+                elapsed=elapsed,
+                materialization_progress=getattr(
+                    self, "_materialization_progress", None
+                ),
+                **self._optical_presentation_frame_bundle().to_trace_fields(),
+            )
+            return
         self._entrance_started = True
         self._cancel_visual_ready_start()
         if not compositor_ready:

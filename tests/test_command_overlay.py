@@ -4449,10 +4449,11 @@ class TestAdaptiveCompositing:
         assert hidden_state["value"] is True
         assert alpha_state["value"] == pytest.approx(0.0)
 
-    def test_hard_deadline_can_fall_back_after_appkit_gate_without_compositor(
-        self, mock_pyobjc
+    def test_hard_deadline_does_not_fall_back_after_appkit_gate_without_compositor(
+        self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
         overlay._visible = True
         overlay._entrance_started = False
         overlay._requested_optical_presentation_state = "opening"
@@ -4479,10 +4480,11 @@ class TestAdaptiveCompositing:
 
         overlay.visualReadyDeadline_(timer)
 
-        overlay._start_entrance_animation.assert_called_once()
-        assert overlay._fullscreen_compositor is None
-        assert hidden_state["value"] is False
-        assert alpha_state["value"] == pytest.approx(1.0)
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+        assert overlay._fullscreen_compositor is compositor
+        assert hidden_state["value"] is True
+        assert alpha_state["value"] == pytest.approx(0.0)
 
     def test_hard_deadline_does_not_certify_semantic_content_over_tiny_slit(
         self, mock_pyobjc
