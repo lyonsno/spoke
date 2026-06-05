@@ -4755,7 +4755,41 @@ class TestAdaptiveCompositing:
         compositor_window.setAlphaValue_.assert_called_with(1.0)
         compositor_window.orderFrontRegardless.assert_called_once()
 
-    def test_seed_slit_does_not_publish_fullscreen_compositor_before_body_ready(
+    def test_seed_slit_does_not_publish_fullscreen_compositor_before_publication_gate(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._visual_ready_brightness_synced = False
+        overlay._materialization_progress = (
+            mod._OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS - 0.01
+        )
+        overlay._fill_hidden_until_signature = None
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        compositor.sampled_brightness = 0.04
+        compositor_window = MagicMock()
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = time.perf_counter() - 0.5
+
+        overlay.visualReadyDeadline_(timer)
+
+        assert overlay._entrance_started is False
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._fullscreen_compositor is compositor
+        compositor_window.setAlphaValue_.assert_called_with(0.0)
+        compositor_window.orderFrontRegardless.assert_not_called()
+
+    def test_materializing_unzip_can_publish_warp_before_text_release(
         self, mock_pyobjc
     ):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -4784,8 +4818,8 @@ class TestAdaptiveCompositing:
         assert overlay._entrance_started is False
         overlay._start_entrance_animation.assert_not_called()
         assert overlay._fullscreen_compositor is compositor
-        compositor_window.setAlphaValue_.assert_called_with(0.0)
-        compositor_window.orderFrontRegardless.assert_not_called()
+        compositor_window.setAlphaValue_.assert_called_with(1.0)
+        compositor_window.orderFrontRegardless.assert_called_once()
 
     def test_materialized_body_can_publish_warp_before_text_release(
         self, mock_pyobjc
