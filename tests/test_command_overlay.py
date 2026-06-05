@@ -4538,6 +4538,158 @@ class TestAdaptiveCompositing:
         overlay._start_entrance_animation.assert_called_once()
         assert overlay._entrance_started is True
 
+    def test_hard_deadline_rearms_when_body_is_not_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._materialization_progress = 0.10
+        overlay._fill_hidden_until_signature = None
+        timer = MagicMock()
+        retry_timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        compositor.sampled_brightness = 0.04
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
+        )
+        scheduled = []
+
+        def _schedule(interval, target, selector, user_info, repeats):
+            scheduled.append((interval, target, selector, user_info, repeats))
+            return retry_timer
+
+        monkeypatch.setattr(
+            mod.NSTimer,
+            "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+            _schedule,
+        )
+
+        overlay.visualReadyDeadline_(timer)
+
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+        assert scheduled == [
+            (
+                pytest.approx(mod._OPTICAL_ENTRANCE_READY_POLL_S),
+                overlay,
+                "visualReadyDeadline:",
+                None,
+                False,
+            )
+        ]
+        assert overlay._visual_ready_timer is retry_timer
+
+    def test_hard_deadline_rearms_when_appkit_gate_is_not_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._materialization_progress = (
+            mod._OPTICAL_APPKIT_ENTRANCE_MIN_PROGRESS - 0.0001
+        )
+        overlay._fill_hidden_until_signature = None
+        timer = MagicMock()
+        retry_timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        compositor.sampled_brightness = 0.04
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
+        )
+        scheduled = []
+
+        def _schedule(interval, target, selector, user_info, repeats):
+            scheduled.append((interval, target, selector, user_info, repeats))
+            return retry_timer
+
+        monkeypatch.setattr(
+            mod.NSTimer,
+            "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+            _schedule,
+        )
+
+        overlay.visualReadyDeadline_(timer)
+
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+        assert scheduled == [
+            (
+                pytest.approx(mod._OPTICAL_ENTRANCE_READY_POLL_S),
+                overlay,
+                "visualReadyDeadline:",
+                None,
+                False,
+            )
+        ]
+        assert overlay._visual_ready_timer is retry_timer
+
+    def test_hard_deadline_rearms_when_fill_is_not_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._materialization_progress = 1.0
+        overlay._fill_hidden_until_signature = ("current", "fill")
+        overlay._pending_fill_image_signature = ("stale", "fill")
+        timer = MagicMock()
+        retry_timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        compositor.sampled_brightness = 0.04
+        compositor_window = MagicMock()
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
+        )
+        scheduled = []
+
+        def _schedule(interval, target, selector, user_info, repeats):
+            scheduled.append((interval, target, selector, user_info, repeats))
+            return retry_timer
+
+        monkeypatch.setattr(
+            mod.NSTimer,
+            "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+            _schedule,
+        )
+
+        overlay.visualReadyDeadline_(timer)
+
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+        assert scheduled == [
+            (
+                pytest.approx(mod._OPTICAL_ENTRANCE_READY_POLL_S),
+                overlay,
+                "visualReadyDeadline:",
+                None,
+                False,
+            )
+        ]
+        assert overlay._visual_ready_timer is retry_timer
+        compositor_window.setAlphaValue_.assert_called_with(0.0)
+
     def test_hard_deadline_does_not_certify_semantic_content_over_tiny_slit(
         self, mock_pyobjc
     ):

@@ -4807,7 +4807,6 @@ class CommandOverlay(NSObject):
             **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         if compositor_ready and not self._optical_body_content_ready():
-            self._cancel_visual_ready_start()
             if self._optical_compositor_publication_ready():
                 self._set_fullscreen_compositor_human_visible(True)
             else:
@@ -4822,6 +4821,7 @@ class CommandOverlay(NSObject):
                 ),
                 **self._optical_presentation_frame_bundle().to_trace_fields(),
             )
+            self._reschedule_visual_ready_poll()
             return
         if not self._optical_appkit_entrance_ready():
             if self._optical_compositor_publication_ready():
@@ -4837,11 +4837,24 @@ class CommandOverlay(NSObject):
                 ),
                 **self._optical_presentation_frame_bundle().to_trace_fields(),
             )
+            self._reschedule_visual_ready_poll()
             return
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and not compositor_ready:
             self._set_fullscreen_compositor_human_visible(False)
             record_command_overlay_trace(
                 "overlay.visual_ready.hard_deadline.compositor_not_ready",
+                elapsed=elapsed,
+                materialization_progress=getattr(
+                    self, "_materialization_progress", None
+                ),
+                **self._optical_presentation_frame_bundle().to_trace_fields(),
+            )
+            self._reschedule_visual_ready_poll()
+            return
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and not self._optical_fill_ready():
+            self._set_fullscreen_compositor_human_visible(False)
+            record_command_overlay_trace(
+                "overlay.visual_ready.hard_deadline.fill_not_ready",
                 elapsed=elapsed,
                 materialization_progress=getattr(
                     self, "_materialization_progress", None
