@@ -130,7 +130,10 @@ _DISMISS_SEAM_CLIENT_ID = "assistant.command.dismiss_seam"
 _DISMISS_RADIAL_PUCKER_CLIENT_ID = "assistant.command.dismiss_radial_pucker"
 _SEAM_PUCKER_TUNING_CLIENT_ID = "assistant.seam_pucker_tuner"
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
-_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER = 10.0
+_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER = 1.0
+_OPTICAL_MATERIALIZATION_RADIAL_DIAMETER_HEIGHT_FRAC = 0.72
+_OPTICAL_MATERIALIZATION_RADIAL_MAX_HEIGHT_FRAC = 0.85
+_OPTICAL_MATERIALIZATION_RADIAL_MAX_WIDTH_FRAC = 0.20
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
 _OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
 _OPTICAL_MATERIALIZATION_RADIAL_CYCLES = 2.35
@@ -1142,8 +1145,15 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
-    base_diameter = max(560.0, min(base_w * 0.52, base_h * 2.9))
-    diameter = base_diameter * math.sqrt(_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER)
+    base_diameter = min(
+        base_h * _OPTICAL_MATERIALIZATION_RADIAL_DIAMETER_HEIGHT_FRAC,
+        base_h * _OPTICAL_MATERIALIZATION_RADIAL_MAX_HEIGHT_FRAC,
+        base_w * _OPTICAL_MATERIALIZATION_RADIAL_MAX_WIDTH_FRAC,
+    )
+    diameter = max(
+        1.0,
+        base_diameter * math.sqrt(_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER),
+    )
     config["content_width_points"] = diameter
     config["content_height_points"] = diameter
     config["corner_radius_points"] = diameter * 0.5
