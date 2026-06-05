@@ -1378,7 +1378,7 @@ class TestOpticalShellMaterialization:
         assert retarget_progress == pytest.approx(mod.OPTICAL_SLIT_REENTRY_PROGRESS)
         assert retarget_progress < mod._OPTICAL_MATERIALIZATION_BODY_READY
 
-    def test_dismiss_text_collapse_is_bounded_by_visible_body_height(
+    def test_dismiss_text_collapse_ignores_stale_local_fill_height(
         self, mock_pyobjc
     ):
         _, mod = _make_overlay(mock_pyobjc)
@@ -1389,11 +1389,25 @@ class TestOpticalShellMaterialization:
         )
         text_state = mod._dismiss_text_collapse_state(text_progress)
 
-        assert text_progress < mod._OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS
-        assert text_state["alpha"] == pytest.approx(0.0)
-        assert text_state["height_frac"] == pytest.approx(
-            mod._OPTICAL_DISMISS_TEXT_BLOB_FRAC
+        assert text_progress == pytest.approx(0.8236982521227807)
+        assert text_progress > mod._OPTICAL_DISMISS_TEXT_COLLAPSE_START_PROGRESS
+        assert text_state["alpha"] == pytest.approx(1.0)
+        assert text_state["height_frac"] == pytest.approx(1.0)
+
+    def test_trace_backed_dismiss_text_does_not_vanish_while_compositor_body_is_open(
+        self, mock_pyobjc
+    ):
+        _, mod = _make_overlay(mock_pyobjc)
+
+        text_progress = mod._dismiss_text_collapse_progress_for_body_height(
+            0.6822329058823149,
+            mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
         )
+        text_state = mod._dismiss_text_collapse_state(text_progress)
+
+        assert text_progress > mod._OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS
+        assert text_state["alpha"] > 0.5
+        assert text_state["width_frac"] > 0.5
 
     def test_pre_body_dismiss_retarget_cannot_publish_late_summon_magnification(
         self, mock_pyobjc

@@ -932,16 +932,14 @@ def _dismiss_text_collapse_progress_for_body_height(
     progress: float,
     body_height_frac: float,
 ) -> float:
-    """Bound dismiss text publication by the body height actually on screen."""
+    """Collapse text by compositor progress, not stale local fill height.
+
+    During compositor-owned dismiss, the local SDF fill can already be a slit
+    while the fullscreen compositor shell is still visibly large. Treating that
+    local fill height as the visible body made text vanish under an open shell.
+    """
     p = _clamp01(progress)
-    hf = _clamp01(body_height_frac)
-    if hf >= 0.99:
-        return p
-    gone_at = _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
-    min_h = _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC
-    body_t = _clamp01((hf - min_h) / max(1.0 - min_h, 1e-6))
-    body_limited_progress = _lerp(gone_at, 1.0, body_t)
-    return min(p, body_limited_progress)
+    return p
 
 
 def _dismiss_pucker_amount(progress: float) -> float:

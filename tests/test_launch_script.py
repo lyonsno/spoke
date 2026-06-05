@@ -412,6 +412,14 @@ class TestLauncherRetinaLassoWitness:
         assert 'and not capture_first_stimulus' in text
 
     @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_retina_lasso_witness_preserves_capture_boundary(self, script_text):
+        text = script_text()
+        assert "SPOKE_RETINA_LASSO_CAPTURE_MODE" in text
+        assert "SPOKE_RETINA_LASSO_CAPTURE_RECT" in text
+        assert "--capture-mode" in text
+        assert "--capture-rect" in text
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
     def test_retina_lasso_witness_is_sidecar_only(self, script_text):
         text = script_text()
         app_launch = text.find('"-m", "spoke"')
