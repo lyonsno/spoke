@@ -4486,6 +4486,58 @@ class TestAdaptiveCompositing:
         assert hidden_state["value"] is True
         assert alpha_state["value"] == pytest.approx(0.0)
 
+    def test_no_compositor_hard_deadline_rearms_visual_ready_poll(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._materialization_progress = 1.0
+        timer = MagicMock()
+        retry_timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 0
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
+        )
+        scheduled = []
+
+        def _schedule(interval, target, selector, user_info, repeats):
+            scheduled.append((interval, target, selector, user_info, repeats))
+            return retry_timer
+
+        monkeypatch.setattr(
+            mod.NSTimer,
+            "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+            _schedule,
+        )
+
+        overlay.visualReadyDeadline_(timer)
+
+        overlay._start_entrance_animation.assert_not_called()
+        assert overlay._entrance_started is False
+        assert scheduled == [
+            (
+                pytest.approx(mod._OPTICAL_ENTRANCE_READY_POLL_S),
+                overlay,
+                "visualReadyDeadline:",
+                None,
+                False,
+            )
+        ]
+        assert overlay._visual_ready_timer is retry_timer
+
+        compositor.presented_count = 1
+        overlay.visualReadyDeadline_(retry_timer)
+
+        overlay._start_entrance_animation.assert_called_once()
+        assert overlay._entrance_started is True
+
     def test_hard_deadline_does_not_certify_semantic_content_over_tiny_slit(
         self, mock_pyobjc
     ):

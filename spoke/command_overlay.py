@@ -4641,6 +4641,23 @@ class CommandOverlay(NSObject):
         )
         _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
 
+    def _reschedule_visual_ready_poll(self) -> None:
+        """Retry visual readiness after a one-shot deadline could not publish."""
+        timer = getattr(self, "_visual_ready_timer", None)
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
+        self._visual_ready_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _OPTICAL_ENTRANCE_READY_POLL_S,
+            self,
+            "visualReadyDeadline:",
+            None,
+            False,
+        )
+        _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
+
     def _enforce_compositor_window_order(self) -> None:
         """Ensure compositor window is visible and overlay is on top of it."""
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -4831,6 +4848,7 @@ class CommandOverlay(NSObject):
                 ),
                 **self._optical_presentation_frame_bundle().to_trace_fields(),
             )
+            self._reschedule_visual_ready_poll()
             return
         self._entrance_started = True
         self._cancel_visual_ready_start()
