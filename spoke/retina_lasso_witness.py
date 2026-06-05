@@ -220,6 +220,10 @@ def build_retina_lasso_command(
     trace_path: str | Path | None = None,
     capture_profile: str = DEFAULT_PASSIVE_CAPTURE_PROFILE,
     capture_command: str | Path | None = None,
+    capture_mode: str | None = None,
+    capture_rect: str | None = None,
+    window_id: str | int | None = None,
+    display_id: str | int | None = None,
     uv_command: str | Path | None = None,
 ) -> list[str]:
     resolved_capture_command = (
@@ -249,7 +253,18 @@ def build_retina_lasso_command(
         ]
         if trace_path is not None:
             command.extend(["--trace-path", str(Path(trace_path).expanduser())])
+        if capture_mode:
+            command.extend(["--mode", capture_mode])
+        if capture_rect:
+            command.extend(["--rect", capture_rect])
+        if window_id is not None:
+            command.extend(["--window-id", str(window_id)])
+        if display_id is not None:
+            command.extend(["--display-id", str(display_id)])
         return command
+
+    if capture_mode or capture_rect or window_id is not None or display_id is not None:
+        raise ValueError("bounded capture requires global witness capture command")
 
     resolved_uv = str(Path(uv_command).expanduser()) if uv_command is not None else _default_uv_command()
     return [
@@ -583,6 +598,10 @@ def run_autonomous_hammer_witness(
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
     capture_command: str | Path | None = None,
+    capture_mode: str | None = None,
+    capture_rect: str | None = None,
+    window_id: str | int | None = None,
+    display_id: str | int | None = None,
     launch_target: str | None = None,
     launch_wait_seconds: float = 3.0,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
@@ -611,6 +630,10 @@ def run_autonomous_hammer_witness(
         trace_path=trace_path,
         capture_profile=capture_profile,
         capture_command=capture_command,
+        capture_mode=capture_mode,
+        capture_rect=capture_rect,
+        window_id=window_id,
+        display_id=display_id,
     )
     started_at = now()
     capture_cwd = None if _is_global_capture_command(command) else Path(perceptasia_root).expanduser()
@@ -686,6 +709,10 @@ def run_witness_window(
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
     capture_command: str | Path | None = None,
+    capture_mode: str | None = None,
+    capture_rect: str | None = None,
+    window_id: str | int | None = None,
+    display_id: str | int | None = None,
     stimulus: dict[str, Any] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     now: Callable[[], datetime] = _utc_now,
@@ -705,6 +732,10 @@ def run_witness_window(
         trace_path=trace_path,
         capture_profile=capture_profile,
         capture_command=capture_command,
+        capture_mode=capture_mode,
+        capture_rect=capture_rect,
+        window_id=window_id,
+        display_id=display_id,
     )
     started_at = now()
     capture_cwd = None if _is_global_capture_command(command) else Path(perceptasia_root).expanduser()
@@ -741,6 +772,10 @@ def run_trace_triggered_witness(
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
     capture_command: str | Path | None = None,
+    capture_mode: str | None = None,
+    capture_rect: str | None = None,
+    window_id: str | int | None = None,
+    display_id: str | int | None = None,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     now: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], None] = time.sleep,
@@ -804,6 +839,10 @@ def run_trace_triggered_witness(
                 source_app=source_app,
                 source_window=source_window,
                 capture_command=capture_command,
+                capture_mode=capture_mode,
+                capture_rect=capture_rect,
+                window_id=window_id,
+                display_id=display_id,
                 stimulus={
                     "mode": "trace-triggered",
                     "trigger_event": event,
@@ -891,6 +930,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "legacy uv-run perceptasia-screen-capture."
         ),
     )
+    parser.add_argument(
+        "--capture-mode",
+        choices=("full-screen", "display", "rect", "window"),
+        help="Global witness capture mode. Use rect/window/display to avoid full-screen contamination.",
+    )
+    parser.add_argument(
+        "--capture-rect",
+        help="Rectangle for --capture-mode rect, formatted as x,y,width,height in screen pixels.",
+    )
+    parser.add_argument("--window-id", help="Window id for --capture-mode window.")
+    parser.add_argument("--display-id", help="Display id for --capture-mode display.")
     parser.add_argument(
         "--watch-trace",
         action="store_true",
@@ -1037,6 +1087,10 @@ def main(argv: list[str] | None = None) -> int:
             source_app=args.source_app,
             source_window=args.source_window,
             capture_command=args.capture_command,
+            capture_mode=args.capture_mode,
+            capture_rect=args.capture_rect,
+            window_id=args.window_id,
+            display_id=args.display_id,
         )
     elif stimulus_mode:
         index_path = run_autonomous_hammer_witness(
@@ -1062,6 +1116,10 @@ def main(argv: list[str] | None = None) -> int:
             source_app=args.source_app,
             source_window=args.source_window,
             capture_command=args.capture_command,
+            capture_mode=args.capture_mode,
+            capture_rect=args.capture_rect,
+            window_id=args.window_id,
+            display_id=args.display_id,
             launch_target=args.launch_target,
             launch_wait_seconds=args.launch_wait,
         )
@@ -1078,6 +1136,10 @@ def main(argv: list[str] | None = None) -> int:
             source_app=args.source_app,
             source_window=args.source_window,
             capture_command=args.capture_command,
+            capture_mode=args.capture_mode,
+            capture_rect=args.capture_rect,
+            window_id=args.window_id,
+            display_id=args.display_id,
         )
     print(index_path)
     return 0

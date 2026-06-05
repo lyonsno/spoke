@@ -15,6 +15,7 @@ from spoke.retina_lasso_witness import (
     read_trace_events_from_offset,
     run_autonomous_hammer_witness,
     run_trace_triggered_witness,
+    run_witness_window,
     trace_event_is_open_ready,
     trace_event_output_slug,
     wait_for_open_ready_trace,
@@ -58,6 +59,49 @@ def test_build_retina_lasso_command_prefers_global_capture_custody(tmp_path):
     assert command[command.index("--trace-path") + 1] == str(tmp_path / "trace.jsonl")
 
 
+def test_build_retina_lasso_command_passes_bounded_global_capture_args(tmp_path):
+    command = build_retina_lasso_command(
+        output_dir=tmp_path,
+        count=3,
+        interval_seconds=0.125,
+        lane="warpstorm-pit-boss",
+        diaulos="Warpstorm Pit Boss",
+        source_app="Spoke",
+        source_window="Command Overlay",
+        trace_path=tmp_path / "trace.jsonl",
+        capture_profile="stress",
+        capture_command="/usr/local/bin/global-witness-capture",
+        capture_mode="rect",
+        capture_rect="0,360,2048,850",
+        display_id=1,
+    )
+
+    assert command[command.index("--mode") + 1] == "rect"
+    assert command[command.index("--rect") + 1] == "0,360,2048,850"
+    assert command[command.index("--display-id") + 1] == "1"
+
+
+def test_build_retina_lasso_command_rejects_bounded_legacy_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(witness, "_default_global_capture_command", lambda: None)
+
+    try:
+        build_retina_lasso_command(
+            output_dir=tmp_path,
+            count=1,
+            interval_seconds=1.0,
+            lane="warpstorm-pit-boss",
+            diaulos="Warpstorm Pit Boss",
+            source_app="Spoke",
+            source_window="Command Overlay",
+            capture_mode="rect",
+            capture_rect="0,360,2048,850",
+        )
+    except ValueError as exc:
+        assert "bounded capture requires global witness capture" in str(exc)
+    else:
+        raise AssertionError("bounded capture must not silently fall back to legacy full-screen capture")
+
+
 def test_build_retina_lasso_command_uses_healthy_global_capture_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(witness.shutil, "which", lambda name: "/usr/local/bin/global-witness-capture")
     monkeypatch.setattr(witness, "_global_capture_command_is_healthy", lambda command: True)
@@ -73,6 +117,34 @@ def test_build_retina_lasso_command_uses_healthy_global_capture_by_default(tmp_p
     )
 
     assert command[0] == "/usr/local/bin/global-witness-capture"
+
+
+def test_run_witness_window_passes_bounded_capture_contract(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text("", encoding="utf-8")
+    runner_calls = []
+
+    def runner(command, cwd=None, check=False):
+        runner_calls.append(command)
+        capture_dir = Path(command[command.index("--output-dir") + 1])
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        (capture_dir / "manifest.json").write_text(json.dumps({"frames": []}), encoding="utf-8")
+
+    run_witness_window(
+        trace_path=trace_path,
+        output_dir=tmp_path / "capture",
+        duration_seconds=0.25,
+        fps=4.0,
+        capture_profile="stress",
+        capture_command="/usr/local/bin/global-witness-capture",
+        capture_mode="rect",
+        capture_rect="0,360,2048,850",
+        runner=runner,
+    )
+
+    command = runner_calls[0]
+    assert command[command.index("--mode") + 1] == "rect"
+    assert command[command.index("--rect") + 1] == "0,360,2048,850"
 
 
 def test_build_retina_lasso_command_skips_unhealthy_global_capture(tmp_path, monkeypatch):

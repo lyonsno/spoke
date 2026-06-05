@@ -228,6 +228,18 @@ def _start_retina_lasso_witness(
     )
     if capture_command:
         args.extend(["--capture-command", capture_command])
+    capture_mode = child_env.get("SPOKE_RETINA_LASSO_CAPTURE_MODE", "").strip()
+    if capture_mode:
+        args.extend(["--capture-mode", capture_mode])
+    capture_rect = child_env.get("SPOKE_RETINA_LASSO_CAPTURE_RECT", "").strip()
+    if capture_rect:
+        args.extend(["--capture-rect", capture_rect])
+    window_id = child_env.get("SPOKE_RETINA_LASSO_WINDOW_ID", "").strip()
+    if window_id:
+        args.extend(["--window-id", window_id])
+    display_id = child_env.get("SPOKE_RETINA_LASSO_DISPLAY_ID", "").strip()
+    if display_id:
+        args.extend(["--display-id", display_id])
     capture_first_stimulus = _append_retina_lasso_stimulus_args(args, child_env=child_env, log=log)
     if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE") and not capture_first_stimulus:
         args.append("--watch-trace")
