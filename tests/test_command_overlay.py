@@ -4880,6 +4880,54 @@ class TestAdaptiveCompositing:
         compositor_window.setAlphaValue_.assert_called_with(1.0)
         compositor_window.orderFrontRegardless.assert_called_once()
 
+    def test_retargeted_materialization_waits_for_current_generation_ack_before_publish(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        generation = overlay._begin_optical_presentation_generation("opening")
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._visual_ready_brightness_synced = False
+        overlay._materialization_direction = 1
+        overlay._materialization_progress = (
+            mod._OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS + 0.04
+        )
+        overlay._materialization_started_at = (
+            time.perf_counter()
+            - overlay._materialization_progress * mod._OPTICAL_MATERIALIZATION_S
+        )
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        overlay._retargeted_opening_presentation_generation = generation
+        timer = MagicMock()
+        overlay._materialization_timer = timer
+        compositor_window = MagicMock()
+        compositor = MagicMock()
+        compositor.presented_count = 4
+        compositor.presentation_generation = generation
+        compositor.presentation_ack_generation = None
+        compositor.sampled_brightness = 0.04
+        compositor._host = SimpleNamespace(
+            _compositor=SimpleNamespace(_window=compositor_window)
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+
+        overlay.materializationStep_(timer)
+
+        overlay._start_entrance_animation.assert_not_called()
+        compositor_window.setAlphaValue_.assert_called_with(0.0)
+        compositor_window.orderFrontRegardless.assert_not_called()
+
     def test_materialized_body_can_publish_warp_before_text_release(
         self, mock_pyobjc
     ):

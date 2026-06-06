@@ -1654,6 +1654,7 @@ class CommandOverlay(NSObject):
         self._optical_compositor_config_generation = None
         self._optical_compositor_config_identity = None
         self._optical_presentation_ack_generation = None
+        self._retargeted_opening_presentation_generation = None
 
         return self
 
@@ -1967,6 +1968,7 @@ class CommandOverlay(NSObject):
         self._optical_compositor_config_generation = None
         self._optical_compositor_config_identity = None
         self._optical_presentation_ack_generation = None
+        self._retargeted_opening_presentation_generation = None
         return generation
 
     def _quarantine_appkit_presentation_for_optical_retarget(self) -> None:
@@ -2147,6 +2149,11 @@ class CommandOverlay(NSObject):
         if config_generation != generation:
             return
         self._optical_presentation_ack_generation = generation
+        if (
+            getattr(self, "_retargeted_opening_presentation_generation", None)
+            == generation
+        ):
+            self._retargeted_opening_presentation_generation = None
         try:
             setattr(compositor, "presentation_ack_generation", generation)
         except Exception:
@@ -4186,6 +4193,8 @@ class CommandOverlay(NSObject):
                 and self._optical_compositor_publication_ready()
             ):
                 self._set_fullscreen_compositor_human_visible(True)
+            elif getattr(self, "_materialization_direction", 1) > 0:
+                self._set_fullscreen_compositor_human_visible(False)
         except Exception:
             logger.debug("Failed to update command materialization shell", exc_info=True)
         if raw >= 1.0:
@@ -4899,10 +4908,19 @@ class CommandOverlay(NSObject):
         )
 
     def _optical_compositor_publication_ready(self) -> bool:
-        return (
+        if (
             float(getattr(self, "_materialization_progress", 0.0) or 0.0)
-            >= _OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS
+            < _OPTICAL_COMPOSITOR_PUBLICATION_MIN_PROGRESS
+        ):
+            return False
+        retarget_generation = getattr(
+            self, "_retargeted_opening_presentation_generation", None
         )
+        if isinstance(retarget_generation, numbers.Integral):
+            generation = self._current_optical_presentation_generation()
+            if generation == int(retarget_generation):
+                return self._optical_compositor_has_presented()
+        return True
 
     def _optical_compositor_has_presented(self) -> bool:
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -5754,6 +5772,7 @@ class CommandOverlay(NSObject):
                 self._optical_compositor_config_generation = generation
                 self._optical_compositor_config_identity = config_identity
                 self._optical_presentation_ack_generation = None
+                self._retargeted_opening_presentation_generation = generation
                 self._committed_optical_publisher_state = "compositor_configured"
                 try:
                     setattr(compositor, "presentation_generation", generation)
