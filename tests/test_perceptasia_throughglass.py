@@ -4,7 +4,9 @@ import importlib
 import importlib.util
 import subprocess
 import sys
+import tomllib
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -15,6 +17,16 @@ from spoke.optical_field import OpticalFieldBounds
 
 def _connection_refused(*_args, **_kwargs):
     raise OSError("connection refused")
+
+
+def test_throughglass_declares_webkit_pyobjc_framework_dependency():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    dependencies = {
+        dependency.split(";", 1)[0].split(">=", 1)[0].split("==", 1)[0].strip().lower()
+        for dependency in pyproject["project"]["dependencies"]
+    }
+
+    assert "pyobjc-framework-webkit" in dependencies
 
 
 def test_manifest_defaults_to_current_local_perceptasia_provider(mock_pyobjc, monkeypatch):
