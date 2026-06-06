@@ -76,6 +76,39 @@ def _make_delegate(main_module, monkeypatch):
     return delegate
 
 
+class TestPerceptasiaThroughglassHook:
+    def test_toggle_constructs_throughglass_graft_lazily(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        registry = object()
+        d._overlay_compositor_registry = registry
+        graft = MagicMock(name="throughglass_graft")
+        graft.isVisible.return_value = False
+
+        factory = MagicMock(name="PerceptasiaThroughglassGraft")
+        factory.alloc.return_value.initWithCompositorRegistry_.return_value = graft
+        monkeypatch.setattr(
+            "spoke.perceptasia_throughglass.PerceptasiaThroughglassGraft",
+            factory,
+        )
+
+        d._toggle_perceptasia_throughglass()
+
+        factory.alloc.return_value.initWithCompositorRegistry_.assert_called_once_with(
+            registry
+        )
+        graft.show.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Perceptasia Throughglass")
+
+    def test_throughglass_smoke_hook_is_quiet_without_env(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        assert d._maybe_show_perceptasia_throughglass_smoke() is False
+
+        assert not hasattr(d, "_perceptasia_throughglass")
+
+
 class TestOperatorPingTokenSmokeHook:
     def test_smoke_hook_is_quiet_without_env(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

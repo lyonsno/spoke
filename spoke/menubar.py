@@ -89,6 +89,7 @@ class MenuBarIcon(NSObject):
         self._on_select_model = on_select_model
         self._on_toggle_preview_warp = None
         self._on_toggle_seam_pucker = None
+        self._on_toggle_perceptasia_throughglass = None
         self._on_toggle_handsfree = None
         self._status_item = None
         self._status_text = "Idle"
@@ -365,6 +366,13 @@ class MenuBarIcon(NSObject):
             seam_pucker_item.setTarget_(self)
             menu.addItem_(seam_pucker_item)
 
+        if getattr(self, "_on_toggle_perceptasia_throughglass", None) is not None:
+            throughglass_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Perceptasia Throughglass Graft", "togglePerceptasiaThroughglass:", "g"
+            )
+            throughglass_item.setTarget_(self)
+            menu.addItem_(throughglass_item)
+
         if launch_target:
             menu.addItem_(NSMenuItem.separatorItem())
             for item_id, label, enabled in launch_target["items"]:
@@ -462,6 +470,10 @@ class MenuBarIcon(NSObject):
     def toggleSeamPucker_(self, sender) -> None:
         if self._on_toggle_seam_pucker is not None:
             self._on_toggle_seam_pucker()
+
+    def togglePerceptasiaThroughglass_(self, sender) -> None:
+        if self._on_toggle_perceptasia_throughglass is not None:
+            self._on_toggle_perceptasia_throughglass()
 
     def quitApp_(self, sender) -> None:
         self._on_quit()

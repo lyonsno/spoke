@@ -1407,6 +1407,11 @@ class SpokeAppDelegate(NSObject):
             self._seam_pucker_hud.restore_visibility()
             self._menubar._on_toggle_seam_pucker = self._seam_pucker_hud.toggle
 
+        self._perceptasia_throughglass = None
+        self._menubar._on_toggle_perceptasia_throughglass = (
+            self._toggle_perceptasia_throughglass
+        )
+
         # Hands-free mode — expose the toggle when a wakeword backend is configured
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
@@ -1596,6 +1601,7 @@ class SpokeAppDelegate(NSObject):
         self._hide_startup_status()
         self._maybe_show_operator_ping_token_smoke()
         self._maybe_show_diaulos_card_smoke()
+        self._maybe_show_perceptasia_throughglass_smoke()
 
         # Warn if cloud preview is active — each partial is a paid API call.
         if getattr(self, "_preview_backend", "local") == "cloud":
@@ -1934,6 +1940,64 @@ class SpokeAppDelegate(NSObject):
         if overlay is None:
             return
         overlay.hide()
+
+    def _ensure_perceptasia_throughglass(self):
+        graft = getattr(self, "_perceptasia_throughglass", None)
+        if graft is not None:
+            return graft
+        registry = getattr(self, "_overlay_compositor_registry", None)
+        if registry is None:
+            logger.warning("Perceptasia Throughglass requested before compositor registry")
+            menubar = getattr(self, "_menubar", None)
+            if menubar is not None:
+                menubar.set_status_text("Perceptasia Throughglass unavailable")
+            return None
+        from .perceptasia_throughglass import PerceptasiaThroughglassGraft
+
+        graft = (
+            PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+        )
+        self._perceptasia_throughglass = graft
+        return graft
+
+    def _toggle_perceptasia_throughglass(self) -> None:
+        graft = self._ensure_perceptasia_throughglass()
+        if graft is None:
+            return
+        try:
+            visible = bool(graft.isVisible())
+        except Exception:
+            visible = False
+        menubar = getattr(self, "_menubar", None)
+        if visible:
+            graft.hide()
+            if menubar is not None:
+                menubar.set_status_text("Perceptasia Throughglass hidden")
+            return
+        shown = bool(graft.show())
+        if menubar is not None:
+            menubar.set_status_text(
+                "Perceptasia Throughglass"
+                if shown
+                else "Perceptasia Throughglass waiting"
+            )
+
+    def _maybe_show_perceptasia_throughglass_smoke(self) -> bool:
+        flag = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "")
+        if flag.strip().lower() not in {"1", "true", "yes", "on"}:
+            return False
+        graft = self._ensure_perceptasia_throughglass()
+        if graft is None:
+            return False
+        shown = bool(graft.show())
+        menubar = getattr(self, "_menubar", None)
+        if menubar is not None:
+            menubar.set_status_text(
+                "Perceptasia Throughglass"
+                if shown
+                else "Perceptasia Throughglass waiting"
+            )
+        return shown
 
     def _refresh_startup_status(self) -> None:
         if getattr(self, "_warm_error", None) is not None:
@@ -7320,6 +7384,11 @@ class SpokeAppDelegate(NSObject):
             self._preview_warp_hud.cleanup()
         if hasattr(self, "_seam_pucker_hud") and self._seam_pucker_hud is not None:
             self._seam_pucker_hud.cleanup()
+        if (
+            hasattr(self, "_perceptasia_throughglass")
+            and self._perceptasia_throughglass is not None
+        ):
+            self._perceptasia_throughglass.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 
@@ -7477,6 +7546,11 @@ def main() -> None:
             delegate._preview_warp_hud.cleanup()
         if hasattr(delegate, "_seam_pucker_hud") and delegate._seam_pucker_hud is not None:
             delegate._seam_pucker_hud.cleanup()
+        if (
+            hasattr(delegate, "_perceptasia_throughglass")
+            and delegate._perceptasia_throughglass is not None
+        ):
+            delegate._perceptasia_throughglass.cleanup()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
         # Remove heartbeat so next launch doesn't see us as a zombie.

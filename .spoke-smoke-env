@@ -67,3 +67,12 @@ export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS="28.0"
 export SPOKE_STACK_SPECULUM_SMOKE="0"
 export SPOKE_OPERATOR_PING_TOKEN_SMOKE="0"
 export SPOKE_DIAULOS_CARD_SMOKE="0"
+
+# Perceptasia primitive-passport consumer smoke. This exercises the extracted
+# sibling primitive as a live-content carrier without letting an empty shell
+# substitute for WebKit/WebGL content.
+export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH="0"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8742"
