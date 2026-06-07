@@ -558,6 +558,32 @@ def test_assistant_visibility_update_does_not_hide_visible_sibling_client(monkey
     assert compositor._window.alphas[-1] == pytest.approx(1.0)
 
 
+def test_client_visibility_noop_does_not_republish_sibling_configs(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(241),
+        content_view=object(),
+    )
+    throughglass = host.register_client(
+        _identity("perceptasia.throughglass", host.display_id, "hud"),
+        window=_FakeWindow(242),
+        content_view=object(),
+    )
+
+    assert assistant.update_shell_config({"center_x": 10.0, "visible": True})
+    assert throughglass.update_shell_config({"center_x": 20.0, "visible": True})
+    compositor = _FakeFullScreenCompositor.instances[0]
+    compositor._window = _FakeCompositorWindow()
+    compositor.updated_configs.clear()
+
+    assert host.set_client_visibility("assistant.command", True)
+
+    assert compositor.updated_configs == []
+    assert compositor._window.alphas[-1] == pytest.approx(1.0)
+
+
 def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

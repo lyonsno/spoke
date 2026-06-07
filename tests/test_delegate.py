@@ -81,23 +81,29 @@ class TestPerceptasiaThroughglassHook:
         d = _make_delegate(main_module, monkeypatch)
         registry = object()
         d._overlay_compositor_registry = registry
-        graft = MagicMock(name="throughglass_graft")
-        graft.isVisible.return_value = False
-
-        factory = MagicMock(name="PerceptasiaThroughglassGraft")
-        factory.alloc.return_value.initWithCompositorRegistry_.return_value = graft
-        monkeypatch.setattr(
-            "spoke.perceptasia_throughglass.PerceptasiaThroughglassGraft",
-            factory,
-        )
+        graft = d._ensure_perceptasia_throughglass()
+        graft.isVisible = MagicMock(return_value=False)
+        graft.show = MagicMock(return_value=True)
 
         d._toggle_perceptasia_throughglass()
 
-        factory.alloc.return_value.initWithCompositorRegistry_.assert_called_once_with(
-            registry
-        )
+        assert d._perceptasia_throughglass is graft
         graft.show.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Perceptasia Throughglass")
+
+    def test_throughglass_visibility_callback_owns_menu_status(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        registry = object()
+        d._overlay_compositor_registry = registry
+
+        graft = d._ensure_perceptasia_throughglass()
+
+        callback = graft._visibility_callback
+        assert callable(callback)
+        callback(True)
+        d._menubar.set_status_text.assert_called_with("Perceptasia Throughglass")
+        callback(False)
+        d._menubar.set_status_text.assert_called_with("Perceptasia Throughglass hidden")
 
     def test_throughglass_smoke_hook_is_quiet_without_env(
         self, main_module, monkeypatch

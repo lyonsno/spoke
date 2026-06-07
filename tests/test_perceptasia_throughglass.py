@@ -468,6 +468,21 @@ def test_throughglass_exposes_visible_state_for_menu_toggle(mock_pyobjc):
     assert graft.isVisible() is True
 
 
+def test_throughglass_reports_display_visibility_independent_of_assistant_overlay(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft._panel = MagicMock()
+    events = []
+
+    graft.set_visibility_callback(lambda visible: events.append(bool(visible)))
+
+    assert graft.show() is True
+    graft.hide()
+
+    assert events == [True, False]
+
+
 def test_throughglass_hide_unloads_live_webview_carrier(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

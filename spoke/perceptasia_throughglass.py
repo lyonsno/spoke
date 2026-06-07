@@ -223,7 +223,11 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_generation = 0
         self._client_registered = False
         self._pending_show = False
+        self._visibility_callback = None
         return self
+
+    def set_visibility_callback(self, callback) -> None:
+        self._visibility_callback = callback
 
     def setup(self) -> None:
         if self._panel is not None:
@@ -322,6 +326,7 @@ class PerceptasiaThroughglassGraft(NSObject):
     def __show_verified(self) -> bool:
         if self._panel is None:
             return False
+        was_visible = bool(self._visible)
         self._panel.orderFrontRegardless()
         self._visible = True
         self._pending_show = False
@@ -340,9 +345,12 @@ class PerceptasiaThroughglassGraft(NSObject):
             self._content_kind,
             self._content_verified,
         )
+        if not was_visible:
+            self.__notify_visibility_changed(True)
         return True
 
     def hide(self) -> None:
+        was_visible = bool(self._visible)
         self._pending_show = False
         self._visible = False
         if getattr(self, "_client_registered", False):
@@ -352,6 +360,8 @@ class PerceptasiaThroughglassGraft(NSObject):
             self._panel.orderOut_(None)
         self.__release_shell_client()
         self.__teardown_content_carrier()
+        if was_visible:
+            self.__notify_visibility_changed(False)
 
     def toggle(self) -> None:
         if self._visible:
@@ -517,6 +527,15 @@ class PerceptasiaThroughglassGraft(NSObject):
         if callable(release):
             release(_CLIENT_ID)
         self._client_registered = False
+
+    def __notify_visibility_changed(self, visible: bool) -> None:
+        callback = getattr(self, "_visibility_callback", None)
+        if not callable(callback):
+            return
+        try:
+            callback(bool(visible))
+        except Exception:
+            logger.debug("Perceptasia Throughglass: visibility callback failed", exc_info=True)
 
     def __teardown_content_carrier(self) -> None:
         content = self._content_view

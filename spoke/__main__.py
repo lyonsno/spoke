@@ -1957,8 +1957,21 @@ class SpokeAppDelegate(NSObject):
         graft = (
             PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
         )
+        set_visibility_callback = getattr(graft, "set_visibility_callback", None)
+        if callable(set_visibility_callback):
+            set_visibility_callback(self._set_perceptasia_throughglass_display_status)
         self._perceptasia_throughglass = graft
         return graft
+
+    def _set_perceptasia_throughglass_display_status(self, visible: bool) -> None:
+        menubar = getattr(self, "_menubar", None)
+        if menubar is None:
+            return
+        menubar.set_status_text(
+            "Perceptasia Throughglass"
+            if bool(visible)
+            else "Perceptasia Throughglass hidden"
+        )
 
     def _toggle_perceptasia_throughglass(self) -> None:
         graft = self._ensure_perceptasia_throughglass()

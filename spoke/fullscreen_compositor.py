@@ -1675,7 +1675,22 @@ class OverlayCompositorHost:
         return self.update_client_config(client_id, config)
 
     def set_client_visibility(self, client_id: str, visible: bool) -> bool:
-        updated = self.update_client_config_key(client_id, "visible", bool(visible))
+        entry = self._clients.get(client_id)
+        if entry is None:
+            return False
+        snapshot = entry.get("snapshot")
+        if snapshot is None:
+            return False
+        desired_visible = bool(visible)
+        if bool(snapshot.visible) == desired_visible:
+            self._set_compositor_window_visible(
+                any(
+                    bool(entry.get("snapshot") and entry["snapshot"].visible)
+                    for entry in self._clients.values()
+                )
+            )
+            return True
+        updated = self.update_client_config_key(client_id, "visible", desired_visible)
         if not updated:
             return False
         self._set_compositor_window_visible(
