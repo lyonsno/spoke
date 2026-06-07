@@ -1560,15 +1560,19 @@ class SpokeAppDelegate(NSObject):
         self._hold_rejected_during_warmup = False
         self._models_ready = False
         self._warm_error = None
-        self._refresh_startup_status()
-        if self._warmup_in_flight:
-            return
-        self._warmup_in_flight = True
-        threading.Thread(
-            target=self._prepare_clients_in_background,
-            daemon=True,
-            name="client-warmup",
-        ).start()
+        if not self._warmup_in_flight:
+            self._warmup_in_flight = True
+            threading.Thread(
+                target=self._prepare_clients_in_background,
+                daemon=True,
+                name="client-warmup",
+            ).start()
+        try:
+            self._refresh_startup_status()
+        except Exception:
+            logger.exception(
+                "Startup status update failed; continuing client warmup"
+            )
 
     def _prepare_clients_in_background(self) -> None:
         _record_runtime_phase("client_warmup.start")

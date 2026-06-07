@@ -3397,6 +3397,42 @@ class TestWarmupContract:
             "Loading models...\nFirst launch may download selected models."
         )
 
+    def test_event_tap_warmup_starts_before_startup_status_render(
+        self, main_module, monkeypatch
+    ):
+        """Startup status rendering must not gate the client warmup thread."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._warmup_in_flight = False
+        events = []
+        d._refresh_startup_status = MagicMock(side_effect=lambda: events.append("status"))
+
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            mock_thread = MagicMock()
+            mock_thread.start.side_effect = lambda: events.append("thread.start")
+            mock_thread_cls.return_value = mock_thread
+
+            d._complete_event_tap_startup()
+
+        assert events == ["thread.start", "status"]
+
+    def test_event_tap_warmup_survives_startup_status_render_failure(
+        self, main_module, monkeypatch
+    ):
+        """A broken startup visual surface must not leave Spoke permanently offline."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._warmup_in_flight = False
+        d._refresh_startup_status = MagicMock(
+            side_effect=RuntimeError("startup surface wedged")
+        )
+
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            mock_thread = MagicMock()
+            mock_thread_cls.return_value = mock_thread
+
+            d._complete_event_tap_startup()
+
+        mock_thread.start.assert_called_once_with()
+
     def test_background_warmup_dispatches_success_to_main_thread(
         self, main_module, monkeypatch
     ):

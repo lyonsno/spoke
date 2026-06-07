@@ -286,6 +286,7 @@ def test_preview_adapter_publishes_preview_transcription_snapshot_without_starti
     assert snapshot.geometry.content_height_points == pytest.approx(
         (80.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0) * 2.0
     )
+    assert snapshot.geometry.cut_radius_points == pytest.approx(16.0 * 2.0)
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
 
 

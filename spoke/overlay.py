@@ -692,6 +692,7 @@ class TranscriptionOverlay(NSObject):
             content_width_points=shell_width * scale,
             content_height_points=shell_height * scale,
             corner_radius_points=shell_body_corner_r * scale,
+            cut_radius_points=shell_body_corner_r * scale,
             band_width_points=tuning["band_width_points"] * scale,
             tail_width_points=tuning["tail_width_points"] * scale,
         )
