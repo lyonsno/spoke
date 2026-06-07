@@ -223,6 +223,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_generation = 0
         self._client_registered = False
         self._pending_show = False
+        self._assistant_overlay_parked = False
         self._visibility_callback = None
         return self
 
@@ -356,6 +357,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         was_visible = bool(self._visible)
         self._pending_show = False
         self._visible = False
+        self._assistant_overlay_parked = False
         if getattr(self, "_client_registered", False):
             self.__publish_shell_state("dismiss")
             self.__publish_shell_state("hidden", visible=False)
@@ -374,6 +376,37 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def isVisible(self) -> bool:
         return bool(getattr(self, "_visible", False))
+
+    def park_for_assistant_overlay(self) -> bool:
+        """Temporarily remove the live carrier while assistant owns the screen."""
+        if not bool(getattr(self, "_visible", False)):
+            return False
+        panel = getattr(self, "_panel", None)
+        if panel is not None:
+            panel.orderOut_(None)
+        self._assistant_overlay_parked = True
+        if getattr(self, "_client_registered", False):
+            self.__publish_shell_state("hidden", visible=False)
+        return True
+
+    def restore_after_assistant_overlay(self) -> bool:
+        """Restore a carrier parked for assistant display without reloading it."""
+        if not bool(getattr(self, "_assistant_overlay_parked", False)):
+            return False
+        self._assistant_overlay_parked = False
+        if not bool(getattr(self, "_visible", False)):
+            return False
+        panel = getattr(self, "_panel", None)
+        if panel is None:
+            return self.show()
+        self.__reassert_live_carrier_window_level()
+        panel.orderFrontRegardless()
+        if self.__should_publish_shell():
+            self.__publish_shell_state("materialize")
+            self.__publish_shell_state("rest")
+            self.__reassert_live_carrier_window_level()
+            panel.orderFrontRegardless()
+        return True
 
     def cleanup(self) -> None:
         self.hide()

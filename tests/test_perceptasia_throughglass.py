@@ -508,6 +508,38 @@ def test_throughglass_reports_display_visibility_independent_of_assistant_overla
     assert events == [True, False]
 
 
+def test_throughglass_can_park_without_destroying_live_webview(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    panel = MagicMock()
+    webview = MagicMock()
+    graft._panel = panel
+    graft._content_view = webview
+    graft._visible = True
+
+    assert graft.park_for_assistant_overlay() is True
+
+    panel.orderOut_.assert_called_once_with(None)
+    assert graft.isVisible() is True
+    assert graft._content_view is webview
+
+
+def test_throughglass_restores_after_assistant_overlay_park(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    panel = MagicMock()
+    graft._panel = panel
+    graft._visible = True
+    graft._assistant_overlay_parked = True
+
+    assert graft.restore_after_assistant_overlay() is True
+
+    panel.orderFrontRegardless.assert_called_once_with()
+    assert graft._assistant_overlay_parked is False
+
+
 def test_throughglass_hide_unloads_live_webview_carrier(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

@@ -44,6 +44,7 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
+_THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S = 0.48
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -1977,6 +1978,94 @@ class SpokeAppDelegate(NSObject):
             else "Perceptasia Throughglass hidden"
         )
 
+    def _park_perceptasia_throughglass_for_command_overlay(self) -> None:
+        timer = getattr(self, "_perceptasia_throughglass_restore_timer", None)
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                logger.debug("Perceptasia Throughglass restore timer invalidate failed", exc_info=True)
+            self._perceptasia_throughglass_restore_timer = None
+        graft = getattr(self, "_perceptasia_throughglass", None)
+        if graft is None:
+            return
+        try:
+            visible = bool(graft.isVisible())
+        except Exception:
+            logger.exception("Perceptasia Throughglass visibility check failed before assistant park")
+            visible = False
+        if not visible:
+            return
+        try:
+            park = getattr(graft, "park_for_assistant_overlay", None)
+            parked = bool(park()) if callable(park) else False
+        except Exception:
+            logger.exception("Perceptasia Throughglass assistant park failed")
+            parked = False
+        if parked:
+            self._perceptasia_throughglass_parked_for_command_overlay = True
+            menubar = getattr(self, "_menubar", None)
+            if menubar is not None:
+                menubar.set_status_text("Perceptasia Throughglass parked")
+
+    def _schedule_perceptasia_throughglass_restore_after_command_overlay(
+        self, delay: float = _THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S
+    ) -> None:
+        timer = getattr(self, "_perceptasia_throughglass_restore_timer", None)
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                logger.debug("Perceptasia Throughglass restore timer invalidate failed", exc_info=True)
+            self._perceptasia_throughglass_restore_timer = None
+        if not bool(getattr(self, "_perceptasia_throughglass_parked_for_command_overlay", False)):
+            return
+        if delay <= 0:
+            self.restorePerceptasiaThroughglassAfterCommandOverlay_(None)
+            return
+        self._perceptasia_throughglass_restore_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                delay,
+                self,
+                "restorePerceptasiaThroughglassAfterCommandOverlay:",
+                None,
+                False,
+            )
+        )
+
+    def restorePerceptasiaThroughglassAfterCommandOverlay_(self, timer) -> None:
+        self._perceptasia_throughglass_restore_timer = None
+        if not bool(getattr(self, "_perceptasia_throughglass_parked_for_command_overlay", False)):
+            return
+        self._perceptasia_throughglass_parked_for_command_overlay = False
+        graft = getattr(self, "_perceptasia_throughglass", None)
+        if graft is None:
+            return
+        try:
+            restore = getattr(graft, "restore_after_assistant_overlay", None)
+            shown = bool(restore()) if callable(restore) else bool(graft.show())
+        except Exception:
+            logger.exception("Perceptasia Throughglass assistant restore failed")
+            shown = False
+        if shown:
+            menubar = getattr(self, "_menubar", None)
+            if menubar is not None:
+                menubar.set_status_text("Perceptasia Throughglass")
+
+    def _show_command_overlay(self, **kwargs) -> None:
+        overlay = getattr(self, "_command_overlay", None)
+        if overlay is None:
+            return
+        self._park_perceptasia_throughglass_for_command_overlay()
+        overlay.show(**kwargs)
+
+    def _dismiss_command_overlay(self) -> None:
+        overlay = getattr(self, "_command_overlay", None)
+        if overlay is None:
+            return
+        overlay.cancel_dismiss()
+        self._schedule_perceptasia_throughglass_restore_after_command_overlay()
+
     def _toggle_perceptasia_throughglass(self) -> None:
         graft = self._ensure_perceptasia_throughglass()
         if graft is None:
@@ -1987,6 +2076,7 @@ class SpokeAppDelegate(NSObject):
             visible = False
         menubar = getattr(self, "_menubar", None)
         if visible:
+            self._perceptasia_throughglass_parked_for_command_overlay = False
             graft.hide()
             if menubar is not None:
                 menubar.set_status_text("Perceptasia Throughglass hidden")
@@ -3301,7 +3391,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Recalling last response: %r", last_utterance[:50])
             if self._command_overlay is not None:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(
+                self._show_command_overlay(
                     start_thinking_timer=False,
                     initial_utterance=last_utterance,
                     initial_response=_command_overlay_recall_preview(last_response),
@@ -4025,7 +4115,7 @@ class SpokeAppDelegate(NSObject):
         )
         if overlay_visible:
             logger.info("Double-tap Enter — dismissing command overlay")
-            self._command_overlay.cancel_dismiss()
+            self._dismiss_command_overlay()
             self._detector.command_overlay_active = False
             record_command_overlay_trace("delegate.toggle.dismiss")
         elif (
@@ -4037,7 +4127,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — re-showing pending approval overlay")
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(
+                self._show_command_overlay(
                     start_thinking_timer=False,
                     initial_utterance=utterance,
                     initial_response=pending_body,
@@ -4056,7 +4146,7 @@ class SpokeAppDelegate(NSObject):
             )
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(
+                self._show_command_overlay(
                     preserve_thinking_timer=True,
                     initial_utterance=utterance,
                     initial_response=streaming,
@@ -4088,7 +4178,7 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Double-tap Enter — restoring durable pending approval overlay")
                 try:
                     self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show(
+                    self._show_command_overlay(
                         start_thinking_timer=False,
                         initial_utterance=utterance,
                         initial_response=self._compose_pending_approval_overlay_body(),
@@ -4106,7 +4196,7 @@ class SpokeAppDelegate(NSObject):
                 if self._command_overlay is not None:
                     try:
                         self._sync_command_overlay_brightness(immediate=True)
-                        self._command_overlay.show(
+                        self._show_command_overlay(
                             start_thinking_timer=False,
                             initial_utterance=last_utterance,
                             initial_response=_command_overlay_recall_preview(last_response),
@@ -4696,7 +4786,7 @@ class SpokeAppDelegate(NSObject):
         # Show the command overlay with the utterance as context
         if self._command_overlay is not None:
             self._sync_command_overlay_brightness(immediate=True)
-            self._command_overlay.show(initial_utterance=utterance)
+            self._show_command_overlay(initial_utterance=utterance)
             self._detector.command_overlay_active = True
             logger.info("command_overlay_active -> True (command started)")
         self._command_first_token = True
@@ -4951,7 +5041,7 @@ class SpokeAppDelegate(NSObject):
         if self._command_client is not None:
             self._command_client.cancel_pending_tool_call()
         if dismiss_overlay and self._command_overlay is not None:
-            self._command_overlay.cancel_dismiss()
+            self._dismiss_command_overlay()
             self._detector.command_overlay_active = False
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
@@ -5015,7 +5105,7 @@ class SpokeAppDelegate(NSObject):
             if not self._command_overlay._visible:
                 self._sync_command_overlay_brightness(immediate=True)
                 try:
-                    self._command_overlay.show()
+                    self._show_command_overlay()
                 except Exception:
                     logger.exception("Command overlay show failed during error presentation")
             try:
