@@ -584,6 +584,41 @@ def test_client_visibility_noop_does_not_republish_sibling_configs(monkeypatch):
     assert compositor._window.alphas[-1] == pytest.approx(1.0)
 
 
+def test_assistant_visibility_suppresses_throughglass_shell_until_assistant_hides(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(251),
+        content_view=object(),
+    )
+    throughglass = host.register_client(
+        _identity("perceptasia.throughglass", host.display_id, "hud"),
+        window=_FakeWindow(252),
+        content_view=object(),
+    )
+
+    assert throughglass.update_shell_config(
+        {
+            "center_x": 20.0,
+            "visible": True,
+            "presentation_layer": "hud",
+            "presentation_order": 42,
+        }
+    )
+    assert assistant.update_shell_config({"center_x": 10.0, "visible": True})
+    compositor = _FakeFullScreenCompositor.instances[0]
+
+    latest = compositor.updated_configs[-1]
+    assert [config["client_id"] for config in latest] == ["assistant.command"]
+
+    assert host.set_client_visibility("assistant.command", False)
+
+    latest = compositor.updated_configs[-1]
+    assert [config["client_id"] for config in latest] == ["perceptasia.throughglass"]
+    assert latest[0]["visible"] is True
+
+
 def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

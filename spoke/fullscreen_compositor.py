@@ -1727,6 +1727,19 @@ class OverlayCompositorHost:
             )
         )
 
+    def _shell_snapshots_for_compositor(self) -> tuple[OverlayRenderSnapshot, ...]:
+        snapshots = tuple(snapshot for snapshot in self.render_snapshots() if snapshot.visible)
+        assistant_visible = any(
+            snapshot.identity.client_id == "assistant.command" for snapshot in snapshots
+        )
+        if not assistant_visible:
+            return snapshots
+        return tuple(
+            snapshot
+            for snapshot in snapshots
+            if snapshot.identity.client_id != "perceptasia.throughglass"
+        )
+
     def sample_brightness(self, client_id: str) -> float:
         entry = self._clients.get(client_id)
         if entry is None or entry.get("snapshot") is None:
@@ -1826,8 +1839,10 @@ class OverlayCompositorHost:
         overlay_window_ids = []
         for entry in self._clients.values():
             overlay_window_ids.extend(self._window_ids_for_entry(entry))
-        snapshots = self.render_snapshots()
-        shell_configs = [_snapshot_to_shell_config(snapshot) for snapshot in snapshots if snapshot.visible]
+        shell_configs = [
+            _snapshot_to_shell_config(snapshot)
+            for snapshot in self._shell_snapshots_for_compositor()
+        ]
         set_excluded = getattr(self._compositor, "set_excluded_window_ids", None)
         if callable(set_excluded):
             set_excluded(overlay_window_ids)
