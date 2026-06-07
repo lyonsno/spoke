@@ -359,6 +359,9 @@ class PerceptasiaThroughglassGraft(NSObject):
         else:
             self.show()
 
+    def isVisible(self) -> bool:
+        return bool(getattr(self, "_visible", False))
+
     def cleanup(self) -> None:
         self.hide()
         self._panel = None

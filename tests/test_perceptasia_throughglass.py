@@ -457,6 +457,17 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert host.update_client_config.call_count == 1
 
 
+def test_throughglass_exposes_visible_state_for_menu_toggle(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+
+    assert graft.isVisible() is False
+
+    graft._visible = True
+    assert graft.isVisible() is True
+
+
 def test_throughglass_hide_unloads_live_webview_carrier(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

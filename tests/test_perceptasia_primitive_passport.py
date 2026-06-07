@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from spoke.optical_field import OpticalFieldBounds
@@ -67,3 +69,9 @@ def test_passport_env_overrides_never_touch_assistant_command_overlay_state():
     assert overrides["SPOKE_PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_REQUIRED"] == "1"
     assert overrides["SPOKE_PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL"] == "0"
     assert all(not key.startswith("SPOKE_COMMAND_") for key in overrides)
+
+
+def test_passport_smoke_env_keeps_live_webview_out_of_shared_assistant_shell():
+    smoke_env = Path(".spoke-smoke-env").read_text()
+
+    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="0"' in smoke_env
