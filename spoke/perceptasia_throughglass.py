@@ -275,6 +275,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         )
         panel.setFloatingPanel_(True)
         panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setLevel_(_THROUGHGLASS_WINDOW_LEVEL)
 
         content_result = (
             _make_content_view(self._manifest.url, width, height)
@@ -326,6 +327,7 @@ class PerceptasiaThroughglassGraft(NSObject):
     def __show_verified(self) -> bool:
         if self._panel is None:
             return False
+        self.__reassert_live_carrier_window_level()
         was_visible = bool(self._visible)
         self._panel.orderFrontRegardless()
         self._visible = True
@@ -335,6 +337,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             self.__publish_shell_state("rest")
             # Starting the compositor can perturb ordering; reassert the content
             # panel above the optical field after the shell has been published.
+            self.__reassert_live_carrier_window_level()
             self._panel.orderFrontRegardless()
         else:
             logger.info(
@@ -555,6 +558,14 @@ class PerceptasiaThroughglassGraft(NSObject):
             callback(bool(visible))
         except Exception:
             logger.debug("Perceptasia Throughglass: visibility callback failed", exc_info=True)
+
+    def __reassert_live_carrier_window_level(self) -> None:
+        panel = self._panel
+        if panel is None:
+            return
+        set_level = getattr(panel, "setLevel_", None)
+        if callable(set_level):
+            set_level(_THROUGHGLASS_WINDOW_LEVEL)
 
     def __teardown_content_carrier(self) -> None:
         content = self._content_view
