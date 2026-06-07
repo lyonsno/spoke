@@ -143,6 +143,7 @@ def _snapshot(
             content_width_points=300.0,
             content_height_points=80.0,
             corner_radius_points=16.0,
+            cut_radius_points=16.0,
             band_width_points=8.0,
             tail_width_points=12.0,
         ),
@@ -193,6 +194,7 @@ def test_snapshot_round_trip_preserves_preview_warp_shape_controls():
             "content_width_points": 600.0,
             "content_height_points": 80.0,
             "corner_radius_points": 16.0,
+            "cut_radius_points": 18.0,
             "band_width_points": 11.3,
             "tail_width_points": 8.5,
             "initial_brightness": 0.37,
@@ -204,12 +206,14 @@ def test_snapshot_round_trip_preserves_preview_warp_shape_controls():
         generation=7,
     )
 
+    assert snapshot.geometry.cut_radius_points == pytest.approx(18.0)
     assert snapshot.material.bleed_zone_frac == pytest.approx(0.8)
     assert snapshot.material.exterior_mix_width_points == pytest.approx(20.0)
     assert snapshot.material.x_squeeze == pytest.approx(2.5)
     assert snapshot.material.y_squeeze == pytest.approx(1.5)
 
     round_trip = _snapshot_to_shell_config(snapshot)
+    assert round_trip["cut_radius_points"] == pytest.approx(18.0)
     assert round_trip["bleed_zone_frac"] == pytest.approx(0.8)
     assert round_trip["exterior_mix_width_points"] == pytest.approx(20.0)
     assert round_trip["x_squeeze"] == pytest.approx(2.5)
@@ -957,6 +961,7 @@ def test_debug_snapshot_emits_frame_strip_manifest_with_transition_phase(monkeyp
                 "content_width_points": pytest.approx(300.0),
                 "content_height_points": pytest.approx(80.0),
                 "corner_radius_points": pytest.approx(16.0),
+                "cut_radius_points": pytest.approx(16.0),
                 "band_width_points": pytest.approx(8.0),
                 "tail_width_points": pytest.approx(12.0),
             },

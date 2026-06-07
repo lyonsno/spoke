@@ -49,6 +49,15 @@ def test_passport_carrier_cannot_substitute_shell_material_for_live_content():
     assert "phase" not in config["optical_field"]
 
 
+def test_passport_carrier_exposes_cut_radius_as_coupled_shell_contract():
+    config = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+
+    assert config["cut_radius_points"] == pytest.approx(config["corner_radius_points"])
+    assert config["optical_field"]["cut_radius_points"] == pytest.approx(
+        config["corner_radius_points"]
+    )
+
+
 def test_passport_hidden_state_unpublishes_carrier_without_assistant_visibility_coupling():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="hidden", visible=True)
 

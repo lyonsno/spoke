@@ -25,6 +25,7 @@ def optical_presentation_config_identity(config: dict[str, Any] | None) -> str |
             "content_width_points",
             "content_height_points",
             "corner_radius_points",
+            "cut_radius_points",
             "visible",
             "opacity",
             "text_mask_progress",

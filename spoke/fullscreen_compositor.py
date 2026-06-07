@@ -50,6 +50,7 @@ class OpticalShellGeometrySnapshot:
     content_width_points: float
     content_height_points: float
     corner_radius_points: float
+    cut_radius_points: float
     band_width_points: float
     tail_width_points: float
 
@@ -1336,6 +1337,7 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "content_width_points": snapshot.geometry.content_width_points,
         "content_height_points": snapshot.geometry.content_height_points,
         "corner_radius_points": snapshot.geometry.corner_radius_points,
+        "cut_radius_points": snapshot.geometry.cut_radius_points,
         "band_width_points": snapshot.geometry.band_width_points,
         "tail_width_points": snapshot.geometry.tail_width_points,
         "initial_brightness": snapshot.material.initial_brightness,
@@ -1414,6 +1416,7 @@ def _snapshot_from_shell_config(
         content_width_points=float(config.get("content_width_points", 0.0)),
         content_height_points=float(config.get("content_height_points", 0.0)),
         corner_radius_points=float(config.get("corner_radius_points", 0.0)),
+        cut_radius_points=float(config.get("cut_radius_points", config.get("corner_radius_points", 0.0))),
         band_width_points=float(config.get("band_width_points", 0.0)),
         tail_width_points=float(config.get("tail_width_points", 0.0)),
     )
@@ -1523,6 +1526,7 @@ def _frame_strip_manifest_from_snapshot(snapshot: OverlayRenderSnapshot) -> dict
             "content_width_points": config["content_width_points"],
             "content_height_points": config["content_height_points"],
             "corner_radius_points": config["corner_radius_points"],
+            "cut_radius_points": config["cut_radius_points"],
             "band_width_points": config["band_width_points"],
             "tail_width_points": config["tail_width_points"],
         },

@@ -893,6 +893,7 @@ def compile_placeholder_shell_config(
 
     optical_field = _with_transition_metadata(metadata, request, transition)
     optical_field = _with_motion_metadata(optical_field, request, transition)
+    optical_field["cut_radius_points"] = float(corner_radius)
 
     config = {
         "enabled": True,
@@ -905,6 +906,7 @@ def compile_placeholder_shell_config(
         "content_width_points": float(bounds.width),
         "content_height_points": float(bounds.height),
         "corner_radius_points": float(corner_radius),
+        "cut_radius_points": float(corner_radius),
         "center_x": float(bounds.center_x),
         "center_y": float(bounds.center_y),
         "core_magnification": _float_param(params, "core_magnification"),
