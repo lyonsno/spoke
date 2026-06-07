@@ -71,7 +71,7 @@ def test_passport_env_overrides_never_touch_assistant_command_overlay_state():
     assert all(not key.startswith("SPOKE_COMMAND_") for key in overrides)
 
 
-def test_passport_smoke_env_keeps_live_webview_out_of_shared_assistant_shell():
+def test_passport_smoke_env_publishes_through_independent_primitive_shell():
     smoke_env = Path(".spoke-smoke-env").read_text()
 
-    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="0"' in smoke_env
+    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"' in smoke_env

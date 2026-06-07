@@ -22,7 +22,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 import objc
 
@@ -40,7 +40,7 @@ _SCK_FRAME_INTERVAL = (1, _SCK_TARGET_FPS, 0, 0)
 class OverlayClientIdentity:
     client_id: str
     display_id: int | str
-    role: Literal["assistant", "preview", "tray", "recovery"]
+    role: str
 
 
 @dataclass(frozen=True)
@@ -1604,7 +1604,12 @@ class OverlayCompositorHost:
         return True
 
     def add_client(self, client_id: str, window, content_view, shell_config: dict) -> bool:
-        identity = OverlayClientIdentity(client_id=client_id, display_id=self.display_id, role="assistant")
+        role = str(shell_config.get("role") or "assistant")
+        identity = OverlayClientIdentity(
+            client_id=client_id,
+            display_id=self.display_id,
+            role=role,
+        )
         client = self.register_client(identity, window=window, content_view=content_view)
         return client.update_shell_config(shell_config)
 
@@ -1668,6 +1673,18 @@ class OverlayCompositorHost:
         config = _snapshot_to_shell_config(snapshot)
         config[key] = value
         return self.update_client_config(client_id, config)
+
+    def set_client_visibility(self, client_id: str, visible: bool) -> bool:
+        updated = self.update_client_config_key(client_id, "visible", bool(visible))
+        if not updated:
+            return False
+        self._set_compositor_window_visible(
+            any(
+                bool(entry.get("snapshot") and entry["snapshot"].visible)
+                for entry in self._clients.values()
+            )
+        )
+        return True
 
     def release_client(self, client_id: str) -> None:
         self._clients.pop(client_id, None)
@@ -1777,6 +1794,18 @@ class OverlayCompositorHost:
         except Exception:
             pass
         return window_ids
+
+    def _set_compositor_window_visible(self, visible: bool) -> None:
+        window = getattr(self._compositor, "_window", None)
+        if window is None:
+            return
+        try:
+            if hasattr(window, "setAlphaValue_"):
+                window.setAlphaValue_(1.0 if visible else 0.0)
+            if visible and hasattr(window, "orderFrontRegardless"):
+                window.orderFrontRegardless()
+        except Exception:
+            logger.debug("Failed to update shared overlay compositor visibility", exc_info=True)
 
     def _sync_host(self, start_if_needed: bool = False) -> bool:
         overlay_window_ids = []

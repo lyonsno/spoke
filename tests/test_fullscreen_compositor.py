@@ -24,6 +24,18 @@ class _FakeWindow:
         return self._window_number
 
 
+class _FakeCompositorWindow:
+    def __init__(self):
+        self.alphas = []
+        self.order_front_calls = 0
+
+    def setAlphaValue_(self, alpha):
+        self.alphas.append(float(alpha))
+
+    def orderFrontRegardless(self):
+        self.order_front_calls += 1
+
+
 class _FakeFullScreenCompositor:
     instances = []
 
@@ -495,6 +507,55 @@ def test_host_arbitrates_sibling_surfaces_by_presentation_order_then_z_index(mon
         "assistant.command",
         "preview.transcription",
     ]
+
+
+def test_legacy_add_client_preserves_non_assistant_role_from_shell_config(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+
+    assert host.add_client(
+        "perceptasia.throughglass",
+        _FakeWindow(221),
+        object(),
+        {
+            "role": "hud",
+            "center_x": 30.0,
+            "presentation_layer": "hud",
+            "presentation_order": 42,
+        },
+    )
+
+    snapshot = host.render_snapshots()[0]
+    assert snapshot.identity.client_id == "perceptasia.throughglass"
+    assert snapshot.identity.role == "hud"
+
+
+def test_assistant_visibility_update_does_not_hide_visible_sibling_client(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(231),
+        content_view=object(),
+    )
+    throughglass = host.register_client(
+        _identity("perceptasia.throughglass", host.display_id, "hud"),
+        window=_FakeWindow(232),
+        content_view=object(),
+    )
+
+    assert assistant.update_shell_config({"center_x": 10.0, "visible": True})
+    assert throughglass.update_shell_config({"center_x": 20.0, "visible": True})
+    compositor = _FakeFullScreenCompositor.instances[0]
+    compositor._window = _FakeCompositorWindow()
+    compositor.updated_configs.clear()
+
+    assert host.set_client_visibility("assistant.command", False)
+
+    latest = compositor.updated_configs[-1]
+    assert [config["client_id"] for config in latest] == ["perceptasia.throughglass"]
+    assert latest[0]["visible"] is True
+    assert compositor._window.alphas[-1] == pytest.approx(1.0)
 
 
 def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):

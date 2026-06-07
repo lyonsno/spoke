@@ -4733,6 +4733,19 @@ class CommandOverlay(NSObject):
         return getattr(comp_inner, "_window", None) if comp_inner is not None else None
 
     def _set_fullscreen_compositor_human_visible(self, visible: bool) -> None:
+        compositor_client = getattr(self, "_fullscreen_compositor", None)
+        host = getattr(compositor_client, "_host", None)
+        client_id = getattr(compositor_client, "_client_id", None)
+        set_client_visibility = getattr(host, "set_client_visibility", None)
+        if callable(set_client_visibility) and client_id:
+            try:
+                if bool(set_client_visibility(client_id, visible)):
+                    return
+            except Exception:
+                logger.debug(
+                    "Failed to update command compositor client visibility",
+                    exc_info=True,
+                )
         comp_window = self._fullscreen_compositor_window()
         if comp_window is None:
             return

@@ -172,6 +172,20 @@ def _make_overlay(mock_pyobjc):
     return overlay, mod
 
 
+def test_fullscreen_compositor_visibility_uses_client_local_boundary_when_available(mock_pyobjc):
+    overlay, _mod = _make_overlay(mock_pyobjc)
+    host = MagicMock()
+    host.set_client_visibility.return_value = True
+    overlay._fullscreen_compositor = SimpleNamespace(
+        _host=host,
+        _client_id="assistant.command",
+    )
+
+    overlay._set_fullscreen_compositor_human_visible(False)
+
+    host.set_client_visibility.assert_called_once_with("assistant.command", False)
+
+
 class _FakeAttributedString:
     def __init__(self, text):
         self.text = text
