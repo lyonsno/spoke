@@ -476,6 +476,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             str(result.get(key, ""))
             for key in ("title", "readyState", "bodyText")
         ).lower()
+        body_text = str(result.get("bodyText", "")).lower()
         canvas_count = result.get("canvasCount", 0)
         try:
             canvas_count = int(canvas_count)
@@ -491,12 +492,30 @@ class PerceptasiaThroughglassGraft(NSObject):
             visual_signal = float(visual_signal)
         except (TypeError, ValueError):
             visual_signal = 0.0
-        return (
-            "perceptasia" in haystack
-            and canvas_count >= 1
+        has_perceptasia_identity = "perceptasia" in haystack
+        canvas_proves_content = (
+            canvas_count >= 1
             and sampled_pixels >= 64
             and visual_signal >= 0.015
         )
+        dom_markers = (
+            "start hand control",
+            "native stream",
+            "frame ",
+            "authority",
+            "orbit",
+            "spring",
+            "witness",
+            "reticule",
+            "command",
+        )
+        live_dom_marker_count = sum(1 for marker in dom_markers if marker in body_text)
+        dom_proves_content = (
+            canvas_count >= 1
+            and sampled_pixels >= 64
+            and live_dom_marker_count >= 4
+        )
+        return has_perceptasia_identity and (canvas_proves_content or dom_proves_content)
 
     def __mark_content_verified(self, result) -> None:
         self._content_verified = True

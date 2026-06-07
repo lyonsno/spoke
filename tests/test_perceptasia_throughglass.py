@@ -583,6 +583,29 @@ def test_throughglass_probe_rejects_canvas_count_without_pixel_signal(mock_pyobj
     assert matches is False
 
 
+def test_throughglass_probe_accepts_live_perceptasia_dom_when_canvas_readback_is_blank(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+
+    matches = graft._PerceptasiaThroughglassGraft__content_probe_matches_perceptasia(
+        {
+            "title": "Perceptasia 3D",
+            "readyState": "complete",
+            "bodyText": (
+                "Perceptasia 3D - loading... reticule: scout none locked none "
+                "Start Hand Control Native Stream Off Frame Low Authority WiLoR "
+                "Orbit On Spring Absolute Witness Off command idle"
+            ),
+            "canvasCount": 3,
+            "canvasSampledPixels": 12288,
+            "canvasVisualSignal": 0.0,
+        }
+    )
+
+    assert matches is True
+
+
 def test_throughglass_probe_accepts_perceptasia_canvas_with_pixel_signal(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
