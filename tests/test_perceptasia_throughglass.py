@@ -510,6 +510,54 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert host.update_client_config.call_count == 1
 
 
+def test_throughglass_publishes_display_local_scaled_geometry_for_primitive_shell(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=230.0, y=90.0),
+        size=SimpleNamespace(width=980.0, height=560.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    screen = module.NSScreen.mainScreen.return_value
+    screen.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+
+    assert graft.show() is False
+    graft.mark_content_verified_for_test("Perceptasia 3D")
+
+    published_config = host.add_client.call_args.args[3]
+    assert published_config["center_x"] == pytest.approx(1440.0)
+    assert published_config["center_y"] == pytest.approx(1060.0)
+    assert published_config["content_width_points"] == pytest.approx(1960.0)
+    assert published_config["content_height_points"] == pytest.approx(1120.0)
+    assert published_config["corner_radius_points"] <= 560.0
+    assert published_config["optical_field"]["source_coordinate_space"] == "screen_points"
+    assert published_config["optical_field"]["backing_scale"] == pytest.approx(2.0)
+
+
 def test_throughglass_exposes_visible_state_for_menu_toggle(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

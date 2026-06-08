@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
+import numbers
 import os
 from pathlib import Path
 import urllib.error
@@ -642,15 +643,17 @@ class PerceptasiaThroughglassGraft(NSObject):
             logger.info("Perceptasia Throughglass: content carrier torn down")
 
     def _bounds(self) -> OpticalFieldBounds:
+        bounds, _metadata = self.__bounds_and_coordinate_metadata()
+        return bounds
+
+    def __bounds_and_coordinate_metadata(self) -> tuple[OpticalFieldBounds, dict[str, object]]:
         if self._panel is None:
-            return OpticalFieldBounds(0.0, 0.0, _DEFAULT_WIDTH, _DEFAULT_HEIGHT)
+            return OpticalFieldBounds(0.0, 0.0, _DEFAULT_WIDTH, _DEFAULT_HEIGHT), {
+                "source_coordinate_space": "display_local",
+            }
         frame = self._panel.frame()
-        return OpticalFieldBounds(
-            x=float(frame.origin.x),
-            y=float(frame.origin.y),
-            width=float(frame.size.width),
-            height=float(frame.size.height),
-        )
+        screen = NSScreen.mainScreen()
+        return _display_local_scaled_window_bounds(frame, screen)
 
     def __publish_shell_state(self, state: str, *, visible: bool = True) -> bool:
         if self._registry is None or self._panel is None or self._content_view is None:
@@ -662,7 +665,9 @@ class PerceptasiaThroughglassGraft(NSObject):
                 logger.info("Perceptasia Throughglass: registry has no host_for_screen")
                 return False
             self._host = host_for_screen(NSScreen.mainScreen())
-        config = compile_perceptasia_shell_config(self._bounds(), state=state, visible=visible)
+        bounds, coordinate_metadata = self.__bounds_and_coordinate_metadata()
+        config = compile_perceptasia_shell_config(bounds, state=state, visible=visible)
+        _annotate_shell_coordinate_metadata(config, coordinate_metadata)
         if not getattr(self, "_client_registered", False):
             added = self._host.add_client(_CLIENT_ID, self._panel, self._content_view, config)
             self._client_registered = bool(added)
@@ -683,6 +688,83 @@ def _default_panel_rect(frame) -> tuple[float, float, float, float]:
     x = float(frame.origin.x) + (float(frame.size.width) - width) * 0.5
     y = float(frame.origin.y) + (float(frame.size.height) - height) * 0.5
     return x, y, width, height
+
+
+def _real_attr(value, attr: str, default: float = 0.0) -> float:
+    candidate = getattr(value, attr, default)
+    if isinstance(candidate, numbers.Real):
+        return float(candidate)
+    return float(default)
+
+
+def _rect_numbers(rect) -> tuple[float, float, float, float]:
+    origin = getattr(rect, "origin", None)
+    size = getattr(rect, "size", None)
+    return (
+        _real_attr(origin, "x"),
+        _real_attr(origin, "y"),
+        _real_attr(size, "width", _DEFAULT_WIDTH),
+        _real_attr(size, "height", _DEFAULT_HEIGHT),
+    )
+
+
+def _screen_frame_for_bounds(screen):
+    if screen is None:
+        return NSMakeRect(0, 0, 1440, 900)
+    for selector in ("frame", "visibleFrame"):
+        getter = getattr(screen, selector, None)
+        if not callable(getter):
+            continue
+        try:
+            frame = getter()
+        except Exception:
+            continue
+        _x, _y, width, height = _rect_numbers(frame)
+        if width > 0.0 and height > 0.0:
+            return frame
+    return NSMakeRect(0, 0, 1440, 900)
+
+
+def _screen_backing_scale(screen) -> float:
+    getter = getattr(screen, "backingScaleFactor", None)
+    if callable(getter):
+        try:
+            value = getter()
+        except Exception:
+            value = None
+        if isinstance(value, numbers.Real) and value > 0.0:
+            return float(value)
+    return 2.0
+
+
+def _display_local_scaled_window_bounds(
+    window_frame,
+    screen,
+) -> tuple[OpticalFieldBounds, dict[str, object]]:
+    window_x, window_y, window_width, window_height = _rect_numbers(window_frame)
+    screen_frame = _screen_frame_for_bounds(screen)
+    screen_x, screen_y, _screen_width, screen_height = _rect_numbers(screen_frame)
+    scale = _screen_backing_scale(screen)
+    display_x = window_x - screen_x
+    display_y_top = screen_y + screen_height - (window_y + window_height)
+    bounds = OpticalFieldBounds(
+        x=display_x * scale,
+        y=display_y_top * scale,
+        width=window_width * scale,
+        height=window_height * scale,
+    )
+    return bounds, {
+        "source_coordinate_space": "screen_points",
+        "normalized_coordinate_space": "display_local_backing_pixels",
+        "backing_scale": scale,
+        "display_origin": (screen_x, screen_y),
+    }
+
+
+def _annotate_shell_coordinate_metadata(config: dict[str, object], metadata: dict[str, object]) -> None:
+    optical_field = config.get("optical_field")
+    if isinstance(optical_field, dict):
+        optical_field.update(metadata)
 
 
 def _discovery_ports() -> tuple[int, ...]:
