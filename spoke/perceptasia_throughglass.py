@@ -552,6 +552,16 @@ class PerceptasiaThroughglassGraft(NSObject):
             "witness",
             "reticule",
             "command",
+            "structure",
+            "visibility",
+            "labels",
+            "edges",
+            "atmosphere",
+            "context",
+            "physics",
+            "works_on",
+            "belongs_to",
+            "attracted_to",
         )
         live_dom_marker_count = sum(1 for marker in dom_markers if marker in body_text)
         dom_proves_content = (

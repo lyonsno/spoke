@@ -691,6 +691,29 @@ def test_throughglass_probe_accepts_live_perceptasia_dom_when_canvas_readback_is
     assert matches is True
 
 
+def test_throughglass_probe_accepts_current_perceptasia_viewer_dom_when_canvas_readback_is_blank(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+
+    matches = graft._PerceptasiaThroughglassGraft__content_probe_matches_perceptasia(
+        {
+            "title": "Perceptasia 3D",
+            "readyState": "complete",
+            "bodyText": (
+                "Perceptasia 3D - 1763 primitives, 3414 edges - remote - origin/main "
+                "reticule: scout none locked none Structure Visibility Labels Edges "
+                "Atmosphere Reticule Context Physics works_on belongs_to attracted_to"
+            ),
+            "canvasCount": 2,
+            "canvasSampledPixels": 8192,
+            "canvasVisualSignal": 0.0,
+        }
+    )
+
+    assert matches is True
+
+
 def test_throughglass_probe_accepts_perceptasia_canvas_with_pixel_signal(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
