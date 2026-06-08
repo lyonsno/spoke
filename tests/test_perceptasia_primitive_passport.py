@@ -33,7 +33,7 @@ def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
     assert request.selected_handoff is None
 
 
-def test_passport_carrier_cannot_substitute_shell_material_for_live_content():
+def test_passport_carrier_captures_live_webview_into_primitive_without_material_substitution():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="materialize")
 
     assert config["client_id"] == PERCEPTASIA_PRIMITIVE_CLIENT_ID
@@ -41,7 +41,8 @@ def test_passport_carrier_cannot_substitute_shell_material_for_live_content():
     assert config["presentation_layer"] == "hud"
     assert config["presentation_order"] > 20
     assert config["visible"] is True
-    assert config["throughglass_content_carrier"] == "external_webview"
+    assert config["throughglass_content_carrier"] == "captured_webview"
+    assert config["include_carrier_window_in_capture"] is True
     assert config["content_proof_required"] is True
     assert config["gpu_material_enabled"] == pytest.approx(0.0)
     assert config["mip_blur_strength"] == pytest.approx(0.0)
@@ -64,7 +65,8 @@ def test_passport_hidden_state_unpublishes_carrier_without_assistant_visibility_
     assert config["visible"] is False
     assert config["visibility_scope"] == "independent"
     assert config["optical_field"]["visibility_scope"] == "independent"
-    assert config["throughglass_content_carrier"] == "external_webview"
+    assert config["throughglass_content_carrier"] == "captured_webview"
+    assert config["include_carrier_window_in_capture"] is True
 
 
 def test_passport_env_overrides_never_touch_assistant_command_overlay_state():

@@ -89,11 +89,12 @@ def compile_perceptasia_primitive_carrier_config(
     visible: bool = True,
     content_proof_required: bool = True,
 ) -> dict[str, object]:
-    """Compile the optical shell envelope for an external live WebView carrier.
+    """Compile the optical shell envelope for a live WebView captured by the primitive.
 
-    The optical primitive may place, animate, and rim the surface. The live
-    Perceptasia renderer remains the content authority, so shell material is
-    disabled and cannot visually substitute for missing WebKit/WebGL pixels.
+    The optical primitive places, animates, and rims the surface by capturing
+    the live Perceptasia WebView into the compositor. The Perceptasia renderer
+    remains the content authority, so shell material is disabled and cannot
+    visually substitute for missing WebKit/WebGL pixels.
     """
 
     request = build_perceptasia_primitive_request(bounds, state=state, visible=visible)
@@ -103,7 +104,8 @@ def compile_perceptasia_primitive_carrier_config(
             "visible": bool(visible and state != "hidden"),
             "gpu_material_enabled": 0.0,
             "mip_blur_strength": 0.0,
-            "throughglass_content_carrier": "external_webview",
+            "throughglass_content_carrier": "captured_webview",
+            "include_carrier_window_in_capture": True,
             "content_proof_required": bool(content_proof_required),
         }
     )

@@ -345,6 +345,34 @@ def test_throughglass_panel_level_is_reasserted_after_floating_panel_setup(mock_
     assert events[-2:] == [("floating", True), ("level", 25)]
 
 
+def test_throughglass_shell_publish_places_webview_under_compositor_for_capture(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    events = []
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.setFloatingPanel_.side_effect = lambda value: events.append(("floating", value))
+    panel.setLevel_.side_effect = lambda level: events.append(("level", level))
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft.setup()
+
+    assert ("level", 23) in events
+    assert events[-2:] == [("floating", True), ("level", 23)]
+
+
 def test_throughglass_panel_can_opt_into_click_through_debug_mode(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

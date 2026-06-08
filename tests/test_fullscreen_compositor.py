@@ -623,6 +623,39 @@ def test_assistant_visibility_suppresses_throughglass_shell_until_assistant_hide
     assert latest[0]["visible"] is True
 
 
+def test_captured_content_client_window_is_not_excluded_from_compositor_capture(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(261),
+        content_view=object(),
+    )
+    throughglass = host.register_client(
+        _identity("perceptasia.throughglass", host.display_id, "hud"),
+        window=_FakeWindow(262),
+        content_view=object(),
+    )
+
+    assert assistant.update_shell_config({"center_x": 10.0, "visible": False})
+    assert throughglass.update_shell_config(
+        {
+            "center_x": 20.0,
+            "visible": True,
+            "presentation_layer": "hud",
+            "presentation_order": 42,
+            "include_carrier_window_in_capture": True,
+        }
+    )
+
+    compositor = _FakeFullScreenCompositor.instances[0]
+    assert 261 in compositor.excluded_window_ids
+    assert 262 not in compositor.excluded_window_ids
+    latest = compositor.updated_configs[-1]
+    assert latest[0]["include_carrier_window_in_capture"] is True
+    assert latest[0]["client_id"] == "perceptasia.throughglass"
+
+
 def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

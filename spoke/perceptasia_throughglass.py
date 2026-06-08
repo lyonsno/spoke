@@ -49,7 +49,8 @@ _DISCOVERY_PORTS = (8742, 8753, 8754, 8755, 8764, 8797, 8798, 8799, 8896)
 _NSWindowStyleMaskClosable = 1 << 1
 _NSWindowStyleMaskResizable = 1 << 3
 _NSWindowStyleMaskUtilityWindow = 1 << 4
-_THROUGHGLASS_WINDOW_LEVEL = 25
+_THROUGHGLASS_SIBLING_WINDOW_LEVEL = 25
+_THROUGHGLASS_PRIMITIVE_CARRIER_WINDOW_LEVEL = 23
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
@@ -82,6 +83,12 @@ _THROUGHGLASS_MEDIA_CAPTURE_METADATA = {
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() not in {"", "0", "false", "False", "no", "off"}
+
+
+def _throughglass_window_level() -> int:
+    if _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL"):
+        return _THROUGHGLASS_PRIMITIVE_CARRIER_WINDOW_LEVEL
+    return _THROUGHGLASS_SIBLING_WINDOW_LEVEL
 
 
 def _objc_typed_selector(signature):
@@ -254,9 +261,10 @@ class PerceptasiaThroughglassGraft(NSObject):
             False,
         )
         panel.setTitle_("Perceptasia Throughglass Graft")
-        # Above the shared compositor (24) but below the command overlay (26),
-        # so the graft can show content without covering dictation.
-        panel.setLevel_(_THROUGHGLASS_WINDOW_LEVEL)
+        # In primitive-shell mode the WebView must sit under the compositor so
+        # the optical field captures its pixels instead of excluding them. When
+        # shell publication is off, keep the WebView as a normal sibling panel.
+        panel.setLevel_(_throughglass_window_level())
         # WKWebView/WebGL content is the load-bearing visible surface here. A
         # clear carrier can let the optical material shell become the only
         # visible layer even after WebKit reports rendered pixels.
@@ -276,7 +284,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         )
         panel.setFloatingPanel_(True)
         panel.setBecomesKeyOnlyIfNeeded_(True)
-        panel.setLevel_(_THROUGHGLASS_WINDOW_LEVEL)
+        panel.setLevel_(_throughglass_window_level())
 
         content_result = (
             _make_content_view(self._manifest.url, width, height)
@@ -598,7 +606,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             return
         set_level = getattr(panel, "setLevel_", None)
         if callable(set_level):
-            set_level(_THROUGHGLASS_WINDOW_LEVEL)
+            set_level(_throughglass_window_level())
 
     def __teardown_content_carrier(self) -> None:
         content = self._content_view

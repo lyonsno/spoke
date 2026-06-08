@@ -107,6 +107,7 @@ class OverlayRenderSnapshot:
     presentation_generation: int | None = None
     presentation_requested_state: str | None = None
     presentation_publisher_state: str | None = None
+    include_carrier_window_in_capture: bool = False
     optical_field: Mapping[str, Any] | None = None
 
 
@@ -1380,6 +1381,8 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         config["presentation_requested_state"] = snapshot.presentation_requested_state
     if snapshot.presentation_publisher_state is not None:
         config["presentation_publisher_state"] = snapshot.presentation_publisher_state
+    if snapshot.include_carrier_window_in_capture:
+        config["include_carrier_window_in_capture"] = True
     for key in (
         "bleed_zone_frac",
         "exterior_mix_width_points",
@@ -1499,6 +1502,9 @@ def _snapshot_from_shell_config(
             str(config["presentation_publisher_state"])
             if config.get("presentation_publisher_state") is not None
             else None
+        ),
+        include_carrier_window_in_capture=bool(
+            config.get("include_carrier_window_in_capture", False)
         ),
         optical_field=optical_field,
     )
@@ -1842,6 +1848,12 @@ class OverlayCompositorHost:
     def _sync_host(self, start_if_needed: bool = False) -> bool:
         overlay_window_ids = []
         for entry in self._clients.values():
+            snapshot = entry.get("snapshot")
+            if (
+                snapshot is not None
+                and getattr(snapshot, "include_carrier_window_in_capture", False)
+            ):
+                continue
             overlay_window_ids.extend(self._window_ids_for_entry(entry))
         shell_configs = [
             _snapshot_to_shell_config(snapshot)
