@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 import logging
 import numbers
 import os
@@ -81,6 +82,20 @@ _THROUGHGLASS_MEDIA_CAPTURE_METADATA = {
         },
     },
 }
+_THROUGHGLASS_PRIMITIVE_CAPTURE_CSS = """
+html, body {
+  overflow: hidden !important;
+  background: transparent !important;
+}
+* {
+  scrollbar-width: none !important;
+}
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+"""
 
 
 def _env_flag(name: str) -> bool:
@@ -892,6 +907,8 @@ def _make_webview_configuration():
         from WebKit import WKWebViewConfiguration
 
         configuration = WKWebViewConfiguration.alloc().init()
+        if _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL"):
+            _install_primitive_capture_styles(configuration)
         return configuration
     except Exception:
         logger.warning(
@@ -899,6 +916,41 @@ def _make_webview_configuration():
             exc_info=True,
         )
         return None
+
+
+def _install_primitive_capture_styles(configuration) -> None:
+    try:
+        from WebKit import (
+            WKUserContentController,
+            WKUserScript,
+            WKUserScriptInjectionTimeAtDocumentStart,
+        )
+    except Exception:
+        logger.warning(
+            "Perceptasia Throughglass: primitive capture stylesheet unavailable",
+            exc_info=True,
+        )
+        return
+    controller = WKUserContentController.alloc().init()
+    source = (
+        "(() => {"
+        f"const css = {json.dumps(_THROUGHGLASS_PRIMITIVE_CAPTURE_CSS)};"
+        "const style = document.createElement('style');"
+        "style.dataset.spokeThroughglassPrimitiveCapture = 'true';"
+        "style.textContent = css;"
+        "(document.head || document.documentElement).appendChild(style);"
+        "})();"
+    )
+    script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+        source,
+        WKUserScriptInjectionTimeAtDocumentStart,
+        True,
+    )
+    add_script = getattr(controller, "addUserScript_", None)
+    set_controller = getattr(configuration, "setUserContentController_", None)
+    if callable(add_script) and callable(set_controller):
+        add_script(script)
+        set_controller(controller)
 
 
 def _make_provider_unavailable_view(url: str, width: float, height: float):

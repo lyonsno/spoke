@@ -301,6 +301,44 @@ def test_throughglass_webview_leaves_media_capture_on_native_webkit_path_by_defa
     view.setUIDelegate_.assert_not_called()
 
 
+def test_throughglass_primitive_shell_hides_webkit_scrollbars_before_capture(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    foundation = sys.modules["Foundation"]
+    foundation.NSURL = SimpleNamespace(URLWithString_=MagicMock(return_value="url"))
+    foundation.NSURLRequest = SimpleNamespace(requestWithURL_=MagicMock(return_value="request"))
+
+    view = MagicMock()
+    config = MagicMock()
+    controller = MagicMock()
+    script = MagicMock()
+    webkit = types.ModuleType("WebKit")
+    webkit.WKWebViewConfiguration = MagicMock()
+    webkit.WKWebViewConfiguration.alloc.return_value.init.return_value = config
+    webkit.WKUserContentController = MagicMock()
+    webkit.WKUserContentController.alloc.return_value.init.return_value = controller
+    webkit.WKUserScript = MagicMock()
+    webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.return_value = script
+    webkit.WKUserScriptInjectionTimeAtDocumentStart = 0
+    webkit.WKWebView = MagicMock()
+    webkit.WKWebView.alloc.return_value.initWithFrame_configuration_.return_value = view
+    monkeypatch.setitem(sys.modules, "WebKit", webkit)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    content, kind = module._make_content_view("http://localhost:8753", 900.0, 520.0)
+
+    assert content is view
+    assert kind == "webview"
+    config.setUserContentController_.assert_called_once_with(controller)
+    controller.addUserScript_.assert_called_once_with(script)
+    source = webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.call_args.args[0]
+    assert "::-webkit-scrollbar" in source
+    assert "overflow: hidden" in source
+    assert "background: transparent" in source
+
+
 def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
