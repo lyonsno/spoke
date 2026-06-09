@@ -350,10 +350,6 @@ class PerceptasiaThroughglassGraft(NSObject):
         if self.__should_publish_shell():
             self.__publish_shell_state("materialize")
             self.__publish_shell_state("rest")
-            # Starting the compositor can perturb ordering; reassert the content
-            # panel above the optical field after the shell has been published.
-            self.__reassert_live_carrier_window_level()
-            self._panel.orderFrontRegardless()
         else:
             logger.info(
                 "Perceptasia Throughglass: shell publish skipped for live content carrier"
@@ -418,8 +414,6 @@ class PerceptasiaThroughglassGraft(NSObject):
         if self.__should_publish_shell():
             self.__publish_shell_state("materialize")
             self.__publish_shell_state("rest")
-            self.__reassert_live_carrier_window_level()
-            panel.orderFrontRegardless()
         return True
 
     def cleanup(self) -> None:

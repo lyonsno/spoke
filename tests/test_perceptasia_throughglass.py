@@ -542,8 +542,8 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert graft.show() is False
     graft.mark_content_verified_for_test("Perceptasia 3D")
 
-    assert panel.orderFrontRegardless.call_count == 2
-    assert panel.setLevel_.call_count >= 4
+    assert panel.orderFrontRegardless.call_count == 1
+    assert panel.setLevel_.call_count >= 3
     assert host.add_client.call_count == 1
     assert host.update_client_config.call_count == 1
 
