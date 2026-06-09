@@ -416,6 +416,43 @@ def test_throughglass_webview_panel_is_opaque_content_carrier(mock_pyobjc, monke
     panel.setBackgroundColor_.assert_called()
 
 
+def test_throughglass_primitive_shell_masks_live_carrier_to_rounded_optical_body(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    root_layer = MagicMock()
+    content_layer = MagicMock()
+    content_root = MagicMock()
+    content_root.layer.return_value = root_layer
+    panel = MagicMock()
+    panel.contentView.return_value = content_root
+    content = MagicMock()
+    content.layer.return_value = content_layer
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: content)
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft.setup()
+
+    panel.setOpaque_.assert_called_once_with(False)
+    module.NSColor.colorWithWhite_alpha_.assert_any_call(0.0, 0.0)
+    root_layer.setMasksToBounds_.assert_called_once_with(True)
+    content_layer.setMasksToBounds_.assert_called_once_with(True)
+    assert root_layer.setCornerRadius_.call_args.args[0] == pytest.approx(
+        content_layer.setCornerRadius_.call_args.args[0]
+    )
+    assert root_layer.setCornerRadius_.call_args.args[0] > 1.0
+
+
 def test_throughglass_smoke_defers_unverified_webview_content(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

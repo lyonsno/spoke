@@ -267,12 +267,16 @@ class PerceptasiaThroughglassGraft(NSObject):
         # the optical field captures its pixels instead of excluding them. When
         # shell publication is off, keep the WebView as a normal sibling panel.
         panel.setLevel_(_throughglass_window_level())
-        # WKWebView/WebGL content is the load-bearing visible surface here. A
-        # clear carrier can let the optical material shell become the only
-        # visible layer even after WebKit reports rendered pixels.
-        panel.setOpaque_(True)
+        primitive_shell = _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL")
+        # WKWebView/WebGL content is the load-bearing visible surface here.
+        # Standalone sibling mode keeps an opaque carrier, while primitive
+        # shell mode must not contribute a rectangular panel background around
+        # the rounded captured content.
+        panel.setOpaque_(not primitive_shell)
         panel.setHasShadow_(False)
-        panel.setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.0, 1.0))
+        panel.setBackgroundColor_(
+            NSColor.colorWithWhite_alpha_(0.0, 0.0 if primitive_shell else 1.0)
+        )
         # Throughglass is a live Perceptasia viewer, so pointer input is
         # accepted by default. Click-through remains available for witness/debug
         # runs that only need a visual surface.
@@ -922,17 +926,50 @@ def _set_view_autoresizing(view) -> None:
         setter(_NSViewWidthSizable | _NSViewHeightSizable)
 
 
+def _throughglass_carrier_corner_radius(width: float, height: float) -> float:
+    bounds = OpticalFieldBounds(0.0, 0.0, float(width), float(height))
+    config = compile_perceptasia_shell_config(bounds, state="rest")
+    return float(config.get("corner_radius_points", min(float(width), float(height)) * 0.25))
+
+
+def _shape_throughglass_carrier_layer(layer, *, radius: float, background_alpha: float | None = None) -> None:
+    if layer is None:
+        return
+    masks_setter = getattr(layer, "setMasksToBounds_", None)
+    if callable(masks_setter):
+        masks_setter(True)
+    radius_setter = getattr(layer, "setCornerRadius_", None)
+    if callable(radius_setter):
+        radius_setter(float(radius))
+    if background_alpha is not None:
+        background_setter = getattr(layer, "setBackgroundColor_", None)
+        cg_color_getter = getattr(
+            NSColor.colorWithWhite_alpha_(0.0, float(background_alpha)), "CGColor", None
+        )
+        if callable(background_setter) and callable(cg_color_getter):
+            background_setter(cg_color_getter())
+
+
 def _configure_content_carrier(content_root, content, width: float, height: float) -> None:
     frame_setter = getattr(content, "setFrame_", None)
     if callable(frame_setter):
         frame_setter(NSMakeRect(0, 0, width, height))
     _set_view_autoresizing(content)
+    primitive_shell = _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL")
+    corner_radius = _throughglass_carrier_corner_radius(width, height)
     root_layer_setter = getattr(content_root, "setWantsLayer_", None)
     if callable(root_layer_setter):
         root_layer_setter(True)
     root_layer_getter = getattr(content_root, "layer", None)
     root_layer = root_layer_getter() if callable(root_layer_getter) else None
-    background_setter = getattr(root_layer, "setBackgroundColor_", None)
-    cg_color_getter = getattr(NSColor.colorWithWhite_alpha_(0.0, 1.0), "CGColor", None)
-    if callable(background_setter) and callable(cg_color_getter):
-        background_setter(cg_color_getter())
+    _shape_throughglass_carrier_layer(
+        root_layer,
+        radius=corner_radius,
+        background_alpha=0.0 if primitive_shell else 1.0,
+    )
+    content_layer_setter = getattr(content, "setWantsLayer_", None)
+    if callable(content_layer_setter):
+        content_layer_setter(True)
+    content_layer_getter = getattr(content, "layer", None)
+    content_layer = content_layer_getter() if callable(content_layer_getter) else None
+    _shape_throughglass_carrier_layer(content_layer, radius=corner_radius)
