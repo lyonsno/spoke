@@ -161,6 +161,32 @@ def test_pack_warp_params_uses_shell_specific_gpu_material_controls():
     assert values[39] == pytest.approx(0.35)
 
 
+def test_pack_warp_params_uses_captured_carrier_clip_flag():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "include_carrier_window_in_capture": True,
+            "clip_captured_carrier_to_shell": True,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+
+    assert values[40] == pytest.approx(1.0)
+
+
+def test_metal_shader_suppresses_captured_carrier_source_plate_outside_shell():
+    source = metal_warp._metal_shader_source()
+
+    assert "clipCapturedCarrierToShell" in source
+    assert "carrierPlateEscapeSample" in source
+    assert "clipCapturedCarrier && insideCarrierRect" in source
+    assert "passthroughSample = carrierPlateEscapeSample" in source
+
+
 def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     source = metal_warp._metal_shader_source()
 

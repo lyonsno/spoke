@@ -108,6 +108,7 @@ class OverlayRenderSnapshot:
     presentation_requested_state: str | None = None
     presentation_publisher_state: str | None = None
     include_carrier_window_in_capture: bool = False
+    clip_captured_carrier_to_shell: bool = False
     optical_field: Mapping[str, Any] | None = None
 
 
@@ -1383,6 +1384,8 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         config["presentation_publisher_state"] = snapshot.presentation_publisher_state
     if snapshot.include_carrier_window_in_capture:
         config["include_carrier_window_in_capture"] = True
+    if snapshot.clip_captured_carrier_to_shell:
+        config["clip_captured_carrier_to_shell"] = True
     for key in (
         "bleed_zone_frac",
         "exterior_mix_width_points",
@@ -1505,6 +1508,9 @@ def _snapshot_from_shell_config(
         ),
         include_carrier_window_in_capture=bool(
             config.get("include_carrier_window_in_capture", False)
+        ),
+        clip_captured_carrier_to_shell=bool(
+            config.get("clip_captured_carrier_to_shell", False)
         ),
         optical_field=optical_field,
     )

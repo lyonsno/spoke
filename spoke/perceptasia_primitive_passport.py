@@ -106,6 +106,7 @@ def compile_perceptasia_primitive_carrier_config(
             "mip_blur_strength": 0.0,
             "throughglass_content_carrier": "captured_webview",
             "include_carrier_window_in_capture": True,
+            "clip_captured_carrier_to_shell": True,
             "content_proof_required": bool(content_proof_required),
         }
     )

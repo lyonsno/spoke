@@ -190,6 +190,7 @@ struct WarpParams {{
     float gpuMaterialHeightFrac; // 0..1 vertical reveal of the final material field
     float gpuMaterialTextContrastBias; // finite text contrast basis signal
     float gpuMaterialRidgeEmphasis; // finite ridge emphasis signal
+    float clipCapturedCarrierToShell; // suppress captured WebView source plate outside shell body
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -273,6 +274,25 @@ float4 composeShellMaterial(float4 warpedColor, float2 p, constant WarpParams& p
     return float4(mix(warpedColor.rgb, materialColor, alpha), warpedColor.a);
 }}
 
+float2 carrierPlateEscapeSample(
+    float2 d,
+    float2 c,
+    float2 p,
+    float2 halfRect,
+    constant WarpParams& params
+) {{
+    float margin = max(max(params.cornerRadius, params.exteriorMixWidth), 12.0f);
+    float2 escaped = p;
+    float dx = halfRect.x - abs(p.x);
+    float dy = halfRect.y - abs(p.y);
+    if (dx < dy) {{
+        escaped.x = (p.x >= 0.0f ? 1.0f : -1.0f) * (halfRect.x + margin);
+    }} else {{
+        escaped.y = (p.y >= 0.0f ? 1.0f : -1.0f) * (halfRect.y + margin);
+    }}
+    return clamp(c + escaped, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
+}}
+
 constexpr sampler bilinearSampler(
     coord::pixel,
     address::clamp_to_edge,
@@ -313,11 +333,21 @@ kernel void opticalShellWarp(
     float spineHalfY = max(halfRect.y - capsuleRadius, 0.0f);
 
     float capsuleSdf = sdStadium(p, spineHalfX, spineHalfY, capsuleRadius);
+    bool clipCapturedCarrier = params.clipCapturedCarrierToShell > 0.5f;
+    bool insideCarrierRect = abs(p.x) <= halfRect.x && abs(p.y) <= halfRect.y;
 
     float bleedZone = capsuleRadius * max(params.bleedZoneFrac, 0.0f);
     if (capsuleSdf > bleedZone) {{
         // Outside warp zone: pass through unwarped content.
-        outTexture.write(inTexture.sample(bilinearSampler, d), pixel);
+        float2 passthroughSample = d;
+        if (clipCapturedCarrier && insideCarrierRect) {{
+            // Captured WebView carriers live in the same SCK source as the
+            // background. Outside the optical body, suppress raw captured
+            // carrier pixels outside the optical body by sampling just past
+            // the carrier plate instead of showing its rectangular corner.
+            passthroughSample = carrierPlateEscapeSample(d, c, p, halfRect, params);
+        }}
+        outTexture.write(inTexture.sample(bilinearSampler, passthroughSample), pixel);
         return;
     }}
 
@@ -454,6 +484,11 @@ kernel void opticalShellWarp(
     }}
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
+    if (clipCapturedCarrier && insideCarrierRect && capsuleSdf > 0.0f) {{
+        result = carrierPlateEscapeSample(d, c, p, halfRect, params);
+        scaleX = 1.0f;
+        scaleY = 1.0f;
+    }}
 
     // Depth-dependent blur via mipmap LOD.
     // The warp shell is inflated by capsuleRadius beyond the fill boundary,
@@ -562,7 +597,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "40f"
+_WARP_PARAMS_FORMAT = "41f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -614,6 +649,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("gpu_material_height_frac", 1.0)),
         float(shell_config.get("gpu_material_text_contrast_bias", 0.5)),
         float(shell_config.get("gpu_material_ridge_emphasis", 0.5)),
+        1.0 if bool(shell_config.get("clip_captured_carrier_to_shell", False)) else 0.0,
     )
 
 

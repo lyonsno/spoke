@@ -43,6 +43,7 @@ def test_passport_carrier_captures_live_webview_into_primitive_without_material_
     assert config["visible"] is True
     assert config["throughglass_content_carrier"] == "captured_webview"
     assert config["include_carrier_window_in_capture"] is True
+    assert config["clip_captured_carrier_to_shell"] is True
     assert config["content_proof_required"] is True
     assert config["gpu_material_enabled"] == pytest.approx(0.0)
     assert config["mip_blur_strength"] == pytest.approx(0.0)
