@@ -5,6 +5,7 @@ verifies the old file-based launcher architecture is retired.
 """
 
 import ast
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -434,6 +435,38 @@ class TestLauncherRetinaLassoWitness:
         assert "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE" in text
         assert "spoke.perceptasia_throughglass_witness" in text
         assert "SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT" in text
+
+    def test_target_witness_wrapper_routes_throughglass_for_stable_launcher(self):
+        """The stable hotkey launcher may call the selected worktree's legacy
+        command-overlay witness wrapper before the launcher itself has learned
+        a newer smoke route. The target-side wrapper must still honor the
+        Throughglass smoke env instead of silently producing command-overlay
+        evidence.
+        """
+        script = Path(__file__).resolve().parent.parent / "scripts" / "command-overlay-retina-lasso-witness.py"
+        text = script.read_text(encoding="utf-8")
+
+        assert "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE" in text
+        assert "perceptasia_throughglass_witness" in text
+        assert "retina_lasso_witness" in text
+
+    def test_target_witness_wrapper_dispatches_from_env(self, monkeypatch):
+        script = Path(__file__).resolve().parent.parent / "scripts" / "command-overlay-retina-lasso-witness.py"
+        spec = importlib.util.spec_from_file_location("command_overlay_retina_lasso_witness_test", script)
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        calls: list[str] = []
+        monkeypatch.setattr(module, "throughglass_main", lambda: calls.append("throughglass") or 17)
+        monkeypatch.setattr(module, "command_overlay_main", lambda: calls.append("command") or 23)
+
+        monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "1")
+        assert module.main() == 17
+        monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "0")
+        assert module.main() == 23
+        assert calls == ["throughglass", "command"]
 
 
 class TestSecretsEnvExampleTemplate:

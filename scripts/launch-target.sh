@@ -202,6 +202,7 @@ def _start_retina_lasso_witness(
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_WINDOW", "Perceptasia Throughglass"),
             "--allow-unproven",
         ]
+        witness_route = "perceptasia-throughglass-pixel"
     else:
         args = [
             str(script),
@@ -224,6 +225,7 @@ def _start_retina_lasso_witness(
             "--source-window",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_WINDOW", "Command Overlay"),
         ]
+        witness_route = "command-overlay-retina-lasso"
     fps = child_env.get("SPOKE_RETINA_LASSO_FPS", "").strip()
     if fps:
         args.extend(["--fps", fps])
@@ -275,6 +277,11 @@ def _start_retina_lasso_witness(
         witness_env["UV_BIN"] = str(uv_bin)
 
     log.write(f"Retina Lasso auto witness output: {output_dir}\n")
+    log.write(
+        "Retina Lasso auto witness route: "
+        f"{witness_route} "
+        f"(SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE={child_env.get('SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE', '')!r})\n"
+    )
     log.write(f"Retina Lasso auto witness command: {command!r}\n")
     log.flush()
     subprocess.Popen(
