@@ -428,6 +428,13 @@ class TestLauncherRetinaLassoWitness:
         assert witness_launch != -1
         assert app_launch < witness_launch
 
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_throughglass_smoke_uses_throughglass_pixel_witness(self, script_text):
+        text = script_text()
+        assert "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE" in text
+        assert "spoke.perceptasia_throughglass_witness" in text
+        assert "SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT" in text
+
 
 class TestSecretsEnvExampleTemplate:
     """A committed .example template documents the expected shape without

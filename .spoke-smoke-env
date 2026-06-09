@@ -6,9 +6,9 @@
 export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
 export SPOKE_BACKDROP_FRAME_TIMING="1"
 
-# Retina Lasso remains available as an explicit smoke affordance, but main
-# must not carry the perturbing witness in its default hot path.
-export SPOKE_RETINA_LASSO_AUTO_WITNESS="0"
+# This branch is a live-content primitive graft smoke, so launcher relaunches
+# must produce a Throughglass pixel witness without waiting for operator relay.
+export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
 export SPOKE_RETINA_LASSO_WATCH_TRACE="0"
 export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
 export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
@@ -29,10 +29,11 @@ export SPOKE_RETINA_LASSO_CAPTURE_BIN="/private/tmp/epistaxis-global-witness-liv
 export SPOKE_RETINA_LASSO_CAPTURE_COMMAND="/private/tmp/epistaxis-global-witness-live-0528/tools/global_witness_capture.py"
 export SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT="/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521"
 export SPOKE_RETINA_LASSO_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-retina-lasso-capture-first"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-throughglass-auto"
 export SPOKE_RETINA_LASSO_LANE="warpstorm-pit-boss"
 export SPOKE_RETINA_LASSO_DIAULOS="Warpstorm Pit Boss"
 export SPOKE_RETINA_LASSO_SOURCE_APP="Spoke"
-export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Command Overlay"
+export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Perceptasia Throughglass"
 
 # Preserve the optical geometry/tuning contract from the witness baseline.
 # These are part of the visual surface under smoke, not incidental fixtures.

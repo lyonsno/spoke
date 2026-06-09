@@ -177,8 +177,9 @@ def _start_retina_lasso_witness(
         log.write("Retina Lasso auto witness skipped: SPOKE_COMMAND_OVERLAY_TRACE_PATH is unset.\n")
         return
 
+    throughglass_witness = _env_flag(child_env, "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE")
     script = repo_root / "scripts" / "command-overlay-retina-lasso-witness.py"
-    if not script.is_file():
+    if not throughglass_witness and not script.is_file():
         log.write(f"Retina Lasso auto witness skipped: witness script missing at {script}.\n")
         return
 
@@ -189,34 +190,62 @@ def _start_retina_lasso_witness(
         )
     ).expanduser()
 
+    output_root_key = (
+        "SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT"
+        if throughglass_witness
+        else "SPOKE_RETINA_LASSO_OUTPUT_ROOT"
+    )
     output_root = Path(
-        child_env.get("SPOKE_RETINA_LASSO_OUTPUT_ROOT", "/tmp/spoke-retina-lasso-witnesses")
+        child_env.get(output_root_key, child_env.get("SPOKE_RETINA_LASSO_OUTPUT_ROOT", "/tmp/spoke-retina-lasso-witnesses"))
     ).expanduser()
     stamp = time.strftime("%Y%m%dT%H%M%S")
     output_dir = output_root / f"{_safe_path_slug(target_id)}-{stamp}"
     output_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    args = [
-        str(script),
-        "--trace",
-        trace_path,
-        "--output-dir",
-        str(output_dir),
-        "--perceptasia-root",
-        str(perceptasia_root),
-        "--duration",
-        child_env.get("SPOKE_RETINA_LASSO_DURATION_SECONDS", "45"),
-        "--capture-profile",
-        child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
-        "--lane",
-        child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
-        "--diaulos",
-        child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
-        "--source-app",
-        child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
-        "--source-window",
-        child_env.get("SPOKE_RETINA_LASSO_SOURCE_WINDOW", "Command Overlay"),
-    ]
+    if throughglass_witness:
+        args = [
+            "-m",
+            "spoke.perceptasia_throughglass_witness",
+            "--trace",
+            trace_path,
+            "--output-dir",
+            str(output_dir),
+            "--duration",
+            child_env.get("SPOKE_RETINA_LASSO_DURATION_SECONDS", "45"),
+            "--capture-profile",
+            child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
+            "--lane",
+            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
+            "--diaulos",
+            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+            "--source-app",
+            child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
+            "--source-window",
+            child_env.get("SPOKE_RETINA_LASSO_SOURCE_WINDOW", "Perceptasia Throughglass"),
+            "--allow-unproven",
+        ]
+    else:
+        args = [
+            str(script),
+            "--trace",
+            trace_path,
+            "--output-dir",
+            str(output_dir),
+            "--perceptasia-root",
+            str(perceptasia_root),
+            "--duration",
+            child_env.get("SPOKE_RETINA_LASSO_DURATION_SECONDS", "45"),
+            "--capture-profile",
+            child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
+            "--lane",
+            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
+            "--diaulos",
+            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+            "--source-app",
+            child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
+            "--source-window",
+            child_env.get("SPOKE_RETINA_LASSO_SOURCE_WINDOW", "Command Overlay"),
+        ]
     fps = child_env.get("SPOKE_RETINA_LASSO_FPS", "").strip()
     if fps:
         args.extend(["--fps", fps])
@@ -228,20 +257,23 @@ def _start_retina_lasso_witness(
     )
     if capture_command:
         args.extend(["--capture-command", capture_command])
-    capture_mode = child_env.get("SPOKE_RETINA_LASSO_CAPTURE_MODE", "").strip()
-    if capture_mode:
-        args.extend(["--capture-mode", capture_mode])
-    capture_rect = child_env.get("SPOKE_RETINA_LASSO_CAPTURE_RECT", "").strip()
-    if capture_rect:
-        args.extend(["--capture-rect", capture_rect])
-    window_id = child_env.get("SPOKE_RETINA_LASSO_WINDOW_ID", "").strip()
-    if window_id:
-        args.extend(["--window-id", window_id])
-    display_id = child_env.get("SPOKE_RETINA_LASSO_DISPLAY_ID", "").strip()
-    if display_id:
-        args.extend(["--display-id", display_id])
-    capture_first_stimulus = _append_retina_lasso_stimulus_args(args, child_env=child_env, log=log)
-    if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE") and not capture_first_stimulus:
+    if not throughglass_witness:
+        capture_mode = child_env.get("SPOKE_RETINA_LASSO_CAPTURE_MODE", "").strip()
+        if capture_mode:
+            args.extend(["--capture-mode", capture_mode])
+        capture_rect = child_env.get("SPOKE_RETINA_LASSO_CAPTURE_RECT", "").strip()
+        if capture_rect:
+            args.extend(["--capture-rect", capture_rect])
+        window_id = child_env.get("SPOKE_RETINA_LASSO_WINDOW_ID", "").strip()
+        if window_id:
+            args.extend(["--window-id", window_id])
+        display_id = child_env.get("SPOKE_RETINA_LASSO_DISPLAY_ID", "").strip()
+        if display_id:
+            args.extend(["--display-id", display_id])
+    capture_first_stimulus = False
+    if not throughglass_witness:
+        capture_first_stimulus = _append_retina_lasso_stimulus_args(args, child_env=child_env, log=log)
+    if not throughglass_witness and _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE") and not capture_first_stimulus:
         args.append("--watch-trace")
         args.extend(["--watch-timeout", child_env.get("SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS", "7200")])
         args.extend(
