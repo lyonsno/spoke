@@ -436,6 +436,13 @@ class TestLauncherRetinaLassoWitness:
         assert "spoke.perceptasia_throughglass_witness" in text
         assert "SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT" in text
 
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_throughglass_smoke_can_run_trace_watch_for_later_operator_actions(self, script_text):
+        text = script_text()
+        assert 'if throughglass_witness and _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE")' in text
+        assert 'args.append("--watch-trace")' in text
+        assert '"--event-capture-duration"' in text
+
     def test_target_witness_wrapper_routes_throughglass_for_stable_launcher(self):
         """The stable hotkey launcher may call the selected worktree's legacy
         command-overlay witness wrapper before the launcher itself has learned

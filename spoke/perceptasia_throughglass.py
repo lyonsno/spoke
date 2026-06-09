@@ -31,6 +31,7 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject
 
+from .command_overlay_trace import record_command_overlay_trace
 from .optical_field import OpticalFieldBounds
 from .perceptasia_primitive_passport import (
     PERCEPTASIA_PRIMITIVE_CLIENT_ID,
@@ -676,9 +677,29 @@ class PerceptasiaThroughglassGraft(NSObject):
                 state,
                 self._client_registered,
             )
+            record_command_overlay_trace(
+                f"throughglass.publish.{state}",
+                visible=visible,
+                updated=bool(added),
+                registered=self._client_registered,
+                x=bounds.x,
+                y=bounds.y,
+                width=bounds.width,
+                height=bounds.height,
+            )
             return bool(added)
         updated = bool(self._host.update_client_config(_CLIENT_ID, config))
         logger.info("Perceptasia Throughglass: publish state=%s updated=%s", state, updated)
+        record_command_overlay_trace(
+            f"throughglass.publish.{state}",
+            visible=visible,
+            updated=updated,
+            registered=True,
+            x=bounds.x,
+            y=bounds.y,
+            width=bounds.width,
+            height=bounds.height,
+        )
         return updated
 
 

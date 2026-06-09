@@ -9,7 +9,7 @@ export SPOKE_BACKDROP_FRAME_TIMING="1"
 # This branch is a live-content primitive graft smoke, so launcher relaunches
 # must produce a Throughglass pixel witness without waiting for operator relay.
 export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
-export SPOKE_RETINA_LASSO_WATCH_TRACE="0"
+export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
 export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
 export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
 export SPOKE_RETINA_LASSO_MAX_TRIGGER_LAG_SECONDS="1.0"

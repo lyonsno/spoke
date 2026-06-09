@@ -17,6 +17,7 @@ from .retina_lasso_witness import (
     DEFAULT_STRESS_CAPTURE_PROFILE,
     _capture_profile_from_cli,
     run_autonomous_hammer_witness,
+    run_trace_triggered_witness,
     run_witness_window,
 )
 
@@ -38,6 +39,12 @@ _VISUAL_PASS_THRESHOLDS = {
     "edge_density": 0.09,
     "graph_saturated_pixel_fraction": 0.04,
     "graph_edge_density": 0.09,
+}
+THROUGHGLASS_TRACE_TRIGGER_EVENTS = {
+    "throughglass.publish.materialize",
+    "throughglass.publish.rest",
+    "throughglass.publish.dismiss",
+    "throughglass.publish.hidden",
 }
 
 
@@ -500,11 +507,34 @@ def annotate_throughglass_contract(index_path: Path, *, log_paths: list[Path]) -
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     output_dir = Path(args.output_dir).expanduser() if args.output_dir else default_output_dir(args.output_root)
-    stimulus_mode = bool(args.launch or args.hammer_toggles or args.retarget_during_dismiss_repeats)
+    stimulus_mode = bool(args.launch or args.watch_trace or args.hammer_toggles or args.retarget_during_dismiss_repeats)
     capture_profile = _capture_profile_from_cli(
         args.capture_profile or (DEFAULT_STRESS_CAPTURE_PROFILE if stimulus_mode else DEFAULT_PASSIVE_CAPTURE_PROFILE)
     )
 
+    if args.watch_trace:
+        index_path = run_trace_triggered_witness(
+            trace_path=args.trace,
+            output_dir=output_dir,
+            watch_timeout_seconds=args.watch_timeout,
+            event_capture_duration_seconds=args.event_capture_duration,
+            max_captures=args.watch_max_captures,
+            max_trigger_lag_seconds=args.max_trigger_lag,
+            fps=args.fps,
+            capture_profile=capture_profile,
+            trigger_events=THROUGHGLASS_TRACE_TRIGGER_EVENTS,
+            lane=args.lane,
+            diaulos=args.diaulos,
+            source_app=args.source_app,
+            source_window=args.source_window,
+            capture_command=args.capture_command,
+        )
+        print(index_path)
+        try:
+            payload = _load_index(Path(index_path))
+            return 0 if args.allow_unproven or int(payload.get("capture_count", 0)) > 0 else 2
+        except Exception:
+            return 0 if args.allow_unproven else 2
     if stimulus_mode:
         index_path = run_autonomous_hammer_witness(
             trace_path=args.trace,

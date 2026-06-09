@@ -86,6 +86,7 @@ def test_passport_smoke_env_publishes_through_independent_primitive_shell():
     smoke_env = Path(".spoke-smoke-env").read_text()
 
     assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"' in smoke_env
+    assert 'SPOKE_RETINA_LASSO_WATCH_TRACE="1"' in smoke_env
 
 
 def test_passport_smoke_env_targets_live_perceptasia_provider_port():

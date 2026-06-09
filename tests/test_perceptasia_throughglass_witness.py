@@ -167,6 +167,55 @@ def test_throughglass_witness_launch_mode_uses_selected_target_contract(tmp_path
     assert calls[0]["source_app"] == "Spoke"
 
 
+def test_throughglass_witness_watch_mode_captures_later_operator_events(tmp_path, monkeypatch):
+    calls = []
+
+    def run_trace_triggered_witness(**kwargs):
+        calls.append(kwargs)
+        index = Path(kwargs["output_dir"]) / "watch-index.json"
+        index.parent.mkdir(parents=True)
+        index.write_text('{"schema":"spoke.retina_lasso_trace_trigger_watch.v1","capture_count":1}\n', encoding="utf-8")
+        return index
+
+    monkeypatch.setattr(witness, "run_trace_triggered_witness", run_trace_triggered_witness)
+
+    assert (
+        witness.main(
+            [
+                "--watch-trace",
+                "--trace",
+                str(tmp_path / "trace.jsonl"),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--watch-timeout",
+                "7",
+                "--event-capture-duration",
+                "0.5",
+                "--watch-max-captures",
+                "3",
+                "--max-trigger-lag",
+                "2",
+                "--fps",
+                "12",
+            ]
+        )
+        == 0
+    )
+
+    assert calls[0]["output_dir"] == tmp_path / "out"
+    assert calls[0]["watch_timeout_seconds"] == 7
+    assert calls[0]["event_capture_duration_seconds"] == 0.5
+    assert calls[0]["max_captures"] == 3
+    assert calls[0]["max_trigger_lag_seconds"] == 2
+    assert calls[0]["fps"] == 12
+    assert calls[0]["trigger_events"] == {
+        "throughglass.publish.materialize",
+        "throughglass.publish.rest",
+        "throughglass.publish.dismiss",
+        "throughglass.publish.hidden",
+    }
+
+
 def test_throughglass_witness_fails_when_capture_lacks_content_proof(tmp_path, monkeypatch):
     def run_witness_window(**kwargs):
         index = Path(kwargs["output_dir"]) / "witness-index.json"

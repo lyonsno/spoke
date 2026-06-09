@@ -275,6 +275,17 @@ def _start_retina_lasso_witness(
     capture_first_stimulus = False
     if not throughglass_witness:
         capture_first_stimulus = _append_retina_lasso_stimulus_args(args, child_env=child_env, log=log)
+    if throughglass_witness and _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE"):
+        args.append("--watch-trace")
+        args.extend(["--watch-timeout", child_env.get("SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS", "7200")])
+        args.extend(
+            [
+                "--event-capture-duration",
+                child_env.get("SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS", "1.5"),
+            ]
+        )
+        args.extend(["--watch-max-captures", child_env.get("SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES", "96")])
+        args.extend(["--max-trigger-lag", child_env.get("SPOKE_RETINA_LASSO_MAX_TRIGGER_LAG_SECONDS", "1.0")])
     if not throughglass_witness and _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE") and not capture_first_stimulus:
         args.append("--watch-trace")
         args.extend(["--watch-timeout", child_env.get("SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS", "7200")])
