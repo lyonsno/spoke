@@ -82,10 +82,11 @@ _THROUGHGLASS_MEDIA_CAPTURE_METADATA = {
         },
     },
 }
+_THROUGHGLASS_CONTENT_PROBE_DEFAULT_MAX_ATTEMPTS = 120
 _THROUGHGLASS_PRIMITIVE_CAPTURE_CSS = """
 html, body {
   overflow: hidden !important;
-  background: transparent !important;
+  background: #050708 !important;
 }
 * {
   scrollbar-width: none !important;
@@ -100,6 +101,14 @@ html, body {
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() not in {"", "0", "false", "False", "no", "off"}
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 def _throughglass_window_level() -> int:
@@ -521,7 +530,11 @@ class PerceptasiaThroughglassGraft(NSObject):
             if self.__content_probe_matches_perceptasia(result):
                 self.__mark_content_verified(result)
                 return
-            if self._content_probe_attempts < 10:
+            max_attempts = _env_positive_int(
+                "SPOKE_PERCEPTASIA_THROUGHGLASS_CONTENT_PROBE_ATTEMPTS",
+                _THROUGHGLASS_CONTENT_PROBE_DEFAULT_MAX_ATTEMPTS,
+            )
+            if self._content_probe_attempts < max_attempts:
                 self.__schedule_content_probe(delay=0.25)
                 return
             self.__mark_content_failed(f"probe-mismatch:{result!r}")
@@ -583,6 +596,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             canvas_count >= 1
             and sampled_pixels >= 64
             and live_dom_marker_count >= 4
+            and (not self.__should_publish_shell() or canvas_proves_content)
         )
         return has_perceptasia_identity and (canvas_proves_content or dom_proves_content)
 

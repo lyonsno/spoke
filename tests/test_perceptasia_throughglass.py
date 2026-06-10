@@ -336,7 +336,62 @@ def test_throughglass_primitive_shell_hides_webkit_scrollbars_before_capture(
     source = webkit.WKUserScript.alloc.return_value.initWithSource_injectionTime_forMainFrameOnly_.call_args.args[0]
     assert "::-webkit-scrollbar" in source
     assert "overflow: hidden" in source
-    assert "background: transparent" in source
+    assert "background: #050708" in source
+
+
+def test_throughglass_primitive_capture_css_uses_dark_scene_backing_not_source_plate(
+    mock_pyobjc,
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    css = module._THROUGHGLASS_PRIMITIVE_CAPTURE_CSS
+
+    assert "#050708" in css
+    assert "background: transparent" not in css
+
+
+def test_throughglass_shell_probe_rejects_dom_controls_without_scene_pixels(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    result = {
+        "title": "Perceptasia 3D",
+        "readyState": "complete",
+        "bodyText": (
+            "Start Hand Control Native Stream Off Frame Low Authority WiLoR "
+            "Orbit On Spring Absolute Witness Off"
+        ),
+        "canvasCount": 1,
+        "canvasSampledPixels": 4096,
+        "canvasVisualSignal": 0.0,
+    }
+
+    assert graft._PerceptasiaThroughglassGraft__content_probe_matches_perceptasia(result) is False
+
+
+def test_throughglass_shell_probe_accepts_scene_pixels_without_dom_controls(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    result = {
+        "title": "Perceptasia 3D",
+        "readyState": "complete",
+        "bodyText": "",
+        "canvasCount": 1,
+        "canvasSampledPixels": 4096,
+        "canvasVisualSignal": 0.08,
+    }
+
+    assert graft._PerceptasiaThroughglassGraft__content_probe_matches_perceptasia(result) is True
 
 
 def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):
