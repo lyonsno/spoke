@@ -1994,7 +1994,12 @@ class SpokeAppDelegate(NSObject):
         except Exception:
             logger.exception("Perceptasia Throughglass visibility check failed before assistant park")
             visible = False
-        if not visible:
+        try:
+            has_live_carrier = bool(graft.has_live_carrier())
+        except Exception:
+            logger.exception("Perceptasia Throughglass carrier check failed before assistant park")
+            has_live_carrier = False
+        if not visible and not has_live_carrier:
             return
         try:
             park = getattr(graft, "park_for_assistant_overlay", None)

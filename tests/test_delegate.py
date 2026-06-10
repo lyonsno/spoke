@@ -153,6 +153,25 @@ class TestPerceptasiaThroughglassHook:
         timer.invalidate.assert_called_once_with()
         assert d._perceptasia_throughglass_restore_timer is None
 
+    def test_command_overlay_show_parks_stale_registered_throughglass(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        graft = MagicMock()
+        graft.isVisible.return_value = False
+        graft.park_for_assistant_overlay.return_value = True
+        graft.has_live_carrier.return_value = True
+        d._perceptasia_throughglass = graft
+        d._command_overlay = MagicMock()
+
+        d._show_command_overlay(initial_utterance="inspect graph")
+
+        graft.park_for_assistant_overlay.assert_called_once_with()
+        d._command_overlay.show.assert_called_once_with(
+            initial_utterance="inspect graph"
+        )
+        assert d._perceptasia_throughglass_parked_for_command_overlay is True
+
 
 class TestOperatorPingTokenSmokeHook:
     def test_smoke_hook_is_quiet_without_env(self, main_module, monkeypatch):

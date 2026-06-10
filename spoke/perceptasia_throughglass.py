@@ -411,16 +411,23 @@ class PerceptasiaThroughglassGraft(NSObject):
     def isVisible(self) -> bool:
         return bool(getattr(self, "_visible", False))
 
+    def has_live_carrier(self) -> bool:
+        return bool(
+            getattr(self, "_panel", None) is not None
+            or getattr(self, "_content_view", None) is not None
+            or getattr(self, "_client_registered", False)
+        )
+
     def park_for_assistant_overlay(self) -> bool:
         """Temporarily remove the live carrier while assistant owns the screen."""
-        if not bool(getattr(self, "_visible", False)):
+        if not self.has_live_carrier():
             return False
         panel = getattr(self, "_panel", None)
-        if panel is not None:
-            panel.orderOut_(None)
         self._assistant_overlay_parked = True
         if getattr(self, "_client_registered", False):
             self.__publish_shell_state("hidden", visible=False)
+        if panel is not None:
+            panel.orderOut_(None)
         return True
 
     def restore_after_assistant_overlay(self) -> bool:

@@ -778,6 +778,41 @@ def test_throughglass_can_park_without_destroying_live_webview(mock_pyobjc):
     assert graft._content_view is webview
 
 
+def test_throughglass_park_hides_registered_shell_when_visibility_is_stale(
+    mock_pyobjc,
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    panel = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    screen = module.NSScreen.mainScreen.return_value
+    screen.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    host = MagicMock()
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft._registry = registry
+    graft._panel = panel
+    graft._content_view = MagicMock()
+    graft._host = host
+    graft._client_registered = True
+    graft._visible = False
+
+    assert graft.park_for_assistant_overlay() is True
+
+    panel.orderOut_.assert_called_once_with(None)
+    config = host.update_client_config.call_args.args[1]
+    assert config["visible"] is False
+    assert config["optical_field"]["state"] == "hidden"
+
+
 def test_throughglass_restores_after_assistant_overlay_park(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
