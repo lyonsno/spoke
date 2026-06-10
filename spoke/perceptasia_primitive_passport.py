@@ -56,23 +56,21 @@ def build_perceptasia_primitive_request(
             latency_mask="content_proof",
         ),
         profile=OpticalFieldProfileRef(
-            base="agent_card",
+            base="captured_scene",
             params={
-                "core_magnification": 1.02,
                 "mip_blur_strength": 0.0,
-                "exterior_mix_frac": 0.10,
             },
             slots={
                 "materialize": OpticalFieldSlotOverride(
                     params={
                         "mip_blur_strength": 0.0,
-                        "ring_amplitude_frac": 0.040,
+                        "ring_amplitude_frac": 0.018,
                     }
                 ),
                 "dismiss": OpticalFieldSlotOverride(
                     params={
                         "mip_blur_strength": 0.0,
-                        "ring_amplitude_frac": 0.020,
+                        "ring_amplitude_frac": 0.012,
                     }
                 ),
             },

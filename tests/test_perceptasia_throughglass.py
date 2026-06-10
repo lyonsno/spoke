@@ -125,7 +125,7 @@ def test_throughglass_request_is_independent_sibling_without_progress_custody(mo
     assert request.role == "hud"
     assert request.visibility_scope == "independent"
     assert request.layout_recipe == "perceptasia-primitive-passport"
-    assert request.profile.base == "agent_card"
+    assert request.profile.base == "captured_scene"
     assert request.presentation.layer == "hud"
     assert request.presentation.order == 42
 

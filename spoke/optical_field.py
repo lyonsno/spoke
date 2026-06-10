@@ -566,6 +566,17 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "exterior_mix_frac": 0.12,
         "mip_blur_strength": 0.65,
     },
+    "captured_scene": {
+        "corner_radius_frac": 0.10,
+        "core_magnification": 1.0,
+        "band_width_frac": 0.024,
+        "tail_width_frac": 0.014,
+        "ring_amplitude_frac": 0.018,
+        "tail_amplitude_frac": 0.006,
+        "bleed_zone_frac": 0.55,
+        "exterior_mix_frac": 0.055,
+        "mip_blur_strength": 0.0,
+    },
     "quiet_chip": {
         "corner_radius_frac": 0.50,
         "core_magnification": 1.02,

@@ -26,7 +26,7 @@ def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
     assert request.visibility_scope == "independent"
     assert request.presentation.layer == "hud"
     assert request.presentation.order > 20
-    assert request.profile.base == "agent_card"
+    assert request.profile.base == "captured_scene"
     assert request.layout_recipe == "perceptasia-primitive-passport"
     assert request.motion.strategy == "continuous"
     assert request.motion.continuity == "preserve_identity"
@@ -49,6 +49,20 @@ def test_passport_carrier_captures_live_webview_into_primitive_without_material_
     assert config["mip_blur_strength"] == pytest.approx(0.0)
     assert "progress" not in config["optical_field"]
     assert "phase" not in config["optical_field"]
+
+
+def test_passport_carrier_uses_flat_captured_scene_profile_not_agent_card_lens():
+    for state in ("materialize", "rest", "dismiss"):
+        config = compile_perceptasia_primitive_carrier_config(_bounds(), state=state)
+
+        assert config["optical_field"]["profile"] == "captured_scene"
+        assert config["core_magnification"] <= 1.01
+        assert config["corner_radius_points"] == pytest.approx(52.0)
+        assert config["cut_radius_points"] == pytest.approx(52.0)
+        assert config["band_width_points"] <= 13.0
+        assert config["tail_width_points"] <= 8.0
+        assert config["ring_amplitude_points"] <= 10.5
+        assert config["exterior_mix_width_points"] <= 31.5
 
 
 def test_passport_carrier_exposes_cut_radius_as_coupled_shell_contract():
