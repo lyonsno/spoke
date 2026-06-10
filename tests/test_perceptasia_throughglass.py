@@ -778,6 +778,51 @@ def test_throughglass_can_park_without_destroying_live_webview(mock_pyobjc):
     assert graft._content_view is webview
 
 
+def test_throughglass_park_quarantines_carrier_before_hidden_publish(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    events = []
+    panel_root = MagicMock()
+    panel_root.setHidden_.side_effect = lambda hidden: events.append(("root_hidden", hidden))
+    panel = MagicMock()
+    panel.contentView.return_value = panel_root
+    panel.setAlphaValue_.side_effect = lambda alpha: events.append(("panel_alpha", alpha))
+    panel.setIgnoresMouseEvents_.side_effect = lambda ignored: events.append(
+        ("mouse_ignored", ignored)
+    )
+    panel.orderOut_.side_effect = lambda _sender: events.append(("order_out", None))
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    content = MagicMock()
+    content.setHidden_.side_effect = lambda hidden: events.append(("content_hidden", hidden))
+    screen = module.NSScreen.mainScreen.return_value
+    screen.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    host = MagicMock()
+    host.update_client_config.side_effect = (
+        lambda _client_id, _config: events.append(("publish_hidden", None)) or True
+    )
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft._registry = registry
+    graft._panel = panel
+    graft._content_view = content
+    graft._host = host
+    graft._client_registered = True
+    graft._visible = True
+
+    assert graft.park_for_assistant_overlay() is True
+
+    assert events.index(("panel_alpha", 0.0)) < events.index(("publish_hidden", None))
+    assert events.index(("content_hidden", True)) < events.index(("publish_hidden", None))
+    assert events.index(("order_out", None)) < events.index(("publish_hidden", None))
+
+
 def test_throughglass_park_hides_registered_shell_when_visibility_is_stale(
     mock_pyobjc,
 ):

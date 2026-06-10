@@ -424,10 +424,11 @@ class PerceptasiaThroughglassGraft(NSObject):
             return False
         panel = getattr(self, "_panel", None)
         self._assistant_overlay_parked = True
-        if getattr(self, "_client_registered", False):
-            self.__publish_shell_state("hidden", visible=False)
+        self.__set_live_carrier_human_visible(False)
         if panel is not None:
             panel.orderOut_(None)
+        if getattr(self, "_client_registered", False):
+            self.__publish_shell_state("hidden", visible=False)
         return True
 
     def restore_after_assistant_overlay(self) -> bool:
@@ -441,6 +442,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         if panel is None:
             return self.show()
         self.__reassert_live_carrier_window_level()
+        self.__set_live_carrier_human_visible(True)
         panel.orderFrontRegardless()
         if self.__should_publish_shell():
             self.__publish_shell_state("materialize")
@@ -653,6 +655,27 @@ class PerceptasiaThroughglassGraft(NSObject):
         set_level = getattr(panel, "setLevel_", None)
         if callable(set_level):
             set_level(_throughglass_window_level())
+
+    def __set_live_carrier_human_visible(self, visible: bool) -> None:
+        panel = self._panel
+        if panel is None:
+            return
+        set_alpha = getattr(panel, "setAlphaValue_", None)
+        if callable(set_alpha):
+            set_alpha(1.0 if visible else 0.0)
+        set_ignores_mouse = getattr(panel, "setIgnoresMouseEvents_", None)
+        if callable(set_ignores_mouse):
+            set_ignores_mouse(
+                _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH")
+                if visible
+                else True
+            )
+        content_root_getter = getattr(panel, "contentView", None)
+        content_root = content_root_getter() if callable(content_root_getter) else None
+        for view in (content_root, self._content_view):
+            set_hidden = getattr(view, "setHidden_", None)
+            if callable(set_hidden):
+                set_hidden(not visible)
 
     def __teardown_content_carrier(self) -> None:
         content = self._content_view
