@@ -52,6 +52,7 @@ def test_passport_carrier_captures_live_webview_into_primitive_without_material_
 
 
 def test_passport_carrier_uses_flat_captured_scene_profile_not_agent_card_lens():
+    rest_config = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
     for state in ("materialize", "rest", "dismiss"):
         config = compile_perceptasia_primitive_carrier_config(_bounds(), state=state)
 
@@ -59,10 +60,39 @@ def test_passport_carrier_uses_flat_captured_scene_profile_not_agent_card_lens()
         assert config["core_magnification"] <= 1.01
         assert config["corner_radius_points"] == pytest.approx(52.0)
         assert config["cut_radius_points"] == pytest.approx(52.0)
-        assert config["band_width_points"] <= 13.0
-        assert config["tail_width_points"] <= 8.0
-        assert config["ring_amplitude_points"] <= 10.5
-        assert config["exterior_mix_width_points"] <= 31.5
+        assert config["band_width_points"] <= 22.0
+        assert config["tail_width_points"] <= 15.0
+        assert config["ring_amplitude_points"] <= 18.0
+        assert config["exterior_mix_width_points"] <= 47.0
+
+    assert rest_config["band_width_points"] <= 13.0
+    assert rest_config["tail_width_points"] <= 8.0
+    assert rest_config["ring_amplitude_points"] <= 10.5
+    assert rest_config["exterior_mix_width_points"] <= 31.5
+
+
+def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload():
+    rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    materialize = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize"
+    )
+    dismiss = compile_perceptasia_primitive_carrier_config(_bounds(), state="dismiss")
+
+    for config in (materialize, dismiss):
+        assert config["core_magnification"] == pytest.approx(rest["core_magnification"])
+        assert config["mip_blur_strength"] == pytest.approx(0.0)
+        assert config["gpu_material_enabled"] == pytest.approx(0.0)
+        assert config["throughglass_content_carrier"] == "captured_webview"
+
+    assert materialize["band_width_points"] > rest["band_width_points"]
+    assert materialize["tail_width_points"] > rest["tail_width_points"]
+    assert materialize["ring_amplitude_points"] > rest["ring_amplitude_points"]
+    assert materialize["exterior_mix_width_points"] > rest["exterior_mix_width_points"]
+
+    assert dismiss["band_width_points"] > rest["band_width_points"]
+    assert dismiss["tail_width_points"] > rest["tail_width_points"]
+    assert dismiss["ring_amplitude_points"] > rest["ring_amplitude_points"]
+    assert dismiss["exterior_mix_width_points"] > rest["exterior_mix_width_points"]
 
 
 def test_passport_carrier_exposes_cut_radius_as_coupled_shell_contract():

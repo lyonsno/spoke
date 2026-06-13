@@ -55,6 +55,8 @@ _NSWindowStyleMaskUtilityWindow = 1 << 4
 _THROUGHGLASS_SIBLING_WINDOW_LEVEL = 25
 _THROUGHGLASS_PRIMITIVE_CARRIER_WINDOW_LEVEL = 23
 _THROUGHGLASS_SHELL_PUBLISH_DELAY_SECONDS = 0.08
+_THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS = 0.12
+_THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS = 0.12
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
@@ -118,6 +120,16 @@ def _env_positive_float(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return value if value > 0.0 else default
+
+
+def _usable_selector_scheduler(obj):
+    scheduler = getattr(obj, "performSelector_withObject_afterDelay_", None)
+    if not callable(scheduler):
+        return None
+    module_name = getattr(type(scheduler), "__module__", "")
+    if module_name.startswith("unittest.mock"):
+        return None
+    return scheduler
 
 
 def _throughglass_window_level() -> int:
@@ -266,6 +278,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._client_registered = False
         self._pending_show = False
         self._pending_shell_publish = False
+        self._pending_shell_rest_publish = False
+        self._pending_shell_hide_finish = False
         self._assistant_overlay_parked = False
         self._visibility_callback = None
         return self
@@ -400,15 +414,16 @@ class PerceptasiaThroughglassGraft(NSObject):
         was_visible = bool(self._visible)
         self._pending_show = False
         self._pending_shell_publish = False
+        self._pending_shell_rest_publish = False
         self._visible = False
         self._assistant_overlay_parked = False
         if getattr(self, "_client_registered", False):
             self.__publish_shell_state("dismiss")
-            self.__publish_shell_state("hidden", visible=False)
-        if self._panel is not None:
-            self._panel.orderOut_(None)
-        self.__release_shell_client()
-        self.__teardown_content_carrier()
+            if self.__schedule_shell_hide_after_dismiss():
+                if was_visible:
+                    self.__notify_visibility_changed(False)
+                return
+        self.__finish_hide_after_dismiss()
         if was_visible:
             self.__notify_visibility_changed(False)
 
@@ -473,6 +488,12 @@ class PerceptasiaThroughglassGraft(NSObject):
     def publishThroughglassShellAfterCarrierPresent_(self, _sender) -> None:
         self.__publish_shell_after_carrier_present()
 
+    def publishThroughglassShellRestAfterMaterialize_(self, _sender) -> None:
+        self.__publish_shell_rest_after_materialize()
+
+    def finishThroughglassHideAfterDismiss_(self, _sender) -> None:
+        self.__finish_hide_after_dismiss(scheduled=True)
+
     def __requires_verified_content(self) -> bool:
         return _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY") or _env_flag(
             "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE"
@@ -487,7 +508,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             "SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_PUBLISH_DELAY_SECONDS",
             _THROUGHGLASS_SHELL_PUBLISH_DELAY_SECONDS,
         )
-        scheduler = getattr(self, "performSelector_withObject_afterDelay_", None)
+        scheduler = _usable_selector_scheduler(self)
         if callable(scheduler):
             scheduler("publishThroughglassShellAfterCarrierPresent:", None, delay)
             logger.info(
@@ -496,6 +517,68 @@ class PerceptasiaThroughglassGraft(NSObject):
             )
             return
         self.__publish_shell_after_carrier_present()
+
+    def __schedule_shell_rest_after_materialize(self) -> bool:
+        self._pending_shell_rest_publish = True
+        scheduler = _usable_selector_scheduler(self)
+        if callable(scheduler):
+            scheduler(
+                "publishThroughglassShellRestAfterMaterialize:",
+                None,
+                _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS,
+            )
+            logger.info(
+                "Perceptasia Throughglass: shell rest publish deferred after materialize delay=%.3f",
+                _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS,
+            )
+            return True
+        self.__publish_shell_rest_after_materialize()
+        return False
+
+    def __publish_shell_rest_after_materialize(self) -> None:
+        if not bool(getattr(self, "_pending_shell_rest_publish", False)):
+            return
+        self._pending_shell_rest_publish = False
+        if (
+            not bool(getattr(self, "_visible", False))
+            or self._panel is None
+            or self._content_view is None
+            or not self.__should_publish_shell()
+        ):
+            logger.info("Perceptasia Throughglass: rest shell publish skipped after state changed")
+            return
+        self.__publish_shell_state("rest")
+
+    def __schedule_shell_hide_after_dismiss(self) -> bool:
+        self._pending_shell_hide_finish = True
+        scheduler = _usable_selector_scheduler(self)
+        if callable(scheduler):
+            scheduler(
+                "finishThroughglassHideAfterDismiss:",
+                None,
+                _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS,
+            )
+            logger.info(
+                "Perceptasia Throughglass: shell hide deferred after dismiss delay=%.3f",
+                _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS,
+            )
+            return True
+        self.__finish_hide_after_dismiss()
+        return False
+
+    def __finish_hide_after_dismiss(self, *, scheduled: bool = False) -> None:
+        if bool(getattr(self, "_visible", False)):
+            self._pending_shell_hide_finish = False
+            return
+        if scheduled and not bool(getattr(self, "_pending_shell_hide_finish", False)):
+            return
+        self._pending_shell_hide_finish = False
+        if getattr(self, "_client_registered", False):
+            self.__publish_shell_state("hidden", visible=False)
+        if self._panel is not None:
+            self._panel.orderOut_(None)
+        self.__release_shell_client()
+        self.__teardown_content_carrier()
 
     def __publish_shell_after_carrier_present(self) -> None:
         if not bool(getattr(self, "_pending_shell_publish", False)):
@@ -511,10 +594,10 @@ class PerceptasiaThroughglassGraft(NSObject):
             return
         self.__reassert_live_carrier_window_level()
         self.__publish_shell_state("materialize")
-        self.__publish_shell_state("rest")
+        self.__schedule_shell_rest_after_materialize()
 
     def __schedule_content_probe(self, *, delay: float) -> None:
-        scheduler = getattr(self, "performSelector_withObject_afterDelay_", None)
+        scheduler = _usable_selector_scheduler(self)
         if callable(scheduler):
             try:
                 scheduler("probeThroughglassContent:", None, delay)

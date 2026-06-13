@@ -686,7 +686,62 @@ def test_throughglass_shell_publish_waits_for_carrier_present_tick(mock_pyobjc, 
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
     assert host.add_client.call_count == 1
+    host.update_client_config.assert_not_called()
+    assert scheduled[-1] == (
+        "publishThroughglassShellRestAfterMaterialize:",
+        None,
+        pytest.approx(0.12),
+    )
+
+
+def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+    scheduled = []
+    graft.performSelector_withObject_afterDelay_ = (
+        lambda selector, obj, delay: scheduled.append((selector, obj, delay))
+    )
+
+    assert graft.show() is False
+    graft.mark_content_verified_for_test("Perceptasia 3D")
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    assert host.add_client.call_count == 1
+    assert host.add_client.call_args.args[3]["optical_field"]["state"] == "materialize"
+    host.update_client_config.assert_not_called()
+    assert scheduled[-1] == (
+        "publishThroughglassShellRestAfterMaterialize:",
+        None,
+        pytest.approx(0.12),
+    )
+
+    graft.publishThroughglassShellRestAfterMaterialize_(None)
+
     assert host.update_client_config.call_count == 1
+    assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
 
 
 def test_throughglass_shell_publish_emits_trace_receipts_for_visual_witness(
@@ -826,6 +881,62 @@ def test_throughglass_can_park_without_destroying_live_webview(mock_pyobjc):
     panel.orderOut_.assert_called_once_with(None)
     assert graft.isVisible() is True
     assert graft._content_view is webview
+
+
+def test_throughglass_dismiss_survives_until_hide_finish_tick(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    events = []
+    panel = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    panel.orderOut_.side_effect = lambda _sender: events.append(("order_out", None))
+    screen = module.NSScreen.mainScreen.return_value
+    screen.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    host = MagicMock()
+    host.update_client_config.side_effect = (
+        lambda _client_id, config: events.append(
+            ("publish", config["optical_field"]["state"])
+        )
+        or True
+    )
+    host.release_client.side_effect = lambda _client_id: events.append(("release", None))
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft._registry = registry
+    graft._panel = panel
+    graft._content_view = MagicMock()
+    graft._host = host
+    graft._client_registered = True
+    graft._visible = True
+    scheduled = []
+    graft.performSelector_withObject_afterDelay_ = (
+        lambda selector, obj, delay: scheduled.append((selector, obj, delay))
+    )
+
+    graft.hide()
+
+    assert events == [("publish", "dismiss")]
+    assert scheduled[-1] == (
+        "finishThroughglassHideAfterDismiss:",
+        None,
+        pytest.approx(0.12),
+    )
+
+    graft.finishThroughglassHideAfterDismiss_(None)
+
+    assert events[:3] == [
+        ("publish", "dismiss"),
+        ("publish", "hidden"),
+        ("order_out", None),
+    ]
+    assert events[-1] == ("release", None)
 
 
 def test_throughglass_park_quarantines_carrier_before_hidden_publish(mock_pyobjc):

@@ -64,13 +64,21 @@ def build_perceptasia_primitive_request(
                 "materialize": OpticalFieldSlotOverride(
                     params={
                         "mip_blur_strength": 0.0,
-                        "ring_amplitude_frac": 0.018,
+                        "band_width_frac": 0.038,
+                        "tail_width_frac": 0.026,
+                        "ring_amplitude_frac": 0.032,
+                        "tail_amplitude_frac": 0.012,
+                        "exterior_mix_frac": 0.085,
                     }
                 ),
                 "dismiss": OpticalFieldSlotOverride(
                     params={
                         "mip_blur_strength": 0.0,
-                        "ring_amplitude_frac": 0.012,
+                        "band_width_frac": 0.034,
+                        "tail_width_frac": 0.024,
+                        "ring_amplitude_frac": 0.028,
+                        "tail_amplitude_frac": 0.010,
+                        "exterior_mix_frac": 0.075,
                     }
                 ),
             },
