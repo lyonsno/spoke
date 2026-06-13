@@ -497,10 +497,13 @@ kernel void opticalShellWarp(
     }}
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
-    if (clipCapturedCarrier && insideCarrierRect && capsuleSdf > 0.0f) {{
-        result = carrierPlateEscapeSample(d, c, p, halfRect, params);
-        scaleX = 1.0f;
-        scaleY = 1.0f;
+    if (clipCapturedCarrier) {{
+        float2 sourceP = result - c;
+        bool sourceInsideCarrierRect = abs(sourceP.x) <= halfRect.x && abs(sourceP.y) <= halfRect.y;
+        float sourceCapsuleSdf = sdStadium(sourceP, spineHalfX, spineHalfY, capsuleRadius);
+        if (sourceInsideCarrierRect && sourceCapsuleSdf > 0.0f) {{
+            result = carrierPlateEscapeSample(result, c, sourceP, halfRect, params);
+        }}
     }}
 
     // Depth-dependent blur via mipmap LOD.

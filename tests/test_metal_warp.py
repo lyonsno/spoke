@@ -195,6 +195,19 @@ def test_metal_shader_preserves_captured_carrier_interior_unwarped():
     assert "float4 carrierInteriorColor = inTexture.sample(bilinearSampler, d)" in source
 
 
+def test_metal_shader_keeps_captured_carrier_exterior_warp_before_source_escape():
+    source = metal_warp._metal_shader_source()
+
+    assert "float2 sourceP = result - c;" in source
+    assert "float sourceCapsuleSdf = sdStadium(sourceP, spineHalfX, spineHalfY, capsuleRadius);" in source
+    assert "result = carrierPlateEscapeSample(result, c, sourceP, halfRect, params);" in source
+    assert "result = carrierPlateEscapeSample(d, c, p, halfRect, params);" not in source
+    assert "scaleX = 1.0f;" not in source.split("float2 sourceP = result - c;", 1)[1].split(
+        "// Depth-dependent blur via mipmap LOD.",
+        1,
+    )[0]
+
+
 def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     source = metal_warp._metal_shader_source()
 
