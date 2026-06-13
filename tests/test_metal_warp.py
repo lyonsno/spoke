@@ -187,6 +187,14 @@ def test_metal_shader_suppresses_captured_carrier_source_plate_outside_shell():
     assert "passthroughSample = carrierPlateEscapeSample" in source
 
 
+def test_metal_shader_preserves_captured_carrier_interior_unwarped():
+    source = metal_warp._metal_shader_source()
+
+    assert "capturedCarrierInteriorPassthrough" in source
+    assert "clipCapturedCarrier && insideCarrierRect && capsuleSdf < -carrierInteriorInset" in source
+    assert "float4 carrierInteriorColor = inTexture.sample(bilinearSampler, d)" in source
+
+
 def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     source = metal_warp._metal_shader_source()
 
