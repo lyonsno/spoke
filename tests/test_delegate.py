@@ -138,6 +138,27 @@ class TestPerceptasiaThroughglassHook:
         graft.restore_after_assistant_overlay.assert_called_once_with()
         assert d._perceptasia_throughglass_parked_for_command_overlay is False
 
+    def test_command_overlay_dismiss_defers_throughglass_restore_while_assistant_fades(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        graft = MagicMock()
+        d._perceptasia_throughglass = graft
+        d._perceptasia_throughglass_parked_for_command_overlay = True
+        overlay = MagicMock()
+        overlay._fade_timer = object()
+        overlay._fade_direction = -1
+        d._command_overlay = overlay
+        retry_timer = MagicMock()
+        main_module.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = retry_timer
+
+        d.restorePerceptasiaThroughglassAfterCommandOverlay_(None)
+
+        graft.restore_after_assistant_overlay.assert_not_called()
+        assert d._perceptasia_throughglass_parked_for_command_overlay is True
+        assert d._perceptasia_throughglass_restore_timer is retry_timer
+        main_module.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
+
     def test_command_overlay_show_cancels_pending_throughglass_restore(
         self, main_module, monkeypatch
     ):

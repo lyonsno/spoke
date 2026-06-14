@@ -45,6 +45,7 @@ _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 _THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S = 0.48
+_THROUGHGLASS_ASSISTANT_RESTORE_POLL_S = 0.08
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -2038,9 +2039,40 @@ class SpokeAppDelegate(NSObject):
             )
         )
 
+    def _command_overlay_still_owns_screen_for_throughglass(self) -> bool:
+        overlay = getattr(self, "_command_overlay", None)
+        if overlay is None:
+            return False
+
+        def explicit_attr(name: str, default=None):
+            namespace = getattr(overlay, "__dict__", None)
+            if namespace is not None:
+                return namespace.get(name, default)
+            return getattr(overlay, name, default)
+
+        if explicit_attr("_fade_timer") is not None and explicit_attr("_fade_direction", 0) == -1:
+            return True
+        if explicit_attr("_cancel_timer_anim") is not None:
+            return True
+        if (
+            explicit_attr("_materialization_timer") is not None
+            and explicit_attr("_materialization_direction", 1) < 0
+        ):
+            return True
+        if bool(explicit_attr("_visible", False)):
+            return True
+        if explicit_attr("_fullscreen_compositor") is not None:
+            return True
+        return False
+
     def restorePerceptasiaThroughglassAfterCommandOverlay_(self, timer) -> None:
         self._perceptasia_throughglass_restore_timer = None
         if not bool(getattr(self, "_perceptasia_throughglass_parked_for_command_overlay", False)):
+            return
+        if self._command_overlay_still_owns_screen_for_throughglass():
+            self._schedule_perceptasia_throughglass_restore_after_command_overlay(
+                _THROUGHGLASS_ASSISTANT_RESTORE_POLL_S
+            )
             return
         self._perceptasia_throughglass_parked_for_command_overlay = False
         graft = getattr(self, "_perceptasia_throughglass", None)
