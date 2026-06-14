@@ -502,6 +502,18 @@ class PerceptasiaThroughglassGraft(NSObject):
     def __should_publish_shell(self) -> bool:
         return _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL")
 
+    def __shell_materialize_settle_delay_seconds(self) -> float:
+        return _env_positive_float(
+            "SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS",
+            _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS,
+        )
+
+    def __shell_dismiss_delay_seconds(self) -> float:
+        return _env_positive_float(
+            "SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS",
+            _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS,
+        )
+
     def __schedule_shell_publish_after_carrier_present(self) -> None:
         self._pending_shell_publish = True
         delay = _env_positive_float(
@@ -520,16 +532,17 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def __schedule_shell_rest_after_materialize(self) -> bool:
         self._pending_shell_rest_publish = True
+        delay = self.__shell_materialize_settle_delay_seconds()
         scheduler = _usable_selector_scheduler(self)
         if callable(scheduler):
             scheduler(
                 "publishThroughglassShellRestAfterMaterialize:",
                 None,
-                _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS,
+                delay,
             )
             logger.info(
                 "Perceptasia Throughglass: shell rest publish deferred after materialize delay=%.3f",
-                _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS,
+                delay,
             )
             return True
         self.__publish_shell_rest_after_materialize()
@@ -551,16 +564,17 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def __schedule_shell_hide_after_dismiss(self) -> bool:
         self._pending_shell_hide_finish = True
+        delay = self.__shell_dismiss_delay_seconds()
         scheduler = _usable_selector_scheduler(self)
         if callable(scheduler):
             scheduler(
                 "finishThroughglassHideAfterDismiss:",
                 None,
-                _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS,
+                delay,
             )
             logger.info(
                 "Perceptasia Throughglass: shell hide deferred after dismiss delay=%.3f",
-                _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS,
+                delay,
             )
             return True
         self.__finish_hide_after_dismiss()
