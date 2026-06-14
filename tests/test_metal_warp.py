@@ -190,9 +190,14 @@ def test_metal_shader_suppresses_captured_carrier_source_plate_outside_shell():
 def test_metal_shader_preserves_captured_carrier_interior_unwarped():
     source = metal_warp._metal_shader_source()
 
-    assert "capturedCarrierInteriorPassthrough" in source
-    assert "clipCapturedCarrier && insideCarrierRect && capsuleSdf < -carrierInteriorInset" in source
-    assert "float4 carrierInteriorColor = inTexture.sample(bilinearSampler, d)" in source
+    assert "capturedCarrierPayloadPassthrough" in source
+    assert "clipCapturedCarrier && insideCarrierRect && capsuleSdf < 0.0f" in source
+    assert "float4 carrierPayloadColor = inTexture.sample(bilinearSampler, d)" in source
+    payload_block = source.split("bool capturedCarrierPayloadPassthrough", 1)[1].split(
+        "float scaleX =",
+        1,
+    )[0]
+    assert "carrierInteriorInset" not in payload_block
 
 
 def test_metal_shader_keeps_captured_carrier_exterior_warp_before_source_escape():

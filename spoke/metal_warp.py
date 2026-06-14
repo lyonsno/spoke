@@ -351,16 +351,15 @@ kernel void opticalShellWarp(
         return;
     }}
 
-    float carrierInteriorInset = max(max(params.bandWidth, params.tailWidth) * 0.85f, 10.0f);
-    bool capturedCarrierInteriorPassthrough =
-        clipCapturedCarrier && insideCarrierRect && capsuleSdf < -carrierInteriorInset;
-    if (capturedCarrierInteriorPassthrough) {{
-        // The captured WebView is the live payload, not backdrop texture for
-        // the lens. Keep the stable body pixels unwarped and reserve the
-        // optical field for the rim/boundary band around the carrier.
-        float4 carrierInteriorColor = inTexture.sample(bilinearSampler, d);
-        accumOut.write(carrierInteriorColor, gid);
-        outTexture.write(carrierInteriorColor, pixel);
+    bool capturedCarrierPayloadPassthrough =
+        clipCapturedCarrier && insideCarrierRect && capsuleSdf < 0.0f;
+    if (capturedCarrierPayloadPassthrough) {{
+        // The captured WebView is the live payload, not source texture for the
+        // lens. Preserve every pixel inside its rounded body; the optical field
+        // only owns the exterior pressure band around the carrier.
+        float4 carrierPayloadColor = inTexture.sample(bilinearSampler, d);
+        accumOut.write(carrierPayloadColor, gid);
+        outTexture.write(carrierPayloadColor, pixel);
         return;
     }}
 
