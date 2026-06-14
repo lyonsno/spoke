@@ -2099,6 +2099,8 @@ class TestShiftReleaseRouting:
         det._forwarding_timer = None
         det._tap = None
         det._tap_source = None
+        det._awaiting_space_release = False
+        det._on_throughglass_crown_key = None
         return det, on_start, on_end
 
     def test_shift_held_at_release_passes_flag(self, input_tap_module):
@@ -2144,6 +2146,28 @@ class TestShiftReleaseRouting:
         result = det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
         assert result is True  # suppressed — recording starts
         assert det._state == mod._State.WAITING
+
+    def test_quote_during_waiting_toggles_throughglass_and_swallows_space_release(
+        self, input_tap_module
+    ):
+        """Space+quote should be an independent Throughglass crown chord."""
+        mod = input_tap_module
+        det, on_start, on_end = self._make_detector(input_tap_module)
+        crown_key = MagicMock()
+        det._on_throughglass_crown_key = crown_key
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        result = det.handle_key_down(mod.QUOTE_KEYCODE, 0)
+
+        assert result is True
+        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is True
+        crown_key.assert_called_once_with()
+        on_start.assert_not_called()
+        on_end.assert_not_called()
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
 
 class TestCommandThinking:

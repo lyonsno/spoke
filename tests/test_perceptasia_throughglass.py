@@ -160,6 +160,21 @@ def test_throughglass_shell_preserves_live_webview_content_but_still_draws_perim
     assert config["gpu_material_feather_points"] >= 90.0
 
 
+def test_throughglass_default_panel_rect_seats_independent_consumer_in_top_band(mock_pyobjc):
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    frame = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+
+    x, y, width, height = module._default_panel_rect(frame)
+
+    assert width == pytest.approx(980.0)
+    assert height == pytest.approx(560.0)
+    assert x == pytest.approx(230.0)
+    assert y == pytest.approx(308.0)
+
+
 def test_throughglass_real_pyobjc_import_accepts_private_helpers():
     if (
         importlib.util.find_spec("objc") is None

@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
 SLASH_KEYCODE = 44
+QUOTE_KEYCODE = 39
 RETURN_KEYCODE = 36
 ENTER_KEYCODE = RETURN_KEYCODE
 KEYPAD_ENTER_KEYCODE = 76
@@ -218,6 +219,7 @@ class SpacebarHoldDetector(NSObject):
 
         # Enter during WAITING = toggle command overlay (before hold threshold fires)
         self._on_enter_during_waiting: Callable[[], None] | None = None
+        self._on_throughglass_crown_key: Callable[[], None] | None = None
 
         return self
 
@@ -335,6 +337,21 @@ class SpacebarHoldDetector(NSObject):
             self._state = _State.IDLE
             self._awaiting_space_release = True
             cb = getattr(self, "_on_tray_deck_switch", None)
+            if cb is not None:
+                cb()
+            return True
+
+        if keycode == QUOTE_KEYCODE and self._state == _State.WAITING:
+            self._cancel_hold_timer()
+            self._state = _State.IDLE
+            self._awaiting_space_release = True
+            record_command_overlay_trace(
+                "input.throughglass_crown_key",
+                command_overlay_active=bool(
+                    getattr(self, "command_overlay_active", False)
+                ),
+            )
+            cb = getattr(self, "_on_throughglass_crown_key", None)
             if cb is not None:
                 cb()
             return True

@@ -911,7 +911,10 @@ def _default_panel_rect(frame) -> tuple[float, float, float, float]:
     width = min(_DEFAULT_WIDTH, max(480.0, float(frame.size.width) - 2 * _MIN_MARGIN))
     height = min(_DEFAULT_HEIGHT, max(320.0, float(frame.size.height) - 2 * _MIN_MARGIN))
     x = float(frame.origin.x) + (float(frame.size.width) - width) * 0.5
-    y = float(frame.origin.y) + (float(frame.size.height) - height) * 0.5
+    y = float(frame.origin.y) + max(
+        _MIN_MARGIN,
+        float(frame.size.height) - height - _MIN_MARGIN,
+    )
     return x, y, width, height
 
 

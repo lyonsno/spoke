@@ -1114,6 +1114,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
+        self._detector._on_throughglass_crown_key = self._toggle_perceptasia_throughglass
         self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
         self._detector._on_approval_delete_pressed = self._on_approval_delete_pressed
         self._detector._on_double_tap_shift = None
