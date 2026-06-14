@@ -628,7 +628,11 @@ class PerceptasiaThroughglassGraft(NSObject):
             logger.info("Perceptasia Throughglass: deferred shell publish skipped after state changed")
             return
         self.__reassert_live_carrier_window_level()
-        self.__publish_shell_state("materialize")
+        published = self.__publish_shell_state("materialize")
+        if published:
+            self.__set_live_carrier_window_exposure(True)
+            if self._panel is not None:
+                self._panel.orderFrontRegardless()
         self.__schedule_shell_rest_after_materialize()
 
     def __schedule_content_probe(self, *, delay: float) -> None:

@@ -655,8 +655,9 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert graft.show() is True
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
-    assert panel.orderFrontRegardless.call_count == 1
-    panel.setAlphaValue_.assert_called_with(0.0)
+    assert panel.orderFrontRegardless.call_count >= 2
+    panel.setAlphaValue_.assert_any_call(0.0)
+    panel.setAlphaValue_.assert_called_with(1.0)
     assert panel.setLevel_.call_count >= 3
     assert host.add_client.call_count == 1
     config = host.add_client.call_args.args[3]
@@ -920,7 +921,7 @@ def test_throughglass_shell_publish_emits_trace_receipts_for_visual_witness(
     assert events[0]["width"] == 1800.0
 
 
-def test_throughglass_shell_releases_quarantined_content_after_pixel_proof(
+def test_throughglass_shell_releases_quarantined_content_after_shell_registration(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -962,6 +963,47 @@ def test_throughglass_shell_releases_quarantined_content_after_pixel_proof(
     assert ("mouse", True) in events
     assert ("content_hidden", True) not in events
 
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    assert ("alpha", 1.0) in events
+    assert ("mouse", False) in events
+    assert graft.isVisible() is True
+
+
+def test_throughglass_pixel_proof_keeps_registered_external_carrier_visible(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    events = []
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.setAlphaValue_.side_effect = lambda alpha: events.append(("alpha", alpha))
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    content = MagicMock()
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: content)
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+
+    assert graft.show() is True
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
     graft.mark_content_verified_for_test("Perceptasia 3D")
 
     assert ("alpha", 1.0) in events
