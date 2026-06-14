@@ -2094,7 +2094,6 @@ class SpokeAppDelegate(NSObject):
         overlay = getattr(self, "_command_overlay", None)
         if overlay is None:
             return
-        self._park_perceptasia_throughglass_for_command_overlay()
         overlay.show(**kwargs)
 
     def _dismiss_command_overlay(self) -> None:
@@ -2102,7 +2101,6 @@ class SpokeAppDelegate(NSObject):
         if overlay is None:
             return
         overlay.cancel_dismiss()
-        self._schedule_perceptasia_throughglass_restore_after_command_overlay()
 
     def _toggle_perceptasia_throughglass(self) -> None:
         graft = self._ensure_perceptasia_throughglass()

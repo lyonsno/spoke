@@ -1744,17 +1744,7 @@ class OverlayCompositorHost:
         )
 
     def _shell_snapshots_for_compositor(self) -> tuple[OverlayRenderSnapshot, ...]:
-        snapshots = tuple(snapshot for snapshot in self.render_snapshots() if snapshot.visible)
-        assistant_visible = any(
-            snapshot.identity.client_id == "assistant.command" for snapshot in snapshots
-        )
-        if not assistant_visible:
-            return snapshots
-        return tuple(
-            snapshot
-            for snapshot in snapshots
-            if snapshot.identity.client_id != "perceptasia.throughglass"
-        )
+        return tuple(snapshot for snapshot in self.render_snapshots() if snapshot.visible)
 
     def sample_brightness(self, client_id: str) -> float:
         entry = self._clients.get(client_id)

@@ -588,7 +588,7 @@ def test_client_visibility_noop_does_not_republish_sibling_configs(monkeypatch):
     assert compositor._window.alphas[-1] == pytest.approx(1.0)
 
 
-def test_assistant_visibility_suppresses_throughglass_shell_until_assistant_hides(monkeypatch):
+def test_assistant_visibility_preserves_throughglass_sibling_shell(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
     assistant = host.register_client(
@@ -614,7 +614,10 @@ def test_assistant_visibility_suppresses_throughglass_shell_until_assistant_hide
     compositor = _FakeFullScreenCompositor.instances[0]
 
     latest = compositor.updated_configs[-1]
-    assert [config["client_id"] for config in latest] == ["assistant.command"]
+    assert [config["client_id"] for config in latest] == [
+        "assistant.command",
+        "perceptasia.throughglass",
+    ]
 
     assert host.set_client_visibility("assistant.command", False)
 

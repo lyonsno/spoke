@@ -114,16 +114,22 @@ class TestPerceptasiaThroughglassHook:
 
         assert not hasattr(d, "_perceptasia_throughglass")
 
-    def test_command_overlay_show_parks_visible_throughglass(self, main_module, monkeypatch):
+    def test_command_overlay_show_preserves_visible_throughglass(
+        self, main_module, monkeypatch
+    ):
         d = _make_delegate(main_module, monkeypatch)
         graft = MagicMock()
         graft.isVisible.return_value = True
         d._perceptasia_throughglass = graft
+        d._command_overlay = MagicMock()
 
-        d._park_perceptasia_throughglass_for_command_overlay()
+        d._show_command_overlay(initial_utterance="inspect graph")
 
-        graft.park_for_assistant_overlay.assert_called_once_with()
-        assert d._perceptasia_throughglass_parked_for_command_overlay is True
+        graft.park_for_assistant_overlay.assert_not_called()
+        d._command_overlay.show.assert_called_once_with(initial_utterance="inspect graph")
+        assert not bool(
+            getattr(d, "_perceptasia_throughglass_parked_for_command_overlay", False)
+        )
 
     def test_command_overlay_dismiss_restores_parked_throughglass(
         self, main_module, monkeypatch
@@ -174,7 +180,7 @@ class TestPerceptasiaThroughglassHook:
         timer.invalidate.assert_called_once_with()
         assert d._perceptasia_throughglass_restore_timer is None
 
-    def test_command_overlay_show_parks_stale_registered_throughglass(
+    def test_command_overlay_show_preserves_stale_registered_throughglass(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -187,11 +193,13 @@ class TestPerceptasiaThroughglassHook:
 
         d._show_command_overlay(initial_utterance="inspect graph")
 
-        graft.park_for_assistant_overlay.assert_called_once_with()
+        graft.park_for_assistant_overlay.assert_not_called()
         d._command_overlay.show.assert_called_once_with(
             initial_utterance="inspect graph"
         )
-        assert d._perceptasia_throughglass_parked_for_command_overlay is True
+        assert not bool(
+            getattr(d, "_perceptasia_throughglass_parked_for_command_overlay", False)
+        )
 
 
 class TestOperatorPingTokenSmokeHook:
