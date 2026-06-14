@@ -744,6 +744,66 @@ def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, 
     assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
 
 
+def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    outer_frame = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    content_bounds = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=880.0, height=500.0),
+    )
+    content_window_rect = SimpleNamespace(
+        origin=SimpleNamespace(x=10.0, y=12.0),
+        size=SimpleNamespace(width=880.0, height=500.0),
+    )
+    content_screen_rect = SimpleNamespace(
+        origin=SimpleNamespace(x=110.0, y=92.0),
+        size=SimpleNamespace(width=880.0, height=500.0),
+    )
+    content_root = MagicMock()
+    content = MagicMock()
+    content.bounds.return_value = content_bounds
+    content.convertRect_toView_.return_value = content_window_rect
+    panel.contentView.return_value = content_root
+    panel.frame.return_value = outer_frame
+    panel.convertRectToScreen_.return_value = content_screen_rect
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    screen = module.NSScreen.mainScreen.return_value
+    screen.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: content)
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+
+    assert graft.show() is False
+    graft.mark_content_verified_for_test("Perceptasia 3D")
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    config = host.add_client.call_args.args[3]
+    assert config["content_width_points"] == pytest.approx(1760.0)
+    assert config["content_height_points"] == pytest.approx(1000.0)
+    assert config["center_x"] == pytest.approx(1100.0)
+    assert config["center_y"] == pytest.approx(1116.0)
+    assert config["optical_field"]["source_rect_basis"] == "content_view"
+
+
 def test_throughglass_shell_materialize_hold_can_be_widened_for_visual_witness(
     mock_pyobjc, monkeypatch
 ):

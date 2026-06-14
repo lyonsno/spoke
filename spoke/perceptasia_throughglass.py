@@ -851,9 +851,14 @@ class PerceptasiaThroughglassGraft(NSObject):
             return OpticalFieldBounds(0.0, 0.0, _DEFAULT_WIDTH, _DEFAULT_HEIGHT), {
                 "source_coordinate_space": "display_local",
             }
-        frame = self._panel.frame()
+        frame = _content_view_screen_frame(self._panel, self._content_view)
+        source_rect_basis = "content_view" if frame is not None else "panel_frame"
+        if frame is None:
+            frame = self._panel.frame()
         screen = NSScreen.mainScreen()
-        return _display_local_scaled_window_bounds(frame, screen)
+        bounds, metadata = _display_local_scaled_window_bounds(frame, screen)
+        metadata["source_rect_basis"] = source_rect_basis
+        return bounds, metadata
 
     def __publish_shell_state(self, state: str, *, visible: bool = True) -> bool:
         if self._registry is None or self._panel is None or self._content_view is None:
@@ -928,6 +933,52 @@ def _rect_numbers(rect) -> tuple[float, float, float, float]:
     )
 
 
+def _rect_has_positive_size(rect) -> bool:
+    size = getattr(rect, "size", None)
+    width = getattr(size, "width", None)
+    height = getattr(size, "height", None)
+    return (
+        isinstance(width, numbers.Real)
+        and isinstance(height, numbers.Real)
+        and float(width) > 0.0
+        and float(height) > 0.0
+    )
+
+
+def _content_view_screen_frame(panel, content_view):
+    """Return the live payload rect in screen points when AppKit can prove it."""
+
+    if panel is None or content_view is None:
+        return None
+    convert_to_screen = getattr(panel, "convertRectToScreen_", None)
+    if not callable(convert_to_screen):
+        return None
+    candidate_views = [content_view]
+    content_root_getter = getattr(panel, "contentView", None)
+    content_root = content_root_getter() if callable(content_root_getter) else None
+    if content_root is not None and content_root is not content_view:
+        candidate_views.append(content_root)
+    for view in candidate_views:
+        bounds_getter = getattr(view, "bounds", None)
+        convert_to_window = getattr(view, "convertRect_toView_", None)
+        if not callable(bounds_getter) or not callable(convert_to_window):
+            continue
+        try:
+            bounds = bounds_getter()
+            if not _rect_has_positive_size(bounds):
+                continue
+            window_rect = convert_to_window(bounds, None)
+            if not _rect_has_positive_size(window_rect):
+                continue
+            screen_rect = convert_to_screen(window_rect)
+        except Exception:
+            logger.debug("Perceptasia Throughglass: content-view bounds conversion failed", exc_info=True)
+            continue
+        if _rect_has_positive_size(screen_rect):
+            return screen_rect
+    return None
+
+
 def _screen_frame_for_bounds(screen):
     if screen is None:
         return NSMakeRect(0, 0, 1440, 900)
@@ -938,6 +989,8 @@ def _screen_frame_for_bounds(screen):
         try:
             frame = getter()
         except Exception:
+            continue
+        if not _rect_has_positive_size(frame):
             continue
         _x, _y, width, height = _rect_numbers(frame)
         if width > 0.0 and height > 0.0:
