@@ -378,6 +378,8 @@ class PerceptasiaThroughglassGraft(NSObject):
             logger.warning("Perceptasia Throughglass: show aborted without panel")
             return False
         if self.__requires_verified_content() and not self._content_verified:
+            if self.__should_publish_shell():
+                return self.__show_shell_with_quarantined_content()
             self._pending_show = True
             logger.warning(
                 "Perceptasia Throughglass: show deferred until content verifies kind=%s failure=%s",
@@ -405,6 +407,25 @@ class PerceptasiaThroughglassGraft(NSObject):
             "Perceptasia Throughglass: show complete content_kind=%s content_verified=%s",
             self._content_kind,
             self._content_verified,
+        )
+        if not was_visible:
+            self.__notify_visibility_changed(True)
+        return True
+
+    def __show_shell_with_quarantined_content(self) -> bool:
+        if self._panel is None:
+            return False
+        self.__reassert_live_carrier_window_level()
+        was_visible = bool(self._visible)
+        self.__set_live_carrier_window_exposure(False)
+        self._panel.orderFrontRegardless()
+        self._visible = True
+        self._pending_show = True
+        self.__schedule_shell_publish_after_carrier_present()
+        logger.info(
+            "Perceptasia Throughglass: shell show started before content proof kind=%s failure=%s",
+            self._content_kind,
+            self._content_failure,
         )
         if not was_visible:
             self.__notify_visibility_changed(True)
@@ -766,6 +787,13 @@ class PerceptasiaThroughglassGraft(NSObject):
             visual_signal,
         )
         if self._pending_show:
+            if self.__should_publish_shell() and bool(getattr(self, "_visible", False)):
+                self._pending_show = False
+                self.__reassert_live_carrier_window_level()
+                self.__set_live_carrier_human_visible(True)
+                if self._panel is not None:
+                    self._panel.orderFrontRegardless()
+                return
             self.__show_verified()
 
     def __mark_content_failed(self, reason: str) -> None:
@@ -802,6 +830,18 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel = self._panel
         if panel is None:
             return
+        self.__set_live_carrier_window_exposure(visible)
+        content_root_getter = getattr(panel, "contentView", None)
+        content_root = content_root_getter() if callable(content_root_getter) else None
+        for view in (content_root, self._content_view):
+            set_hidden = getattr(view, "setHidden_", None)
+            if callable(set_hidden):
+                set_hidden(not visible)
+
+    def __set_live_carrier_window_exposure(self, visible: bool) -> None:
+        panel = self._panel
+        if panel is None:
+            return
         set_alpha = getattr(panel, "setAlphaValue_", None)
         if callable(set_alpha):
             set_alpha(1.0 if visible else 0.0)
@@ -812,12 +852,6 @@ class PerceptasiaThroughglassGraft(NSObject):
                 if visible
                 else True
             )
-        content_root_getter = getattr(panel, "contentView", None)
-        content_root = content_root_getter() if callable(content_root_getter) else None
-        for view in (content_root, self._content_view):
-            set_hidden = getattr(view, "setHidden_", None)
-            if callable(set_hidden):
-                set_hidden(not visible)
 
     def __teardown_content_carrier(self) -> None:
         content = self._content_view

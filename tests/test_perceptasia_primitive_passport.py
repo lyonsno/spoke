@@ -33,7 +33,7 @@ def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
     assert request.selected_handoff is None
 
 
-def test_passport_carrier_captures_live_webview_into_primitive_with_perimeter_material_only():
+def test_passport_carrier_keeps_live_webview_external_with_perimeter_material_only():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="materialize")
 
     assert config["client_id"] == PERCEPTASIA_PRIMITIVE_CLIENT_ID
@@ -41,9 +41,9 @@ def test_passport_carrier_captures_live_webview_into_primitive_with_perimeter_ma
     assert config["presentation_layer"] == "hud"
     assert config["presentation_order"] > 20
     assert config["visible"] is True
-    assert config["throughglass_content_carrier"] == "captured_webview"
-    assert config["include_carrier_window_in_capture"] is True
-    assert config["clip_captured_carrier_to_shell"] is True
+    assert config["throughglass_content_carrier"] == "external_webview"
+    assert config["include_carrier_window_in_capture"] is False
+    assert config["clip_captured_carrier_to_shell"] is False
     assert config["content_proof_required"] is True
     assert config["mip_blur_strength"] == pytest.approx(0.0)
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
@@ -88,7 +88,8 @@ def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload()
         assert config["mip_blur_strength"] == pytest.approx(0.0)
         assert config["gpu_material_enabled"] == pytest.approx(1.0)
         assert config["gpu_material_opacity"] >= rest["gpu_material_opacity"]
-        assert config["throughglass_content_carrier"] == "captured_webview"
+        assert config["throughglass_content_carrier"] == "external_webview"
+        assert config["include_carrier_window_in_capture"] is False
 
     assert materialize["band_width_points"] > rest["band_width_points"]
     assert materialize["tail_width_points"] > rest["tail_width_points"]
@@ -116,8 +117,8 @@ def test_passport_hidden_state_unpublishes_carrier_without_assistant_visibility_
     assert config["visible"] is False
     assert config["visibility_scope"] == "independent"
     assert config["optical_field"]["visibility_scope"] == "independent"
-    assert config["throughglass_content_carrier"] == "captured_webview"
-    assert config["include_carrier_window_in_capture"] is True
+    assert config["throughglass_content_carrier"] == "external_webview"
+    assert config["include_carrier_window_in_capture"] is False
 
 
 def test_passport_env_overrides_never_touch_assistant_command_overlay_state():
