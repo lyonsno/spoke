@@ -99,16 +99,39 @@ def compile_perceptasia_primitive_carrier_config(
 
     The optical primitive places, animates, and rims the surface by capturing
     the live Perceptasia WebView into the compositor. The Perceptasia renderer
-    remains the content authority, so shell material is disabled and cannot
-    visually substitute for missing WebKit/WebGL pixels.
+    remains the content authority; the shader material is only the perimeter
+    pressure field around that captured payload, never a substitute fill.
     """
 
     request = build_perceptasia_primitive_request(bounds, state=state, visible=visible)
     config = compile_placeholder_shell_config(request)
+    material_opacity_by_state = {
+        "materialize": 0.34,
+        "rest": 0.22,
+        "dismiss": 0.30,
+        "hidden": 0.0,
+    }
+    material_ridge_by_state = {
+        "materialize": 0.68,
+        "rest": 0.54,
+        "dismiss": 0.62,
+        "hidden": 0.0,
+    }
     config.update(
         {
             "visible": bool(visible and state != "hidden"),
-            "gpu_material_enabled": 0.0,
+            "gpu_material_enabled": 1.0,
+            "gpu_material_opacity": material_opacity_by_state.get(state, 0.22),
+            "gpu_material_feather_points": 118.0,
+            "gpu_material_fill_overscan_points": 4.0,
+            "gpu_material_base_width_points": float(bounds.width),
+            "gpu_material_base_height_points": float(bounds.height),
+            "gpu_material_base_corner_radius_points": float(
+                config["corner_radius_points"]
+            ),
+            "gpu_material_height_frac": 1.0,
+            "gpu_material_text_contrast_bias": 0.55,
+            "gpu_material_ridge_emphasis": material_ridge_by_state.get(state, 0.54),
             "mip_blur_strength": 0.0,
             "throughglass_content_carrier": "captured_webview",
             "include_carrier_window_in_capture": True,

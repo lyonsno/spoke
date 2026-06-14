@@ -33,7 +33,7 @@ def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
     assert request.selected_handoff is None
 
 
-def test_passport_carrier_captures_live_webview_into_primitive_without_material_substitution():
+def test_passport_carrier_captures_live_webview_into_primitive_with_perimeter_material_only():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="materialize")
 
     assert config["client_id"] == PERCEPTASIA_PRIMITIVE_CLIENT_ID
@@ -45,8 +45,13 @@ def test_passport_carrier_captures_live_webview_into_primitive_without_material_
     assert config["include_carrier_window_in_capture"] is True
     assert config["clip_captured_carrier_to_shell"] is True
     assert config["content_proof_required"] is True
-    assert config["gpu_material_enabled"] == pytest.approx(0.0)
     assert config["mip_blur_strength"] == pytest.approx(0.0)
+    assert config["gpu_material_enabled"] == pytest.approx(1.0)
+    assert 0.0 < config["gpu_material_opacity"] <= 0.45
+    assert config["gpu_material_feather_points"] >= 90.0
+    assert config["gpu_material_fill_overscan_points"] <= 8.0
+    assert config["gpu_material_base_width_points"] == pytest.approx(config["content_width_points"])
+    assert config["gpu_material_base_height_points"] == pytest.approx(config["content_height_points"])
     assert "progress" not in config["optical_field"]
     assert "phase" not in config["optical_field"]
 
@@ -81,7 +86,8 @@ def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload()
     for config in (materialize, dismiss):
         assert config["core_magnification"] == pytest.approx(rest["core_magnification"])
         assert config["mip_blur_strength"] == pytest.approx(0.0)
-        assert config["gpu_material_enabled"] == pytest.approx(0.0)
+        assert config["gpu_material_enabled"] == pytest.approx(1.0)
+        assert config["gpu_material_opacity"] >= rest["gpu_material_opacity"]
         assert config["throughglass_content_carrier"] == "captured_webview"
 
     assert materialize["band_width_points"] > rest["band_width_points"]
