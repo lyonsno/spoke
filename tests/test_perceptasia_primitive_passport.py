@@ -103,6 +103,33 @@ def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload()
     assert dismiss["exterior_mix_width_points"] > rest["exterior_mix_width_points"]
 
 
+def test_passport_materialization_progress_compiles_transient_pressure_slit_without_public_progress():
+    rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    seed = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.0
+    )
+    mid = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.5
+    )
+    final = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=1.0
+    )
+
+    assert "progress" not in seed["optical_field"]
+    assert "phase" not in seed["optical_field"]
+    assert seed["continuous_present"] is True
+    assert seed["content_width_points"] < rest["content_width_points"] * 0.20
+    assert seed["content_height_points"] < rest["content_height_points"] * 0.08
+    assert seed["corner_radius_points"] <= seed["content_height_points"] * 0.5
+    assert seed["gpu_material_base_width_points"] == pytest.approx(rest["content_width_points"])
+    assert seed["gpu_material_base_height_points"] == pytest.approx(rest["content_height_points"])
+    assert 0.0 < seed["gpu_material_height_frac"] < mid["gpu_material_height_frac"] < 1.0
+    assert seed["band_width_points"] < mid["band_width_points"] < final["band_width_points"]
+    assert mid["content_width_points"] < final["content_width_points"]
+    assert final["content_width_points"] == pytest.approx(rest["content_width_points"])
+    assert final["content_height_points"] == pytest.approx(rest["content_height_points"])
+
+
 def test_passport_carrier_exposes_cut_radius_as_coupled_shell_contract():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
 

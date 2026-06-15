@@ -28,6 +28,69 @@ PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_ENV = (
     "SPOKE_PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_REQUIRED"
 )
 PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL_ENV = "SPOKE_PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL"
+_PRIMITIVE_MATERIALIZATION_SPREAD_END = 0.62
+_PRIMITIVE_MATERIALIZATION_BLOOM_START = 0.20
+_PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC = 0.052
+_PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.014
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return float(a) + (float(b) - float(a)) * _clamp01(t)
+
+
+def _smoothstep(value: float) -> float:
+    t = _clamp01(value)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _apply_materialization_progress(config: dict[str, object], progress: float) -> None:
+    p = _clamp01(progress)
+    config["continuous_present"] = True
+    if p >= 1.0:
+        return
+
+    base_w = max(float(config.get("content_width_points", 1.0)), 1.0)
+    base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
+    base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
+    base_band = max(float(config.get("band_width_points", 0.0)), 0.0)
+    base_tail = max(float(config.get("tail_width_points", 0.0)), 0.0)
+    base_ring = max(float(config.get("ring_amplitude_points", 0.0)), 0.0)
+    base_tail_amp = max(float(config.get("tail_amplitude_points", 0.0)), 0.0)
+
+    spread_t = _smoothstep(p / _PRIMITIVE_MATERIALIZATION_SPREAD_END)
+    bloom_t = _smoothstep(
+        (p - _PRIMITIVE_MATERIALIZATION_BLOOM_START)
+        / max(1.0 - _PRIMITIVE_MATERIALIZATION_BLOOM_START, 1e-6)
+    )
+    seed_w = max(24.0, min(base_w * _PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC, 96.0))
+    seed_h = max(2.5, min(base_h * _PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC, 9.0))
+    width = _lerp(seed_w, base_w, spread_t)
+    height = _lerp(seed_h, base_h, bloom_t)
+    edge_t = max(0.18, _smoothstep(max(spread_t, bloom_t)))
+
+    config["_materialization_base_width_points"] = base_w
+    config["_materialization_base_height_points"] = base_h
+    config["_materialization_base_corner_radius_points"] = base_radius
+    config["content_width_points"] = width
+    config["content_height_points"] = height
+    config["corner_radius_points"] = min(base_radius, height * 0.5)
+    config["cut_radius_points"] = config["corner_radius_points"]
+    config["band_width_points"] = _lerp(max(1.5, base_band * 0.18), base_band, edge_t)
+    config["tail_width_points"] = _lerp(max(1.0, base_tail * 0.16), base_tail, edge_t)
+    config["ring_amplitude_points"] = _lerp(max(0.7, base_ring * 0.16), base_ring, edge_t)
+    config["tail_amplitude_points"] = _lerp(max(0.3, base_tail_amp * 0.14), base_tail_amp, edge_t)
+    config["gpu_material_base_width_points"] = base_w
+    config["gpu_material_base_height_points"] = base_h
+    config["gpu_material_base_corner_radius_points"] = base_radius
+    config["gpu_material_height_frac"] = max(0.015, min(height / base_h, 1.0))
+    if isinstance(config.get("optical_field"), dict):
+        optical_field = dict(config["optical_field"])
+        optical_field["cut_radius_points"] = config["cut_radius_points"]
+        config["optical_field"] = optical_field
 
 
 def build_perceptasia_primitive_request(
@@ -94,6 +157,7 @@ def compile_perceptasia_primitive_carrier_config(
     state: OpticalFieldState = "rest",
     visible: bool = True,
     content_proof_required: bool = True,
+    materialization_progress: float | None = None,
 ) -> dict[str, object]:
     """Compile the optical shell envelope for the captured Perceptasia payload.
 
@@ -138,6 +202,8 @@ def compile_perceptasia_primitive_carrier_config(
             "content_proof_required": bool(content_proof_required),
         }
     )
+    if materialization_progress is not None:
+        _apply_materialization_progress(config, materialization_progress)
     return config
 
 

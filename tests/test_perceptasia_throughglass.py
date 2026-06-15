@@ -711,11 +711,14 @@ def test_throughglass_shell_publish_waits_for_carrier_present_tick(mock_pyobjc, 
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
     assert host.add_client.call_count == 1
+    first_config = host.add_client.call_args.args[3]
+    assert first_config["content_width_points"] < 900.0 * 0.25
+    assert first_config["content_height_points"] < 520.0 * 0.12
     host.update_client_config.assert_not_called()
     assert scheduled[-1] == (
-        "publishThroughglassShellRestAfterMaterialize:",
+        "animateThroughglassShellStep:",
         None,
-        pytest.approx(0.12),
+        pytest.approx(1.0 / 60.0),
     )
 
 
@@ -757,14 +760,16 @@ def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, 
     assert host.add_client.call_args.args[3]["optical_field"]["state"] == "materialize"
     assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is True
     assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is True
+    assert host.add_client.call_args.args[3]["content_width_points"] < 900.0 * 0.25
     host.update_client_config.assert_not_called()
     assert scheduled[-1] == (
-        "publishThroughglassShellRestAfterMaterialize:",
+        "animateThroughglassShellStep:",
         None,
-        pytest.approx(0.12),
+        pytest.approx(1.0 / 60.0),
     )
 
-    graft.publishThroughglassShellRestAfterMaterialize_(None)
+    graft._throughglass_shell_animation_started_at -= 1.0
+    graft.animateThroughglassShellStep_(None)
 
     assert host.update_client_config.call_count == 1
     assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
@@ -822,8 +827,8 @@ def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
     config = host.add_client.call_args.args[3]
-    assert config["content_width_points"] == pytest.approx(1760.0)
-    assert config["content_height_points"] == pytest.approx(1000.0)
+    assert config["gpu_material_base_width_points"] == pytest.approx(1760.0)
+    assert config["gpu_material_base_height_points"] == pytest.approx(1000.0)
     assert config["center_x"] == pytest.approx(1100.0)
     assert config["center_y"] == pytest.approx(1116.0)
     assert config["optical_field"]["source_rect_basis"] == "content_view"
@@ -869,10 +874,11 @@ def test_throughglass_shell_materialize_hold_can_be_widened_for_visual_witness(
     assert graft.show() is True
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
+    assert graft._throughglass_shell_animation_duration == pytest.approx(0.42)
     assert scheduled[-1] == (
-        "publishThroughglassShellRestAfterMaterialize:",
+        "animateThroughglassShellStep:",
         None,
-        pytest.approx(0.42),
+        pytest.approx(1.0 / 60.0),
     )
 
 
@@ -1052,8 +1058,8 @@ def test_throughglass_publishes_display_local_scaled_geometry_for_primitive_shel
     published_config = host.add_client.call_args.args[3]
     assert published_config["center_x"] == pytest.approx(1440.0)
     assert published_config["center_y"] == pytest.approx(1060.0)
-    assert published_config["content_width_points"] == pytest.approx(1960.0)
-    assert published_config["content_height_points"] == pytest.approx(1120.0)
+    assert published_config["gpu_material_base_width_points"] == pytest.approx(1960.0)
+    assert published_config["gpu_material_base_height_points"] == pytest.approx(1120.0)
     assert published_config["corner_radius_points"] <= 560.0
     assert published_config["optical_field"]["source_coordinate_space"] == "screen_points"
     assert published_config["optical_field"]["backing_scale"] == pytest.approx(2.0)
@@ -1143,12 +1149,13 @@ def test_throughglass_dismiss_survives_until_hide_finish_tick(mock_pyobjc):
 
     assert events == [("publish", "dismiss")]
     assert scheduled[-1] == (
-        "finishThroughglassHideAfterDismiss:",
+        "animateThroughglassShellStep:",
         None,
-        pytest.approx(0.12),
+        pytest.approx(1.0 / 60.0),
     )
 
-    graft.finishThroughglassHideAfterDismiss_(None)
+    graft._throughglass_shell_animation_started_at -= 1.0
+    graft.animateThroughglassShellStep_(None)
 
     assert events[:3] == [
         ("publish", "dismiss"),
@@ -1195,10 +1202,11 @@ def test_throughglass_dismiss_hold_can_be_widened_for_visual_witness(
 
     graft.hide()
 
+    assert graft._throughglass_shell_animation_duration == pytest.approx(0.46)
     assert scheduled[-1] == (
-        "finishThroughglassHideAfterDismiss:",
+        "animateThroughglassShellStep:",
         None,
-        pytest.approx(0.46),
+        pytest.approx(1.0 / 60.0),
     )
 
 

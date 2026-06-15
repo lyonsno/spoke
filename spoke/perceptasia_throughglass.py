@@ -15,6 +15,7 @@ import logging
 import numbers
 import os
 from pathlib import Path
+import time
 import urllib.error
 import urllib.request
 
@@ -57,6 +58,7 @@ _THROUGHGLASS_PRIMITIVE_CARRIER_WINDOW_LEVEL = 23
 _THROUGHGLASS_SHELL_PUBLISH_DELAY_SECONDS = 0.08
 _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS = 0.12
 _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS = 0.12
+_THROUGHGLASS_SHELL_ANIMATION_FPS = 60.0
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
@@ -280,6 +282,9 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._pending_shell_publish = False
         self._pending_shell_rest_publish = False
         self._pending_shell_hide_finish = False
+        self._throughglass_shell_animation_direction = 0
+        self._throughglass_shell_animation_started_at = 0.0
+        self._throughglass_shell_animation_duration = 0.0
         self._assistant_overlay_parked = False
         self._visibility_callback = None
         return self
@@ -439,8 +444,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._visible = False
         self._assistant_overlay_parked = False
         if getattr(self, "_client_registered", False):
-            self.__publish_shell_state("dismiss")
-            if self.__schedule_shell_hide_after_dismiss():
+            if self.__start_shell_animation(direction=-1):
                 if was_visible:
                     self.__notify_visibility_changed(False)
                 return
@@ -470,6 +474,8 @@ class PerceptasiaThroughglassGraft(NSObject):
             return False
         panel = getattr(self, "_panel", None)
         self._pending_shell_publish = False
+        self._pending_shell_rest_publish = False
+        self._throughglass_shell_animation_direction = 0
         self._assistant_overlay_parked = True
         self.__set_live_carrier_human_visible(False)
         if panel is not None:
@@ -514,6 +520,9 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def finishThroughglassHideAfterDismiss_(self, _sender) -> None:
         self.__finish_hide_after_dismiss(scheduled=True)
+
+    def animateThroughglassShellStep_(self, _sender) -> None:
+        self.__animate_shell_step()
 
     def __requires_verified_content(self) -> bool:
         return _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY") or _env_flag(
@@ -628,12 +637,11 @@ class PerceptasiaThroughglassGraft(NSObject):
             logger.info("Perceptasia Throughglass: deferred shell publish skipped after state changed")
             return
         self.__reassert_live_carrier_window_level()
-        published = self.__publish_shell_state("materialize")
+        published = self.__start_shell_animation(direction=1)
         if published:
             self.__set_live_carrier_window_exposure(True)
             if self._panel is not None:
                 self._panel.orderFrontRegardless()
-        self.__schedule_shell_rest_after_materialize()
 
     def __schedule_content_probe(self, *, delay: float) -> None:
         scheduler = _usable_selector_scheduler(self)
@@ -898,7 +906,84 @@ class PerceptasiaThroughglassGraft(NSObject):
         metadata["source_rect_basis"] = source_rect_basis
         return bounds, metadata
 
-    def __publish_shell_state(self, state: str, *, visible: bool = True) -> bool:
+    def __animation_frame_delay_seconds(self) -> float:
+        return 1.0 / _env_positive_float(
+            "SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_ANIMATION_FPS",
+            _THROUGHGLASS_SHELL_ANIMATION_FPS,
+        )
+
+    def __schedule_shell_animation_step(self) -> bool:
+        scheduler = _usable_selector_scheduler(self)
+        delay = self.__animation_frame_delay_seconds()
+        if callable(scheduler):
+            scheduler("animateThroughglassShellStep:", None, delay)
+            return True
+        self.__finish_shell_animation_immediately()
+        return False
+
+    def __finish_shell_animation_immediately(self) -> None:
+        direction = int(getattr(self, "_throughglass_shell_animation_direction", 0))
+        if direction == 0:
+            return
+        self._throughglass_shell_animation_direction = 0
+        self._throughglass_shell_animation_duration = 0.0
+        if direction > 0:
+            self.__publish_shell_state("rest")
+        else:
+            self.__finish_hide_after_dismiss()
+
+    def __start_shell_animation(self, *, direction: int) -> bool:
+        self._pending_shell_rest_publish = False
+        self._pending_shell_hide_finish = direction < 0
+        self._throughglass_shell_animation_direction = 1 if direction >= 0 else -1
+        self._throughglass_shell_animation_duration = (
+            self.__shell_materialize_settle_delay_seconds()
+            if self._throughglass_shell_animation_direction > 0
+            else self.__shell_dismiss_delay_seconds()
+        )
+        self._throughglass_shell_animation_started_at = time.perf_counter()
+        progress = 0.0 if self._throughglass_shell_animation_direction > 0 else 1.0
+        state = "materialize" if self._throughglass_shell_animation_direction > 0 else "dismiss"
+        published = self.__publish_shell_state(
+            state,
+            visible=True,
+            materialization_progress=progress,
+        )
+        if published:
+            self.__schedule_shell_animation_step()
+        return published
+
+    def __animate_shell_step(self) -> None:
+        direction = int(getattr(self, "_throughglass_shell_animation_direction", 0))
+        if direction == 0:
+            return
+        duration = max(float(getattr(self, "_throughglass_shell_animation_duration", 0.0)), 1e-6)
+        elapsed = max(time.perf_counter() - float(getattr(self, "_throughglass_shell_animation_started_at", 0.0)), 0.0)
+        raw = min(elapsed / duration, 1.0)
+        progress = raw if direction > 0 else 1.0 - raw
+        state = "materialize" if direction > 0 else "dismiss"
+        if raw >= 1.0:
+            self._throughglass_shell_animation_direction = 0
+            self._throughglass_shell_animation_duration = 0.0
+            if direction > 0:
+                self.__publish_shell_state("rest")
+            else:
+                self.__finish_hide_after_dismiss()
+            return
+        self.__publish_shell_state(
+            state,
+            visible=True,
+            materialization_progress=progress,
+        )
+        self.__schedule_shell_animation_step()
+
+    def __publish_shell_state(
+        self,
+        state: str,
+        *,
+        visible: bool = True,
+        materialization_progress: float | None = None,
+    ) -> bool:
         if self._registry is None or self._panel is None or self._content_view is None:
             logger.info("Perceptasia Throughglass: publish skipped state=%s", state)
             return False
@@ -909,7 +994,12 @@ class PerceptasiaThroughglassGraft(NSObject):
                 return False
             self._host = host_for_screen(NSScreen.mainScreen())
         bounds, coordinate_metadata = self.__bounds_and_coordinate_metadata()
-        config = compile_perceptasia_shell_config(bounds, state=state, visible=visible)
+        config = compile_perceptasia_shell_config(
+            bounds,
+            state=state,
+            visible=visible,
+            materialization_progress=materialization_progress,
+        )
         _annotate_shell_coordinate_metadata(config, coordinate_metadata)
         if not getattr(self, "_client_registered", False):
             added = self._host.add_client(_CLIENT_ID, self._panel, self._content_view, config)
@@ -922,6 +1012,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             record_command_overlay_trace(
                 f"throughglass.publish.{state}",
                 visible=visible,
+                materialization_progress=materialization_progress,
                 updated=bool(added),
                 registered=self._client_registered,
                 x=bounds.x,
@@ -935,6 +1026,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         record_command_overlay_trace(
             f"throughglass.publish.{state}",
             visible=visible,
+            materialization_progress=materialization_progress,
             updated=updated,
             registered=True,
             x=bounds.x,
