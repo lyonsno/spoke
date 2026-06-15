@@ -655,7 +655,7 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert graft.show() is True
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
-    assert panel.orderFrontRegardless.call_count >= 2
+    assert panel.orderFrontRegardless.call_count == 1
     panel.setAlphaValue_.assert_any_call(0.0)
     panel.setAlphaValue_.assert_called_with(1.0)
     assert panel.setLevel_.call_count >= 3
@@ -666,6 +666,46 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert config["clip_captured_carrier_to_shell"] is True
     if host.update_client_config.call_count:
         assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
+
+
+def test_throughglass_shell_publish_does_not_front_capture_carrier_above_shell(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+
+    assert graft.show() is True
+    calls_before_publish = panel.orderFrontRegardless.call_count
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    assert host.add_client.call_count == 1
+    assert panel.orderFrontRegardless.call_count == calls_before_publish
+    assert panel.setLevel_.call_args.args[0] < 24
+    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is True
+    assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is True
+    assert host.add_client.call_args.args[3]["throughglass_content_carrier"] == "captured_webview_payload"
 
 
 def test_throughglass_shell_publish_waits_for_carrier_present_tick(mock_pyobjc, monkeypatch):

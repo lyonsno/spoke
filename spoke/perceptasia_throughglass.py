@@ -639,9 +639,10 @@ class PerceptasiaThroughglassGraft(NSObject):
         self.__reassert_live_carrier_window_level()
         published = self.__start_shell_animation(direction=1)
         if published:
+            # The WebView remains a capture-present source below the full-screen
+            # compositor.  Do not front it here; the compositor shell is the
+            # human-facing surface.
             self.__set_live_carrier_window_exposure(True)
-            if self._panel is not None:
-                self._panel.orderFrontRegardless()
 
     def __schedule_content_probe(self, *, delay: float) -> None:
         scheduler = _usable_selector_scheduler(self)
@@ -803,8 +804,6 @@ class PerceptasiaThroughglassGraft(NSObject):
                 self._pending_show = False
                 self.__reassert_live_carrier_window_level()
                 self.__set_live_carrier_human_visible(True)
-                if self._panel is not None:
-                    self._panel.orderFrontRegardless()
                 return
             self.__show_verified()
 
@@ -1015,6 +1014,13 @@ class PerceptasiaThroughglassGraft(NSObject):
                 materialization_progress=materialization_progress,
                 updated=bool(added),
                 registered=self._client_registered,
+                carrier=config.get("throughglass_content_carrier"),
+                include_carrier_window_in_capture=bool(
+                    config.get("include_carrier_window_in_capture", False)
+                ),
+                clip_captured_carrier_to_shell=bool(
+                    config.get("clip_captured_carrier_to_shell", False)
+                ),
                 x=bounds.x,
                 y=bounds.y,
                 width=bounds.width,
@@ -1029,6 +1035,13 @@ class PerceptasiaThroughglassGraft(NSObject):
             materialization_progress=materialization_progress,
             updated=updated,
             registered=True,
+            carrier=config.get("throughglass_content_carrier"),
+            include_carrier_window_in_capture=bool(
+                config.get("include_carrier_window_in_capture", False)
+            ),
+            clip_captured_carrier_to_shell=bool(
+                config.get("clip_captured_carrier_to_shell", False)
+            ),
             x=bounds.x,
             y=bounds.y,
             width=bounds.width,
