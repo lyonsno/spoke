@@ -95,12 +95,11 @@ def compile_perceptasia_primitive_carrier_config(
     visible: bool = True,
     content_proof_required: bool = True,
 ) -> dict[str, object]:
-    """Compile the optical shell envelope for an external live WebView carrier.
+    """Compile the optical shell envelope for the captured Perceptasia payload.
 
-    The optical primitive places, animates, and rims the surface, but the live
-    Perceptasia WebView stays outside compositor capture. That keeps the viewer
-    interactive and prevents one optical client from sampling another client's
-    pixels while the assistant shell is also presenting.
+    The WebView is the primitive payload, not an unrelated sibling plate. The
+    compositor captures it, preserves interior pixels, and clips rectangular
+    carrier corners outside the optical body.
     """
 
     request = build_perceptasia_primitive_request(bounds, state=state, visible=visible)
@@ -133,9 +132,9 @@ def compile_perceptasia_primitive_carrier_config(
             "gpu_material_text_contrast_bias": 0.55,
             "gpu_material_ridge_emphasis": material_ridge_by_state.get(state, 0.54),
             "mip_blur_strength": 0.0,
-            "throughglass_content_carrier": "external_webview",
-            "include_carrier_window_in_capture": False,
-            "clip_captured_carrier_to_shell": False,
+            "throughglass_content_carrier": "captured_webview_payload",
+            "include_carrier_window_in_capture": True,
+            "clip_captured_carrier_to_shell": True,
             "content_proof_required": bool(content_proof_required),
         }
     )

@@ -146,7 +146,7 @@ def test_throughglass_compiles_to_public_optical_field_shell_config(mock_pyobjc)
     assert "phase" not in config["optical_field"]
 
 
-def test_throughglass_shell_preserves_live_webview_content_but_still_draws_perimeter(mock_pyobjc):
+def test_throughglass_shell_captures_live_webview_as_primitive_payload(mock_pyobjc):
     from spoke.perceptasia_throughglass import compile_perceptasia_shell_config
 
     bounds = OpticalFieldBounds(100.0, 80.0, 900.0, 520.0)
@@ -158,9 +158,9 @@ def test_throughglass_shell_preserves_live_webview_content_but_still_draws_perim
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
     assert 0.0 < config["gpu_material_opacity"] <= 0.45
     assert config["gpu_material_feather_points"] >= 90.0
-    assert config["throughglass_content_carrier"] == "external_webview"
-    assert config["include_carrier_window_in_capture"] is False
-    assert config["clip_captured_carrier_to_shell"] is False
+    assert config["throughglass_content_carrier"] == "captured_webview_payload"
+    assert config["include_carrier_window_in_capture"] is True
+    assert config["clip_captured_carrier_to_shell"] is True
 
 
 def test_throughglass_default_panel_rect_seats_independent_consumer_in_top_band(mock_pyobjc):
@@ -662,8 +662,8 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert host.add_client.call_count == 1
     config = host.add_client.call_args.args[3]
     assert config["optical_field"]["state"] == "materialize"
-    assert config["include_carrier_window_in_capture"] is False
-    assert config["clip_captured_carrier_to_shell"] is False
+    assert config["include_carrier_window_in_capture"] is True
+    assert config["clip_captured_carrier_to_shell"] is True
     if host.update_client_config.call_count:
         assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
 
@@ -755,7 +755,8 @@ def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, 
 
     assert host.add_client.call_count == 1
     assert host.add_client.call_args.args[3]["optical_field"]["state"] == "materialize"
-    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is False
+    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is True
+    assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is True
     host.update_client_config.assert_not_called()
     assert scheduled[-1] == (
         "publishThroughglassShellRestAfterMaterialize:",
