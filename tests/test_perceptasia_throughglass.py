@@ -657,15 +657,20 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
 
     assert panel.orderFrontRegardless.call_count == 1
     panel.setAlphaValue_.assert_any_call(0.0)
-    panel.setAlphaValue_.assert_called_with(1.0)
+    panel.setAlphaValue_.assert_called_with(0.0)
     assert panel.setLevel_.call_count >= 3
     assert host.add_client.call_count == 1
     config = host.add_client.call_args.args[3]
     assert config["optical_field"]["state"] == "materialize"
-    assert config["include_carrier_window_in_capture"] is True
-    assert config["clip_captured_carrier_to_shell"] is True
+    assert config["throughglass_content_carrier"] == "shell_transition_only"
+    assert config["include_carrier_window_in_capture"] is False
+    assert config["clip_captured_carrier_to_shell"] is False
     if host.update_client_config.call_count:
-        assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
+        rest_config = host.update_client_config.call_args.args[1]
+        assert rest_config["optical_field"]["state"] == "rest"
+        assert rest_config["throughglass_content_carrier"] == "captured_webview_payload"
+        assert rest_config["include_carrier_window_in_capture"] is True
+        assert rest_config["clip_captured_carrier_to_shell"] is True
 
 
 def test_throughglass_shell_publish_does_not_front_capture_carrier_above_shell(
@@ -703,9 +708,9 @@ def test_throughglass_shell_publish_does_not_front_capture_carrier_above_shell(
     assert host.add_client.call_count == 1
     assert panel.orderFrontRegardless.call_count == calls_before_publish
     assert panel.setLevel_.call_args.args[0] < 24
-    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is True
-    assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is True
-    assert host.add_client.call_args.args[3]["throughglass_content_carrier"] == "captured_webview_payload"
+    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is False
+    assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is False
+    assert host.add_client.call_args.args[3]["throughglass_content_carrier"] == "shell_transition_only"
 
 
 def test_throughglass_shell_publish_waits_for_carrier_present_tick(mock_pyobjc, monkeypatch):
@@ -798,8 +803,9 @@ def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, 
 
     assert host.add_client.call_count == 1
     assert host.add_client.call_args.args[3]["optical_field"]["state"] == "materialize"
-    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is True
-    assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is True
+    assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is False
+    assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is False
+    assert host.add_client.call_args.args[3]["throughglass_content_carrier"] == "shell_transition_only"
     assert host.add_client.call_args.args[3]["content_width_points"] < 900.0 * 0.25
     host.update_client_config.assert_not_called()
     assert scheduled[-1] == (
@@ -812,7 +818,11 @@ def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, 
     graft.animateThroughglassShellStep_(None)
 
     assert host.update_client_config.call_count == 1
-    assert host.update_client_config.call_args.args[1]["optical_field"]["state"] == "rest"
+    rest_config = host.update_client_config.call_args.args[1]
+    assert rest_config["optical_field"]["state"] == "rest"
+    assert rest_config["throughglass_content_carrier"] == "captured_webview_payload"
+    assert rest_config["include_carrier_window_in_capture"] is True
+    assert rest_config["clip_captured_carrier_to_shell"] is True
 
 
 def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
@@ -1010,11 +1020,19 @@ def test_throughglass_shell_releases_quarantined_content_after_shell_registratio
     assert ("mouse", True) in events
     assert ("content_hidden", True) not in events
 
+    alpha_visible_before_publish = events.count(("alpha", 1.0))
+    mouse_live_before_publish = events.count(("mouse", False))
     graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    assert events.count(("alpha", 1.0)) == alpha_visible_before_publish
+    assert events.count(("mouse", False)) == mouse_live_before_publish
+    assert graft.isVisible() is True
+
+    graft._pending_shell_rest_publish = True
+    graft.publishThroughglassShellRestAfterMaterialize_(None)
 
     assert ("alpha", 1.0) in events
     assert ("mouse", False) in events
-    assert graft.isVisible() is True
 
 
 def test_throughglass_pixel_proof_keeps_registered_external_carrier_visible(
@@ -1053,7 +1071,7 @@ def test_throughglass_pixel_proof_keeps_registered_external_carrier_visible(
     graft.publishThroughglassShellAfterCarrierPresent_(None)
     graft.mark_content_verified_for_test("Perceptasia 3D")
 
-    assert ("alpha", 1.0) in events
+    assert ("alpha", 1.0) not in events
     assert graft.isVisible() is True
 
 

@@ -399,6 +399,8 @@ class PerceptasiaThroughglassGraft(NSObject):
             return False
         self.__reassert_live_carrier_window_level()
         was_visible = bool(self._visible)
+        if self.__should_publish_shell():
+            self.__set_live_carrier_window_exposure(False)
         self._panel.orderFrontRegardless()
         self._visible = True
         self._pending_show = False
@@ -444,6 +446,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._visible = False
         self._assistant_overlay_parked = False
         if getattr(self, "_client_registered", False):
+            self.__set_live_carrier_window_exposure(False)
             if self.__start_shell_animation(direction=-1):
                 if was_visible:
                     self.__notify_visibility_changed(False)
@@ -590,7 +593,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         ):
             logger.info("Perceptasia Throughglass: rest shell publish skipped after state changed")
             return
-        self.__publish_shell_state("rest")
+        if self.__publish_shell_state("rest"):
+            self.__set_live_carrier_window_exposure(True)
 
     def __schedule_shell_hide_after_dismiss(self) -> bool:
         self._pending_shell_hide_finish = True
@@ -639,10 +643,10 @@ class PerceptasiaThroughglassGraft(NSObject):
         self.__reassert_live_carrier_window_level()
         published = self.__start_shell_animation(direction=1)
         if published:
-            # The WebView remains a capture-present source below the full-screen
-            # compositor.  Do not front it here; the compositor shell is the
-            # human-facing surface.
-            self.__set_live_carrier_window_exposure(True)
+            # Keep the live carrier off the screen-capture source during the
+            # transition. It becomes capture-present only when the shell reaches
+            # rest, avoiding a full rectangular source plate inside the reveal.
+            self.__set_live_carrier_window_exposure(False)
 
     def __schedule_content_probe(self, *, delay: float) -> None:
         scheduler = _usable_selector_scheduler(self)
@@ -803,7 +807,6 @@ class PerceptasiaThroughglassGraft(NSObject):
             if self.__should_publish_shell() and bool(getattr(self, "_visible", False)):
                 self._pending_show = False
                 self.__reassert_live_carrier_window_level()
-                self.__set_live_carrier_human_visible(True)
                 return
             self.__show_verified()
 

@@ -180,6 +180,7 @@ def compile_perceptasia_primitive_carrier_config(
         "dismiss": 0.62,
         "hidden": 0.0,
     }
+    capture_live_payload = bool(visible and state == "rest")
     config.update(
         {
             "visible": bool(visible and state != "hidden"),
@@ -196,9 +197,11 @@ def compile_perceptasia_primitive_carrier_config(
             "gpu_material_text_contrast_bias": 0.55,
             "gpu_material_ridge_emphasis": material_ridge_by_state.get(state, 0.54),
             "mip_blur_strength": 0.0,
-            "throughglass_content_carrier": "captured_webview_payload",
-            "include_carrier_window_in_capture": True,
-            "clip_captured_carrier_to_shell": True,
+            "throughglass_content_carrier": (
+                "captured_webview_payload" if capture_live_payload else "shell_transition_only"
+            ),
+            "include_carrier_window_in_capture": capture_live_payload,
+            "clip_captured_carrier_to_shell": capture_live_payload,
             "content_proof_required": bool(content_proof_required),
         }
     )
