@@ -341,7 +341,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             | NSWindowCollectionBehaviorStationary
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
-        panel.setFloatingPanel_(True)
+        panel.setFloatingPanel_(not primitive_shell)
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setLevel_(_throughglass_window_level())
 

@@ -459,7 +459,7 @@ def test_throughglass_panel_level_is_reasserted_after_floating_panel_setup(mock_
     assert events[-2:] == [("floating", True), ("level", 25)]
 
 
-def test_throughglass_shell_publish_places_webview_under_compositor_for_capture(
+def test_throughglass_shell_publish_keeps_webview_nonfloating_under_compositor(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -484,7 +484,7 @@ def test_throughglass_shell_publish_places_webview_under_compositor_for_capture(
     graft.setup()
 
     assert ("level", 23) in events
-    assert events[-2:] == [("floating", True), ("level", 23)]
+    assert events[-2:] == [("floating", False), ("level", 23)]
 
 
 def test_throughglass_panel_can_opt_into_click_through_debug_mode(mock_pyobjc, monkeypatch):
