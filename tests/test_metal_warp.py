@@ -204,8 +204,10 @@ def test_metal_shader_keeps_captured_carrier_exterior_warp_before_source_escape(
     source = metal_warp._metal_shader_source()
 
     assert "float2 sourceP = result - c;" in source
-    assert "float sourceCapsuleSdf = sdStadium(sourceP, spineHalfX, spineHalfY, capsuleRadius);" in source
-    assert "result = carrierPlateEscapeSample(result, c, sourceP, halfRect, params);" in source
+    assert "float sourceCarrierPlateSdf = sdStadium" in source
+    assert "carrierPlateSpineHalfX" in source
+    assert "carrierPlateHalfRect" in source
+    assert "result = carrierPlateEscapeSample(result, c, sourceP, carrierPlateHalfRect, params);" in source
     assert "result = carrierPlateEscapeSample(d, c, p, halfRect, params);" not in source
     assert "scaleX = 1.0f;" not in source.split("float2 sourceP = result - c;", 1)[1].split(
         "// Depth-dependent blur via mipmap LOD.",
@@ -365,6 +367,32 @@ def test_warp_dispatch_box_covers_stable_gpu_material_basis():
     assert box[2] >= 1040
     assert box[1] <= 435
     assert box[3] >= 465
+
+
+def test_clipped_captured_carrier_dispatch_covers_stable_source_plate_during_reveal():
+    box = metal_warp._warp_dispatch_box(
+        1440.0,
+        900.0,
+        {
+            "center_x": 720.0,
+            "center_y": 450.0,
+            "content_width_points": 72.0,
+            "content_height_points": 8.0,
+            "corner_radius_points": 4.0,
+            "bleed_zone_frac": 0.0,
+            "gpu_material_enabled": 1.0,
+            "gpu_material_base_width_points": 640.0,
+            "gpu_material_base_height_points": 120.0,
+            "gpu_material_base_corner_radius_points": 28.0,
+            "gpu_material_height_frac": 0.04,
+            "clip_captured_carrier_to_shell": True,
+        },
+    )
+
+    assert box[0] <= 400
+    assert box[2] >= 1040
+    assert box[1] <= 390
+    assert box[3] >= 510
 
 
 def test_warp_exterior_mix_weight_keeps_boundary_strength_but_starts_later_with_tighter_width():

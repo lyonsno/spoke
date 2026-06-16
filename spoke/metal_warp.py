@@ -123,10 +123,10 @@ def _warp_dispatch_box(width: float, height: float, shell_config: dict[str, floa
     capsule_r = _shell_corner_radius(shell_config)
     if float(shell_config.get("gpu_material_enabled", 0.0)) >= 0.5:
         material_w = float(shell_config.get("gpu_material_base_width_points", rect_w))
-        material_h = float(shell_config.get("gpu_material_base_height_points", rect_h)) * min(
-            max(float(shell_config.get("gpu_material_height_frac", 1.0)), 0.0),
-            1.0,
-        )
+        material_base_h = float(shell_config.get("gpu_material_base_height_points", rect_h))
+        material_h = material_base_h * min(max(float(shell_config.get("gpu_material_height_frac", 1.0)), 0.0), 1.0)
+        if bool(shell_config.get("clip_captured_carrier_to_shell", False)):
+            material_h = material_base_h
         rect_w = max(rect_w, material_w)
         rect_h = max(rect_h, material_h)
         capsule_r = max(
@@ -335,17 +335,27 @@ kernel void opticalShellWarp(
     float capsuleSdf = sdStadium(p, spineHalfX, spineHalfY, capsuleRadius);
     bool clipCapturedCarrier = params.clipCapturedCarrierToShell > 0.5f;
     bool insideCarrierRect = abs(p.x) <= halfRect.x && abs(p.y) <= halfRect.y;
+    float carrierPlateWidth = clipCapturedCarrier ? max(params.gpuMaterialBaseWidth, params.rectWidth) : params.rectWidth;
+    float carrierPlateHeight = clipCapturedCarrier ? max(params.gpuMaterialBaseHeight, params.rectHeight) : params.rectHeight;
+    float2 carrierPlateHalfRect = float2(carrierPlateWidth * 0.5f, carrierPlateHeight * 0.5f);
+    float carrierPlateRadius = params.gpuMaterialBaseCornerRadius > 0.0f
+        ? min(params.gpuMaterialBaseCornerRadius, carrierPlateHalfRect.y)
+        : capsuleRadius;
+    carrierPlateRadius = max(carrierPlateRadius, 1.0f);
+    float carrierPlateSpineHalfX = max(carrierPlateHalfRect.x - carrierPlateRadius, 0.0f);
+    float carrierPlateSpineHalfY = max(carrierPlateHalfRect.y - carrierPlateRadius, 0.0f);
+    bool insideCarrierPlateRect = abs(p.x) <= carrierPlateHalfRect.x && abs(p.y) <= carrierPlateHalfRect.y;
 
     float bleedZone = capsuleRadius * max(params.bleedZoneFrac, 0.0f);
     if (capsuleSdf > bleedZone) {{
         // Outside warp zone: pass through unwarped content.
         float2 passthroughSample = d;
-        if (clipCapturedCarrier && insideCarrierRect) {{
+        if (clipCapturedCarrier && insideCarrierPlateRect) {{
             // Captured WebView carriers live in the same SCK source as the
             // background. Outside the optical body, suppress raw captured
             // carrier pixels outside the optical body by sampling just past
             // the carrier plate instead of showing its rectangular corner.
-            passthroughSample = carrierPlateEscapeSample(d, c, p, halfRect, params);
+            passthroughSample = carrierPlateEscapeSample(d, c, p, carrierPlateHalfRect, params);
         }}
         outTexture.write(inTexture.sample(bilinearSampler, passthroughSample), pixel);
         return;
@@ -498,10 +508,16 @@ kernel void opticalShellWarp(
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
     if (clipCapturedCarrier) {{
         float2 sourceP = result - c;
-        bool sourceInsideCarrierRect = abs(sourceP.x) <= halfRect.x && abs(sourceP.y) <= halfRect.y;
-        float sourceCapsuleSdf = sdStadium(sourceP, spineHalfX, spineHalfY, capsuleRadius);
-        if (sourceInsideCarrierRect && sourceCapsuleSdf > 0.0f) {{
-            result = carrierPlateEscapeSample(result, c, sourceP, halfRect, params);
+        bool sourceInsideCarrierPlateRect =
+            abs(sourceP.x) <= carrierPlateHalfRect.x && abs(sourceP.y) <= carrierPlateHalfRect.y;
+        float sourceCarrierPlateSdf = sdStadium(
+            sourceP,
+            carrierPlateSpineHalfX,
+            carrierPlateSpineHalfY,
+            carrierPlateRadius
+        );
+        if (sourceInsideCarrierPlateRect && sourceCarrierPlateSdf > 0.0f) {{
+            result = carrierPlateEscapeSample(result, c, sourceP, carrierPlateHalfRect, params);
         }}
     }}
 
