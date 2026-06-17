@@ -29,9 +29,10 @@ PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_ENV = (
 )
 PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL_ENV = "SPOKE_PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL"
 _PRIMITIVE_MATERIALIZATION_SPREAD_END = 0.62
-_PRIMITIVE_MATERIALIZATION_BLOOM_START = 0.20
+_PRIMITIVE_MATERIALIZATION_BLOOM_START = _PRIMITIVE_MATERIALIZATION_SPREAD_END
 _PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC = 0.052
 _PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.014
+_PRIMITIVE_MATERIALIZATION_SEAM_HEIGHT_FRAC = 0.045
 
 
 def _clamp01(value: float) -> float:
@@ -45,6 +46,11 @@ def _lerp(a: float, b: float, t: float) -> float:
 def _smoothstep(value: float) -> float:
     t = _clamp01(value)
     return t * t * (3.0 - 2.0 * t)
+
+
+def _snap_ease_in(value: float) -> float:
+    t = _clamp01(value)
+    return t * t * t * (t * (6.0 * t - 15.0) + 10.0)
 
 
 def _apply_materialization_progress(config: dict[str, object], progress: float) -> None:
@@ -61,15 +67,21 @@ def _apply_materialization_progress(config: dict[str, object], progress: float) 
     base_ring = max(float(config.get("ring_amplitude_points", 0.0)), 0.0)
     base_tail_amp = max(float(config.get("tail_amplitude_points", 0.0)), 0.0)
 
-    spread_t = _smoothstep(p / _PRIMITIVE_MATERIALIZATION_SPREAD_END)
-    bloom_t = _smoothstep(
+    spread_t = _snap_ease_in(p / _PRIMITIVE_MATERIALIZATION_SPREAD_END)
+    bloom_t = _snap_ease_in(
         (p - _PRIMITIVE_MATERIALIZATION_BLOOM_START)
         / max(1.0 - _PRIMITIVE_MATERIALIZATION_BLOOM_START, 1e-6)
     )
-    seed_w = max(24.0, min(base_w * _PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC, 96.0))
+    seed_w = max(24.0, min(base_w * _PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
     seed_h = max(2.5, min(base_h * _PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC, 9.0))
+    seam_h = max(
+        seed_h,
+        min(base_h * _PRIMITIVE_MATERIALIZATION_SEAM_HEIGHT_FRAC, 48.0),
+    )
+    pre_bloom_t = _smoothstep(p / _PRIMITIVE_MATERIALIZATION_SPREAD_END)
     width = _lerp(seed_w, base_w, spread_t)
-    height = _lerp(seed_h, base_h, bloom_t)
+    slit_height = _lerp(seed_h, seam_h, pre_bloom_t)
+    height = _lerp(slit_height, base_h, bloom_t)
     edge_t = max(0.18, _smoothstep(max(spread_t, bloom_t)))
 
     config["_materialization_base_width_points"] = base_w

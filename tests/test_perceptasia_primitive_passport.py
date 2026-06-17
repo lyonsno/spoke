@@ -142,6 +142,22 @@ def test_passport_materialization_progress_compiles_transient_pressure_slit_with
     assert final["content_height_points"] == pytest.approx(rest["content_height_points"])
 
 
+def test_passport_materialization_unzips_horizontally_before_vertical_bloom():
+    rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    seam_open = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.62
+    )
+    bloom = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.82
+    )
+
+    assert seam_open["content_width_points"] >= rest["content_width_points"] * 0.86
+    assert seam_open["content_height_points"] <= rest["content_height_points"] * 0.12
+    assert seam_open["gpu_material_height_frac"] <= 0.12
+    assert bloom["content_height_points"] > seam_open["content_height_points"] * 2.0
+    assert bloom["content_width_points"] >= seam_open["content_width_points"]
+
+
 def test_passport_carrier_exposes_cut_radius_as_coupled_shell_contract():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
 
