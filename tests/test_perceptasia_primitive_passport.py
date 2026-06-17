@@ -82,10 +82,30 @@ def test_passport_carrier_uses_flat_captured_scene_profile_not_agent_card_lens()
         assert config["ring_amplitude_points"] <= 18.0
         assert config["exterior_mix_width_points"] <= 47.0
 
-    assert rest_config["band_width_points"] <= 13.0
-    assert rest_config["tail_width_points"] <= 8.0
-    assert rest_config["ring_amplitude_points"] <= 10.5
-    assert rest_config["exterior_mix_width_points"] <= 31.5
+    assert rest_config["band_width_points"] <= 18.0
+    assert rest_config["tail_width_points"] <= 13.0
+    assert rest_config["ring_amplitude_points"] <= 15.0
+    assert rest_config["exterior_mix_width_points"] <= 40.0
+
+
+def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
+    rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    materialize = compile_perceptasia_primitive_carrier_config(_bounds(), state="materialize")
+
+    assert rest["throughglass_content_carrier"] == "captured_webview_payload"
+    assert rest["clip_captured_carrier_to_shell"] is True
+    assert rest["mip_blur_strength"] == pytest.approx(0.0)
+    assert rest["core_magnification"] == pytest.approx(1.0)
+
+    assert rest["band_width_points"] >= 15.5
+    assert rest["tail_width_points"] >= 10.5
+    assert rest["ring_amplitude_points"] >= 12.0
+    assert rest["exterior_mix_width_points"] >= 35.0
+
+    assert rest["band_width_points"] < materialize["band_width_points"]
+    assert rest["tail_width_points"] < materialize["tail_width_points"]
+    assert rest["ring_amplitude_points"] < materialize["ring_amplitude_points"]
+    assert rest["exterior_mix_width_points"] < materialize["exterior_mix_width_points"]
 
 
 def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload():

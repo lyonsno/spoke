@@ -134,6 +134,11 @@ def build_perceptasia_primitive_request(
             base="captured_scene",
             params={
                 "mip_blur_strength": 0.0,
+                "band_width_frac": 0.031,
+                "tail_width_frac": 0.021,
+                "ring_amplitude_frac": 0.024,
+                "tail_amplitude_frac": 0.008,
+                "exterior_mix_frac": 0.069,
             },
             slots={
                 "materialize": OpticalFieldSlotOverride(
