@@ -1035,6 +1035,65 @@ def test_throughglass_shell_releases_quarantined_content_after_shell_registratio
     assert ("mouse", False) in events
 
 
+def test_throughglass_rest_publish_exposes_carrier_before_captured_payload(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    events = []
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.setAlphaValue_.side_effect = lambda alpha: events.append(("alpha", alpha))
+    panel.setIgnoresMouseEvents_.side_effect = lambda ignored: events.append(("mouse", ignored))
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    host = MagicMock()
+    host.add_client.return_value = True
+
+    def record_update(_client_id, config):
+        events.append(("publish", config["optical_field"]["state"], config["throughglass_content_carrier"]))
+        return True
+
+    host.update_client_config.side_effect = record_update
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+    scheduled = []
+    graft.performSelector_withObject_afterDelay_ = (
+        lambda selector, obj, delay: scheduled.append((selector, obj, delay))
+    )
+
+    assert graft.show() is True
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    assert ("publish", "rest", "captured_webview_payload") not in events
+    assert scheduled[-1] == (
+        "animateThroughglassShellStep:",
+        None,
+        pytest.approx(1.0 / 60.0),
+    )
+
+    graft._throughglass_shell_animation_started_at -= 1.0
+    graft.animateThroughglassShellStep_(None)
+
+    rest_publish_index = events.index(("publish", "rest", "captured_webview_payload"))
+    alpha_release_index = events.index(("alpha", 1.0))
+    assert alpha_release_index < rest_publish_index
+
+
 def test_throughglass_pixel_proof_keeps_registered_external_carrier_visible(
     mock_pyobjc, monkeypatch
 ):

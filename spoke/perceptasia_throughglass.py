@@ -593,8 +593,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         ):
             logger.info("Perceptasia Throughglass: rest shell publish skipped after state changed")
             return
-        if self.__publish_shell_state("rest"):
-            self.__set_live_carrier_window_exposure(True)
+        self.__publish_shell_rest_state()
 
     def __schedule_shell_hide_after_dismiss(self) -> bool:
         self._pending_shell_hide_finish = True
@@ -840,6 +839,13 @@ class PerceptasiaThroughglassGraft(NSObject):
         if callable(set_level):
             set_level(_throughglass_window_level())
 
+    def __publish_shell_rest_state(self) -> bool:
+        self.__set_live_carrier_window_exposure(True)
+        published = self.__publish_shell_state("rest")
+        if not published:
+            self.__set_live_carrier_window_exposure(False)
+        return published
+
     def __set_live_carrier_human_visible(self, visible: bool) -> None:
         panel = self._panel
         if panel is None:
@@ -968,7 +974,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             self._throughglass_shell_animation_direction = 0
             self._throughglass_shell_animation_duration = 0.0
             if direction > 0:
-                self.__publish_shell_state("rest")
+                self.__publish_shell_rest_state()
             else:
                 self.__finish_hide_after_dismiss()
             return
