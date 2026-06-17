@@ -357,6 +357,8 @@ def test_throughglass_primitive_shell_hides_webkit_scrollbars_before_capture(
     assert "::-webkit-scrollbar" in source
     assert "overflow: hidden" in source
     assert "background: #050708" in source
+    assert "--spoke-throughglass-radius" in source
+    assert "clip-path" in source
 
 
 def test_throughglass_primitive_capture_css_uses_dark_scene_backing_not_source_plate(
@@ -369,6 +371,10 @@ def test_throughglass_primitive_capture_css_uses_dark_scene_backing_not_source_p
 
     assert "#050708" in css
     assert "background: transparent" not in css
+    assert "--spoke-throughglass-radius" in css
+    assert "border-radius: var(--spoke-throughglass-radius)" in css
+    assert "clip-path: inset(0 round var(--spoke-throughglass-radius))" in css
+    assert "canvas" in css
 
 
 def test_throughglass_shell_probe_rejects_dom_controls_without_scene_pixels(

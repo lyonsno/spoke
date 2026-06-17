@@ -89,9 +89,14 @@ _THROUGHGLASS_MEDIA_CAPTURE_METADATA = {
 }
 _THROUGHGLASS_CONTENT_PROBE_DEFAULT_MAX_ATTEMPTS = 120
 _THROUGHGLASS_PRIMITIVE_CAPTURE_CSS = """
+:root {
+  --spoke-throughglass-radius: 42px;
+}
 html, body {
   overflow: hidden !important;
   background: #050708 !important;
+  border-radius: var(--spoke-throughglass-radius) !important;
+  clip-path: inset(0 round var(--spoke-throughglass-radius)) !important;
 }
 * {
   scrollbar-width: none !important;
@@ -100,6 +105,14 @@ html, body {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
+}
+body > * {
+  border-radius: var(--spoke-throughglass-radius) !important;
+  clip-path: inset(0 round var(--spoke-throughglass-radius)) !important;
+}
+canvas {
+  border-radius: var(--spoke-throughglass-radius) !important;
+  clip-path: inset(0 round var(--spoke-throughglass-radius)) !important;
 }
 """
 
