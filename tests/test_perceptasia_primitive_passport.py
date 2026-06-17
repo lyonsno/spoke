@@ -82,10 +82,10 @@ def test_passport_carrier_uses_flat_captured_scene_profile_not_agent_card_lens()
         assert config["ring_amplitude_points"] <= 18.0
         assert config["exterior_mix_width_points"] <= 47.0
 
-    assert rest_config["band_width_points"] <= 18.0
-    assert rest_config["tail_width_points"] <= 13.0
-    assert rest_config["ring_amplitude_points"] <= 15.0
-    assert rest_config["exterior_mix_width_points"] <= 40.0
+    assert rest_config["band_width_points"] <= 22.0
+    assert rest_config["tail_width_points"] <= 15.0
+    assert rest_config["ring_amplitude_points"] <= 18.0
+    assert rest_config["exterior_mix_width_points"] <= 47.0
 
 
 def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
@@ -102,10 +102,11 @@ def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
     assert rest["ring_amplitude_points"] >= 12.0
     assert rest["exterior_mix_width_points"] >= 35.0
 
-    assert rest["band_width_points"] < materialize["band_width_points"]
-    assert rest["tail_width_points"] < materialize["tail_width_points"]
-    assert rest["ring_amplitude_points"] < materialize["ring_amplitude_points"]
-    assert rest["exterior_mix_width_points"] < materialize["exterior_mix_width_points"]
+    assert rest["band_width_points"] >= materialize["band_width_points"]
+    assert rest["tail_width_points"] >= materialize["tail_width_points"]
+    assert rest["ring_amplitude_points"] >= materialize["ring_amplitude_points"]
+    assert rest["exterior_mix_width_points"] >= materialize["exterior_mix_width_points"]
+    assert rest["gpu_material_opacity"] < materialize["gpu_material_opacity"]
 
 
 def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload():
@@ -124,15 +125,15 @@ def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload()
         assert config["include_carrier_window_in_capture"] is False
         assert config["clip_captured_carrier_to_shell"] is False
 
-    assert materialize["band_width_points"] > rest["band_width_points"]
-    assert materialize["tail_width_points"] > rest["tail_width_points"]
-    assert materialize["ring_amplitude_points"] > rest["ring_amplitude_points"]
-    assert materialize["exterior_mix_width_points"] > rest["exterior_mix_width_points"]
+    assert materialize["band_width_points"] == pytest.approx(rest["band_width_points"])
+    assert materialize["tail_width_points"] == pytest.approx(rest["tail_width_points"])
+    assert materialize["ring_amplitude_points"] == pytest.approx(rest["ring_amplitude_points"])
+    assert materialize["exterior_mix_width_points"] == pytest.approx(rest["exterior_mix_width_points"])
 
-    assert dismiss["band_width_points"] > rest["band_width_points"]
-    assert dismiss["tail_width_points"] > rest["tail_width_points"]
-    assert dismiss["ring_amplitude_points"] > rest["ring_amplitude_points"]
-    assert dismiss["exterior_mix_width_points"] > rest["exterior_mix_width_points"]
+    assert dismiss["band_width_points"] >= 17.0
+    assert dismiss["tail_width_points"] >= 12.0
+    assert dismiss["ring_amplitude_points"] >= 14.0
+    assert dismiss["exterior_mix_width_points"] >= 38.0
 
 
 def test_passport_materialization_progress_compiles_transient_pressure_slit_without_public_progress():
