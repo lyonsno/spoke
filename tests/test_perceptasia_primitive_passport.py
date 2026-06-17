@@ -143,6 +143,9 @@ def test_passport_materialization_progress_compiles_transient_pressure_slit_with
     mid = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize", materialization_progress=0.5
     )
+    late = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.9
+    )
     final = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize", materialization_progress=1.0
     )
@@ -155,26 +158,39 @@ def test_passport_materialization_progress_compiles_transient_pressure_slit_with
     assert seed["corner_radius_points"] <= seed["content_height_points"] * 0.5
     assert seed["gpu_material_base_width_points"] == pytest.approx(rest["content_width_points"])
     assert seed["gpu_material_base_height_points"] == pytest.approx(rest["content_height_points"])
-    assert 0.0 < seed["gpu_material_height_frac"] < mid["gpu_material_height_frac"] < 1.0
-    assert seed["band_width_points"] < mid["band_width_points"] < final["band_width_points"]
-    assert mid["content_width_points"] < final["content_width_points"]
+    assert 0.0 < seed["gpu_material_height_frac"] <= mid["gpu_material_height_frac"] < late["gpu_material_height_frac"] < 1.0
+    assert seed["band_width_points"] < mid["band_width_points"] <= final["band_width_points"]
+    assert seed["content_width_points"] < mid["content_width_points"] <= final["content_width_points"]
     assert final["content_width_points"] == pytest.approx(rest["content_width_points"])
     assert final["content_height_points"] == pytest.approx(rest["content_height_points"])
 
 
-def test_passport_materialization_unzips_horizontally_before_vertical_bloom():
+def test_passport_materialization_uses_assistant_style_quick_seam_then_slow_bloom():
     rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    early_seam = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.20
+    )
     seam_open = compile_perceptasia_primitive_carrier_config(
+        _bounds(), state="materialize", materialization_progress=0.25
+    )
+    gathering = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize", materialization_progress=0.62
     )
     bloom = compile_perceptasia_primitive_carrier_config(
-        _bounds(), state="materialize", materialization_progress=0.82
+        _bounds(), state="materialize", materialization_progress=0.94
     )
 
+    assert early_seam["content_width_points"] > rest["content_width_points"] * 0.45
+    assert early_seam["content_height_points"] <= rest["content_height_points"] * 0.05
     assert seam_open["content_width_points"] >= rest["content_width_points"] * 0.86
-    assert seam_open["content_height_points"] <= rest["content_height_points"] * 0.12
-    assert seam_open["gpu_material_height_frac"] <= 0.12
-    assert bloom["content_height_points"] > seam_open["content_height_points"] * 2.0
+    assert seam_open["content_height_points"] <= rest["content_height_points"] * 0.06
+    assert seam_open["gpu_material_opacity"] < 0.005
+    assert seam_open["gpu_material_height_frac"] <= 0.02
+    assert gathering["content_height_points"] > seam_open["content_height_points"]
+    assert gathering["content_height_points"] < rest["content_height_points"] * 0.60
+    assert gathering["gpu_material_height_frac"] < 0.12
+    assert bloom["content_height_points"] > rest["content_height_points"] * 0.80
+    assert bloom["gpu_material_height_frac"] > 0.50
     assert bloom["content_width_points"] >= seam_open["content_width_points"]
 
 

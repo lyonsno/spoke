@@ -28,11 +28,14 @@ PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_ENV = (
     "SPOKE_PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_REQUIRED"
 )
 PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL_ENV = "SPOKE_PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL"
-_PRIMITIVE_MATERIALIZATION_SPREAD_END = 0.62
+_PRIMITIVE_MATERIALIZATION_SPREAD_END = 0.24
 _PRIMITIVE_MATERIALIZATION_BLOOM_START = _PRIMITIVE_MATERIALIZATION_SPREAD_END
 _PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC = 0.052
-_PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.014
-_PRIMITIVE_MATERIALIZATION_SEAM_HEIGHT_FRAC = 0.045
+_PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.028
+_PRIMITIVE_MATERIAL_FILL_START = _PRIMITIVE_MATERIALIZATION_SPREAD_END
+_PRIMITIVE_MATERIAL_FILL_SOLID_AT = 0.80
+_PRIMITIVE_MATERIAL_FILL_FULL_AT = 0.95
+_PRIMITIVE_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
 
 
 def _clamp01(value: float) -> float:
@@ -51,6 +54,42 @@ def _smoothstep(value: float) -> float:
 def _snap_ease_in(value: float) -> float:
     t = _clamp01(value)
     return t * t * t * (t * (6.0 * t - 15.0) + 10.0)
+
+
+def _materialization_fill_state(progress: float) -> dict[str, float]:
+    p = _clamp01(progress)
+    if p <= _PRIMITIVE_MATERIAL_FILL_START:
+        opacity = 0.0
+    else:
+        opacity = _smoothstep(
+            (p - _PRIMITIVE_MATERIAL_FILL_START)
+            / max(
+                _PRIMITIVE_MATERIAL_FILL_SOLID_AT - _PRIMITIVE_MATERIAL_FILL_START,
+                1e-6,
+            )
+        )
+    height = _lerp(
+        _PRIMITIVE_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+        1.0,
+        _clamp01(
+            (p - _PRIMITIVE_MATERIAL_FILL_SOLID_AT)
+            / max(
+                _PRIMITIVE_MATERIAL_FILL_FULL_AT - _PRIMITIVE_MATERIAL_FILL_SOLID_AT,
+                1e-6,
+            )
+        )
+        ** 3.0,
+    )
+    warp_bloom = _snap_ease_in(
+        (p - _PRIMITIVE_MATERIALIZATION_BLOOM_START)
+        / max(1.0 - _PRIMITIVE_MATERIALIZATION_BLOOM_START, 1e-6)
+    )
+    return {
+        "opacity": _clamp01(opacity),
+        "height_frac": _clamp01(
+            min(height, max(_PRIMITIVE_MATERIAL_FILL_MIN_HEIGHT_FRAC, warp_bloom))
+        ),
+    }
 
 
 def _apply_materialization_progress(config: dict[str, object], progress: float) -> None:
@@ -73,16 +112,11 @@ def _apply_materialization_progress(config: dict[str, object], progress: float) 
         / max(1.0 - _PRIMITIVE_MATERIALIZATION_BLOOM_START, 1e-6)
     )
     seed_w = max(24.0, min(base_w * _PRIMITIVE_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
-    seed_h = max(2.5, min(base_h * _PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC, 9.0))
-    seam_h = max(
-        seed_h,
-        min(base_h * _PRIMITIVE_MATERIALIZATION_SEAM_HEIGHT_FRAC, 48.0),
-    )
-    pre_bloom_t = _smoothstep(p / _PRIMITIVE_MATERIALIZATION_SPREAD_END)
+    seed_h = max(2.5, min(base_h * _PRIMITIVE_MATERIALIZATION_SEED_HEIGHT_FRAC, 7.0))
     width = _lerp(seed_w, base_w, spread_t)
-    slit_height = _lerp(seed_h, seam_h, pre_bloom_t)
-    height = _lerp(slit_height, base_h, bloom_t)
+    height = _lerp(seed_h, base_h, bloom_t)
     edge_t = max(0.18, _smoothstep(max(spread_t, bloom_t)))
+    fill_state = _materialization_fill_state(p)
 
     config["_materialization_base_width_points"] = base_w
     config["_materialization_base_height_points"] = base_h
@@ -98,7 +132,11 @@ def _apply_materialization_progress(config: dict[str, object], progress: float) 
     config["gpu_material_base_width_points"] = base_w
     config["gpu_material_base_height_points"] = base_h
     config["gpu_material_base_corner_radius_points"] = base_radius
-    config["gpu_material_height_frac"] = max(0.015, min(height / base_h, 1.0))
+    config["gpu_material_height_frac"] = fill_state["height_frac"]
+    config["gpu_material_opacity"] = min(
+        float(config.get("gpu_material_opacity", 1.0)),
+        fill_state["opacity"],
+    )
     if isinstance(config.get("optical_field"), dict):
         optical_field = dict(config["optical_field"])
         optical_field["cut_radius_points"] = config["cut_radius_points"]
