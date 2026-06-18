@@ -296,6 +296,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._throughglass_shell_animation_direction = 0
         self._throughglass_shell_animation_started_at = 0.0
         self._throughglass_shell_animation_duration = 0.0
+        self._carrier_content_width = 0.0
+        self._carrier_content_height = 0.0
         self._assistant_overlay_parked = False
         self._visibility_callback = None
         return self
@@ -373,6 +375,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel.contentView().addSubview_(content)
         self._panel = panel
         self._content_view = content
+        self._carrier_content_width = float(width)
+        self._carrier_content_height = float(height)
         if self._content_kind == "webview":
             self.__schedule_content_probe(delay=0.25)
         else:
@@ -852,6 +856,7 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def __publish_shell_rest_state(self) -> bool:
         self.__reassert_live_carrier_window_level()
+        self.__apply_live_carrier_shell_phase("rest", 1.0)
         self.__set_live_carrier_window_exposure(True)
         panel = self._panel
         order_front = getattr(panel, "orderFrontRegardless", None) if panel is not None else None
@@ -889,6 +894,85 @@ class PerceptasiaThroughglassGraft(NSObject):
                 else True
             )
 
+    def __apply_live_carrier_shell_phase(self, state: str, progress: float | None) -> None:
+        content = self._content_view
+        if content is None:
+            return
+        final_width, final_height = self.__live_carrier_content_size()
+        if final_width <= 0.0 or final_height <= 0.0:
+            return
+        if state == "rest":
+            target_width = final_width
+            target_height = final_height
+        else:
+            config = compile_perceptasia_shell_config(
+                OpticalFieldBounds(0.0, 0.0, final_width, final_height),
+                state=state,
+                visible=True,
+                materialization_progress=progress,
+            )
+            target_width = min(
+                final_width,
+                max(1.0, float(config.get("content_width_points", final_width))),
+            )
+            target_height = min(
+                final_height,
+                max(1.0, float(config.get("content_height_points", final_height))),
+            )
+        origin_x = (final_width - target_width) * 0.5
+        origin_y = (final_height - target_height) * 0.5
+        setter = getattr(content, "setFrame_", None)
+        if callable(setter):
+            setter(NSMakeRect(origin_x, origin_y, target_width, target_height))
+        radius = _throughglass_carrier_corner_radius(target_width, target_height)
+        layer_getter = getattr(content, "layer", None)
+        layer = layer_getter() if callable(layer_getter) else None
+        _shape_throughglass_carrier_layer(layer, radius=radius)
+        display_setter = getattr(content, "setNeedsDisplay_", None)
+        if callable(display_setter):
+            display_setter(True)
+        self.__set_live_carrier_phase_exposure(state, progress)
+
+    def __live_carrier_content_size(self) -> tuple[float, float]:
+        width = float(getattr(self, "_carrier_content_width", 0.0) or 0.0)
+        height = float(getattr(self, "_carrier_content_height", 0.0) or 0.0)
+        root = None
+        panel = self._panel
+        content_root_getter = getattr(panel, "contentView", None) if panel is not None else None
+        if callable(content_root_getter):
+            root = content_root_getter()
+        frame_getter = getattr(root, "frame", None)
+        if callable(frame_getter):
+            try:
+                _x, _y, frame_width, frame_height = _rect_numbers(frame_getter())
+            except Exception:
+                frame_width = frame_height = 0.0
+            if frame_width > 0.0 and frame_height > 0.0:
+                width = frame_width
+                height = frame_height
+        return width, height
+
+    def __set_live_carrier_phase_exposure(self, state: str, progress: float | None) -> None:
+        panel = self._panel
+        if panel is None:
+            return
+        if state == "rest":
+            alpha = 1.0
+            accepts_mouse = not _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH")
+        else:
+            p = _clamp01_float(0.0 if progress is None else float(progress))
+            if state == "materialize":
+                alpha = _clamp01_float((p - 0.12) / 0.50)
+            else:
+                alpha = _clamp01_float((p - 0.08) / 0.32)
+            accepts_mouse = False
+        set_alpha = getattr(panel, "setAlphaValue_", None)
+        if callable(set_alpha):
+            set_alpha(alpha)
+        set_ignores_mouse = getattr(panel, "setIgnoresMouseEvents_", None)
+        if callable(set_ignores_mouse):
+            set_ignores_mouse(not accepts_mouse)
+
     def __teardown_content_carrier(self) -> None:
         content = self._content_view
         panel = self._panel
@@ -908,6 +992,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_kind = "uninitialized"
         self._content_verified = False
         self._content_failure = None
+        self._carrier_content_width = 0.0
+        self._carrier_content_height = 0.0
         self._content_probe_attempts = 0
         if panel is not None:
             logger.info("Perceptasia Throughglass: content carrier torn down")
@@ -968,6 +1054,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._throughglass_shell_animation_started_at = time.perf_counter()
         progress = 0.0 if self._throughglass_shell_animation_direction > 0 else 1.0
         state = "materialize" if self._throughglass_shell_animation_direction > 0 else "dismiss"
+        self.__apply_live_carrier_shell_phase(state, progress)
         published = self.__publish_shell_state(
             state,
             visible=True,
@@ -994,6 +1081,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             else:
                 self.__finish_hide_after_dismiss()
             return
+        self.__apply_live_carrier_shell_phase(state, progress)
         self.__publish_shell_state(
             state,
             visible=True,
@@ -1091,6 +1179,10 @@ def _real_attr(value, attr: str, default: float = 0.0) -> float:
     if isinstance(candidate, numbers.Real):
         return float(candidate)
     return float(default)
+
+
+def _clamp01_float(value: float) -> float:
+    return min(max(float(value), 0.0), 1.0)
 
 
 def _rect_numbers(rect) -> tuple[float, float, float, float]:
