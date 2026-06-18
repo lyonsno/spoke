@@ -465,7 +465,7 @@ def test_throughglass_panel_level_is_reasserted_after_floating_panel_setup(mock_
     assert events[-2:] == [("floating", True), ("level", 25)]
 
 
-def test_throughglass_shell_publish_keeps_webview_nonfloating_under_compositor(
+def test_throughglass_shell_publish_keeps_external_webview_above_compositor(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -489,8 +489,8 @@ def test_throughglass_shell_publish_keeps_webview_nonfloating_under_compositor(
     graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
     graft.setup()
 
-    assert ("level", 23) in events
-    assert events[-2:] == [("floating", False), ("level", 23)]
+    assert ("level", 25) in events
+    assert events[-2:] == [("floating", True), ("level", 25)]
 
 
 def test_throughglass_panel_can_opt_into_click_through_debug_mode(mock_pyobjc, monkeypatch):
@@ -679,7 +679,7 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
         assert rest_config["clip_captured_carrier_to_shell"] is False
 
 
-def test_throughglass_shell_publish_does_not_front_capture_carrier_above_shell(
+def test_throughglass_shell_publish_does_not_front_hidden_external_carrier_during_transition(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -713,7 +713,7 @@ def test_throughglass_shell_publish_does_not_front_capture_carrier_above_shell(
 
     assert host.add_client.call_count == 1
     assert panel.orderFrontRegardless.call_count == calls_before_publish
-    assert panel.setLevel_.call_args.args[0] < 24
+    assert panel.setLevel_.call_args.args[0] == 25
     assert host.add_client.call_args.args[3]["include_carrier_window_in_capture"] is False
     assert host.add_client.call_args.args[3]["clip_captured_carrier_to_shell"] is False
     assert host.add_client.call_args.args[3]["throughglass_content_carrier"] == "shell_transition_only"

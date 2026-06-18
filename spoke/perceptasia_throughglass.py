@@ -148,8 +148,6 @@ def _usable_selector_scheduler(obj):
 
 
 def _throughglass_window_level() -> int:
-    if _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL"):
-        return _THROUGHGLASS_PRIMITIVE_CARRIER_WINDOW_LEVEL
     return _THROUGHGLASS_SIBLING_WINDOW_LEVEL
 
 
@@ -329,9 +327,9 @@ class PerceptasiaThroughglassGraft(NSObject):
             False,
         )
         panel.setTitle_("Perceptasia Throughglass Graft")
-        # In primitive-shell mode the WebView must sit under the compositor so
-        # the optical field captures its pixels instead of excluding them. When
-        # shell publication is off, keep the WebView as a normal sibling panel.
+        # The compositor owns only the optical shell. The live WebView remains
+        # an external sibling carrier, otherwise excluded capture makes it
+        # invisible behind the fullscreen compositor at rest.
         panel.setLevel_(_throughglass_window_level())
         primitive_shell = _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL")
         # WKWebView/WebGL content is the load-bearing visible surface here.
@@ -354,7 +352,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             | NSWindowCollectionBehaviorStationary
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
-        panel.setFloatingPanel_(not primitive_shell)
+        panel.setFloatingPanel_(True)
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setLevel_(_throughglass_window_level())
 
