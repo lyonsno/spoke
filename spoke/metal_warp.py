@@ -361,8 +361,9 @@ kernel void opticalShellWarp(
         return;
     }}
 
+    float carrierInteriorInset = max(params.bandWidth + params.tailWidth, 10.0f);
     bool capturedCarrierPayloadPassthrough =
-        clipCapturedCarrier && insideCarrierRect && capsuleSdf < 0.0f;
+        clipCapturedCarrier && insideCarrierRect && capsuleSdf < -carrierInteriorInset;
     if (capturedCarrierPayloadPassthrough) {{
         // The captured WebView is the live payload, not source texture for the
         // lens. Preserve every pixel inside its rounded body; the optical field
