@@ -146,7 +146,7 @@ def test_throughglass_compiles_to_public_optical_field_shell_config(mock_pyobjc)
     assert "phase" not in config["optical_field"]
 
 
-def test_throughglass_shell_captures_live_webview_as_primitive_payload(mock_pyobjc):
+def test_throughglass_shell_keeps_live_webview_external_at_rest(mock_pyobjc):
     from spoke.perceptasia_throughglass import compile_perceptasia_shell_config
 
     bounds = OpticalFieldBounds(100.0, 80.0, 900.0, 520.0)
@@ -158,9 +158,9 @@ def test_throughglass_shell_captures_live_webview_as_primitive_payload(mock_pyob
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
     assert 0.0 < config["gpu_material_opacity"] <= 0.45
     assert config["gpu_material_feather_points"] >= 90.0
-    assert config["throughglass_content_carrier"] == "captured_webview_payload"
-    assert config["include_carrier_window_in_capture"] is True
-    assert config["clip_captured_carrier_to_shell"] is True
+    assert config["throughglass_content_carrier"] == "external_webview"
+    assert config["include_carrier_window_in_capture"] is False
+    assert config["clip_captured_carrier_to_shell"] is False
 
 
 def test_throughglass_default_panel_rect_seats_independent_consumer_in_top_band(mock_pyobjc):
@@ -674,9 +674,9 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     if host.update_client_config.call_count:
         rest_config = host.update_client_config.call_args.args[1]
         assert rest_config["optical_field"]["state"] == "rest"
-        assert rest_config["throughglass_content_carrier"] == "captured_webview_payload"
-        assert rest_config["include_carrier_window_in_capture"] is True
-        assert rest_config["clip_captured_carrier_to_shell"] is True
+        assert rest_config["throughglass_content_carrier"] == "external_webview"
+        assert rest_config["include_carrier_window_in_capture"] is False
+        assert rest_config["clip_captured_carrier_to_shell"] is False
 
 
 def test_throughglass_shell_publish_does_not_front_capture_carrier_above_shell(
@@ -826,9 +826,9 @@ def test_throughglass_shell_materialize_survives_until_settle_tick(mock_pyobjc, 
     assert host.update_client_config.call_count == 1
     rest_config = host.update_client_config.call_args.args[1]
     assert rest_config["optical_field"]["state"] == "rest"
-    assert rest_config["throughglass_content_carrier"] == "captured_webview_payload"
-    assert rest_config["include_carrier_window_in_capture"] is True
-    assert rest_config["clip_captured_carrier_to_shell"] is True
+    assert rest_config["throughglass_content_carrier"] == "external_webview"
+    assert rest_config["include_carrier_window_in_capture"] is False
+    assert rest_config["clip_captured_carrier_to_shell"] is False
 
 
 def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
@@ -1041,7 +1041,7 @@ def test_throughglass_shell_releases_quarantined_content_after_shell_registratio
     assert ("mouse", False) in events
 
 
-def test_throughglass_rest_publish_exposes_carrier_before_captured_payload(
+def test_throughglass_rest_publish_exposes_carrier_before_external_shell(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -1085,7 +1085,7 @@ def test_throughglass_rest_publish_exposes_carrier_before_captured_payload(
     assert graft.show() is True
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
-    assert ("publish", "rest", "captured_webview_payload") not in events
+    assert ("publish", "rest", "external_webview") not in events
     assert scheduled[-1] == (
         "animateThroughglassShellStep:",
         None,
@@ -1095,7 +1095,7 @@ def test_throughglass_rest_publish_exposes_carrier_before_captured_payload(
     graft._throughglass_shell_animation_started_at -= 1.0
     graft.animateThroughglassShellStep_(None)
 
-    rest_publish_index = events.index(("publish", "rest", "captured_webview_payload"))
+    rest_publish_index = events.index(("publish", "rest", "external_webview"))
     alpha_release_index = events.index(("alpha", 1.0))
     assert alpha_release_index < rest_publish_index
 

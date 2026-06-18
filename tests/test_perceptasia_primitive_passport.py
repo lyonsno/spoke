@@ -33,7 +33,7 @@ def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
     assert request.selected_handoff is None
 
 
-def test_passport_carrier_captures_live_webview_as_primitive_payload_at_rest():
+def test_passport_carrier_keeps_live_webview_external_at_rest():
     config = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
 
     assert config["client_id"] == PERCEPTASIA_PRIMITIVE_CLIENT_ID
@@ -41,9 +41,9 @@ def test_passport_carrier_captures_live_webview_as_primitive_payload_at_rest():
     assert config["presentation_layer"] == "hud"
     assert config["presentation_order"] > 20
     assert config["visible"] is True
-    assert config["throughglass_content_carrier"] == "captured_webview_payload"
-    assert config["include_carrier_window_in_capture"] is True
-    assert config["clip_captured_carrier_to_shell"] is True
+    assert config["throughglass_content_carrier"] == "external_webview"
+    assert config["include_carrier_window_in_capture"] is False
+    assert config["clip_captured_carrier_to_shell"] is False
     assert config["content_proof_required"] is True
     assert config["mip_blur_strength"] == pytest.approx(0.0)
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
@@ -92,8 +92,9 @@ def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
     rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
     materialize = compile_perceptasia_primitive_carrier_config(_bounds(), state="materialize")
 
-    assert rest["throughglass_content_carrier"] == "captured_webview_payload"
-    assert rest["clip_captured_carrier_to_shell"] is True
+    assert rest["throughglass_content_carrier"] == "external_webview"
+    assert rest["include_carrier_window_in_capture"] is False
+    assert rest["clip_captured_carrier_to_shell"] is False
     assert rest["mip_blur_strength"] == pytest.approx(0.0)
     assert rest["core_magnification"] == pytest.approx(1.0)
 
