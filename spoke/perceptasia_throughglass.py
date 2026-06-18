@@ -853,7 +853,12 @@ class PerceptasiaThroughglassGraft(NSObject):
             set_level(_throughglass_window_level())
 
     def __publish_shell_rest_state(self) -> bool:
+        self.__reassert_live_carrier_window_level()
         self.__set_live_carrier_window_exposure(True)
+        panel = self._panel
+        order_front = getattr(panel, "orderFrontRegardless", None) if panel is not None else None
+        if callable(order_front):
+            order_front()
         published = self.__publish_shell_state("rest")
         if not published:
             self.__set_live_carrier_window_exposure(False)

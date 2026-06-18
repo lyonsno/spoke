@@ -1056,6 +1056,7 @@ def test_throughglass_rest_publish_exposes_carrier_before_external_shell(
     panel.contentView.return_value = MagicMock()
     panel.setAlphaValue_.side_effect = lambda alpha: events.append(("alpha", alpha))
     panel.setIgnoresMouseEvents_.side_effect = lambda ignored: events.append(("mouse", ignored))
+    panel.orderFrontRegardless.side_effect = lambda: events.append(("front", None))
     panel.frame.return_value = SimpleNamespace(
         origin=SimpleNamespace(x=100.0, y=80.0),
         size=SimpleNamespace(width=900.0, height=520.0),
@@ -1097,7 +1098,9 @@ def test_throughglass_rest_publish_exposes_carrier_before_external_shell(
 
     rest_publish_index = events.index(("publish", "rest", "external_webview"))
     alpha_release_index = events.index(("alpha", 1.0))
+    front_release_index = events.index(("front", None), alpha_release_index)
     assert alpha_release_index < rest_publish_index
+    assert front_release_index < rest_publish_index
 
 
 def test_throughglass_pixel_proof_keeps_registered_external_carrier_visible(
