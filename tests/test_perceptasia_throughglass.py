@@ -866,6 +866,8 @@ def test_throughglass_shell_materialize_shapes_live_carrier_view(
         ),
     )
     content = MagicMock()
+    carrier = MagicMock()
+    module.NSView.alloc.return_value.initWithFrame_.return_value = carrier
     monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: content)
 
     host = MagicMock()
@@ -879,19 +881,25 @@ def test_throughglass_shell_materialize_shapes_live_carrier_view(
     )
 
     assert graft.show() is True
-    setup_frame = content.setFrame_.call_args.args[0]
+    setup_frame = carrier.setFrame_.call_args.args[0]
+    setup_content_frame = content.setFrame_.call_args.args[0]
 
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
-    seed_frame = content.setFrame_.call_args.args[0]
+    seed_frame = carrier.setFrame_.call_args.args[0]
+    seed_content_frame = content.setFrame_.call_args.args[0]
     assert seed_frame.size.height < setup_frame.size.height * 0.12
     assert seed_frame.size.width < setup_frame.size.width * 0.25
     assert seed_frame.origin.y > setup_frame.origin.y
+    assert seed_content_frame.size.width == pytest.approx(setup_content_frame.size.width)
+    assert seed_content_frame.size.height == pytest.approx(setup_content_frame.size.height)
+    assert seed_content_frame.origin.x == pytest.approx(-seed_frame.origin.x)
+    assert seed_content_frame.origin.y == pytest.approx(-seed_frame.origin.y)
 
     graft._throughglass_shell_animation_started_at -= 0.06
     graft.animateThroughglassShellStep_(None)
 
-    mid_frame = content.setFrame_.call_args.args[0]
+    mid_frame = carrier.setFrame_.call_args.args[0]
     assert seed_frame.size.height < mid_frame.size.height < setup_frame.size.height
     assert seed_frame.size.width < mid_frame.size.width <= setup_frame.size.width
     assert panel.setAlphaValue_.call_args.args[0] > 0.0
@@ -900,11 +908,95 @@ def test_throughglass_shell_materialize_shapes_live_carrier_view(
     graft._throughglass_shell_animation_started_at -= 1.0
     graft.animateThroughglassShellStep_(None)
 
-    rest_frame = content.setFrame_.call_args.args[0]
+    rest_frame = carrier.setFrame_.call_args.args[0]
+    rest_content_frame = content.setFrame_.call_args.args[0]
     assert rest_frame.origin.x == pytest.approx(setup_frame.origin.x)
     assert rest_frame.origin.y == pytest.approx(setup_frame.origin.y)
     assert rest_frame.size.width == pytest.approx(setup_frame.size.width)
     assert rest_frame.size.height == pytest.approx(setup_frame.size.height)
+    assert rest_content_frame.origin.x == pytest.approx(setup_content_frame.origin.x)
+    assert rest_content_frame.origin.y == pytest.approx(setup_content_frame.origin.y)
+    assert rest_content_frame.size.width == pytest.approx(setup_content_frame.size.width)
+    assert rest_content_frame.size.height == pytest.approx(setup_content_frame.size.height)
+
+
+def test_throughglass_shell_materialize_clips_stable_full_size_webview(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    content_root = MagicMock()
+    content_root.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=980.0, height=560.0),
+    )
+    panel.contentView.return_value = content_root
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=980.0, height=560.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(
+        module,
+        "NSMakeRect",
+        lambda x, y, width, height: SimpleNamespace(
+            origin=SimpleNamespace(x=x, y=y),
+            size=SimpleNamespace(width=width, height=height),
+        ),
+    )
+    carrier = MagicMock()
+    module.NSView.alloc.return_value.initWithFrame_.return_value = carrier
+    content = MagicMock()
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: content)
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+    graft.performSelector_withObject_afterDelay_ = lambda *_args: None
+
+    assert graft.show() is True
+    setup_content_frame = content.setFrame_.call_args.args[0]
+    assert setup_content_frame.size.width == pytest.approx(980.0)
+    assert setup_content_frame.size.height == pytest.approx(560.0)
+    content_root.addSubview_.assert_called_once_with(carrier)
+    carrier.addSubview_.assert_called_once_with(content)
+
+    graft.publishThroughglassShellAfterCarrierPresent_(None)
+
+    seed_carrier_frame = carrier.setFrame_.call_args.args[0]
+    seed_content_frame = content.setFrame_.call_args.args[0]
+    assert seed_carrier_frame.size.height < setup_content_frame.size.height * 0.12
+    assert seed_carrier_frame.size.width < setup_content_frame.size.width * 0.25
+    assert seed_content_frame.size.width == pytest.approx(setup_content_frame.size.width)
+    assert seed_content_frame.size.height == pytest.approx(setup_content_frame.size.height)
+    assert seed_content_frame.origin.x == pytest.approx(-seed_carrier_frame.origin.x)
+    assert seed_content_frame.origin.y == pytest.approx(-seed_carrier_frame.origin.y)
+
+    graft._throughglass_shell_animation_started_at -= 1.0
+    graft.animateThroughglassShellStep_(None)
+
+    rest_carrier_frame = carrier.setFrame_.call_args.args[0]
+    rest_content_frame = content.setFrame_.call_args.args[0]
+    assert rest_carrier_frame.origin.x == pytest.approx(0.0)
+    assert rest_carrier_frame.origin.y == pytest.approx(0.0)
+    assert rest_carrier_frame.size.width == pytest.approx(setup_content_frame.size.width)
+    assert rest_carrier_frame.size.height == pytest.approx(setup_content_frame.size.height)
+    assert rest_content_frame.origin.x == pytest.approx(0.0)
+    assert rest_content_frame.origin.y == pytest.approx(0.0)
+    assert rest_content_frame.size.width == pytest.approx(setup_content_frame.size.width)
+    assert rest_content_frame.size.height == pytest.approx(setup_content_frame.size.height)
 
 
 def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
@@ -935,9 +1027,10 @@ def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
         size=SimpleNamespace(width=880.0, height=500.0),
     )
     content_root = MagicMock()
+    carrier = MagicMock()
     content = MagicMock()
-    content.bounds.return_value = content_bounds
-    content.convertRect_toView_.return_value = content_window_rect
+    carrier.bounds.return_value = content_bounds
+    carrier.convertRect_toView_.return_value = content_window_rect
     panel.contentView.return_value = content_root
     panel.frame.return_value = outer_frame
     panel.convertRectToScreen_.return_value = content_screen_rect
@@ -948,6 +1041,7 @@ def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
         size=SimpleNamespace(width=1440.0, height=900.0),
     )
     screen.backingScaleFactor.return_value = 2.0
+    module.NSView.alloc.return_value.initWithFrame_.return_value = carrier
     monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: content)
 
     host = MagicMock()

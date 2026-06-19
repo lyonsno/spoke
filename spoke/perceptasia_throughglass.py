@@ -25,6 +25,7 @@ from AppKit import (
     NSColor,
     NSPanel,
     NSScreen,
+    NSView,
     NSTextField,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -298,6 +299,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._throughglass_shell_animation_duration = 0.0
         self._carrier_content_width = 0.0
         self._carrier_content_height = 0.0
+        self._carrier_clip_view = None
         self._assistant_overlay_parked = False
         self._visibility_callback = None
         return self
@@ -371,10 +373,14 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_kind = str(content_kind)
         self._content_verified = False
         self._content_failure = None
-        _configure_content_carrier(panel.contentView(), content, width, height)
-        panel.contentView().addSubview_(content)
+        content_root = panel.contentView()
+        carrier = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+        _configure_content_carrier(content_root, carrier, content, width, height)
+        carrier.addSubview_(content)
+        content_root.addSubview_(carrier)
         self._panel = panel
         self._content_view = content
+        self._carrier_clip_view = carrier
         self._carrier_content_width = float(width)
         self._carrier_content_height = float(height)
         if self._content_kind == "webview":
@@ -896,7 +902,8 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def __apply_live_carrier_shell_phase(self, state: str, progress: float | None) -> None:
         content = self._content_view
-        if content is None:
+        carrier = getattr(self, "_carrier_clip_view", None)
+        if content is None or carrier is None:
             return
         final_width, final_height = self.__live_carrier_content_size()
         if final_width <= 0.0 or final_height <= 0.0:
@@ -921,16 +928,26 @@ class PerceptasiaThroughglassGraft(NSObject):
             )
         origin_x = (final_width - target_width) * 0.5
         origin_y = (final_height - target_height) * 0.5
-        setter = getattr(content, "setFrame_", None)
-        if callable(setter):
-            setter(NSMakeRect(origin_x, origin_y, target_width, target_height))
+        carrier_setter = getattr(carrier, "setFrame_", None)
+        if callable(carrier_setter):
+            carrier_setter(NSMakeRect(origin_x, origin_y, target_width, target_height))
+        # Keep the WKWebView/WebGL surface at its final size so WebKit's canvas
+        # viewport does not collapse to the seed slit and leave a black backing
+        # plate at rest. The carrier view supplies the animated clipping aperture.
+        content_setter = getattr(content, "setFrame_", None)
+        if callable(content_setter):
+            content_setter(NSMakeRect(-origin_x, -origin_y, final_width, final_height))
         radius = _throughglass_carrier_corner_radius(target_width, target_height)
-        layer_getter = getattr(content, "layer", None)
+        layer_getter = getattr(carrier, "layer", None)
         layer = layer_getter() if callable(layer_getter) else None
         _shape_throughglass_carrier_layer(layer, radius=radius)
-        display_setter = getattr(content, "setNeedsDisplay_", None)
-        if callable(display_setter):
-            display_setter(True)
+        for view in (carrier, content):
+            display_setter = getattr(view, "setNeedsDisplay_", None)
+            if callable(display_setter):
+                display_setter(True)
+            layout_setter = getattr(view, "setNeedsLayout_", None)
+            if callable(layout_setter):
+                layout_setter(True)
         self.__set_live_carrier_phase_exposure(state, progress)
 
     def __live_carrier_content_size(self) -> tuple[float, float]:
@@ -976,6 +993,7 @@ class PerceptasiaThroughglassGraft(NSObject):
     def __teardown_content_carrier(self) -> None:
         content = self._content_view
         panel = self._panel
+        carrier = getattr(self, "_carrier_clip_view", None)
         if content is not None:
             stop = getattr(content, "stopLoading", None)
             if callable(stop):
@@ -986,9 +1004,14 @@ class PerceptasiaThroughglassGraft(NSObject):
             remove = getattr(content, "removeFromSuperview", None)
             if callable(remove):
                 remove()
+        if carrier is not None:
+            remove_carrier = getattr(carrier, "removeFromSuperview", None)
+            if callable(remove_carrier):
+                remove_carrier()
         self._content_generation += 1
         self._panel = None
         self._content_view = None
+        self._carrier_clip_view = None
         self._content_kind = "uninitialized"
         self._content_verified = False
         self._content_failure = None
@@ -1007,7 +1030,10 @@ class PerceptasiaThroughglassGraft(NSObject):
             return OpticalFieldBounds(0.0, 0.0, _DEFAULT_WIDTH, _DEFAULT_HEIGHT), {
                 "source_coordinate_space": "display_local",
             }
-        frame = _content_view_screen_frame(self._panel, self._content_view)
+        frame = _content_view_screen_frame(
+            self._panel,
+            getattr(self, "_carrier_clip_view", None) or self._content_view,
+        )
         source_rect_basis = "content_view" if frame is not None else "panel_frame"
         if frame is None:
             frame = self._panel.frame()
@@ -1498,11 +1524,14 @@ def _shape_throughglass_carrier_layer(layer, *, radius: float, background_alpha:
             background_setter(cg_color_getter())
 
 
-def _configure_content_carrier(content_root, content, width: float, height: float) -> None:
-    frame_setter = getattr(content, "setFrame_", None)
-    if callable(frame_setter):
-        frame_setter(NSMakeRect(0, 0, width, height))
-    _set_view_autoresizing(content)
+def _configure_content_carrier(content_root, carrier, content, width: float, height: float) -> None:
+    carrier_frame_setter = getattr(carrier, "setFrame_", None)
+    if callable(carrier_frame_setter):
+        carrier_frame_setter(NSMakeRect(0, 0, width, height))
+    content_frame_setter = getattr(content, "setFrame_", None)
+    if callable(content_frame_setter):
+        content_frame_setter(NSMakeRect(0, 0, width, height))
+    _set_view_autoresizing(carrier)
     primitive_shell = _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL")
     corner_radius = _throughglass_carrier_corner_radius(width, height)
     root_layer_setter = getattr(content_root, "setWantsLayer_", None)
@@ -1515,6 +1544,12 @@ def _configure_content_carrier(content_root, content, width: float, height: floa
         radius=corner_radius,
         background_alpha=0.0 if primitive_shell else 1.0,
     )
+    carrier_layer_setter = getattr(carrier, "setWantsLayer_", None)
+    if callable(carrier_layer_setter):
+        carrier_layer_setter(True)
+    carrier_layer_getter = getattr(carrier, "layer", None)
+    carrier_layer = carrier_layer_getter() if callable(carrier_layer_getter) else None
+    _shape_throughglass_carrier_layer(carrier_layer, radius=corner_radius)
     content_layer_setter = getattr(content, "setWantsLayer_", None)
     if callable(content_layer_setter):
         content_layer_setter(True)
