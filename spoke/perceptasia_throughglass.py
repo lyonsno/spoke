@@ -1083,6 +1083,24 @@ class PerceptasiaThroughglassGraft(NSObject):
         metadata["source_rect_basis"] = source_rect_basis
         return bounds, metadata
 
+    def __shell_bounds_and_coordinate_metadata(
+        self,
+        state: str,
+    ) -> tuple[OpticalFieldBounds, dict[str, object]]:
+        if state in {"materialize", "dismiss"} and self._panel is not None:
+            carrier = getattr(self, "_carrier_clip_view", None)
+            frame = _content_view_screen_frame(
+                self._panel,
+                carrier,
+                fallback_to_content_root=False,
+            )
+            if frame is not None:
+                screen = NSScreen.mainScreen()
+                bounds, metadata = _display_local_scaled_window_bounds(frame, screen)
+                metadata["source_rect_basis"] = "carrier_clip"
+                return bounds, metadata
+        return self.__bounds_and_coordinate_metadata()
+
     def __animation_frame_delay_seconds(self) -> float:
         return 1.0 / _env_positive_float(
             "SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_ANIMATION_FPS",
@@ -1172,13 +1190,18 @@ class PerceptasiaThroughglassGraft(NSObject):
                 logger.info("Perceptasia Throughglass: registry has no host_for_screen")
                 return False
             self._host = host_for_screen(NSScreen.mainScreen())
-        bounds, coordinate_metadata = self.__bounds_and_coordinate_metadata()
+        bounds, coordinate_metadata = self.__shell_bounds_and_coordinate_metadata(state)
         config = compile_perceptasia_shell_config(
             bounds,
             state=state,
             visible=visible,
             materialization_progress=materialization_progress,
         )
+        if (
+            state in {"materialize", "dismiss"}
+            and coordinate_metadata.get("source_rect_basis") == "carrier_clip"
+        ):
+            _pin_shell_geometry_to_bounds(config, bounds)
         _annotate_shell_coordinate_metadata(config, coordinate_metadata)
         if not getattr(self, "_client_registered", False):
             carrier_view = getattr(self, "_carrier_clip_view", None) or self._content_view
@@ -1276,7 +1299,7 @@ def _rect_has_positive_size(rect) -> bool:
     )
 
 
-def _content_view_screen_frame(panel, content_view):
+def _content_view_screen_frame(panel, content_view, *, fallback_to_content_root: bool = True):
     """Return the live payload rect in screen points when AppKit can prove it."""
 
     if panel is None or content_view is None:
@@ -1287,7 +1310,7 @@ def _content_view_screen_frame(panel, content_view):
     candidate_views = [content_view]
     content_root_getter = getattr(panel, "contentView", None)
     content_root = content_root_getter() if callable(content_root_getter) else None
-    if content_root is not None and content_root is not content_view:
+    if fallback_to_content_root and content_root is not None and content_root is not content_view:
         candidate_views.append(content_root)
     for view in candidate_views:
         bounds_getter = getattr(view, "bounds", None)
@@ -1307,6 +1330,16 @@ def _content_view_screen_frame(panel, content_view):
             continue
         if _rect_has_positive_size(screen_rect):
             return screen_rect
+    frame_getter = getattr(content_view, "frame", None)
+    if callable(frame_getter):
+        try:
+            frame = frame_getter()
+            if _rect_has_positive_size(frame):
+                screen_rect = convert_to_screen(frame)
+                if _rect_has_positive_size(screen_rect):
+                    return screen_rect
+        except Exception:
+            logger.debug("Perceptasia Throughglass: content-view frame conversion failed", exc_info=True)
     return None
 
 
@@ -1369,6 +1402,22 @@ def _annotate_shell_coordinate_metadata(config: dict[str, object], metadata: dic
     optical_field = config.get("optical_field")
     if isinstance(optical_field, dict):
         optical_field.update(metadata)
+
+
+def _pin_shell_geometry_to_bounds(config: dict[str, object], bounds: OpticalFieldBounds) -> None:
+    """Keep the compositor shell on an already-animated carrier aperture."""
+
+    config["content_width_points"] = float(bounds.width)
+    config["content_height_points"] = float(bounds.height)
+    config["center_x"] = float(bounds.center_x)
+    config["center_y"] = float(bounds.center_y)
+    config["gpu_material_base_width_points"] = float(bounds.width)
+    config["gpu_material_base_height_points"] = float(bounds.height)
+    if isinstance(config.get("optical_field"), dict):
+        optical_field = dict(config["optical_field"])
+        optical_field["bounds"] = bounds.to_payload()
+        optical_field["content_frame"] = bounds.to_payload()
+        config["optical_field"] = optical_field
 
 
 def _discovery_ports() -> tuple[int, ...]:
