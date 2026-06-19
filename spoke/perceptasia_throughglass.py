@@ -60,6 +60,7 @@ _THROUGHGLASS_SHELL_PUBLISH_DELAY_SECONDS = 0.08
 _THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS = 0.12
 _THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS = 0.12
 _THROUGHGLASS_SHELL_ANIMATION_FPS = 60.0
+_THROUGHGLASS_LIVE_CARRIER_MARGIN_POINTS = 18.0
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
 _THROUGHGLASS_UI_DELEGATE = None
@@ -136,6 +137,22 @@ def _env_positive_float(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return value if value > 0.0 else default
+
+
+def _throughglass_live_carrier_margin_points(width: float, height: float) -> float:
+    requested = _env_positive_float(
+        "SPOKE_PERCEPTASIA_THROUGHGLASS_LIVE_CARRIER_MARGIN_POINTS",
+        _THROUGHGLASS_LIVE_CARRIER_MARGIN_POINTS,
+    )
+    return min(requested, max(0.0, min(float(width), float(height)) * 0.18))
+
+
+def _throughglass_live_carrier_aperture(width: float, height: float) -> tuple[float, float, float]:
+    margin = _throughglass_live_carrier_margin_points(width, height)
+    return margin, max(1.0, float(width) - (2.0 * margin)), max(
+        1.0,
+        float(height) - (2.0 * margin),
+    )
 
 
 def _usable_selector_scheduler(obj):
@@ -374,8 +391,22 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_verified = False
         self._content_failure = None
         content_root = panel.contentView()
-        carrier = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
-        _configure_content_carrier(content_root, carrier, content, width, height)
+        carrier_margin, carrier_width, carrier_height = _throughglass_live_carrier_aperture(
+            width,
+            height,
+        )
+        carrier = NSView.alloc().initWithFrame_(
+            NSMakeRect(carrier_margin, carrier_margin, carrier_width, carrier_height)
+        )
+        _configure_content_carrier(
+            content_root,
+            carrier,
+            content,
+            carrier_width,
+            carrier_height,
+            x=carrier_margin,
+            y=carrier_margin,
+        )
         carrier.addSubview_(content)
         content_root.addSubview_(carrier)
         self._panel = panel
@@ -908,26 +939,30 @@ class PerceptasiaThroughglassGraft(NSObject):
         final_width, final_height = self.__live_carrier_content_size()
         if final_width <= 0.0 or final_height <= 0.0:
             return
+        carrier_margin, carrier_width, carrier_height = _throughglass_live_carrier_aperture(
+            final_width,
+            final_height,
+        )
         if state == "rest":
-            target_width = final_width
-            target_height = final_height
+            target_width = carrier_width
+            target_height = carrier_height
         else:
             config = compile_perceptasia_shell_config(
-                OpticalFieldBounds(0.0, 0.0, final_width, final_height),
+                OpticalFieldBounds(0.0, 0.0, carrier_width, carrier_height),
                 state=state,
                 visible=True,
                 materialization_progress=progress,
             )
             target_width = min(
-                final_width,
-                max(1.0, float(config.get("content_width_points", final_width))),
+                carrier_width,
+                max(1.0, float(config.get("content_width_points", carrier_width))),
             )
             target_height = min(
-                final_height,
-                max(1.0, float(config.get("content_height_points", final_height))),
+                carrier_height,
+                max(1.0, float(config.get("content_height_points", carrier_height))),
             )
-        origin_x = (final_width - target_width) * 0.5
-        origin_y = (final_height - target_height) * 0.5
+        origin_x = carrier_margin + ((carrier_width - target_width) * 0.5)
+        origin_y = carrier_margin + ((carrier_height - target_height) * 0.5)
         carrier_setter = getattr(carrier, "setFrame_", None)
         if callable(carrier_setter):
             carrier_setter(NSMakeRect(origin_x, origin_y, target_width, target_height))
@@ -936,7 +971,14 @@ class PerceptasiaThroughglassGraft(NSObject):
         # plate at rest. The carrier view supplies the animated clipping aperture.
         content_setter = getattr(content, "setFrame_", None)
         if callable(content_setter):
-            content_setter(NSMakeRect(-origin_x, -origin_y, final_width, final_height))
+            content_setter(
+                NSMakeRect(
+                    -(origin_x - carrier_margin),
+                    -(origin_y - carrier_margin),
+                    carrier_width,
+                    carrier_height,
+                )
+            )
         radius = _throughglass_carrier_corner_radius(target_width, target_height)
         layer_getter = getattr(carrier, "layer", None)
         layer = layer_getter() if callable(layer_getter) else None
@@ -1030,11 +1072,10 @@ class PerceptasiaThroughglassGraft(NSObject):
             return OpticalFieldBounds(0.0, 0.0, _DEFAULT_WIDTH, _DEFAULT_HEIGHT), {
                 "source_coordinate_space": "display_local",
             }
-        frame = _content_view_screen_frame(
-            self._panel,
-            getattr(self, "_carrier_clip_view", None) or self._content_view,
-        )
-        source_rect_basis = "content_view" if frame is not None else "panel_frame"
+        content_root_getter = getattr(self._panel, "contentView", None)
+        content_root = content_root_getter() if callable(content_root_getter) else None
+        frame = _content_view_screen_frame(self._panel, content_root)
+        source_rect_basis = "content_root" if frame is not None else "panel_frame"
         if frame is None:
             frame = self._panel.frame()
         screen = NSScreen.mainScreen()
@@ -1140,7 +1181,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         )
         _annotate_shell_coordinate_metadata(config, coordinate_metadata)
         if not getattr(self, "_client_registered", False):
-            added = self._host.add_client(_CLIENT_ID, self._panel, self._content_view, config)
+            carrier_view = getattr(self, "_carrier_clip_view", None) or self._content_view
+            added = self._host.add_client(_CLIENT_ID, self._panel, carrier_view, config)
             self._client_registered = bool(added)
             logger.info(
                 "Perceptasia Throughglass: publish state=%s registered=%s",
@@ -1524,10 +1566,19 @@ def _shape_throughglass_carrier_layer(layer, *, radius: float, background_alpha:
             background_setter(cg_color_getter())
 
 
-def _configure_content_carrier(content_root, carrier, content, width: float, height: float) -> None:
+def _configure_content_carrier(
+    content_root,
+    carrier,
+    content,
+    width: float,
+    height: float,
+    *,
+    x: float = 0.0,
+    y: float = 0.0,
+) -> None:
     carrier_frame_setter = getattr(carrier, "setFrame_", None)
     if callable(carrier_frame_setter):
-        carrier_frame_setter(NSMakeRect(0, 0, width, height))
+        carrier_frame_setter(NSMakeRect(x, y, width, height))
     content_frame_setter = getattr(content, "setFrame_", None)
     if callable(content_frame_setter):
         content_frame_setter(NSMakeRect(0, 0, width, height))
