@@ -156,8 +156,10 @@ def test_throughglass_shell_keeps_live_webview_external_at_rest(mock_pyobjc):
     assert config["visible"] is True
     assert config["mip_blur_strength"] == pytest.approx(0.0)
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
-    assert 0.0 < config["gpu_material_opacity"] <= 0.45
+    assert config["gpu_material_opacity"] == pytest.approx(0.0)
     assert config["gpu_material_feather_points"] >= 90.0
+    assert config["ring_amplitude_points"] > 0.0
+    assert config["tail_amplitude_points"] > 0.0
     assert config["throughglass_content_carrier"] == "external_webview"
     assert config["include_carrier_window_in_capture"] is False
     assert config["clip_captured_carrier_to_shell"] is False

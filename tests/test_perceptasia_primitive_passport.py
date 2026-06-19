@@ -47,7 +47,7 @@ def test_passport_carrier_keeps_live_webview_external_at_rest():
     assert config["content_proof_required"] is True
     assert config["mip_blur_strength"] == pytest.approx(0.0)
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
-    assert 0.0 < config["gpu_material_opacity"] <= 0.45
+    assert config["gpu_material_opacity"] == pytest.approx(0.0)
     assert config["gpu_material_feather_points"] >= 90.0
     assert config["gpu_material_fill_overscan_points"] <= 8.0
     assert config["gpu_material_base_width_points"] == pytest.approx(config["content_width_points"])
@@ -108,6 +108,17 @@ def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
     assert rest["ring_amplitude_points"] >= materialize["ring_amplitude_points"]
     assert rest["exterior_mix_width_points"] >= materialize["exterior_mix_width_points"]
     assert rest["gpu_material_opacity"] < materialize["gpu_material_opacity"]
+
+
+def test_passport_external_carrier_rest_is_perimeter_only_not_body_material():
+    rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+
+    assert rest["throughglass_content_carrier"] == "external_webview"
+    assert rest["gpu_material_enabled"] == pytest.approx(1.0)
+    assert rest["gpu_material_opacity"] == pytest.approx(0.0)
+    assert rest["ring_amplitude_points"] > 0.0
+    assert rest["tail_amplitude_points"] > 0.0
+    assert rest["band_width_points"] > 0.0
 
 
 def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload():

@@ -224,7 +224,7 @@ def compile_perceptasia_primitive_carrier_config(
     config = compile_placeholder_shell_config(request)
     material_opacity_by_state = {
         "materialize": 0.34,
-        "rest": 0.22,
+        "rest": 0.0,
         "dismiss": 0.30,
         "hidden": 0.0,
     }
