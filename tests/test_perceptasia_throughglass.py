@@ -1167,6 +1167,27 @@ def test_throughglass_shell_leaves_visible_band_around_live_carrier(
     assert host.add_client.call_args.args[2] is carrier
 
 
+def test_throughglass_default_live_carrier_band_stays_tight_to_viewer(
+    mock_pyobjc, monkeypatch
+):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.delenv(
+        "SPOKE_PERCEPTASIA_THROUGHGLASS_LIVE_CARRIER_MARGIN_POINTS",
+        raising=False,
+    )
+
+    margin, carrier_width, carrier_height = module._throughglass_live_carrier_aperture(
+        980.0,
+        560.0,
+    )
+
+    assert margin == pytest.approx(12.0)
+    assert carrier_width == pytest.approx(956.0)
+    assert carrier_height == pytest.approx(536.0)
+
+
 def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
     mock_pyobjc, monkeypatch
 ):
