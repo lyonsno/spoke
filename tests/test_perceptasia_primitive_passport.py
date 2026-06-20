@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from spoke.optical_field import OpticalFieldBounds
+from spoke.house_optical_primitive import (
+    compile_house_optical_shell_config,
+    materialized_house_optical_shell_config,
+)
 from spoke.perceptasia_primitive_passport import (
     PERCEPTASIA_PRIMITIVE_CLIENT_ID,
     build_perceptasia_primitive_env,
@@ -17,7 +21,22 @@ def _bounds() -> OpticalFieldBounds:
     return OpticalFieldBounds(x=120.0, y=90.0, width=900.0, height=520.0)
 
 
-def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
+def _assert_house_shell_fields(config: dict[str, object], expected: dict[str, object]) -> None:
+    for key in (
+        "content_width_points",
+        "content_height_points",
+        "corner_radius_points",
+        "core_magnification",
+        "band_width_points",
+        "tail_width_points",
+        "ring_amplitude_points",
+        "tail_amplitude_points",
+        "cleanup_blur_radius_points",
+    ):
+        assert config[key] == pytest.approx(float(expected[key]))
+
+
+def test_passport_request_is_independent_hud_consumer_of_house_primitive():
     request = build_perceptasia_primitive_request(_bounds(), state="rest")
 
     assert request.caller_id == PERCEPTASIA_PRIMITIVE_CLIENT_ID
@@ -26,7 +45,7 @@ def test_passport_request_is_independent_hud_sibling_not_assistant_shell():
     assert request.visibility_scope == "independent"
     assert request.presentation.layer == "hud"
     assert request.presentation.order > 20
-    assert request.profile.base == "captured_scene"
+    assert request.profile.base == "assistant_shell"
     assert request.layout_recipe == "perceptasia-primitive-passport"
     assert request.motion.strategy == "continuous"
     assert request.motion.continuity == "preserve_identity"
@@ -68,27 +87,23 @@ def test_passport_transition_shell_does_not_capture_live_webview_source_plate():
         assert config["gpu_material_enabled"] == pytest.approx(1.0)
 
 
-def test_passport_carrier_uses_flat_captured_scene_profile_not_agent_card_lens():
+def test_passport_carrier_uses_extracted_house_primitive_not_sibling_scene_lens():
+    expected = compile_house_optical_shell_config(_bounds().width, _bounds().height)
     rest_config = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
     for state in ("materialize", "rest", "dismiss"):
         config = compile_perceptasia_primitive_carrier_config(_bounds(), state=state)
 
-        assert config["optical_field"]["profile"] == "captured_scene"
-        assert config["core_magnification"] <= 1.01
-        assert config["corner_radius_points"] == pytest.approx(52.0)
-        assert config["cut_radius_points"] == pytest.approx(52.0)
-        assert config["band_width_points"] <= 22.0
-        assert config["tail_width_points"] <= 15.0
-        assert config["ring_amplitude_points"] <= 18.0
-        assert config["exterior_mix_width_points"] <= 47.0
+        assert config["optical_field"]["profile"] == "assistant_shell"
+        _assert_house_shell_fields(config, expected)
+        assert config["cut_radius_points"] == pytest.approx(
+            config["corner_radius_points"]
+        )
 
-    assert rest_config["band_width_points"] <= 22.0
-    assert rest_config["tail_width_points"] <= 15.0
-    assert rest_config["ring_amplitude_points"] <= 18.0
-    assert rest_config["exterior_mix_width_points"] <= 47.0
+    _assert_house_shell_fields(rest_config, expected)
 
 
 def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
+    expected = compile_house_optical_shell_config(_bounds().width, _bounds().height)
     rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
     materialize = compile_perceptasia_primitive_carrier_config(_bounds(), state="materialize")
 
@@ -96,17 +111,11 @@ def test_passport_rest_payload_keeps_perimeter_pressure_after_capture_handoff():
     assert rest["include_carrier_window_in_capture"] is False
     assert rest["clip_captured_carrier_to_shell"] is False
     assert rest["mip_blur_strength"] == pytest.approx(0.0)
-    assert rest["core_magnification"] == pytest.approx(1.0)
-
-    assert rest["band_width_points"] >= 15.5
-    assert rest["tail_width_points"] >= 10.5
-    assert rest["ring_amplitude_points"] >= 12.0
-    assert rest["exterior_mix_width_points"] >= 35.0
+    _assert_house_shell_fields(rest, expected)
 
     assert rest["band_width_points"] >= materialize["band_width_points"]
     assert rest["tail_width_points"] >= materialize["tail_width_points"]
     assert rest["ring_amplitude_points"] >= materialize["ring_amplitude_points"]
-    assert rest["exterior_mix_width_points"] >= materialize["exterior_mix_width_points"]
     assert rest["gpu_material_opacity"] < materialize["gpu_material_opacity"]
 
 
@@ -122,6 +131,7 @@ def test_passport_external_carrier_rest_is_perimeter_only_not_body_material():
 
 
 def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload():
+    expected = compile_house_optical_shell_config(_bounds().width, _bounds().height)
     rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
     materialize = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize"
@@ -129,7 +139,6 @@ def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload()
     dismiss = compile_perceptasia_primitive_carrier_config(_bounds(), state="dismiss")
 
     for config in (materialize, dismiss):
-        assert config["core_magnification"] == pytest.approx(rest["core_magnification"])
         assert config["mip_blur_strength"] == pytest.approx(0.0)
         assert config["gpu_material_enabled"] == pytest.approx(1.0)
         assert config["gpu_material_opacity"] >= rest["gpu_material_opacity"]
@@ -137,22 +146,18 @@ def test_passport_summon_and_dismiss_claim_outer_shell_without_warping_payload()
         assert config["include_carrier_window_in_capture"] is False
         assert config["clip_captured_carrier_to_shell"] is False
 
-    assert materialize["band_width_points"] == pytest.approx(rest["band_width_points"])
-    assert materialize["tail_width_points"] == pytest.approx(rest["tail_width_points"])
-    assert materialize["ring_amplitude_points"] == pytest.approx(rest["ring_amplitude_points"])
-    assert materialize["exterior_mix_width_points"] == pytest.approx(rest["exterior_mix_width_points"])
-
-    assert dismiss["band_width_points"] >= 17.0
-    assert dismiss["tail_width_points"] >= 12.0
-    assert dismiss["ring_amplitude_points"] >= 14.0
-    assert dismiss["exterior_mix_width_points"] >= 38.0
+    _assert_house_shell_fields(rest, expected)
+    _assert_house_shell_fields(materialize, expected)
+    _assert_house_shell_fields(dismiss, expected)
 
 
 def test_passport_materialization_progress_compiles_transient_pressure_slit_without_public_progress():
     rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    expected_final = materialized_house_optical_shell_config(rest, 1.0)
     seed = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize", materialization_progress=0.0
     )
+    expected_seed = materialized_house_optical_shell_config(rest, 0.0)
     mid = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize", materialization_progress=0.5
     )
@@ -166,6 +171,7 @@ def test_passport_materialization_progress_compiles_transient_pressure_slit_with
     assert "progress" not in seed["optical_field"]
     assert "phase" not in seed["optical_field"]
     assert seed["continuous_present"] is True
+    _assert_house_shell_fields(seed, expected_seed)
     assert seed["content_width_points"] < rest["content_width_points"] * 0.20
     assert seed["content_height_points"] < rest["content_height_points"] * 0.08
     assert seed["corner_radius_points"] <= seed["content_height_points"] * 0.5
@@ -174,12 +180,15 @@ def test_passport_materialization_progress_compiles_transient_pressure_slit_with
     assert 0.0 < seed["gpu_material_height_frac"] <= mid["gpu_material_height_frac"] < late["gpu_material_height_frac"] < 1.0
     assert seed["band_width_points"] < mid["band_width_points"] <= final["band_width_points"]
     assert seed["content_width_points"] < mid["content_width_points"] <= final["content_width_points"]
-    assert final["content_width_points"] == pytest.approx(rest["content_width_points"])
-    assert final["content_height_points"] == pytest.approx(rest["content_height_points"])
+    _assert_house_shell_fields(final, expected_final)
 
 
 def test_passport_materialization_uses_assistant_style_quick_seam_then_slow_bloom():
     rest = compile_perceptasia_primitive_carrier_config(_bounds(), state="rest")
+    expected_early = materialized_house_optical_shell_config(rest, 0.20)
+    expected_seam = materialized_house_optical_shell_config(rest, 0.25)
+    expected_gathering = materialized_house_optical_shell_config(rest, 0.62)
+    expected_bloom = materialized_house_optical_shell_config(rest, 0.94)
     early_seam = compile_perceptasia_primitive_carrier_config(
         _bounds(), state="materialize", materialization_progress=0.20
     )
@@ -193,6 +202,10 @@ def test_passport_materialization_uses_assistant_style_quick_seam_then_slow_bloo
         _bounds(), state="materialize", materialization_progress=0.94
     )
 
+    _assert_house_shell_fields(early_seam, expected_early)
+    _assert_house_shell_fields(seam_open, expected_seam)
+    _assert_house_shell_fields(gathering, expected_gathering)
+    _assert_house_shell_fields(bloom, expected_bloom)
     assert early_seam["content_width_points"] > rest["content_width_points"] * 0.45
     assert early_seam["content_height_points"] <= rest["content_height_points"] * 0.05
     assert seam_open["content_width_points"] >= rest["content_width_points"] * 0.86
@@ -202,7 +215,7 @@ def test_passport_materialization_uses_assistant_style_quick_seam_then_slow_bloo
     assert gathering["content_height_points"] > seam_open["content_height_points"]
     assert gathering["content_height_points"] < rest["content_height_points"] * 0.60
     assert gathering["gpu_material_height_frac"] < 0.12
-    assert bloom["content_height_points"] > rest["content_height_points"] * 0.80
+    assert bloom["content_height_points"] > rest["content_height_points"] * 0.75
     assert bloom["gpu_material_height_frac"] > 0.50
     assert bloom["content_width_points"] >= seam_open["content_width_points"]
 

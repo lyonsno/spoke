@@ -63,6 +63,30 @@ from .optical_lifecycle import (
     OPTICAL_SLIT_REENTRY_PROGRESS,
     retarget_progress_for_dismiss,
 )
+from .house_optical_primitive import (
+    apply_dismiss_radial_pucker_fields as _house_apply_dismiss_radial_pucker_fields,
+    apply_dismiss_seam_latch_fields as _house_apply_dismiss_seam_latch_fields,
+    compile_house_optical_shell_config as _house_compile_optical_shell_config,
+    dismiss_pucker_amount as _house_dismiss_pucker_amount,
+    dismiss_pucker_tail_progress_for_close_progress as _house_dismiss_pucker_tail_progress_for_close_progress,
+    dismiss_radial_pucker_house_shell_config as _house_dismiss_radial_pucker_shell_config,
+    dismiss_seam_latch_amount as _house_dismiss_seam_latch_amount,
+    dismiss_seam_latch_house_shell_config as _house_dismiss_seam_latch_shell_config,
+    dismiss_seam_tuning_for_close_progress as _house_dismiss_seam_tuning_for_close_progress,
+    dismiss_text_collapse_progress_for_body_height as _house_dismiss_text_collapse_progress_for_body_height,
+    gpu_material_shell_fields as _house_gpu_material_shell_fields,
+    hidden_dismiss_main_house_shell_config as _house_hidden_dismiss_main_shell_config,
+    house_dismiss_materialization_fill_state as _house_dismiss_materialization_fill_state,
+    house_dismiss_text_collapse_state as _house_dismiss_text_collapse_state,
+    house_materialization_fill_state as _house_materialization_fill_state,
+    material_fill_progress_for_height as _house_material_fill_progress_for_height,
+    materialized_house_optical_shell_config as _house_materialized_optical_shell_config,
+    optical_entrance_text_ready as _house_optical_entrance_text_ready,
+    optical_shell_body_corner_radius as _house_optical_shell_body_corner_radius,
+    optical_text_release_progress as _house_optical_text_release_progress,
+    seam_pucker_tuning_defaults as _house_seam_pucker_tuning_defaults,
+    with_gpu_material_basis as _house_with_gpu_material_basis,
+)
 
 logger = logging.getLogger(__name__)
 _BACKDROP_DISPLAY_LAYER_CLASS = None
@@ -515,19 +539,12 @@ def _gpu_material_shell_fields(
     text_contrast_bias: float = 0.5,
     ridge_emphasis: float = 0.5,
 ) -> dict[str, float]:
-    if not _COMMAND_GPU_MATERIAL_ENABLED:
-        return {}
-    return {
-        "gpu_material_enabled": 1.0,
-        "gpu_material_brightness": _clamp01(brightness),
-        "gpu_material_opacity": 1.0,
-        "gpu_material_feather_points": _OPTICAL_SHELL_FEATHER * max(float(scale), 1.0),
-        "gpu_material_fill_overscan_points": (
-            _COMMAND_MATERIAL_FILL_OVERSCAN_POINTS * max(float(scale), 1.0)
-        ),
-        "gpu_material_text_contrast_bias": _clamp01(text_contrast_bias),
-        "gpu_material_ridge_emphasis": _clamp01(ridge_emphasis),
-    }
+    return _house_gpu_material_shell_fields(
+        brightness,
+        scale,
+        text_contrast_bias=text_contrast_bias,
+        ridge_emphasis=ridge_emphasis,
+    )
 
 
 def _with_gpu_material_basis(
@@ -538,16 +555,12 @@ def _with_gpu_material_basis(
     corner_radius: float,
     progress: float = 1.0,
 ) -> None:
-    if float(config.get("gpu_material_enabled", 0.0)) < 0.5:
-        return
-    state = _materialization_fill_state(progress)
-    config["gpu_material_base_width_points"] = max(float(width), 1.0)
-    config["gpu_material_base_height_points"] = max(float(height), 1.0)
-    config["gpu_material_base_corner_radius_points"] = max(float(corner_radius), 1.0)
-    config["gpu_material_height_frac"] = state["height_frac"]
-    config["gpu_material_opacity"] = min(
-        float(config.get("gpu_material_opacity", 1.0)),
-        state["opacity"] if progress < 1.0 else float(config.get("gpu_material_opacity", 1.0)),
+    return _house_with_gpu_material_basis(
+        config,
+        width=width,
+        height=height,
+        corner_radius=corner_radius,
+        progress=progress,
     )
 
 
@@ -681,8 +694,7 @@ def _optical_shell_body_corner_radius(body_height_points: float) -> float:
     A true capsule is just the special case where the radius reaches half the
     body height; that is not the intended look for this overlay.
     """
-    body_height = max(float(body_height_points), 1.0)
-    return min(_OVERLAY_HEIGHT * 0.25, body_height * 0.5)
+    return _house_optical_shell_body_corner_radius(body_height_points)
 
 
 def _command_optical_shell_config(
@@ -691,34 +703,7 @@ def _command_optical_shell_config(
 ) -> dict[str, float | bool] | None:
     if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
         return None
-    width_points = (
-        _OVERLAY_WIDTH if content_width_points is None else max(float(content_width_points), 1.0)
-    )
-    height_points = (
-        _OVERLAY_HEIGHT
-        if content_height_points is None
-        else max(float(content_height_points), 1.0)
-    )
-    # The rendered shell body is a rounded rectangle. Inflate the warp envelope
-    # around that body, but keep the same body corner radius so fill/mask/warp
-    # continue to agree on the visible shape.
-    shell_body_corner_r = _optical_shell_body_corner_radius(height_points)
-    width_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII * shell_body_corner_r
-    height_points += _COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII * shell_body_corner_r
-    return {
-        "enabled": True,
-        "content_width_points": width_points,
-        "content_height_points": height_points,
-        "corner_radius_points": shell_body_corner_r,
-        "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
-        "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
-        "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
-        "ring_amplitude_points": _COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS,
-        "tail_amplitude_points": _COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS,
-        "debug_visualize": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE,
-        "debug_grid_spacing_points": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS,
-        "cleanup_blur_radius_points": _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
-    }
+    return _house_compile_optical_shell_config(content_width_points, content_height_points)
 
 
 def _materialized_optical_shell_config(
@@ -731,79 +716,7 @@ def _materialized_optical_shell_config(
     not touch the SDF fill geometry, which keeps entrance animation from
     rebuilding expensive masks every visible frame.
     """
-    config = dict(shell_config)
-    p = _clamp01(progress)
-    if p >= 1.0:
-        return config
-
-    base_w = max(float(config.get("content_width_points", 1.0)), 1.0)
-    base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
-    base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
-    config["_materialization_base_width_points"] = base_w
-    config["_materialization_base_height_points"] = base_h
-    config["_materialization_base_corner_radius_points"] = base_radius
-    _with_gpu_material_basis(
-        config,
-        width=base_w,
-        height=base_h,
-        corner_radius=base_radius,
-        progress=p,
-    )
-
-    spread_t = _snap_ease_in(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
-    bloom_t = _snap_ease_in(
-        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
-        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
-    )
-    seed_w = max(24.0, min(base_w * _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
-    seed_h = max(2.5, min(base_h * _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC, 7.0))
-    width = _lerp(seed_w, base_w, spread_t)
-    height = _lerp(seed_h, base_h, bloom_t)
-
-    config["content_width_points"] = width
-    config["content_height_points"] = height
-    config["corner_radius_points"] = min(base_radius, height * 0.5)
-    if "core_magnification" in config:
-        base_mag = max(float(config.get("core_magnification", 1.0)), 0.0)
-        seed_mag = base_mag * _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC
-        if p <= _OPTICAL_MATERIALIZATION_MAG_ACCEL_END:
-            t = _clamp01(p / _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
-            config["core_magnification"] = _lerp(
-                seed_mag,
-                base_mag * 0.82,
-                _snap_ease_in(t),
-            )
-        elif p <= _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT:
-            t = _clamp01(
-                (p - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
-                / (
-                    _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
-                    - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END
-                )
-            )
-            config["core_magnification"] = _lerp(
-                base_mag * 0.82,
-                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
-                _snap_ease_in(t),
-            )
-        else:
-            t = _clamp01(
-                (p - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT)
-                / max(1.0 - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT, 1e-6)
-            )
-            config["core_magnification"] = _lerp(
-                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
-                base_mag,
-                _snap_ease_in(t),
-            )
-    for key in ("band_width_points", "tail_width_points"):
-        if key in config:
-            config[key] = max(1.0, float(config[key]) * _lerp(0.25, 1.0, p))
-    for key in ("ring_amplitude_points", "tail_amplitude_points"):
-        if key in config:
-            config[key] = float(config[key]) * _lerp(0.35, 1.0, p)
-    config["continuous_present"] = True
-    return config
+    return _house_materialized_optical_shell_config(shell_config, progress)
 
 
 def _summon_retarget_progress_for_dismiss_progress(progress: float) -> float:
@@ -812,120 +725,32 @@ def _summon_retarget_progress_for_dismiss_progress(progress: float) -> float:
 
 
 def _materialization_fill_state(progress: float) -> dict[str, float]:
-    p = _clamp01(progress)
-    if p <= _OPTICAL_MATERIAL_FILL_START:
-        opacity = 0.0
-    else:
-        opacity = _smoothstep(
-            (p - _OPTICAL_MATERIAL_FILL_START)
-            / max(_OPTICAL_MATERIAL_FILL_SOLID_AT - _OPTICAL_MATERIAL_FILL_START, 1e-6)
-        )
-    height = _lerp(
-        _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
-        1.0,
-        _clamp01(
-            (p - _OPTICAL_MATERIAL_FILL_SOLID_AT)
-            / max(_OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
-        )
-        ** 3.0,
-    )
-    warp_bloom = _snap_ease_in(
-        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
-        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
-    )
-    # The local fill is visually inside the compositor warp; never let it
-    # become taller than the field that is currently opening around it.
-    height = min(height, max(_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC, warp_bloom))
-    return {
-        "opacity": _clamp01(opacity),
-        "height_frac": _clamp01(height),
-    }
+    return _house_materialization_fill_state(progress)
 
 
 def _material_fill_progress_for_height(height_frac: float) -> float:
-    hf = _clamp01(height_frac)
-    if hf <= _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC:
-        return _OPTICAL_MATERIAL_FILL_SOLID_AT
-    fill_span = max(
-        _OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT,
-        1e-6,
-    )
-    normalized = (
-        (hf - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
-        / max(1.0 - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC, 1e-6)
-    )
-    return _OPTICAL_MATERIAL_FILL_SOLID_AT + fill_span * (normalized ** (1.0 / 3.0))
+    return _house_material_fill_progress_for_height(height_frac)
 
 
 def _optical_text_release_progress() -> float:
-    return max(
-        _OPTICAL_MATERIALIZATION_BODY_READY,
-        _material_fill_progress_for_height(_OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC),
-    )
+    return _house_optical_text_release_progress()
 
 
 def _optical_entrance_text_ready(
     progress: float | None,
     height_frac: float | None = None,
 ) -> bool:
-    if progress is None:
-        return (
-            height_frac is not None
-            and _clamp01(height_frac) >= _OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC
-        )
-    p = _clamp01(progress)
-    hf = (
-        _materialization_fill_state(p)["height_frac"]
-        if height_frac is None
-        else _clamp01(height_frac)
-    )
-    return (
-        p >= _OPTICAL_MATERIALIZATION_BODY_READY
-        and hf >= _OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC
-    )
+    return _house_optical_entrance_text_ready(progress, height_frac)
 
 
 def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
     """Keep the visible shell body alive until the seam sidecar owns dismissal."""
-    p = _clamp01(progress)
-    if p <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
-        return {
-            "opacity": 0.0,
-            "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
-        }
-    state = _materialization_fill_state(p)
-    return {
-        "opacity": state["opacity"],
-        "height_frac": state["height_frac"],
-    }
+    return _house_dismiss_materialization_fill_state(progress)
 
 
 def _dismiss_text_collapse_state(progress: float) -> dict[str, float]:
     """Text leads the dismiss zipper and vanishes before radial pucker takes over."""
-    p = _clamp01(progress)
-    gone_at = _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
-    blob_at = _OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS
-    collapse_start = _OPTICAL_DISMISS_TEXT_COLLAPSE_START_PROGRESS
-    blob = _OPTICAL_DISMISS_TEXT_BLOB_FRAC
-    if p <= gone_at:
-        return {
-            "width_frac": blob,
-            "height_frac": blob,
-            "alpha": 0.0,
-        }
-    if p <= blob_at:
-        return {
-            "width_frac": blob,
-            "height_frac": blob,
-            "alpha": 0.0,
-        }
-    t = _smoothstep((p - blob_at) / max(collapse_start - blob_at, 1e-6))
-    frac = _lerp(blob, 1.0, t)
-    return {
-        "width_frac": _clamp01(frac),
-        "height_frac": _clamp01(frac),
-        "alpha": _clamp01(t * t),
-    }
+    return _house_dismiss_text_collapse_state(progress)
 
 
 def _dismiss_text_collapse_progress_for_body_height(
@@ -938,69 +763,36 @@ def _dismiss_text_collapse_progress_for_body_height(
     while the fullscreen compositor shell is still visibly large. Treating that
     local fill height as the visible body made text vanish under an open shell.
     """
-    p = _clamp01(progress)
-    return p
+    return _house_dismiss_text_collapse_progress_for_body_height(
+        progress,
+        body_height_frac,
+    )
 
 
 def _dismiss_pucker_amount(progress: float) -> float:
     """Signed radial ringdown: an underdamped pucker after the seam vanishes."""
-    p = _clamp01(progress)
-    return math.exp(-_OPTICAL_MATERIALIZATION_RADIAL_DAMPING * p) * math.cos(
-        2.0 * math.pi * _OPTICAL_MATERIALIZATION_RADIAL_CYCLES * p
-    )
+    return _house_dismiss_pucker_amount(progress)
 
 
 def _dismiss_pucker_tail_progress_for_close_progress(close_progress: float) -> float:
     """Advance the radial tail while the shell is visually shrinking away."""
-    start = max(_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS, 1e-6)
-    phase = _clamp01((start - _clamp01(close_progress)) / start)
-    return _lerp(
-        0.0,
-        _OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS,
-        phase,
-    )
+    return _house_dismiss_pucker_tail_progress_for_close_progress(close_progress)
 
 
 def _dismiss_seam_latch_amount(progress: float) -> float:
     """Positive seam pucker already present at latch start, deeper at closure."""
-    p = _clamp01(progress)
-    start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
-    t = _clamp01((start - p) / start)
-    return _lerp(
-        _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
-        1.0,
-        1.0 - (1.0 - t) ** 3.0,
-    )
+    return _house_dismiss_seam_latch_amount(progress)
 
 
 def _seam_pucker_tuning_defaults() -> dict[str, float]:
-    return {
-        "preview_progress": _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45,
-        "seam_latch_start": _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
-        "seam_latch_intensity": _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY,
-        "scar_seam_length_frac": _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
-        "scar_seam_thickness_frac": _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC,
-        "scar_seam_focus_frac": _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC,
-        "scar_vertical_grip": _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP,
-        "scar_horizontal_grip": _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP,
-        "scar_axis_rotation": _OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION,
-        "scar_mirrored_lip": _OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP,
-    }
+    return _house_seam_pucker_tuning_defaults()
 
 
 def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
     """Diagnostic gain envelope: quick visibility peak, long elastic decay."""
-    p = _clamp01(progress)
-    peak_at = max(_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT, 1e-6)
-    if p <= peak_at:
-        t = p / peak_at
-        return _lerp(
-            1.0,
-            _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN,
-            1.0 - (1.0 - t) ** 3.0,
-        )
-    t = (p - peak_at) / max(1.0 - peak_at, 1e-6)
-    return _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN * math.exp(-5.0 * t)
+    from .house_optical_primitive import dismiss_pucker_amplitude_multiplier
+
+    return dismiss_pucker_amplitude_multiplier(progress)
 
 
 def _apply_dismiss_seam_latch_fields(
@@ -1009,62 +801,7 @@ def _apply_dismiss_seam_latch_fields(
     tuning: dict[str, float] | None = None,
 ) -> dict:
     """Apply the crisp seam latch while the slit is still zipping closed."""
-    updated = dict(config)
-    settings = _seam_pucker_tuning_defaults()
-    if tuning:
-        for key, value in tuning.items():
-            if key in settings:
-                settings[key] = float(value)
-    p = _clamp01(progress)
-    overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
-    t = _clamp01((overlap_start - p) / overlap_start)
-    base_h = max(
-        float(
-            updated.get(
-                "_materialization_base_height_points",
-                updated.get("content_height_points", 1.0),
-            )
-        ),
-        1.0,
-    )
-    current_h = max(float(updated.get("content_height_points", 1.0)), 1.0)
-    seam_field_h = max(
-        current_h,
-        min(
-            base_h,
-            max(
-                _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS,
-                base_h * _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC,
-            ),
-        ),
-    )
-    amount = _lerp(
-        settings["seam_latch_start"],
-        1.0,
-        1.0 - (1.0 - t) ** 3.0,
-    ) * settings["seam_latch_intensity"]
-    updated["content_height_points"] = seam_field_h
-    updated["corner_radius_points"] = min(
-        max(float(updated.get("corner_radius_points", 1.0)), 1.0),
-        seam_field_h * 0.5,
-    )
-    updated["cleanup_blur_radius_points"] = 0.0
-    updated["mip_blur_strength"] = 0.0
-    updated["warp_mode"] = 3.0 if settings["scar_mirrored_lip"] >= 0.5 else 1.0
-    updated["scar_amount"] = amount
-    updated["scar_seam_length_frac"] = settings["scar_seam_length_frac"]
-    updated["scar_seam_thickness_frac"] = settings["scar_seam_thickness_frac"]
-    updated["scar_seam_focus_frac"] = settings["scar_seam_focus_frac"]
-    updated["scar_vertical_grip"] = settings["scar_vertical_grip"]
-    updated["scar_horizontal_grip"] = settings["scar_horizontal_grip"]
-    updated["scar_axis_rotation"] = settings["scar_axis_rotation"]
-    updated["scar_mirrored_lip"] = settings["scar_mirrored_lip"]
-    updated["x_squeeze"] = 1.0
-    updated["y_squeeze"] = 1.0
-    updated["ring_amplitude_points"] = 0.0
-    updated["tail_amplitude_points"] = 0.0
-    updated["continuous_present"] = True
-    return updated
+    return _house_apply_dismiss_seam_latch_fields(config, progress, tuning)
 
 
 def _dismiss_seam_tuning_for_close_progress(
@@ -1072,33 +809,7 @@ def _dismiss_seam_tuning_for_close_progress(
     tuning: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Map close progress onto the seam tuner path without firing peak too early."""
-    settings = _seam_pucker_tuning_defaults()
-    if tuning:
-        for key, value in tuning.items():
-            if key in settings:
-                settings[key] = float(value)
-    p = _clamp01(close_progress)
-    arm_start = max(_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS, 1e-6)
-    peak = max(_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS, 1e-6)
-    if p >= peak:
-        arm_phase = _smoothstep((arm_start - p) / max(arm_start - peak, 1e-6))
-        settings["preview_progress"] = 0.0
-        settings["seam_latch_intensity"] *= arm_phase
-        settings["scar_seam_length_frac"] = _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
-        return settings
-
-    phase = _clamp01((peak - p) / peak)
-    settings["preview_progress"] = _lerp(
-        0.0,
-        _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS,
-        phase,
-    )
-    settings["scar_seam_length_frac"] = _lerp(
-        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
-        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC,
-        phase,
-    )
-    return settings
+    return _house_dismiss_seam_tuning_for_close_progress(close_progress, tuning)
 
 
 def _dismiss_seam_latch_shell_config(
@@ -1107,78 +818,29 @@ def _dismiss_seam_latch_shell_config(
     tuning: dict[str, float] | None = None,
 ) -> dict:
     """Return the full-width seam field layered over the close animation."""
-    config = dict(final_shell_config)
-    config["client_id"] = _DISMISS_SEAM_CLIENT_ID
-    config["role"] = "assistant"
-    config["visible"] = True
-    config["z_index"] = 10
-    seam_tuning = _dismiss_seam_tuning_for_close_progress(progress, tuning)
-    return _apply_dismiss_seam_latch_fields(
-        config,
-        seam_tuning["preview_progress"],
-        seam_tuning,
-    )
+    return _house_dismiss_seam_latch_shell_config(final_shell_config, progress, tuning)
 
 
 def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
     """Apply the post-close radial underdamped pucker without blur."""
-    updated = dict(config)
-    amount = (
-        _dismiss_pucker_amount(progress)
-        * _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY
-        * _dismiss_pucker_amplitude_multiplier(progress)
-    )
-    updated["cleanup_blur_radius_points"] = 0.0
-    updated["mip_blur_strength"] = 0.0
-    updated["warp_mode"] = 2.0
-    updated["scar_amount"] = amount
-    updated["x_squeeze"] = 1.0
-    updated["y_squeeze"] = 1.0
-    updated["ring_amplitude_points"] = 0.0
-    updated["tail_amplitude_points"] = 0.0
-    updated["continuous_present"] = True
-    return updated
+    return _house_apply_dismiss_radial_pucker_fields(config, progress)
 
 
 def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     """Return the radial underdamped scar that releases after dismiss closes."""
-    base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
-    base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
-    config = _materialized_optical_shell_config(shell_config, 0.0)
-    base_diameter = min(
-        base_h * _OPTICAL_MATERIALIZATION_RADIAL_DIAMETER_HEIGHT_FRAC,
-        base_h * _OPTICAL_MATERIALIZATION_RADIAL_MAX_HEIGHT_FRAC,
-        base_w * _OPTICAL_MATERIALIZATION_RADIAL_MAX_WIDTH_FRAC,
-    )
-    diameter = max(
-        1.0,
-        base_diameter * math.sqrt(_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER),
-    )
-    config["content_width_points"] = diameter
-    config["content_height_points"] = diameter
-    config["corner_radius_points"] = diameter * 0.5
-    config["core_magnification"] = 1.0
-    return _apply_dismiss_radial_pucker_fields(config, progress)
+    from .house_optical_primitive import dismiss_pucker_house_shell_config
+
+    return dismiss_pucker_house_shell_config(shell_config, progress)
 
 
 def _dismiss_radial_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     """Return the radial scar as an independent compositor client."""
-    config = _dismiss_pucker_shell_config(shell_config, progress)
-    config["client_id"] = _DISMISS_RADIAL_PUCKER_CLIENT_ID
-    config["role"] = "assistant"
-    config["visible"] = True
-    config["z_index"] = 9
-    return config
+    return _house_dismiss_radial_pucker_shell_config(shell_config, progress)
 
 
 def _hidden_dismiss_main_shell_config(shell_config: dict) -> dict:
     """Keep the main client registered without drawing a default shell frame."""
-    config = _materialized_optical_shell_config(shell_config, 0.0)
-    config["visible"] = False
-    config["continuous_present"] = True
-    config["mip_blur_strength"] = 0.0
-    config["cleanup_blur_radius_points"] = 0.0
-    return config
+    return _house_hidden_dismiss_main_shell_config(shell_config)
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:

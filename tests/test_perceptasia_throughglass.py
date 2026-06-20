@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from spoke.house_optical_primitive import compile_house_optical_shell_config
 from spoke.optical_field import OpticalFieldBounds
 
 
@@ -115,7 +116,7 @@ def test_manifest_skips_non_perceptasia_directory_listing(mock_pyobjc, monkeypat
     assert manifest.url == "http://localhost:8798"
 
 
-def test_throughglass_request_is_independent_sibling_without_progress_custody(mock_pyobjc):
+def test_throughglass_request_is_independent_house_primitive_without_progress_custody(mock_pyobjc):
     from spoke.perceptasia_throughglass import build_perceptasia_optical_request
 
     bounds = OpticalFieldBounds(100.0, 80.0, 900.0, 520.0)
@@ -125,7 +126,7 @@ def test_throughglass_request_is_independent_sibling_without_progress_custody(mo
     assert request.role == "hud"
     assert request.visibility_scope == "independent"
     assert request.layout_recipe == "perceptasia-primitive-passport"
-    assert request.profile.base == "captured_scene"
+    assert request.profile.base == "assistant_shell"
     assert request.presentation.layer == "hud"
     assert request.presentation.order == 42
 
@@ -1220,8 +1221,13 @@ def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
     config = host.add_client.call_args.args[3]
-    assert config["gpu_material_base_width_points"] == pytest.approx(1760.0)
-    assert config["gpu_material_base_height_points"] == pytest.approx(1000.0)
+    expected_shell = compile_house_optical_shell_config(1760.0, 1000.0)
+    assert config["gpu_material_base_width_points"] == pytest.approx(
+        expected_shell["content_width_points"]
+    )
+    assert config["gpu_material_base_height_points"] == pytest.approx(
+        expected_shell["content_height_points"]
+    )
     assert config["center_x"] == pytest.approx(1100.0)
     assert config["center_y"] == pytest.approx(1116.0)
     assert config["optical_field"]["source_rect_basis"] == "content_root"
@@ -1519,10 +1525,15 @@ def test_throughglass_publishes_display_local_scaled_geometry_for_primitive_shel
     graft.publishThroughglassShellAfterCarrierPresent_(None)
 
     published_config = host.add_client.call_args.args[3]
+    expected_shell = compile_house_optical_shell_config(1960.0, 1120.0)
     assert published_config["center_x"] == pytest.approx(1440.0)
     assert published_config["center_y"] == pytest.approx(1060.0)
-    assert published_config["gpu_material_base_width_points"] == pytest.approx(1960.0)
-    assert published_config["gpu_material_base_height_points"] == pytest.approx(1120.0)
+    assert published_config["gpu_material_base_width_points"] == pytest.approx(
+        expected_shell["content_width_points"]
+    )
+    assert published_config["gpu_material_base_height_points"] == pytest.approx(
+        expected_shell["content_height_points"]
+    )
     assert published_config["corner_radius_points"] <= 560.0
     assert published_config["optical_field"]["source_coordinate_space"] == "screen_points"
     assert published_config["optical_field"]["backing_scale"] == pytest.approx(2.0)
