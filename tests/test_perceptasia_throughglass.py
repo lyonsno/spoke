@@ -1063,10 +1063,12 @@ def test_throughglass_shell_materialize_clips_stable_full_size_webview(
     assert graft.show() is True
     setup_carrier_frame = carrier.setFrame_.call_args.args[0]
     setup_content_frame = content.setFrame_.call_args.args[0]
-    assert setup_carrier_frame.origin.x > 0.0
-    assert setup_carrier_frame.origin.y > 0.0
-    assert setup_content_frame.size.width < 980.0
-    assert setup_content_frame.size.height < 560.0
+    assert setup_carrier_frame.origin.x == pytest.approx(0.0)
+    assert setup_carrier_frame.origin.y == pytest.approx(0.0)
+    assert setup_carrier_frame.size.width == pytest.approx(980.0)
+    assert setup_carrier_frame.size.height == pytest.approx(560.0)
+    assert setup_content_frame.size.width == pytest.approx(980.0)
+    assert setup_content_frame.size.height == pytest.approx(560.0)
     content_root.addSubview_.assert_called_once_with(carrier)
     carrier.addSubview_.assert_called_once_with(content)
 
@@ -1100,7 +1102,7 @@ def test_throughglass_shell_materialize_clips_stable_full_size_webview(
     assert rest_content_frame.size.height == pytest.approx(setup_content_frame.size.height)
 
 
-def test_throughglass_shell_leaves_visible_band_around_live_carrier(
+def test_throughglass_shell_rest_carrier_covers_discontinuity_region(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -1158,16 +1160,16 @@ def test_throughglass_shell_leaves_visible_band_around_live_carrier(
 
     rest_carrier_frame = carrier.setFrame_.call_args.args[0]
     rest_shell_config = host.update_client_config.call_args.args[1]
-    assert rest_carrier_frame.origin.x > 0.0
-    assert rest_carrier_frame.origin.y > 0.0
-    assert rest_carrier_frame.size.width < outer_frame.size.width
-    assert rest_carrier_frame.size.height < outer_frame.size.height
+    assert rest_carrier_frame.origin.x == pytest.approx(0.0)
+    assert rest_carrier_frame.origin.y == pytest.approx(0.0)
+    assert rest_carrier_frame.size.width == pytest.approx(outer_frame.size.width)
+    assert rest_carrier_frame.size.height == pytest.approx(outer_frame.size.height)
     assert rest_shell_config["gpu_material_base_width_points"] >= outer_frame.size.width
     assert rest_shell_config["gpu_material_base_height_points"] >= outer_frame.size.height
     assert host.add_client.call_args.args[2] is carrier
 
 
-def test_throughglass_default_live_carrier_band_stays_tight_to_viewer(
+def test_throughglass_default_live_carrier_aperture_covers_viewer(
     mock_pyobjc, monkeypatch
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
@@ -1183,9 +1185,9 @@ def test_throughglass_default_live_carrier_band_stays_tight_to_viewer(
         560.0,
     )
 
-    assert margin == pytest.approx(12.0)
-    assert carrier_width == pytest.approx(956.0)
-    assert carrier_height == pytest.approx(536.0)
+    assert margin == pytest.approx(0.0)
+    assert carrier_width == pytest.approx(980.0)
+    assert carrier_height == pytest.approx(560.0)
 
 
 def test_throughglass_shell_uses_content_view_bounds_not_outer_panel_frame(
