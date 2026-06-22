@@ -1191,16 +1191,19 @@ class PerceptasiaThroughglassGraft(NSObject):
                 return False
             self._host = host_for_screen(NSScreen.mainScreen())
         bounds, coordinate_metadata = self.__shell_bounds_and_coordinate_metadata(state)
+        uses_animated_carrier_clip = (
+            state in {"materialize", "dismiss"}
+            and coordinate_metadata.get("source_rect_basis") == "carrier_clip"
+        )
         config = compile_perceptasia_shell_config(
             bounds,
             state=state,
             visible=visible,
-            materialization_progress=materialization_progress,
+            materialization_progress=(
+                None if uses_animated_carrier_clip else materialization_progress
+            ),
         )
-        if (
-            state in {"materialize", "dismiss"}
-            and coordinate_metadata.get("source_rect_basis") == "carrier_clip"
-        ):
+        if uses_animated_carrier_clip:
             _pin_shell_geometry_to_bounds(config, bounds)
         _annotate_shell_coordinate_metadata(config, coordinate_metadata)
         if not getattr(self, "_client_registered", False):
@@ -1405,17 +1408,17 @@ def _annotate_shell_coordinate_metadata(config: dict[str, object], metadata: dic
 
 
 def _pin_shell_geometry_to_bounds(config: dict[str, object], bounds: OpticalFieldBounds) -> None:
-    """Keep the compositor shell on an already-animated carrier aperture."""
+    """Keep shell identity centered on the animated carrier aperture.
 
-    config["content_width_points"] = float(bounds.width)
-    config["content_height_points"] = float(bounds.height)
+    The live WebView is clipped to ``bounds`` during materialize/dismiss. The
+    optical shell still needs the House-inflated envelope around that aperture;
+    otherwise near-rest frames collapse to a hard rectangular carrier edge.
+    """
+
     config["center_x"] = float(bounds.center_x)
     config["center_y"] = float(bounds.center_y)
-    config["gpu_material_base_width_points"] = float(bounds.width)
-    config["gpu_material_base_height_points"] = float(bounds.height)
     if isinstance(config.get("optical_field"), dict):
         optical_field = dict(config["optical_field"])
-        optical_field["bounds"] = bounds.to_payload()
         optical_field["content_frame"] = bounds.to_payload()
         config["optical_field"] = optical_field
 

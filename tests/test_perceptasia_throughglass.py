@@ -999,16 +999,32 @@ def test_throughglass_transition_shell_registers_animated_carrier_bounds(
 
     seed_carrier_frame = carrier.setFrame_.call_args.args[0]
     seed_config = host.add_client.call_args.args[3]
+    expected_shell = compile_house_optical_shell_config(
+        seed_carrier_frame.size.width * 2.0,
+        seed_carrier_frame.size.height * 2.0,
+    )
 
     assert seed_carrier_frame.size.width < setup_carrier_frame.size.width * 0.25
     assert seed_carrier_frame.size.height < setup_carrier_frame.size.height * 0.12
     assert seed_config["content_width_points"] == pytest.approx(
-        seed_carrier_frame.size.width * 2.0
+        expected_shell["content_width_points"]
     )
     assert seed_config["content_height_points"] == pytest.approx(
-        seed_carrier_frame.size.height * 2.0
+        expected_shell["content_height_points"]
+    )
+    assert seed_config["gpu_material_base_width_points"] == pytest.approx(
+        expected_shell["content_width_points"]
+    )
+    assert seed_config["gpu_material_base_height_points"] == pytest.approx(
+        expected_shell["content_height_points"]
     )
     assert seed_config["optical_field"]["source_rect_basis"] == "carrier_clip"
+    assert seed_config["optical_field"]["content_frame"]["width"] == pytest.approx(
+        seed_carrier_frame.size.width * 2.0
+    )
+    assert seed_config["optical_field"]["content_frame"]["height"] == pytest.approx(
+        seed_carrier_frame.size.height * 2.0
+    )
     assert seed_config["optical_field"]["bounds"]["width"] == pytest.approx(
         seed_carrier_frame.size.width * 2.0
     )
