@@ -178,6 +178,36 @@ def test_pack_warp_params_uses_captured_carrier_clip_flag():
     assert values[40] == pytest.approx(1.0)
 
 
+def test_pack_warp_params_marks_fullscreen_accumulator_coordinate_mode():
+    local_payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "center_x": 720.0,
+            "center_y": 450.0,
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+        },
+    )
+    fullscreen_payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "center_x": 720.0,
+            "center_y": 450.0,
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "accum_uses_screen_coords": True,
+        },
+    )
+
+    local_values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, local_payload)
+    fullscreen_values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, fullscreen_payload)
+
+    assert local_values[41] == pytest.approx(0.0)
+    assert fullscreen_values[41] == pytest.approx(1.0)
+
+
 def test_metal_shader_suppresses_captured_carrier_source_plate_outside_shell():
     source = metal_warp._metal_shader_source()
 
@@ -598,6 +628,10 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
         metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, buffer.payload())[10]
         for buffer in params_buffers
     ] == [pytest.approx(25.0), pytest.approx(75.0)]
+    assert [
+        metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, buffer.payload())[41]
+        for buffer in params_buffers
+    ] == [pytest.approx(1.0), pytest.approx(1.0)]
 
 
 def test_warp_diagnostics_record_fullscreen_mip_cost_against_bounded_shell(monkeypatch):

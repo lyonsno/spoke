@@ -191,6 +191,7 @@ struct WarpParams {{
     float gpuMaterialTextContrastBias; // finite text contrast basis signal
     float gpuMaterialRidgeEmphasis; // finite ridge emphasis signal
     float clipCapturedCarrierToShell; // suppress captured WebView source plate outside shell body
+    float accumUsesScreenCoords; // 1 when accum textures are full-frame shared multipass surfaces
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -319,6 +320,7 @@ kernel void opticalShellWarp(
     if (pixel.x >= (uint)params.width || pixel.y >= (uint)params.height) return;
 
     float2 d = float2(pixel.x, pixel.y) + 0.5f;
+    uint2 accumPixel = params.accumUsesScreenCoords > 0.5f ? pixel : gid;
     float2 c = float2(
         params.centerX > 0.0f ? params.centerX : params.width * 0.5f,
         params.centerY > 0.0f ? params.centerY : params.height * 0.5f
@@ -369,7 +371,7 @@ kernel void opticalShellWarp(
         // Preserve their deep interior pixels; the optical field only owns the
         // exterior pressure band around that captured body.
         float4 carrierPayloadColor = inTexture.sample(bilinearSampler, d);
-        accumOut.write(carrierPayloadColor, gid);
+        accumOut.write(carrierPayloadColor, accumPixel);
         outTexture.write(carrierPayloadColor, pixel);
         return;
     }}
@@ -592,14 +594,14 @@ kernel void opticalShellWarp(
         // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
         float mipFrac = clamp(mipLod / 6.0f, 0.0f, 1.0f);
         float temporalWeight = mix(1.0f, params.temporalBlend, mipFrac);
-        float4 prev = accumIn.read(gid);
+        float4 prev = accumIn.read(accumPixel);
         float4 blended = mix(prev, warpedColor, temporalWeight);
-        accumOut.write(blended, gid);
+        accumOut.write(blended, accumPixel);
         warpedColor = composeShellMaterial(blended, p, params);
         outTexture.write(warpedColor, pixel);
     }} else {{
         // Exterior: no temporal smoothing — fully responsive.
-        accumOut.write(warpedColor, gid);
+        accumOut.write(warpedColor, accumPixel);
         warpedColor = composeShellMaterial(warpedColor, p, params);
         outTexture.write(warpedColor, pixel);
     }}
@@ -629,7 +631,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "41f"
+_WARP_PARAMS_FORMAT = "42f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -682,6 +684,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("gpu_material_text_contrast_bias", 0.5)),
         float(shell_config.get("gpu_material_ridge_emphasis", 0.5)),
         1.0 if bool(shell_config.get("clip_captured_carrier_to_shell", False)) else 0.0,
+        1.0 if bool(shell_config.get("accum_uses_screen_coords", False)) else 0.0,
     )
 
 
@@ -1043,6 +1046,7 @@ class MetalWarpPipeline:
                     blit.endEncoding()
                 warp_config = dict(config)
                 warp_config["temporal_blend"] = 1.0
+                warp_config["accum_uses_screen_coords"] = True
                 params_data = _pack_warp_params(
                     out_w,
                     out_h,
