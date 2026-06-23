@@ -237,6 +237,42 @@ class TestMenuBarIcon:
             for call in calls
         )
 
+    def test_build_menu_shows_gutterglass_smoke_stage_item(self, menubar_module):
+        """The agent smoke stage should be available from the visible launcher UI."""
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._on_toggle_gutterglass_smoke_stage = MagicMock()
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(
+            call.args == ("Gutterglass Smoke Stage", "toggleGutterglassSmokeStage:", "s")
+            for call in calls
+        )
+
+    def test_toggle_gutterglass_smoke_stage_callback(self, menubar_module):
+        """Selecting the Gutterglass item should call the stage toggle callback."""
+        toggle_fn = MagicMock()
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_toggle_gutterglass_smoke_stage = toggle_fn
+
+        icon.toggleGutterglassSmokeStage_(None)
+
+        toggle_fn.assert_called_once()
+
     def test_build_menu_shows_assistant_submenu(self, menubar_module):
         """Command-mode callback state should build an Assistant submenu."""
         AppKit = __import__("AppKit")

@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 spoke = "spoke.__main__:main"
+spoke-gutterglass-stage = "spoke.gutterglass_smoke_stage:main"
 
 [project.optional-dependencies]
 tts = [

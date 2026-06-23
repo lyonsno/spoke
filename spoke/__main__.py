@@ -1414,11 +1414,16 @@ class SpokeAppDelegate(NSObject):
         self._menubar._on_toggle_perceptasia_throughglass = (
             self._toggle_perceptasia_throughglass
         )
+        self._gutterglass_smoke_stage = None
+        self._menubar._on_toggle_gutterglass_smoke_stage = (
+            self._toggle_gutterglass_smoke_stage
+        )
 
         # Hands-free mode — expose the toggle when a wakeword backend is configured
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
         self._menubar.refresh_menu()
+        self._maybe_show_gutterglass_smoke_stage()
 
         # Iron Giant: install event tap and probe mic in parallel.
         # The event tap (spacebar interception) only needs Accessibility permission,
@@ -2139,6 +2144,55 @@ class SpokeAppDelegate(NSObject):
                 "Perceptasia Throughglass"
                 if shown
                 else "Perceptasia Throughglass waiting"
+            )
+        return shown
+
+    def _ensure_gutterglass_smoke_stage(self):
+        stage = getattr(self, "_gutterglass_smoke_stage", None)
+        if stage is not None:
+            return stage
+        from .gutterglass_smoke_stage import GutterglassSmokeStage
+
+        stage = GutterglassSmokeStage.alloc().init()
+        self._gutterglass_smoke_stage = stage
+        return stage
+
+    def _toggle_gutterglass_smoke_stage(self) -> None:
+        stage = self._ensure_gutterglass_smoke_stage()
+        if stage is None:
+            return
+        try:
+            visible = bool(stage.isVisible())
+        except Exception:
+            visible = False
+        menubar = getattr(self, "_menubar", None)
+        if visible:
+            stage.hide()
+            if menubar is not None:
+                menubar.set_status_text("Gutterglass Smoke Stage hidden")
+            return
+        shown = bool(stage.show())
+        if menubar is not None:
+            menubar.set_status_text(
+                "Gutterglass Smoke Stage"
+                if shown
+                else "Gutterglass Smoke Stage unavailable"
+            )
+
+    def _maybe_show_gutterglass_smoke_stage(self) -> bool:
+        flag = os.environ.get("SPOKE_GUTTERGLASS_STAGE_SMOKE", "")
+        if flag.strip().lower() not in {"1", "true", "yes", "on"}:
+            return False
+        stage = self._ensure_gutterglass_smoke_stage()
+        if stage is None:
+            return False
+        shown = bool(stage.show())
+        menubar = getattr(self, "_menubar", None)
+        if menubar is not None:
+            menubar.set_status_text(
+                "Gutterglass Smoke Stage"
+                if shown
+                else "Gutterglass Smoke Stage unavailable"
             )
         return shown
 
