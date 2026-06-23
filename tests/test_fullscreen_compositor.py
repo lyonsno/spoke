@@ -685,6 +685,66 @@ def test_captured_content_round_trip_preserves_source_plate_suppression(monkeypa
     assert latest["clip_captured_carrier_to_shell"] is True
 
 
+def test_snapshot_exclusion_ids_survive_sibling_preview_updates(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    throughglass = host.register_client(
+        _identity("perceptasia.throughglass", host.display_id, "hud"),
+        window=_FakeWindow(281),
+        content_view=object(),
+    )
+    preview = host.register_client(
+        _identity("preview.transcription", host.display_id, "preview"),
+        window=_FakeWindow(282),
+        content_view=object(),
+    )
+
+    assert throughglass.update_shell_config(
+        {
+            "center_x": 20.0,
+            "visible": True,
+            "presentation_layer": "hud",
+            "presentation_order": 42,
+            "include_carrier_window_in_capture": False,
+        }
+    )
+    preview_snapshot = _snapshot(
+        "preview.transcription",
+        role="preview",
+        z_index=5,
+    )
+    preview_snapshot = fullscreen_compositor.OverlayRenderSnapshot(
+        identity=preview_snapshot.identity,
+        generation=preview_snapshot.generation,
+        visible=preview_snapshot.visible,
+        geometry=preview_snapshot.geometry,
+        material=preview_snapshot.material,
+        excluded_window_ids=(90210,),
+        z_index=preview_snapshot.z_index,
+        optical_field=preview_snapshot.optical_field,
+    )
+    assert preview.publish(preview_snapshot)
+
+    assert throughglass.update_shell_config(
+        {
+            "center_x": 21.0,
+            "visible": True,
+            "presentation_layer": "hud",
+            "presentation_order": 42,
+            "include_carrier_window_in_capture": False,
+        }
+    )
+
+    compositor = _FakeFullScreenCompositor.instances[0]
+    assert 281 in compositor.excluded_window_ids
+    assert 282 in compositor.excluded_window_ids
+    assert 90210 in compositor.excluded_window_ids
+    assert [config["client_id"] for config in compositor.updated_configs[-1]] == [
+        "preview.transcription",
+        "perceptasia.throughglass",
+    ]
+
+
 def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()

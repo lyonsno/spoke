@@ -1843,6 +1843,18 @@ class OverlayCompositorHost:
 
     def _sync_host(self, start_if_needed: bool = False) -> bool:
         overlay_window_ids = []
+        seen_window_ids: set[int] = set()
+
+        def add_excluded_window_id(window_id) -> None:
+            try:
+                normalized = int(window_id)
+            except Exception:
+                return
+            if normalized in seen_window_ids:
+                return
+            seen_window_ids.add(normalized)
+            overlay_window_ids.append(normalized)
+
         for entry in self._clients.values():
             snapshot = entry.get("snapshot")
             if (
@@ -1850,7 +1862,11 @@ class OverlayCompositorHost:
                 and getattr(snapshot, "include_carrier_window_in_capture", False)
             ):
                 continue
-            overlay_window_ids.extend(self._window_ids_for_entry(entry))
+            for window_id in self._window_ids_for_entry(entry):
+                add_excluded_window_id(window_id)
+            if snapshot is not None:
+                for window_id in getattr(snapshot, "excluded_window_ids", ()):
+                    add_excluded_window_id(window_id)
         shell_configs = [
             _snapshot_to_shell_config(snapshot)
             for snapshot in self._shell_snapshots_for_compositor()
