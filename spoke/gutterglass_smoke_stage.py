@@ -249,6 +249,10 @@ class GutterglassSmokeStage(NSObject):
             False,
         )
         panel.setTitle_("Gutterglass Smoke Stage")
+        if hasattr(panel, "setReleasedWhenClosed_"):
+            panel.setReleasedWhenClosed_(False)
+        if hasattr(panel, "setDelegate_"):
+            panel.setDelegate_(self)
         panel.setLevel_(28)
         panel.setOpaque_(False)
         panel.setHasShadow_(True)
@@ -294,6 +298,9 @@ class GutterglassSmokeStage(NSObject):
     def hide(self) -> None:
         if self._panel is not None:
             self._panel.orderOut_(None)
+        self._visible = False
+
+    def windowWillClose_(self, notification) -> None:
         self._visible = False
 
     def toggle(self) -> None:

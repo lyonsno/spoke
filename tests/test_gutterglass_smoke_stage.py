@@ -193,6 +193,51 @@ def test_stage_panel_renders_text_file_with_provenance_header(
     panel.orderFrontRegardless.assert_called_once_with()
 
 
+def test_stage_panel_close_marks_hidden_and_keeps_panel_reusable(
+    mock_pyobjc,
+    monkeypatch,
+    tmp_path,
+):
+    module = importlib.import_module("spoke.gutterglass_smoke_stage")
+    text_file = tmp_path / "receipt.txt"
+    text_file.write_text("close me without stranding state", encoding="utf-8")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            _request_payload(
+                content_kind="text",
+                path=str(text_file),
+                created_at=time.time(),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    webview = MagicMock(name="webview")
+    _install_webkit(monkeypatch, webview)
+    panel = MagicMock(name="panel")
+    panel.contentView.return_value = MagicMock(name="content-root")
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+
+    stage = module.GutterglassSmokeStage.alloc().initWithRequestPath_(request_path)
+
+    assert stage.show() is True
+    assert stage.isVisible() is True
+    panel.setReleasedWhenClosed_.assert_called_once_with(False)
+    panel.setDelegate_.assert_called_once_with(stage)
+
+    stage.windowWillClose_(None)
+
+    assert stage.isVisible() is False
+    stage.toggle()
+    assert stage.isVisible() is True
+    assert panel.orderFrontRegardless.call_count == 2
+
+
 def test_stage_panel_loads_remote_url_request_in_webkit(
     mock_pyobjc,
     monkeypatch,
