@@ -4181,6 +4181,25 @@ class TestEnvValidation:
         assert result is not None
         assert detector_instance._on_throughglass_crown_key == d._toggle_perceptasia_throughglass
 
+    def test_init_binds_gutterglass_crown_key(self, main_module, monkeypatch):
+        """Space+colon should route to the independent Gutterglass toggle."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+
+        class Detector:
+            command_overlay_active = False
+
+        detector_instance = Detector()
+
+        with patch.object(main_module.SpacebarHoldDetector, "alloc") as mock_alloc:
+            mock_alloc.return_value.initWithHoldStart_holdEnd_holdMs_.return_value = (
+                detector_instance
+            )
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert detector_instance._on_gutterglass_crown_key == d._toggle_gutterglass_smoke_stage
+
 
 class TestRecordingCap:
     """Test the recording cap countdown and force_end trigger."""

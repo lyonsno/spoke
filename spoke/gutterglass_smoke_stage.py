@@ -32,6 +32,21 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject
 
+from .gutterglass_primitive_passport import (
+    GUTTERGLASS_PRIMITIVE_CLIENT_ID,
+    GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID,
+    compile_gutterglass_dismiss_pucker_config,
+    compile_gutterglass_primitive_stage_config,
+)
+from .house_optical_primitive import (
+    OPTICAL_MATERIALIZATION_DISMISS_S,
+    OPTICAL_MATERIALIZATION_PUCKER_TAIL_S,
+    OPTICAL_MATERIALIZATION_S,
+    dismiss_pucker_tail_progress_for_close_progress,
+    hidden_dismiss_main_house_shell_config,
+)
+from .optical_field import OpticalFieldBounds
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = "spoke.gutterglass-smoke-stage.request.v0"
@@ -44,6 +59,7 @@ _NSWindowStyleMaskResizable = 1 << 3
 _NSWindowStyleMaskUtilityWindow = 1 << 4
 _NSViewWidthSizable = 1 << 1
 _NSViewHeightSizable = 1 << 4
+_STAGE_SHELL_ANIMATION_FPS = 60.0
 _SUPPORTED_KINDS = {
     "url",
     "html",
@@ -223,14 +239,28 @@ class GutterglassSmokeStage(NSObject):
         return self.initWithRequestPath_(None)
 
     def initWithRequestPath_(self, request_path):
+        return self.initWithRequestPath_compositorRegistry_(request_path, None)
+
+    def initWithCompositorRegistry_(self, registry):
+        return self.initWithRequestPath_compositorRegistry_(None, registry)
+
+    def initWithRequestPath_compositorRegistry_(self, request_path, registry):
         self = objc.super(GutterglassSmokeStage, self).init()
         if self is None:
             return None
         self._request_path = Path(request_path).expanduser() if request_path else default_request_path()
+        self._registry = registry
+        self._host = None
+        self._client_registered = False
+        self._radial_pucker_registered = False
         self._panel = None
         self._webview = None
         self._visible = False
         self._last_document = None
+        self._stage_shell_animation_direction = 0
+        self._stage_shell_animation_started_at = 0.0
+        self._stage_shell_animation_duration = 0.0
+        self._stage_shell_final_config = None
         return self
 
     def setup(self) -> None:
@@ -293,14 +323,19 @@ class GutterglassSmokeStage(NSObject):
             self._load_document(document)
         self._panel.orderFrontRegardless()
         self._visible = True
+        self.__start_shell_animation(1)
         return True
 
     def hide(self) -> None:
+        if self.__start_shell_animation(-1):
+            self._visible = False
+            return
         if self._panel is not None:
             self._panel.orderOut_(None)
         self._visible = False
 
     def windowWillClose_(self, notification) -> None:
+        self.__release_shell_clients()
         self._visible = False
 
     def toggle(self) -> None:
@@ -359,6 +394,211 @@ class GutterglassSmokeStage(NSObject):
 
         _load_html(self._webview, _render_artifact_html(request))
 
+    def __shell_bounds(self) -> OpticalFieldBounds | None:
+        if self._panel is None:
+            return None
+        frame = self._panel.frame()
+        screen = None
+        panel_screen = getattr(self._panel, "screen", None)
+        if callable(panel_screen):
+            try:
+                screen = panel_screen()
+            except Exception:
+                screen = None
+        scale = _screen_backing_scale(screen or NSScreen.mainScreen())
+        return OpticalFieldBounds(
+            x=float(frame.origin.x) * scale,
+            y=float(frame.origin.y) * scale,
+            width=max(float(frame.size.width) * scale, 1.0),
+            height=max(float(frame.size.height) * scale, 1.0),
+        )
+
+    def __ensure_shell_host(self):
+        if self._registry is None or self._panel is None:
+            return None
+        if self._host is not None:
+            return self._host
+        host_for_screen = getattr(self._registry, "host_for_screen", None)
+        if not callable(host_for_screen):
+            return None
+        screen = None
+        panel_screen = getattr(self._panel, "screen", None)
+        if callable(panel_screen):
+            try:
+                screen = panel_screen()
+            except Exception:
+                screen = None
+        self._host = host_for_screen(screen or NSScreen.mainScreen())
+        return self._host
+
+    def __compile_shell_config(
+        self,
+        state: str,
+        *,
+        visible: bool = True,
+        materialization_progress: float | None = None,
+    ) -> dict[str, object] | None:
+        bounds = self.__shell_bounds()
+        if bounds is None:
+            return None
+        config = compile_gutterglass_primitive_stage_config(
+            bounds,
+            state=state,
+            visible=visible,
+            materialization_progress=materialization_progress,
+        )
+        config["center_x"] = bounds.x + bounds.width / 2.0
+        config["center_y"] = bounds.y + bounds.height / 2.0
+        config["optical_field"] = {
+            **dict(config.get("optical_field", {})),
+            "source_rect_basis": "gutterglass_panel",
+            "bounds": {
+                "x": bounds.x,
+                "y": bounds.y,
+                "width": bounds.width,
+                "height": bounds.height,
+            },
+        }
+        return config
+
+    def __publish_shell_config(self, config: dict[str, object] | None) -> bool:
+        if config is None:
+            return False
+        host = self.__ensure_shell_host()
+        if host is None or self._panel is None or self._webview is None:
+            return False
+        try:
+            if not self._client_registered:
+                added = host.add_client(
+                    GUTTERGLASS_PRIMITIVE_CLIENT_ID,
+                    self._panel,
+                    self._webview,
+                    config,
+                )
+                self._client_registered = bool(added)
+                return bool(added)
+            return bool(host.update_client_config(GUTTERGLASS_PRIMITIVE_CLIENT_ID, config))
+        except Exception:
+            logger.debug("Failed to publish Gutterglass shell config", exc_info=True)
+            return False
+
+    def __publish_radial_pucker_config(
+        self,
+        final_config: dict[str, object],
+        progress: float,
+    ) -> bool:
+        host = self.__ensure_shell_host()
+        if host is None or self._panel is None or self._webview is None:
+            return False
+        config = compile_gutterglass_dismiss_pucker_config(final_config, progress)
+        try:
+            if not self._radial_pucker_registered:
+                added = host.add_client(
+                    GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID,
+                    self._panel,
+                    self._webview,
+                    config,
+                )
+                self._radial_pucker_registered = bool(added)
+                return bool(added)
+            return bool(
+                host.update_client_config(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID, config)
+            )
+        except Exception:
+            logger.debug("Failed to publish Gutterglass radial pucker config", exc_info=True)
+            return False
+
+    def __start_shell_animation(self, direction: int) -> bool:
+        if self._registry is None or self._panel is None or self._webview is None:
+            return False
+        final_config = self.__compile_shell_config("rest", visible=True)
+        if final_config is None:
+            return False
+        self._stage_shell_final_config = dict(final_config)
+        self._stage_shell_animation_direction = 1 if direction >= 0 else -1
+        self._stage_shell_animation_started_at = time.perf_counter()
+        self._stage_shell_animation_duration = (
+            OPTICAL_MATERIALIZATION_S
+            if self._stage_shell_animation_direction > 0
+            else OPTICAL_MATERIALIZATION_DISMISS_S + OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+        )
+        self.__publish_shell_animation_frame()
+        self.__schedule_shell_animation_step()
+        return True
+
+    def __schedule_shell_animation_step(self) -> None:
+        selector = getattr(self, "performSelector_withObject_afterDelay_", None)
+        if callable(selector):
+            selector("animateGutterglassShellStep:", None, 1.0 / _STAGE_SHELL_ANIMATION_FPS)
+
+    def animateGutterglassShellStep_(self, _sender) -> None:
+        self.__publish_shell_animation_frame()
+        if self._stage_shell_animation_direction != 0:
+            self.__schedule_shell_animation_step()
+
+    def __publish_shell_animation_frame(self) -> None:
+        direction = int(getattr(self, "_stage_shell_animation_direction", 0) or 0)
+        if direction == 0:
+            return
+        duration = max(float(getattr(self, "_stage_shell_animation_duration", 0.0) or 0.0), 1e-6)
+        elapsed = max(0.0, time.perf_counter() - float(self._stage_shell_animation_started_at))
+        raw = min(elapsed / duration, 1.0)
+        final_config = dict(getattr(self, "_stage_shell_final_config", None) or {})
+        if not final_config:
+            self._stage_shell_animation_direction = 0
+            return
+        if direction > 0:
+            self.__publish_shell_config(
+                self.__compile_shell_config(
+                    "materialize",
+                    visible=True,
+                    materialization_progress=raw,
+                )
+            )
+            if raw >= 1.0:
+                self._stage_shell_animation_direction = 0
+                self.__publish_shell_config(self.__compile_shell_config("rest", visible=True))
+            return
+        close_duration = max(OPTICAL_MATERIALIZATION_DISMISS_S, 1e-6)
+        tail_start = close_duration / duration
+        if raw < tail_start:
+            close_raw = min(raw / tail_start, 1.0)
+            progress = 1.0 - close_raw
+            self.__publish_shell_config(
+                self.__compile_shell_config(
+                    "dismiss",
+                    visible=True,
+                    materialization_progress=progress,
+                )
+            )
+            self.__publish_radial_pucker_config(
+                final_config,
+                dismiss_pucker_tail_progress_for_close_progress(progress),
+            )
+            return
+        tail_progress = min((raw - tail_start) / max(1.0 - tail_start, 1e-6), 1.0)
+        self.__publish_shell_config(hidden_dismiss_main_house_shell_config(final_config))
+        self.__publish_radial_pucker_config(final_config, tail_progress)
+        if raw >= 1.0:
+            self._stage_shell_animation_direction = 0
+            if self._panel is not None:
+                self._panel.orderOut_(None)
+            self.__release_shell_clients()
+
+    def __release_shell_clients(self) -> None:
+        if self._host is None:
+            self._client_registered = False
+            self._radial_pucker_registered = False
+            return
+        release = getattr(self._host, "release_client", None)
+        if callable(release):
+            if self._client_registered:
+                release(GUTTERGLASS_PRIMITIVE_CLIENT_ID)
+            if self._radial_pucker_registered:
+                release(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID)
+        self._client_registered = False
+        self._radial_pucker_registered = False
+
 
 def _env_max_age_seconds() -> float:
     try:
@@ -414,6 +654,19 @@ def _default_panel_rect(frame) -> tuple[float, float, float, float]:
     x = float(frame.origin.x) + (float(frame.size.width) - width) / 2.0
     y = float(frame.origin.y) + (float(frame.size.height) - height) / 2.0
     return x, y, width, height
+
+
+def _screen_backing_scale(screen) -> float:
+    if screen is None:
+        return 1.0
+    backing_scale = getattr(screen, "backingScaleFactor", None)
+    if callable(backing_scale):
+        try:
+            value = float(backing_scale())
+            return value if value > 0.0 else 1.0
+        except Exception:
+            return 1.0
+    return 1.0
 
 
 def _make_webview(width: float, height: float):

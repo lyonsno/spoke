@@ -273,3 +273,144 @@ def test_stage_panel_loads_remote_url_request_in_webkit(
     webview.loadRequest_.assert_called_once()
     request_arg = webview.loadRequest_.call_args.args[0]
     assert "localhost:8888/smoke" in repr(request_arg)
+
+
+def test_stage_panel_show_registers_house_primitive_shell(
+    mock_pyobjc,
+    monkeypatch,
+    tmp_path,
+):
+    module = importlib.import_module("spoke.gutterglass_smoke_stage")
+    from spoke.gutterglass_primitive_passport import GUTTERGLASS_PRIMITIVE_CLIENT_ID
+
+    text_file = tmp_path / "receipt.txt"
+    text_file.write_text("primitive smoke", encoding="utf-8")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            _request_payload(
+                content_kind="text",
+                path=str(text_file),
+                created_at=time.time(),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    webview = MagicMock(name="webview")
+    _install_webkit(monkeypatch, webview)
+    panel = MagicMock(name="panel")
+    content_root = MagicMock(name="content-root")
+    panel.contentView.return_value = content_root
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=1040.0, height=620.0),
+    )
+    screen = module.NSScreen.mainScreen.return_value
+    screen.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    panel.screen.return_value = screen
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    host = MagicMock()
+    host.add_client.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+
+    stage = module.GutterglassSmokeStage.alloc().initWithRequestPath_compositorRegistry_(
+        request_path,
+        registry,
+    )
+    stage.performSelector_withObject_afterDelay_ = lambda *_args: None
+
+    assert stage.show() is True
+
+    host.add_client.assert_called()
+    client_id, window, content_view, config = host.add_client.call_args.args
+    assert client_id == GUTTERGLASS_PRIMITIVE_CLIENT_ID
+    assert window is panel
+    assert content_view is webview
+    assert config["client_id"] == GUTTERGLASS_PRIMITIVE_CLIENT_ID
+    assert config["optical_field"]["profile"] == "assistant_shell"
+    assert config["optical_field"]["source_rect_basis"] == "gutterglass_panel"
+    assert config["content_width_points"] < 1040.0 * 2.0
+    assert config["content_height_points"] < 620.0 * 2.0
+    assert config["gpu_material_base_width_points"] > 1040.0 * 2.0
+    assert config["gpu_material_base_height_points"] > 620.0 * 2.0
+
+
+def test_stage_panel_hide_uses_shared_radial_pucker_before_release(
+    mock_pyobjc,
+    monkeypatch,
+    tmp_path,
+):
+    module = importlib.import_module("spoke.gutterglass_smoke_stage")
+    from spoke.gutterglass_primitive_passport import (
+        GUTTERGLASS_PRIMITIVE_CLIENT_ID,
+        GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID,
+    )
+
+    text_file = tmp_path / "receipt.txt"
+    text_file.write_text("dismiss me with the oscillator", encoding="utf-8")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            _request_payload(
+                content_kind="text",
+                path=str(text_file),
+                created_at=time.time(),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    webview = MagicMock(name="webview")
+    _install_webkit(monkeypatch, webview)
+    panel = MagicMock(name="panel")
+    panel.contentView.return_value = MagicMock(name="content-root")
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=1040.0, height=620.0),
+    )
+    screen = module.NSScreen.mainScreen.return_value
+    screen.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    panel.screen.return_value = screen
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    host = MagicMock()
+    host.add_client.return_value = True
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+
+    stage = module.GutterglassSmokeStage.alloc().initWithRequestPath_compositorRegistry_(
+        request_path,
+        registry,
+    )
+    stage.performSelector_withObject_afterDelay_ = lambda *_args: None
+    assert stage.show() is True
+
+    stage.hide()
+
+    radial_calls = [
+        call
+        for call in host.add_client.call_args_list
+        if call.args[0] == GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID
+    ]
+    assert radial_calls
+    radial_config = radial_calls[-1].args[3]
+    assert radial_config["client_id"] == GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID
+    assert radial_config["client_id"] != "assistant.command.dismiss_radial_pucker"
+    assert radial_config["role"] == "hud"
+    assert radial_config["warp_mode"] == 2.0
+    panel.orderOut_.assert_not_called()
+
+    stage._stage_shell_animation_started_at -= stage._stage_shell_animation_duration + 0.01
+    stage.animateGutterglassShellStep_(None)
+
+    panel.orderOut_.assert_called_once_with(None)
+    host.release_client.assert_any_call(GUTTERGLASS_PRIMITIVE_CLIENT_ID)
+    host.release_client.assert_any_call(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID)
