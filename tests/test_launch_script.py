@@ -443,6 +443,13 @@ class TestLauncherRetinaLassoWitness:
         assert 'args.append("--watch-trace")' in text
         assert '"--event-capture-duration"' in text
 
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_generic_retina_lasso_witness_accepts_explicit_trace_trigger_events(self, script_text):
+        text = script_text()
+        assert "SPOKE_RETINA_LASSO_TRIGGER_EVENTS" in text
+        assert "--trigger-event" in text
+        assert "gutterglass.publish.materialize" not in text
+
     def test_target_witness_wrapper_routes_throughglass_for_stable_launcher(self):
         """The stable hotkey launcher may call the selected worktree's legacy
         command-overlay witness wrapper before the launcher itself has learned

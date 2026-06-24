@@ -1,0 +1,14 @@
+{
+  "authority": "none",
+  "content_kind": "html",
+  "created_at": 1782247160.475488,
+  "lifecycle": "ephemeral",
+  "path": "first-draft.html",
+  "receipt_refs": [
+    "spoke://gutterglass/first-draft"
+  ],
+  "schema": "spoke.gutterglass-smoke-stage.request.v0",
+  "source_sign": "diaulos:warpstorm-pit-boss",
+  "summary": "",
+  "title": "Gutterglass Smoke Stage First Draft"
+}

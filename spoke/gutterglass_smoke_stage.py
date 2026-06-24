@@ -32,6 +32,7 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject
 
+from .command_overlay_trace import record_command_overlay_trace
 from .gutterglass_primitive_passport import (
     GUTTERGLASS_PRIMITIVE_CLIENT_ID,
     GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID,
@@ -476,11 +477,57 @@ class GutterglassSmokeStage(NSObject):
                     config,
                 )
                 self._client_registered = bool(added)
+                self.__record_shell_publish_trace(
+                    config,
+                    registered=self._client_registered,
+                    updated=False,
+                )
                 return bool(added)
-            return bool(host.update_client_config(GUTTERGLASS_PRIMITIVE_CLIENT_ID, config))
+            updated = bool(host.update_client_config(GUTTERGLASS_PRIMITIVE_CLIENT_ID, config))
+            self.__record_shell_publish_trace(
+                config,
+                registered=self._client_registered,
+                updated=updated,
+            )
+            return updated
         except Exception:
             logger.debug("Failed to publish Gutterglass shell config", exc_info=True)
             return False
+
+    def __record_shell_publish_trace(
+        self,
+        config: dict[str, object],
+        *,
+        registered: bool,
+        updated: bool,
+    ) -> None:
+        optical_field = config.get("optical_field", {})
+        if not isinstance(optical_field, dict):
+            optical_field = {}
+        bounds = optical_field.get("bounds", {})
+        if not isinstance(bounds, dict):
+            bounds = {}
+        state = str(
+            config.get("materialization_state")
+            or config.get("state")
+            or optical_field.get("state")
+            or "unknown"
+        )
+        record_command_overlay_trace(
+            f"gutterglass.publish.{state}",
+            client_id=str(config.get("client_id") or GUTTERGLASS_PRIMITIVE_CLIENT_ID),
+            visible=bool(config.get("visible", True)),
+            registered=registered,
+            updated=updated,
+            materialization_progress=config.get("materialization_progress"),
+            source_rect_basis=optical_field.get("source_rect_basis"),
+            x=bounds.get("x"),
+            y=bounds.get("y"),
+            width=bounds.get("width"),
+            height=bounds.get("height"),
+            center_x=config.get("center_x"),
+            center_y=config.get("center_y"),
+        )
 
     def __publish_radial_pucker_config(
         self,
@@ -500,13 +547,52 @@ class GutterglassSmokeStage(NSObject):
                     config,
                 )
                 self._radial_pucker_registered = bool(added)
+                self.__record_radial_pucker_trace(
+                    config,
+                    registered=self._radial_pucker_registered,
+                    updated=False,
+                    progress=progress,
+                )
                 return bool(added)
-            return bool(
-                host.update_client_config(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID, config)
+            updated = bool(host.update_client_config(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID, config))
+            self.__record_radial_pucker_trace(
+                config,
+                registered=self._radial_pucker_registered,
+                updated=updated,
+                progress=progress,
             )
+            return updated
         except Exception:
             logger.debug("Failed to publish Gutterglass radial pucker config", exc_info=True)
             return False
+
+    def __record_radial_pucker_trace(
+        self,
+        config: dict[str, object],
+        *,
+        registered: bool,
+        updated: bool,
+        progress: float,
+    ) -> None:
+        optical_field = config.get("optical_field", {})
+        if not isinstance(optical_field, dict):
+            optical_field = {}
+        bounds = optical_field.get("bounds", {})
+        if not isinstance(bounds, dict):
+            bounds = {}
+        record_command_overlay_trace(
+            "gutterglass.publish.radial_pucker",
+            client_id=str(config.get("client_id") or GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID),
+            visible=bool(config.get("visible", True)),
+            registered=registered,
+            updated=updated,
+            progress=progress,
+            source_rect_basis=optical_field.get("source_rect_basis"),
+            x=bounds.get("x"),
+            y=bounds.get("y"),
+            width=bounds.get("width"),
+            height=bounds.get("height"),
+        )
 
     def __start_shell_animation(self, direction: int) -> bool:
         if self._registry is None or self._panel is None or self._webview is None:

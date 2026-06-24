@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 import sys
 import time
 import types
@@ -340,6 +341,70 @@ def test_stage_panel_show_registers_house_primitive_shell(
     assert config["gpu_material_base_height_points"] > 620.0 * 2.0
 
 
+def test_stage_panel_show_records_gutterglass_publish_trace(
+    mock_pyobjc,
+    monkeypatch,
+    tmp_path,
+):
+    module = importlib.import_module("spoke.gutterglass_smoke_stage")
+
+    trace_path = tmp_path / "overlay-trace.jsonl"
+    monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_TRACE_PATH", str(trace_path))
+    text_file = tmp_path / "receipt.txt"
+    text_file.write_text("trace me", encoding="utf-8")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            _request_payload(
+                content_kind="text",
+                path=str(text_file),
+                created_at=time.time(),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    webview = MagicMock(name="webview")
+    _install_webkit(monkeypatch, webview)
+    panel = MagicMock(name="panel")
+    panel.contentView.return_value = MagicMock(name="content-root")
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=1040.0, height=620.0),
+    )
+    screen = module.NSScreen.mainScreen.return_value
+    screen.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    screen.backingScaleFactor.return_value = 2.0
+    panel.screen.return_value = screen
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    host = MagicMock()
+    host.add_client.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+
+    stage = module.GutterglassSmokeStage.alloc().initWithRequestPath_compositorRegistry_(
+        request_path,
+        registry,
+    )
+    stage.performSelector_withObject_afterDelay_ = lambda *_args: None
+
+    assert stage.show() is True
+
+    events = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["event"] == "gutterglass.publish.materialize"
+    assert events[-1]["client_id"] == "gutterglass.smoke_stage"
+    assert events[-1]["source_rect_basis"] == "gutterglass_panel"
+    assert events[-1]["visible"] is True
+    assert events[-1]["registered"] is True
+    assert events[-1]["width"] == 2080.0
+    assert events[-1]["height"] == 1240.0
+
+
 def test_stage_panel_hide_uses_shared_radial_pucker_before_release(
     mock_pyobjc,
     monkeypatch,
@@ -414,3 +479,13 @@ def test_stage_panel_hide_uses_shared_radial_pucker_before_release(
     panel.orderOut_.assert_called_once_with(None)
     host.release_client.assert_any_call(GUTTERGLASS_PRIMITIVE_CLIENT_ID)
     host.release_client.assert_any_call(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID)
+
+
+def test_gutterglass_smoke_env_uses_gutterglass_trace_witness_not_throughglass():
+    smoke_env = Path(".spoke-smoke-env").read_text(encoding="utf-8")
+
+    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="0"' in smoke_env
+    assert 'SPOKE_RETINA_LASSO_SOURCE_WINDOW="Gutterglass Smoke Stage"' in smoke_env
+    assert "gutterglass.publish.materialize" in smoke_env
+    assert "gutterglass.publish.radial_pucker" in smoke_env
+    assert "SPOKE_PERCEPTASIA_THROUGHGLASS_URL" not in smoke_env

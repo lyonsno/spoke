@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from spoke.optical_field import OpticalFieldBounds
@@ -253,15 +251,23 @@ def test_passport_env_overrides_never_touch_assistant_command_overlay_state():
     assert all(not key.startswith("SPOKE_COMMAND_") for key in overrides)
 
 
-def test_passport_smoke_env_publishes_through_independent_primitive_shell():
-    smoke_env = Path(".spoke-smoke-env").read_text()
+def test_passport_env_builder_publishes_through_independent_primitive_shell():
+    overrides = build_perceptasia_primitive_env(
+        provider_url="http://localhost:8753",
+        content_proof_required=True,
+        publish_shell=True,
+    )
 
-    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"' in smoke_env
-    assert 'SPOKE_RETINA_LASSO_WATCH_TRACE="1"' in smoke_env
+    assert overrides["SPOKE_PERCEPTASIA_PRIMITIVE_PUBLISH_SHELL"] == "1"
+    assert overrides["SPOKE_PERCEPTASIA_PRIMITIVE_CONTENT_PROOF_REQUIRED"] == "1"
 
 
-def test_passport_smoke_env_targets_live_perceptasia_provider_port():
-    smoke_env = Path(".spoke-smoke-env").read_text()
+def test_passport_env_builder_targets_live_perceptasia_provider_port():
+    overrides = build_perceptasia_primitive_env(
+        provider_url="http://localhost:8753/",
+        content_proof_required=True,
+        publish_shell=True,
+    )
 
-    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"' in smoke_env
-    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8742"' not in smoke_env
+    assert overrides["SPOKE_PERCEPTASIA_PRIMITIVE_URL"] == "http://localhost:8753"
+    assert overrides["SPOKE_PERCEPTASIA_PRIMITIVE_URL"] != "http://localhost:8742"

@@ -6,15 +6,15 @@
 export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
 export SPOKE_BACKDROP_FRAME_TIMING="1"
 
-# This branch is a live-content primitive graft smoke, so launcher relaunches
-# must produce a Throughglass pixel witness without waiting for operator relay.
+# This branch is a Gutterglass smoke-stage primitive smoke. Launcher relaunches
+# should produce Gutterglass lifecycle witnesses without starting Throughglass.
 export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
 export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
 export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
 export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
 export SPOKE_RETINA_LASSO_MAX_TRIGGER_LAG_SECONDS="1.0"
 export SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES="96"
-export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="stress"
+export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="low-perturbation"
 export SPOKE_RETINA_LASSO_FPS="12"
 export SPOKE_RETINA_LASSO_DURATION_SECONDS="45"
 export SPOKE_RETINA_LASSO_PRE_HAMMER_DELAY_SECONDS="3.0"
@@ -29,11 +29,11 @@ export SPOKE_RETINA_LASSO_CAPTURE_BIN="/Users/noahlyons/dev/epistaxis/tools/glob
 export SPOKE_RETINA_LASSO_CAPTURE_COMMAND="/Users/noahlyons/dev/epistaxis/tools/global_witness_capture.py"
 export SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT="/Users/noahlyons/dev/perceptasia"
 export SPOKE_RETINA_LASSO_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-retina-lasso-capture-first"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-throughglass-auto"
 export SPOKE_RETINA_LASSO_LANE="warpstorm-pit-boss"
 export SPOKE_RETINA_LASSO_DIAULOS="Warpstorm Pit Boss"
 export SPOKE_RETINA_LASSO_SOURCE_APP="Spoke"
-export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Perceptasia Throughglass"
+export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Gutterglass Smoke Stage"
+export SPOKE_RETINA_LASSO_TRIGGER_EVENTS="gutterglass.publish.materialize,gutterglass.publish.rest,gutterglass.publish.dismiss,gutterglass.publish.hidden,gutterglass.publish.radial_pucker"
 
 # Preserve the optical geometry/tuning contract from the witness baseline.
 # These are part of the visual surface under smoke, not incidental fixtures.
@@ -69,13 +69,11 @@ export SPOKE_STACK_SPECULUM_SMOKE="0"
 export SPOKE_OPERATOR_PING_TOKEN_SMOKE="0"
 export SPOKE_DIAULOS_CARD_SMOKE="0"
 
-# Perceptasia primitive-passport consumer smoke. This exercises the extracted
-# sibling primitive as a live-content carrier without letting an empty shell
-# substitute for WebKit/WebGL content.
-export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="1"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY="1"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH="0"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS="0.42"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS="0.46"
+# Keep the Perceptasia Throughglass consumer out of this smoke. If this flag is
+# true, the launcher selects the Throughglass witness module and the target drags
+# a live WebKit/WebGL carrier into an unrelated Gutterglass run.
+export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="0"
+
+# Gutterglass local smoke seed. Deliberately no SPOKE_GUTTERGLASS_STAGE_SMOKE:
+# the panel must be operator-summoned, not pinned open on every relaunch.
+export SPOKE_GUTTERGLASS_STAGE_REQUEST_PATH="/private/tmp/spoke-gutterglass-smoke-stage-0623/.gutterglass-smoke/request.json"

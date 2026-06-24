@@ -251,6 +251,13 @@ def _start_retina_lasso_witness(
     fps = child_env.get("SPOKE_RETINA_LASSO_FPS", "").strip()
     if fps:
         args.extend(["--fps", fps])
+    if not throughglass_witness:
+        trigger_events_text = child_env.get("SPOKE_RETINA_LASSO_TRIGGER_EVENTS", "").strip()
+        if trigger_events_text:
+            for trigger_event in trigger_events_text.replace(",", " ").split():
+                trigger_event = trigger_event.strip()
+                if trigger_event:
+                    args.extend(["--trigger-event", trigger_event])
     capture_command = (
         child_env.get("SPOKE_RETINA_LASSO_CAPTURE_COMMAND", "").strip()
         or child_env.get("SPOKE_RETINA_LASSO_CAPTURE_BIN", "").strip()
