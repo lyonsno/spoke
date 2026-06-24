@@ -33,7 +33,7 @@ export SPOKE_RETINA_LASSO_LANE="warpstorm-pit-boss"
 export SPOKE_RETINA_LASSO_DIAULOS="Warpstorm Pit Boss"
 export SPOKE_RETINA_LASSO_SOURCE_APP="Spoke"
 export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Gutterglass Smoke Stage"
-export SPOKE_RETINA_LASSO_TRIGGER_EVENTS="gutterglass.publish.materialize,gutterglass.publish.rest,gutterglass.publish.dismiss,gutterglass.publish.hidden,gutterglass.publish.radial_pucker"
+export SPOKE_RETINA_LASSO_TRIGGER_EVENTS="gutterglass.publish.materialize,gutterglass.publish.rest,gutterglass.publish.dismiss,gutterglass.publish.hidden,gutterglass.publish.radial_pucker,throughglass.publish.materialize,throughglass.publish.rest,throughglass.publish.dismiss,throughglass.publish.hidden"
 
 # Preserve the optical geometry/tuning contract from the witness baseline.
 # These are part of the visual surface under smoke, not incidental fixtures.
@@ -73,6 +73,16 @@ export SPOKE_DIAULOS_CARD_SMOKE="0"
 # true, the launcher selects the Throughglass witness module and the target drags
 # a live WebKit/WebGL carrier into an unrelated Gutterglass run.
 export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="0"
+
+# Preserve manual Crown Key Throughglass as an independent primitive consumer.
+# Auto-smoke stays off above, but the viewer still needs its shell publication,
+# content gate, URL, and timing contract when the operator invokes it manually.
+export SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH="0"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS="0.42"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS="0.46"
 
 # Gutterglass local smoke seed. Deliberately no SPOKE_GUTTERGLASS_STAGE_SMOKE:
 # the panel must be operator-summoned, not pinned open on every relaunch.

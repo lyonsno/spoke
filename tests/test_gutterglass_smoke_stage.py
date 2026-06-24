@@ -481,11 +481,14 @@ def test_stage_panel_hide_uses_shared_radial_pucker_before_release(
     host.release_client.assert_any_call(GUTTERGLASS_RADIAL_PUCKER_CLIENT_ID)
 
 
-def test_gutterglass_smoke_env_uses_gutterglass_trace_witness_not_throughglass():
+def test_gutterglass_smoke_env_keeps_manual_throughglass_shell_without_auto_smoke():
     smoke_env = Path(".spoke-smoke-env").read_text(encoding="utf-8")
 
     assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="0"' in smoke_env
+    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY="1"' in smoke_env
+    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"' in smoke_env
+    assert 'SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"' in smoke_env
     assert 'SPOKE_RETINA_LASSO_SOURCE_WINDOW="Gutterglass Smoke Stage"' in smoke_env
     assert "gutterglass.publish.materialize" in smoke_env
+    assert "throughglass.publish.materialize" in smoke_env
     assert "gutterglass.publish.radial_pucker" in smoke_env
-    assert "SPOKE_PERCEPTASIA_THROUGHGLASS_URL" not in smoke_env
