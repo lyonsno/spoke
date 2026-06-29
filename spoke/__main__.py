@@ -18,6 +18,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import faulthandler
+import io
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ import time
 import traceback
 import urllib.error
 import uuid
+import wave
 
 import objc
 from AppKit import (
@@ -47,6 +49,8 @@ _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 _THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S = 0.48
 _THROUGHGLASS_ASSISTANT_RESTORE_POLL_S = 0.08
 _AUDIO_CONTENTION_MODE_ENV = "SPOKE_AUDIO_CONTENTION_MODE"
+_AUDIO_CONTENTION_CHUNK_SECONDS_ENV = "SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS"
+_DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS = 8.0
 _AUDIO_CONTENTION_MODE_VALUES = frozenset(
     {
         "1",
@@ -128,6 +132,68 @@ def _audio_contention_mode_enabled() -> bool:
     """Whether final transcription should favor custody over latency shortcuts."""
     value = os.environ.get(_AUDIO_CONTENTION_MODE_ENV, "").strip().lower()
     return value in _AUDIO_CONTENTION_MODE_VALUES
+
+
+def _audio_contention_chunk_seconds() -> float:
+    """Target WAV chunk duration for contention-mode final transcription."""
+    raw = os.environ.get(_AUDIO_CONTENTION_CHUNK_SECONDS_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; using %.1fs",
+            _AUDIO_CONTENTION_CHUNK_SECONDS_ENV,
+            raw,
+            _DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS,
+        )
+        return _DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS
+    if value <= 0:
+        logger.warning(
+            "Invalid %s=%r; using %.1fs",
+            _AUDIO_CONTENTION_CHUNK_SECONDS_ENV,
+            raw,
+            _DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS,
+        )
+        return _DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS
+    return value
+
+
+def _split_wav_bytes_for_contention(
+    wav_bytes: bytes, *, chunk_seconds: float
+) -> list[bytes]:
+    """Split valid WAV bytes into decode-sized chunks without dropping frames."""
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as source:
+            framerate = source.getframerate()
+            if framerate <= 0:
+                return [wav_bytes]
+            frames_per_chunk = max(1, int(framerate * chunk_seconds))
+            total_frames = source.getnframes()
+            if total_frames <= frames_per_chunk:
+                return [wav_bytes]
+
+            chunks: list[bytes] = []
+            nchannels = source.getnchannels()
+            sampwidth = source.getsampwidth()
+            comptype = source.getcomptype()
+            compname = source.getcompname()
+            while True:
+                frames = source.readframes(frames_per_chunk)
+                if not frames:
+                    break
+                out = io.BytesIO()
+                with wave.open(out, "wb") as chunk:
+                    chunk.setnchannels(nchannels)
+                    chunk.setsampwidth(sampwidth)
+                    chunk.setframerate(framerate)
+                    chunk.setcomptype(comptype, compname)
+                    chunk.writeframes(frames)
+                chunks.append(out.getvalue())
+            return chunks or [wav_bytes]
+    except (EOFError, wave.Error):
+        return [wav_bytes]
 
 
 def _run_modal_with_paste(alert) -> int:
@@ -3071,6 +3137,39 @@ class SpokeAppDelegate(NSObject):
         with self._local_inference_context(active_client):
             return active_client.transcribe(wav_bytes)
 
+    def _transcribe_contention_buffer(self, wav_bytes: bytes) -> str:
+        """Transcribe stopped audio in chunks so load cannot poison one long decode."""
+        chunk_seconds = _audio_contention_chunk_seconds()
+        chunks = _split_wav_bytes_for_contention(
+            wav_bytes, chunk_seconds=chunk_seconds
+        )
+        if len(chunks) <= 1:
+            logger.info(
+                "Audio contention mode: transcribing full stopped buffer (%d bytes)",
+                len(wav_bytes),
+            )
+            return self._transcribe_full_buffer(wav_bytes)
+
+        logger.info(
+            "Audio contention mode: transcribing %d WAV chunks from stopped buffer "
+            "(%d bytes, target %.1fs)",
+            len(chunks),
+            len(wav_bytes),
+            chunk_seconds,
+        )
+        parts: list[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            logger.info(
+                "Audio contention mode: transcribing chunk %d/%d (%d bytes)",
+                index,
+                len(chunks),
+                len(chunk),
+            )
+            text = self._transcribe_full_buffer(chunk)
+            if text:
+                parts.append(text)
+        return " ".join(parts)
+
     def _wait_for_preview_finalization(self, *, release_cutover: bool = False) -> None:
         """Wait for preview wind-down unless the final route must avoid latency traps."""
         if _audio_contention_mode_enabled():
@@ -3099,11 +3198,7 @@ class SpokeAppDelegate(NSObject):
         """Choose the final transcription route for all hold-release pathways."""
         if _audio_contention_mode_enabled():
             self._cancel_preview_stream_for_full_buffer()
-            logger.info(
-                "Audio contention mode: transcribing full stopped buffer (%d bytes)",
-                len(wav_bytes),
-            )
-            return self._transcribe_full_buffer(wav_bytes)
+            return self._transcribe_contention_buffer(wav_bytes)
 
         text = self._transcribe_segments_and_tail(wav_bytes)
         if text is not None:
