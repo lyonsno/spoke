@@ -46,6 +46,21 @@ _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 _THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S = 0.48
 _THROUGHGLASS_ASSISTANT_RESTORE_POLL_S = 0.08
+_AUDIO_CONTENTION_MODE_ENV = "SPOKE_AUDIO_CONTENTION_MODE"
+_AUDIO_CONTENTION_MODE_VALUES = frozenset(
+    {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "raw",
+        "full",
+        "full-buffer",
+        "full_buffer",
+        "stopped-buffer",
+        "stopped_buffer",
+    }
+)
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -107,6 +122,12 @@ def _format_command_http_error(exc) -> str:
     if detail:
         return f"{base} — {detail}"
     return base
+
+
+def _audio_contention_mode_enabled() -> bool:
+    """Whether final transcription should favor custody over latency shortcuts."""
+    value = os.environ.get(_AUDIO_CONTENTION_MODE_ENV, "").strip().lower()
+    return value in _AUDIO_CONTENTION_MODE_VALUES
 
 
 def _run_modal_with_paste(alert) -> int:
@@ -3048,6 +3069,61 @@ class SpokeAppDelegate(NSObject):
         with self._local_inference_context(active_client):
             return active_client.transcribe(wav_bytes)
 
+    def _wait_for_preview_finalization(self, *, release_cutover: bool = False) -> None:
+        """Wait for preview wind-down unless the final route must avoid latency traps."""
+        if _audio_contention_mode_enabled():
+            logger.info(
+                "Audio contention mode: skipping preview wind-down before final transcription"
+            )
+            return
+        if self._preview_thread is None or release_cutover:
+            return
+        if getattr(self, "_preview_done", None) is not None:
+            self._preview_done.wait(timeout=2.0)
+        self._preview_thread.join(timeout=2.0)
+        self._preview_thread = None
+
+    def _cancel_preview_stream_for_full_buffer(self) -> None:
+        if (
+            getattr(self._client, "supports_streaming", False)
+            and self._client is self._preview_client
+            and getattr(self._client, "has_active_stream", False)
+        ):
+            cancel_stream = getattr(self._client, "cancel_stream", None)
+            if callable(cancel_stream):
+                cancel_stream()
+
+    def _transcribe_final_buffer(self, wav_bytes: bytes, *, release_cutover: bool = False) -> str:
+        """Choose the final transcription route for all hold-release pathways."""
+        if _audio_contention_mode_enabled():
+            self._cancel_preview_stream_for_full_buffer()
+            logger.info(
+                "Audio contention mode: transcribing full stopped buffer (%d bytes)",
+                len(wav_bytes),
+            )
+            return self._transcribe_full_buffer(wav_bytes)
+
+        text = self._transcribe_segments_and_tail(wav_bytes)
+        if text is not None:
+            return text
+
+        if (
+            release_cutover
+            and getattr(self._client, "supports_streaming", False)
+            and self._client is self._preview_client
+            and getattr(self._client, "has_active_stream", False)
+        ):
+            self._cancel_preview_stream_for_full_buffer()
+            return self._transcribe_full_buffer(wav_bytes)
+        if (
+            getattr(self._client, "supports_streaming", False)
+            and self._client is self._preview_client
+            and getattr(self._client, "has_active_stream", False)
+        ):
+            with self._local_inference_context(self._client):
+                return self._client.finish_stream()
+        return self._transcribe_full_buffer(wav_bytes)
+
     def _transcribe_local_whisper_with_recovery(
         self, wav_bytes: bytes, client: LocalTranscriptionClient
     ) -> str:
@@ -3119,40 +3195,12 @@ class SpokeAppDelegate(NSObject):
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
         # Normally we wait for preview shutdown before the final pass. On release
-        # cutover, stop blocking on preview wind-down and let the local inference
-        # lock serialize any in-flight work that still needs to exit.
-        if self._preview_thread is not None and not release_cutover:
-            if getattr(self, "_preview_done", None) is not None:
-                self._preview_done.wait(timeout=2.0)
-            self._preview_thread.join(timeout=2.0)
-            self._preview_thread = None
+        # cutover or contention mode, stop blocking on preview wind-down and let
+        # the final route own recovery from the stopped capture.
+        self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         try:
-            # Fast path: use cached segment transcriptions + tail only.
-            text = self._transcribe_segments_and_tail(wav_bytes)
-            if text is None:
-                # Slow path: full-buffer transcription.
-                # If the preview client was streaming, finalize it for the final text
-                # (this runs the tail refinement pass with the existing KV cache).
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    with self._local_inference_context(self._client):
-                        text = self._client.finish_stream()
-                else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
         except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3174,34 +3222,10 @@ class SpokeAppDelegate(NSObject):
         an active assistant turn."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
-        if self._preview_thread is not None and not release_cutover:
-            if getattr(self, "_preview_done", None) is not None:
-                self._preview_done.wait(timeout=2.0)
-            self._preview_thread.join(timeout=2.0)
-            self._preview_thread = None
+        self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         try:
-            text = self._transcribe_segments_and_tail(wav_bytes)
-            if text is None:
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    with self._local_inference_context(self._client):
-                        text = self._client.finish_stream()
-                else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3565,35 +3589,10 @@ class SpokeAppDelegate(NSObject):
         """Background thread: transcribe audio, then enter tray on main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
-        if self._preview_thread is not None and not release_cutover:
-            if getattr(self, "_preview_done", None) is not None:
-                self._preview_done.wait(timeout=2.0)
-            self._preview_thread.join(timeout=2.0)
-            self._preview_thread = None
+        self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         try:
-            # Fast path: use cached segment transcriptions + tail only.
-            text = self._transcribe_segments_and_tail(wav_bytes)
-            if text is None:
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    with self._local_inference_context(self._client):
-                        text = self._client.finish_stream()
-                else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
         except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4683,27 +4682,11 @@ class SpokeAppDelegate(NSObject):
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe then send command to OMLX."""
         self._command_tool_used_tts = False
-        # Wait for preview loop to finish
-        if self._preview_thread is not None:
-            if getattr(self, "_preview_done", None) is not None:
-                self._preview_done.wait(timeout=2.0)
-            self._preview_thread.join(timeout=2.0)
-            self._preview_thread = None
+        self._wait_for_preview_finalization()
 
         # Step 1: Transcribe the audio
         try:
-            # Fast path: use cached segment transcriptions + tail only.
-            utterance = self._transcribe_segments_and_tail(wav_bytes)
-            if utterance is None:
-                if (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    with self._local_inference_context(self._client):
-                        utterance = self._client.finish_stream()
-                else:
-                    utterance = self._transcribe_full_buffer(wav_bytes)
+            utterance = self._transcribe_final_buffer(wav_bytes)
         except Exception as exc:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
