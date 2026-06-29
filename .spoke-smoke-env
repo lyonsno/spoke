@@ -1,81 +1,19 @@
-# Smoke env - Warpstorm SOAK baseline
+# Smoke env - Warpstorm audio black box / contention mode
 #
 # Machine-local secrets are sourced by scripts/launch-main.sh from
 # ~/.config/spoke/secrets.env before this file is applied.
 
-export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
-export SPOKE_BACKDROP_FRAME_TIMING="1"
-
-# This branch is a live-content primitive graft smoke, so launcher relaunches
-# must produce a Throughglass pixel witness without waiting for operator relay.
-export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
+# This branch is an audio-custody smoke, not an optical witness smoke.
+export SPOKE_RETINA_LASSO_AUTO_WITNESS="0"
 export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
-export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
-export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
-export SPOKE_RETINA_LASSO_MAX_TRIGGER_LAG_SECONDS="1.0"
-export SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES="96"
-export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="stress"
-export SPOKE_RETINA_LASSO_FPS="12"
-export SPOKE_RETINA_LASSO_DURATION_SECONDS="45"
-export SPOKE_RETINA_LASSO_PRE_HAMMER_DELAY_SECONDS="3.0"
-export SPOKE_RETINA_LASSO_RETARGET_DURING_DISMISS_REPEATS="0"
-export SPOKE_RETINA_LASSO_OPEN_DWELL_SECONDS="0.75"
-export SPOKE_RETINA_LASSO_DISMISS_RETARGET_DELAY_SECONDS="0.08"
-export SPOKE_RETINA_LASSO_REOPEN_DWELL_SECONDS="0.55"
-export SPOKE_RETINA_LASSO_CYCLE_PAUSE_SECONDS="0.25"
-export SPOKE_RETINA_LASSO_OPEN_READY_TIMEOUT_SECONDS="2.0"
-export SPOKE_RETINA_LASSO_OPEN_READY_POLL_INTERVAL_SECONDS="0.025"
-export SPOKE_RETINA_LASSO_CAPTURE_BIN="/Users/noahlyons/dev/epistaxis/tools/global_witness_capture.py"
-export SPOKE_RETINA_LASSO_CAPTURE_COMMAND="/Users/noahlyons/dev/epistaxis/tools/global_witness_capture.py"
-export SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT="/Users/noahlyons/dev/perceptasia"
-export SPOKE_RETINA_LASSO_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-retina-lasso-capture-first"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-throughglass-auto"
-export SPOKE_RETINA_LASSO_LANE="warpstorm-pit-boss"
-export SPOKE_RETINA_LASSO_DIAULOS="Warpstorm Pit Boss"
-export SPOKE_RETINA_LASSO_SOURCE_APP="Spoke"
-export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Perceptasia Throughglass"
-
-# Preserve the optical geometry/tuning contract from the witness baseline.
-# These are part of the visual surface under smoke, not incidental fixtures.
-export SPOKE_COMMAND_BACKDROP_BLUR_RADIUS="0.75"
-export SPOKE_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER="0.5"
-export SPOKE_COMMAND_BACKDROP_OVERSCAN_CM="0.15"
-export SPOKE_BACKDROP_DISABLE_SCK="0"
-export SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE="0.75"
-export SPOKE_COMMAND_OVERLAY_WIDTH="1200.0"
-export SPOKE_COMMAND_OVERLAY_HEIGHT="160.0"
-export SPOKE_COMMAND_OVERLAY_CORNER_RADIUS="32.0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED="1"
-export SPOKE_COMMAND_GPU_MATERIAL_ENABLED="0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION="14.0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM="2.0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM="1.25"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS="200.0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS="0.0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS="0.2"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK="0.03"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK="0.10"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT="0.05"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT="0.18"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE="0.08"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL="0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE="0"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER="0.12"
-export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS="28.0"
-
-# Keep the witness surface quiet: no unrelated Diaulos-card, operator-ping,
-# or Stack Speculum smoke fixtures are forced by this launcher target.
+export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="0"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"
 export SPOKE_STACK_SPECULUM_SMOKE="0"
 export SPOKE_OPERATOR_PING_TOKEN_SMOKE="0"
 export SPOKE_DIAULOS_CARD_SMOKE="0"
 
-# Perceptasia primitive-passport consumer smoke. This exercises the extracted
-# sibling primitive as a live-content carrier without letting an empty shell
-# substitute for WebKit/WebGL content.
-export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="1"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY="1"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH="0"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_SETTLE_DELAY_SECONDS="0.42"
-export SPOKE_PERCEPTASIA_THROUGHGLASS_SHELL_DISMISS_DELAY_SECONDS="0.46"
+# Preserve raw stopped captures and route final transcription through the full
+# stopped buffer while the operator is deliberately smoking heavy box contention.
+export SPOKE_AUDIO_CONTENTION_MODE="raw"
+export SPOKE_AUDIO_SPOOL_ENABLED="1"

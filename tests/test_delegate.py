@@ -6618,6 +6618,48 @@ class TestSegmentAcceleratedTranscription:
 
         d._client.transcribe.assert_called_once_with(b"full_wav")
 
+    def test_contention_mode_uses_full_buffer_even_with_cached_segments(
+        self, main_module, monkeypatch
+    ):
+        """Contention mode should prefer the stopped buffer over latency shortcuts."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
+
+        acc = main_module.SegmentAccumulator()
+        segment_client = MagicMock()
+        segment_client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", segment_client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+        d._pre_stop_tail_wav = b"tail_wav"
+        d._pre_stop_segment_count = acc.count
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "full buffer text"
+
+    def test_contention_mode_does_not_wait_for_preview_wind_down(
+        self, main_module, monkeypatch
+    ):
+        """Contention mode should not block finalization on preview thread shutdown."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
+        d._preview_thread = MagicMock()
+        d._preview_done = MagicMock()
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._preview_done.wait.assert_not_called()
+        d._preview_thread.join.assert_not_called()
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+
     def test_transcribe_worker_retries_local_whisper_after_initial_failure(
         self, main_module, monkeypatch
     ):
