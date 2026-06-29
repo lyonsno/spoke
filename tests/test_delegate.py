@@ -11,7 +11,21 @@ import io
 import time
 import threading
 import urllib.error
+import wave
 from unittest.mock import MagicMock, call, patch
+
+
+def _silent_wav(duration_seconds: float, *, sample_rate: int = 16000) -> bytes:
+    """Build a valid mono 16-bit WAV without depending on fixture files."""
+    frames = max(1, int(duration_seconds * sample_rate))
+    payload = b"\x00\x00" * frames
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(payload)
+    return out.getvalue()
 
 
 def _make_delegate(main_module, monkeypatch):
@@ -6600,6 +6614,26 @@ class TestSegmentAcceleratedTranscription:
         d._preview_done.wait.assert_not_called()
         d._preview_thread.join.assert_not_called()
         d._client.transcribe.assert_called_once_with(b"full_wav")
+
+    def test_contention_mode_chunks_long_wav_before_final_decode(
+        self, main_module, monkeypatch
+    ):
+        """Long contention-mode captures should not depend on one fragile decode."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
+        monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS", "1.0")
+        wav_bytes = _silent_wav(2.4)
+        d._client.transcribe.side_effect = ["first", "second", "third"]
+
+        d._transcribe_worker(wav_bytes, token=1)
+
+        assert d._client.transcribe.call_count == 3
+        payloads = [call_args.args[0] for call_args in d._client.transcribe.call_args_list]
+        assert all(payload.startswith(b"RIFF") for payload in payloads)
+        assert all(payload != wav_bytes for payload in payloads)
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "first second third"
 
     def test_transcribe_worker_retries_local_whisper_after_initial_failure(
         self, main_module, monkeypatch

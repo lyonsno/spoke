@@ -16,4 +16,5 @@ export SPOKE_DIAULOS_CARD_SMOKE="0"
 # Preserve raw stopped captures and route final transcription through the full
 # stopped buffer while the operator is deliberately smoking heavy box contention.
 export SPOKE_AUDIO_CONTENTION_MODE="raw"
+export SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS="8.0"
 export SPOKE_AUDIO_SPOOL_ENABLED="1"
