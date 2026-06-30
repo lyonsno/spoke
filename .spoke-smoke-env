@@ -13,9 +13,9 @@ export SPOKE_STACK_SPECULUM_SMOKE="0"
 export SPOKE_OPERATOR_PING_TOKEN_SMOKE="0"
 export SPOKE_DIAULOS_CARD_SMOKE="0"
 
-# Preserve raw stopped captures and route final transcription through the full
-# stopped buffer while the operator is deliberately smoking heavy box contention.
-export SPOKE_AUDIO_CONTENTION_MODE="raw"
-export SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS="4.0"
-export SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS="0.75"
+# Preserve raw stopped captures for recovery. Chunked contention transcription
+# is currently opt-in only; the 4s chunk smoke proved too lossy for normal use.
+# export SPOKE_AUDIO_CONTENTION_MODE="raw"
+# export SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS="4.0"
+# export SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS="0.75"
 export SPOKE_AUDIO_SPOOL_ENABLED="1"
