@@ -23,6 +23,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -50,7 +51,13 @@ _THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S = 0.48
 _THROUGHGLASS_ASSISTANT_RESTORE_POLL_S = 0.08
 _AUDIO_CONTENTION_MODE_ENV = "SPOKE_AUDIO_CONTENTION_MODE"
 _AUDIO_CONTENTION_CHUNK_SECONDS_ENV = "SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS"
-_DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS = 8.0
+_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS_ENV = (
+    "SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS"
+)
+_DEFAULT_AUDIO_CONTENTION_CHUNK_SECONDS = 4.0
+_DEFAULT_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS = 0.75
+_TRANSCRIPT_TOKEN_RE = re.compile(r"\S+")
+_TRANSCRIPT_TOKEN_EDGE_RE = re.compile(r"^\W+|\W+$")
 _AUDIO_CONTENTION_MODE_VALUES = frozenset(
     {
         "1",
@@ -160,8 +167,66 @@ def _audio_contention_chunk_seconds() -> float:
     return value
 
 
+def _audio_contention_chunk_overlap_seconds(chunk_seconds: float) -> float:
+    """Overlap between contention-mode chunks to protect boundary words."""
+    raw = os.environ.get(_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS_ENV, "").strip()
+    if not raw:
+        value = _DEFAULT_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; using %.2fs",
+                _AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS_ENV,
+                raw,
+                _DEFAULT_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS,
+            )
+            value = _DEFAULT_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS
+    if value < 0:
+        logger.warning(
+            "Invalid %s=%r; using %.2fs",
+            _AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS_ENV,
+            raw,
+            _DEFAULT_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS,
+        )
+        value = _DEFAULT_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS
+    if chunk_seconds <= 0:
+        return 0.0
+    return min(value, max(0.0, chunk_seconds * 0.9))
+
+
+def _normal_transcript_token(token: str) -> str:
+    return _TRANSCRIPT_TOKEN_EDGE_RE.sub("", token).lower()
+
+
+def _join_overlapped_transcript_parts(parts: list[str]) -> str:
+    """Join chunk transcripts while dropping exact repeated seam words."""
+    merged_tokens: list[str] = []
+    for part in parts:
+        tokens = _TRANSCRIPT_TOKEN_RE.findall(part.strip())
+        if not tokens:
+            continue
+        normalized = [_normal_transcript_token(token) for token in tokens]
+        overlap = 0
+        if merged_tokens:
+            merged_normalized = [
+                _normal_transcript_token(token) for token in merged_tokens
+            ]
+            max_overlap = min(12, len(merged_normalized), len(normalized))
+            for candidate in range(max_overlap, 0, -1):
+                if (
+                    merged_normalized[-candidate:] == normalized[:candidate]
+                    and any(normalized[:candidate])
+                ):
+                    overlap = candidate
+                    break
+        merged_tokens.extend(tokens[overlap:])
+    return " ".join(merged_tokens)
+
+
 def _split_wav_bytes_for_contention(
-    wav_bytes: bytes, *, chunk_seconds: float
+    wav_bytes: bytes, *, chunk_seconds: float, overlap_seconds: float = 0.0
 ) -> list[bytes]:
     """Split valid WAV bytes into decode-sized chunks without dropping frames."""
     try:
@@ -170,6 +235,8 @@ def _split_wav_bytes_for_contention(
             if framerate <= 0:
                 return [wav_bytes]
             frames_per_chunk = max(1, int(framerate * chunk_seconds))
+            overlap_frames = max(0, int(framerate * overlap_seconds))
+            step_frames = max(1, frames_per_chunk - overlap_frames)
             total_frames = source.getnframes()
             if total_frames <= frames_per_chunk:
                 return [wav_bytes]
@@ -177,10 +244,16 @@ def _split_wav_bytes_for_contention(
             chunks: list[bytes] = []
             nchannels = source.getnchannels()
             sampwidth = source.getsampwidth()
+            bytes_per_frame = max(1, nchannels * sampwidth)
             comptype = source.getcomptype()
             compname = source.getcompname()
-            while True:
-                frames = source.readframes(frames_per_chunk)
+            all_frames = source.readframes(total_frames)
+            start = 0
+            while start < total_frames:
+                end = min(total_frames, start + frames_per_chunk)
+                frames = all_frames[
+                    start * bytes_per_frame : end * bytes_per_frame
+                ]
                 if not frames:
                     break
                 out = io.BytesIO()
@@ -191,6 +264,9 @@ def _split_wav_bytes_for_contention(
                     chunk.setcomptype(comptype, compname)
                     chunk.writeframes(frames)
                 chunks.append(out.getvalue())
+                if end >= total_frames:
+                    break
+                start += step_frames
             return chunks or [wav_bytes]
     except (EOFError, wave.Error):
         return [wav_bytes]
@@ -3140,8 +3216,11 @@ class SpokeAppDelegate(NSObject):
     def _transcribe_contention_buffer(self, wav_bytes: bytes) -> str:
         """Transcribe stopped audio in chunks so load cannot poison one long decode."""
         chunk_seconds = _audio_contention_chunk_seconds()
+        overlap_seconds = _audio_contention_chunk_overlap_seconds(chunk_seconds)
         chunks = _split_wav_bytes_for_contention(
-            wav_bytes, chunk_seconds=chunk_seconds
+            wav_bytes,
+            chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds,
         )
         if len(chunks) <= 1:
             logger.info(
@@ -3152,10 +3231,11 @@ class SpokeAppDelegate(NSObject):
 
         logger.info(
             "Audio contention mode: transcribing %d WAV chunks from stopped buffer "
-            "(%d bytes, target %.1fs)",
+            "(%d bytes, target %.1fs, overlap %.2fs)",
             len(chunks),
             len(wav_bytes),
             chunk_seconds,
+            overlap_seconds,
         )
         parts: list[str] = []
         for index, chunk in enumerate(chunks, start=1):
@@ -3166,9 +3246,20 @@ class SpokeAppDelegate(NSObject):
                 len(chunk),
             )
             text = self._transcribe_full_buffer(chunk)
-            if text:
-                parts.append(text)
-        return " ".join(parts)
+            stripped = text.strip() if text else ""
+            word_count = len(_TRANSCRIPT_TOKEN_RE.findall(stripped))
+            logger.info(
+                "Audio contention mode: chunk %d/%d result words=%d chars=%d "
+                "preview=%r",
+                index,
+                len(chunks),
+                word_count,
+                len(stripped),
+                stripped.replace("\n", " ")[:120],
+            )
+            if stripped:
+                parts.append(stripped)
+        return _join_overlapped_transcript_parts(parts)
 
     def _wait_for_preview_finalization(self, *, release_cutover: bool = False) -> None:
         """Wait for preview wind-down unless the final route must avoid latency traps."""
