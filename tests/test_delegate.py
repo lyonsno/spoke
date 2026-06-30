@@ -6615,82 +6615,81 @@ class TestSegmentAcceleratedTranscription:
         d._preview_thread.join.assert_not_called()
         d._client.transcribe.assert_called_once_with(b"full_wav")
 
-    def test_contention_mode_chunks_long_wav_before_final_decode(
+    def test_contention_mode_decodes_long_wav_once_even_when_chunk_env_is_set(
         self, main_module, monkeypatch
     ):
-        """Long contention-mode captures should not depend on one fragile decode."""
+        """Contention mode must not multiply Whisper calls and text-stitch results."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribe_start = time.monotonic()
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS", "1.0")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS", "0.0")
         wav_bytes = _silent_wav(2.4)
-        d._client.transcribe.side_effect = ["first", "second", "third"]
+        d._client.transcribe.return_value = "single decode"
 
         d._transcribe_worker(wav_bytes, token=1)
 
-        assert d._client.transcribe.call_count == 3
-        payloads = [call_args.args[0] for call_args in d._client.transcribe.call_args_list]
-        assert all(payload.startswith(b"RIFF") for payload in payloads)
-        assert all(payload != wav_bytes for payload in payloads)
+        assert d._client.transcribe.call_count == 1
+        assert d._client.transcribe.call_args.args[0] == wav_bytes
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
-        assert payload["text"] == "first second third"
+        assert payload["text"] == "single decode"
 
-    def test_contention_mode_uses_chunk_overlap_from_env(
+    def test_contention_mode_ignores_chunk_overlap_for_live_decoder_calls(
         self, main_module, monkeypatch
     ):
-        """Contention chunks should overlap so boundary words are not amputated."""
+        """Overlap config must not revive independent per-chunk ASR."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribe_start = time.monotonic()
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS", "1.0")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS", "0.5")
         wav_bytes = _silent_wav(2.1)
-        d._client.transcribe.side_effect = ["one", "two", "three", "four", "five"]
+        d._client.transcribe.return_value = "single overlapped decode"
 
         d._transcribe_worker(wav_bytes, token=1)
 
-        assert d._client.transcribe.call_count > 3
+        assert d._client.transcribe.call_count == 1
+        assert d._client.transcribe.call_args.args[0] == wav_bytes
 
-    def test_contention_mode_stitches_overlapped_chunk_text(
+    def test_contention_mode_does_not_text_stitch_chunk_transcripts(
         self, main_module, monkeypatch
     ):
-        """Overlapped chunk transcripts should not duplicate seam words."""
+        """The live insert path must treat text stitching as rejected architecture."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribe_start = time.monotonic()
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS", "1.0")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS", "0.0")
         wav_bytes = _silent_wav(2.4)
-        d._client.transcribe.side_effect = [
-            "first seam",
-            "seam second",
-            "second third",
-        ]
+        d._client.transcribe.return_value = "first seam second third"
 
         d._transcribe_worker(wav_bytes, token=1)
 
+        assert d._client.transcribe.call_count == 1
+        assert d._client.transcribe.call_args.args[0] == wav_bytes
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "first seam second third"
 
-    def test_contention_mode_logs_each_chunk_decode_result(
+    def test_contention_mode_logs_single_decode_not_chunk_receipts(
         self, main_module, monkeypatch, caplog
     ):
-        """Chunked contention mode should leave receipts for bad-but-successful decodes."""
+        """Receipts should prove the live route did not fan out decoder calls."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribe_start = time.monotonic()
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_SECONDS", "1.0")
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_CHUNK_OVERLAP_SECONDS", "0.0")
         wav_bytes = _silent_wav(2.4)
-        d._client.transcribe.side_effect = ["alpha", "", "omega"]
+        d._client.transcribe.return_value = "alpha omega"
 
         with caplog.at_level(logging.INFO):
             d._transcribe_worker(wav_bytes, token=1)
 
-        assert "Audio contention mode: chunk 1/3 result" in caplog.text
-        assert "Audio contention mode: chunk 2/3 result" in caplog.text
-        assert "words=0" in caplog.text
+        assert "Audio contention mode: transcribing full stopped buffer" in caplog.text
+        assert "transcribing chunk" not in caplog.text
+        assert "chunk 1/" not in caplog.text
+        assert d._client.transcribe.call_count == 1
+        assert d._client.transcribe.call_args.args[0] == wav_bytes
 
     def test_transcribe_worker_retries_local_whisper_after_initial_failure(
         self, main_module, monkeypatch
