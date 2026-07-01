@@ -4622,6 +4622,26 @@ class TestCommandTranscribeWorker:
         d._preview_done.wait.assert_called_once_with(timeout=2.0)
         mock_thread.join.assert_called_once_with(timeout=2.0)
 
+    def test_release_cutover_skips_preview_wait_before_command_transcription(
+        self, main_module, monkeypatch
+    ):
+        """Command holds should not stall on a dead preview sidecar after release."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._preview_cancelled_on_release = True
+        mock_thread = MagicMock()
+        d._preview_thread = mock_thread
+        d._client.transcribe.return_value = "open the file"
+        d._client.supports_streaming = False
+        d._command_client.stream_command_events.return_value = iter([
+            MagicMock(kind="assistant_final", text="ok"),
+        ])
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        d._preview_done.wait.assert_not_called()
+        mock_thread.join.assert_not_called()
+        d._client.transcribe.assert_called_once_with(b"wav-data")
+
 
 class TestCommandCallbacks:
     """Test main-thread command pathway callbacks."""
@@ -6403,6 +6423,40 @@ class TestBuildClientRouting:
         d = _make_delegate(main_module, monkeypatch)
         client = d._build_client("http://localhost:8000", "any-model")
         assert isinstance(client, main_module.TranscriptionClient)
+
+    def test_remote_client_accepts_preview_specific_timeout(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module, "TranscriptionClient") as MockClient:
+            d._build_client(
+                "http://localhost:8000",
+                "any-model",
+                timeout=1.25,
+            )
+
+        MockClient.assert_called_once_with(
+            base_url="http://localhost:8000",
+            model="any-model",
+            api_key="",
+            timeout=1.25,
+        )
+
+    def test_client_cache_distinguishes_remote_timeout(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._client_cache = {}
+
+        with patch.object(main_module, "TranscriptionClient") as MockClient:
+            slow_client = object()
+            fast_client = object()
+            MockClient.side_effect = [slow_client, fast_client]
+            first = d._get_client("http://localhost:8000", "any-model", timeout=60.0)
+            second = d._get_client("http://localhost:8000", "any-model", timeout=1.25)
+
+        assert first is slow_client
+        assert second is fast_client
+        assert MockClient.call_count == 2
 
     def test_qwen_prefix_returns_local_qwen_client(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
