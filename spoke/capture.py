@@ -405,7 +405,8 @@ class AudioCapture:
 
             self._encode_queue = None
             self._encode_thread = None
-            had_vad = self._vad_cb is not None or self._segment_cb is not None
+            had_segmenter = self._segment_cb is not None
+            had_vad = self._vad_cb is not None or had_segmenter
             self._amplitude_cb = None
             self._vad_cb = None
             self._stop_callback_dispatch()
@@ -415,12 +416,14 @@ class AudioCapture:
 
             self._segment_cb = None
 
-            # Use trimmed speech chunks if available; if VAD never detected
+            # Use trimmed speech chunks only when a segmenting backend asked for
+            # them. UI-only VAD state must never replace the raw recording.
+            # If VAD never detected
             # speech, fall back to raw frames only when the mic captured
             # non-silent samples. Under load, VAD/segment state can lag behind
             # raw capture; returning empty there clips real utterances.
             speech_chunks = getattr(self, "_speech_chunks", None)
-            if speech_chunks is not None and len(speech_chunks) > 0:
+            if had_segmenter and speech_chunks is not None and len(speech_chunks) > 0:
                 final_chunks = list(speech_chunks)
                 wav_bytes = self._encode_wav(np.concatenate(final_chunks))
             elif had_vad:

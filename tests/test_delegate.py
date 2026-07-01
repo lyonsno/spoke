@@ -6901,9 +6901,10 @@ class TestSegmentAcceleratedTranscription:
         # capture.start should have been called with a segment_callback.
         call_kwargs = d._capture.start.call_args[1]
         assert call_kwargs.get("segment_callback") is not None
+        assert call_kwargs.get("vad_state_callback") is not None
 
     def test_hold_start_no_segment_callback_for_local(self, main_module, monkeypatch):
-        """_on_hold_start should not wire segment_callback for local backend."""
+        """_on_hold_start should keep local capture raw-first and VAD-free."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
 
@@ -6911,6 +6912,7 @@ class TestSegmentAcceleratedTranscription:
 
         call_kwargs = d._capture.start.call_args[1]
         assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
 
     def test_preview_batch_uses_cached_segments_plus_tail(self, main_module, monkeypatch):
         """Preview loop should use cached segment text + tail when segments exist."""

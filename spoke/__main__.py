@@ -2370,9 +2370,10 @@ class SpokeAppDelegate(NSObject):
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "updateVadState:", is_speech, False
                     )
+            vad_state_cb = on_vad_state if use_segments else None
             self._capture.start(
                 amplitude_callback=self._on_amplitude,
-                vad_state_callback=on_vad_state,
+                vad_state_callback=vad_state_cb,
                 segment_callback=segment_cb,
             )
         except Exception:

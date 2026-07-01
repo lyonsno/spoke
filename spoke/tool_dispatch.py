@@ -3,6 +3,16 @@
 Defines the tool schemas for capture_context and read_aloud, handles
 accumulation of streamed tool call deltas, and executes tools locally.
 
+WARNING: the filesystem/search tools in this module still contain arbitrary
+agent-evidence caps (`list_directory` 50 entries, `search_file` 5 matches/file
+then 30 total, `find_file` 30 matches, and `read_file` outline fallback above
+`SPOKE_MAX_FILE_LINES`). They surface truncation, but they are still a known
+secret-castration family: agents debugging "why can't the shell find the
+obvious thing?" should treat this module as suspect until an uncapped/Mohel
+repair slice lands. Do not "clean up" this warning without replacing the caps
+with a contract that preserves full evidence or loudly records the upstream
+permissiveness problem.
+
 See docs/screen-context-v1.md for the design.
 """
 
