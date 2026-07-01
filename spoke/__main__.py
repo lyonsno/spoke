@@ -3333,12 +3333,6 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return  # stale failure, ignore
         self._transcribing = False
-        if self._last_preview_text:
-            logger.warning(
-                "Final transcription failed — falling back to latest preview text"
-            )
-            self._inject_result_text(self._last_preview_text, "Pasted preview")
-            return
         error_text = payload.get("error") or "Error — try again"
         logger.error("Transcription failed — no text injected: %s", error_text)
         if self._overlay is not None:
@@ -3350,11 +3344,10 @@ class SpokeAppDelegate(NSObject):
         """Main thread: handle failure on the parallel insert lane."""
         if payload["token"] != self._parallel_insert_token:
             return
-        if self._last_preview_text:
-            logger.warning("Parallel transcription failed — falling back to latest preview text")
-            self._inject_result_text(self._last_preview_text, "Pasted preview")
-            return
-        self._resume_handsfree_after_hold()
+        error_text = payload.get("error") or "Error — try again"
+        logger.error("Parallel transcription failed — no text injected: %s", error_text)
+        if not self._resume_handsfree_after_hold() and self._menubar is not None:
+            self._menubar.set_status_text(error_text)
 
     def hideOverlayAfterInject_(self, timer) -> None:
         """Hide the overlay after briefly showing the final transcription."""
@@ -3622,32 +3615,23 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         text = payload["text"]
         if not text:
-            # Empty transcription — use last preview text if available
-            if self._last_preview_text:
-                logger.info("Tray transcription empty — using last preview text")
-                text = self._last_preview_text
-            else:
-                logger.info("Tray transcription returned empty — dismissing")
-                if self._overlay is not None:
-                    self._overlay.hide()
-                if self._glow is not None:
-                    self._glow.hide()
-                self._tray_active = False
-                self._detector.tray_active = False
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
-                return
+            logger.info("Tray transcription returned empty — dismissing")
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            self._tray_active = False
+            self._detector.tray_active = False
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
         self._enter_tray(text)
 
     def trayTranscriptionFailed_(self, payload: dict) -> None:
-        """Main thread: tray transcription failed — fall back to preview text."""
+        """Main thread: tray transcription failed without promoting preview text."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._last_preview_text:
-            logger.warning("Tray transcription failed — using preview text")
-            self._enter_tray(self._last_preview_text)
-            return
         error_text = payload.get("error") or "Error — try again"
         logger.error("Tray transcription failed — no text: %s", error_text)
         if self._overlay is not None:

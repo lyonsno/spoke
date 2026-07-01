@@ -970,23 +970,35 @@ class TestPreviewFinalizationContract:
 
         d._overlay.set_text.assert_not_called()
 
-    def test_transcription_failed_uses_latest_preview_text_as_fallback(
+    def test_transcription_failed_does_not_promote_latest_preview_text(
         self, main_module, monkeypatch
     ):
-        """If final transcription fails, the latest preview text should be pasted."""
+        """If final transcription fails, preview text must not impersonate final text."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcription_token = 7
         d._transcribing = True
         d._last_preview_text = "usable preview text"
 
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionFailed_({"token": 7})
-            # Fire the deferred inject timer callback
-            d.resultInjectDelayed_(None)
+            d.transcriptionFailed_({"token": 7, "error": "final route failed"})
 
-        mock_inject.assert_called_once()
-        assert mock_inject.call_args[0][0] == "usable preview text"
+        mock_inject.assert_not_called()
         assert d._transcribing is False
+        d._menubar.set_status_text.assert_called_with("final route failed")
+
+    def test_parallel_transcription_failed_does_not_promote_latest_preview_text(
+        self, main_module, monkeypatch
+    ):
+        """Parallel insert failures should not paste stale/partial preview text."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 4
+        d._last_preview_text = "partial preview"
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.parallelTranscriptionFailed_({"token": 4, "error": "parallel failed"})
+
+        mock_inject.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("parallel failed")
 
     def test_transcribe_worker_streaming_preview_to_batch_final_uses_batch_final(
         self, main_module, monkeypatch
