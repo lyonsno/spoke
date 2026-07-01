@@ -23,10 +23,35 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 _DEFAULT_DECODE_TIMEOUT = 30.0
 _DEFAULT_EAGER_EVAL = False
+_WHISPER_SAMPLE_RATE = 16000.0
+_MIN_DURATION_FOR_COVERAGE_GUARD_SECONDS = 12.0
+_MIN_MISSING_TAIL_FOR_COVERAGE_GUARD_SECONDS = 4.0
+_MIN_COVERAGE_RATIO = 0.88
 
 mx = None
 mlx_whisper = None
 load_model = None
+
+
+class IncompleteLocalTranscriptionError(RuntimeError):
+    """Raised when mlx-whisper returns a successful but visibly partial result."""
+
+    def __init__(
+        self,
+        *,
+        duration_seconds: float,
+        coverage_end_seconds: float,
+        text_preview: str,
+    ) -> None:
+        self.duration_seconds = duration_seconds
+        self.coverage_end_seconds = coverage_end_seconds
+        self.text_preview = text_preview
+        missing_seconds = max(0.0, duration_seconds - coverage_end_seconds)
+        super().__init__(
+            "Local Whisper result covered only "
+            f"{coverage_end_seconds:.2f}s of {duration_seconds:.2f}s "
+            f"({missing_seconds:.2f}s missing): {text_preview!r}"
+        )
 
 
 def _huggingface_hub_cache_dir() -> Path:
@@ -110,6 +135,44 @@ def _supports_decode_option(option_name: str) -> bool:
 def supports_eager_eval() -> bool:
     """Whether the installed mlx-whisper build accepts eager_eval."""
     return _supports_decode_option("eager_eval")
+
+
+def _segment_coverage_end_seconds(result: dict) -> float | None:
+    segments = result.get("segments")
+    if not isinstance(segments, list):
+        return None
+    ends: list[float] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        end = segment.get("end")
+        if isinstance(end, (int, float)):
+            ends.append(float(end))
+    if not ends:
+        return None
+    return max(ends)
+
+
+def _local_transcription_looks_incomplete(
+    *,
+    duration_seconds: float,
+    coverage_end_seconds: float | None,
+    text: str,
+) -> bool:
+    if not text.strip():
+        return False
+    if coverage_end_seconds is None:
+        return False
+    if duration_seconds < _MIN_DURATION_FOR_COVERAGE_GUARD_SECONDS:
+        return False
+    if coverage_end_seconds >= duration_seconds:
+        return False
+    missing_tail = duration_seconds - coverage_end_seconds
+    coverage_ratio = coverage_end_seconds / duration_seconds if duration_seconds else 1.0
+    return (
+        missing_tail >= _MIN_MISSING_TAIL_FOR_COVERAGE_GUARD_SECONDS
+        and coverage_ratio < _MIN_COVERAGE_RATIO
+    )
 
 
 class LocalTranscriptionClient:
@@ -207,6 +270,20 @@ class LocalTranscriptionClient:
         result = runtime_whisper.transcribe(audio, **kwargs)
 
         text = result.get("text", "").strip()
+        duration_seconds = float(len(audio)) / _WHISPER_SAMPLE_RATE
+        coverage_end_seconds = _segment_coverage_end_seconds(result)
+        if _local_transcription_looks_incomplete(
+            duration_seconds=duration_seconds,
+            coverage_end_seconds=coverage_end_seconds,
+            text=text,
+        ):
+            raise IncompleteLocalTranscriptionError(
+                duration_seconds=duration_seconds,
+                coverage_end_seconds=coverage_end_seconds
+                if coverage_end_seconds is not None
+                else 0.0,
+                text_preview=text[:120],
+            )
         text = truncate_repetition(text)
         text = repair_ontology_terms(text)
         if is_hallucination(text):

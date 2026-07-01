@@ -6753,7 +6753,7 @@ class TestSegmentAcceleratedTranscription:
     def test_transcribe_worker_retries_local_whisper_after_initial_failure(
         self, main_module, monkeypatch
     ):
-        """Local Whisper finalization should retry from cached audio with bounded settings."""
+        """Local Whisper finalization should retry from cached audio without shortening it."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
         d._transcribe_start = time.monotonic()
@@ -6783,12 +6783,82 @@ class TestSegmentAcceleratedTranscription:
 
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "recovered text"
-        assert attempts == [(8.0, False), (8.0, True)]
+        assert attempts == [(30.0, False), (None, False)]
+
+    def test_transcribe_worker_retries_local_whisper_after_partial_success(
+        self, main_module, monkeypatch
+    ):
+        """A local Whisper front-slice should be retried instead of inserted."""
+        from spoke.transcribe_local import IncompleteLocalTranscriptionError
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._transcribe_start = time.monotonic()
+        d._segment_accumulator = main_module.SegmentAccumulator()
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-large-v3-turbo",
+            decode_timeout=30.0,
+            eager_eval=True,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        attempts: list[tuple[float | None, bool]] = []
+
+        def fake_transcribe(self, wav_bytes):
+            attempts.append((self._decode_timeout, self._eager_eval))
+            if len(attempts) == 1:
+                raise IncompleteLocalTranscriptionError(
+                    duration_seconds=48.0,
+                    coverage_end_seconds=18.0,
+                    text_preview="front slice",
+                )
+            return "full recovered text"
+
+        monkeypatch.setattr(
+            main_module.LocalTranscriptionClient,
+            "transcribe",
+            fake_transcribe,
+            raising=False,
+        )
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "full recovered text"
+        assert attempts == [(30.0, True), (None, True)]
+
+    def test_local_whisper_recovery_uses_current_settings_for_first_attempt(
+        self, main_module, monkeypatch
+    ):
+        """The first final pass must not be replaced by the recovery timeout."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-medium.en-mlx",
+            decode_timeout=30.0,
+            eager_eval=True,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        attempts: list[tuple[float | None, bool]] = []
+
+        def fake_transcribe(self, wav_bytes):
+            attempts.append((self._decode_timeout, self._eager_eval))
+            return "full final text"
+
+        monkeypatch.setattr(
+            main_module.LocalTranscriptionClient,
+            "transcribe",
+            fake_transcribe,
+            raising=False,
+        )
+
+        assert d._transcribe_local_whisper_with_recovery(b"full_wav", d._client) == (
+            "full final text"
+        )
+        assert attempts == [(30.0, True)]
 
     def test_local_whisper_recovery_reuses_warmed_client_for_bounded_attempt(
         self, main_module, monkeypatch
     ):
-        """Bounded finalization should not load a throwaway Whisper client on release."""
+        """Finalization should not load a throwaway Whisper client on release."""
         d = _make_delegate(main_module, monkeypatch)
         d._client = main_module.LocalTranscriptionClient(
             model="mlx-community/whisper-large-v3-turbo",
