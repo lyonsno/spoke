@@ -122,6 +122,36 @@ class TestTrayEntry:
         # Should route to command pathway, not tray
         assert d._tray_active is not True
 
+    def test_tray_empty_transcription_does_not_promote_preview_text(
+        self, main_module, monkeypatch
+    ):
+        """An empty final tray transcript should not enter tray with preview text."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._transcription_token = 7
+        d._transcribing = True
+        d._last_preview_text = "partial tray preview"
+
+        d.trayTranscriptionComplete_({"token": 7, "text": ""})
+
+        assert d._tray_stack == []
+        assert d._tray_active is False
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_tray_failed_transcription_does_not_promote_preview_text(
+        self, main_module, monkeypatch
+    ):
+        """A failed final tray transcript should not enter tray with preview text."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._transcription_token = 7
+        d._transcribing = True
+        d._last_preview_text = "partial tray preview"
+
+        d.trayTranscriptionFailed_({"token": 7, "error": "tray final failed"})
+
+        assert d._tray_stack == []
+        assert d._tray_active is False
+        d._menubar.set_status_text.assert_called_with("tray final failed")
+
 
 class TestTrayStack:
     """Tray stack lifecycle — push, navigate, consume, delete."""
