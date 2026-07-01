@@ -21,8 +21,10 @@ export SPOKE_AUDIO_SPOOL_ENABLED="1"
 
 # Optional CoreML/ANE final-ASR escape hatch. This seats the explicit
 # whisper.cpp/CoreML route in the model picker without silently selecting it as
-# the default final model. The current seated proof is base.en; use the menu or
-# uncomment SPOKE_TRANSCRIPTION_MODEL only when deliberately smoking quality.
+# the default final model. The current seated quality smoke is medium.en; base.en
+# and tiny.en are installed beside it for quick latency/quality comparison.
 export SPOKE_WHISPER_CPP_BINARY="/Users/noahlyons/.local/share/spoke/whisper.cpp-coreml/build/bin/whisper-cli"
-export SPOKE_WHISPER_CPP_MODEL="/Users/noahlyons/.local/share/spoke/whisper.cpp-coreml/models/ggml-base.en.bin"
-# export SPOKE_TRANSCRIPTION_MODEL="whisper.cpp/coreml"
+# export SPOKE_WHISPER_CPP_MODEL="/Users/noahlyons/.local/share/spoke/whisper.cpp-coreml/models/ggml-tiny.en.bin"
+# export SPOKE_WHISPER_CPP_MODEL="/Users/noahlyons/.local/share/spoke/whisper.cpp-coreml/models/ggml-base.en.bin"
+export SPOKE_WHISPER_CPP_MODEL="/Users/noahlyons/.local/share/spoke/whisper.cpp-coreml/models/ggml-medium.en.bin"
+export SPOKE_TRANSCRIPTION_MODEL="whisper.cpp/coreml"
