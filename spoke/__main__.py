@@ -214,6 +214,10 @@ from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
+from .transcribe_whisper_cpp import (
+    WhisperCppCoreMLClient,
+    _WHISPER_CPP_COREML_MODEL_ID,
+)
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient, RemoteTTSClient, CloudTTSClient, GEMINI_VOICES, _DEFAULT_VOICE
 from .heartbeat import (
@@ -5211,6 +5215,7 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo-4bit", "v3 Large Turbo (4bit)"),
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
+        (_WHISPER_CPP_COREML_MODEL_ID, "whisper.cpp CoreML/ANE (configured)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
         (_PARAKEET_MODEL_ID, "Parakeet CTC-110M (CoreML/ANE, preview only)"),
     ]
@@ -6475,6 +6480,9 @@ class SpokeAppDelegate(NSObject):
             model_dir = self._resolve_parakeet_model_dir()
             logger.info("Using Parakeet CoreML: %s", model_dir)
             return ParakeetCoreMLClient(model_dir=model_dir)
+        if model_id == _WHISPER_CPP_COREML_MODEL_ID:
+            logger.info("Using whisper.cpp CoreML transcription route")
+            return WhisperCppCoreMLClient()
         if model_id.startswith("Qwen/"):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
@@ -7238,7 +7246,12 @@ class SpokeAppDelegate(NSObject):
                 or self._default_transcription_model(),
             ),
         ]
-        return any(model_id and not model_id.startswith("Qwen/") for model_id in model_ids)
+        return any(
+            model_id
+            and not model_id.startswith("Qwen/")
+            and model_id not in {_PARAKEET_MODEL_ID, _WHISPER_CPP_COREML_MODEL_ID}
+            for model_id in model_ids
+        )
 
     def _local_whisper_eager_eval_available(self) -> bool:
         return self._local_whisper_controls_available() and supports_eager_eval()
@@ -7579,6 +7592,8 @@ class SpokeAppDelegate(NSObject):
                     (s / "AudioEncoder.mlmodelc").exists() for s in hf_snapshots.iterdir()
                 )
             return False
+        if model_id == _WHISPER_CPP_COREML_MODEL_ID:
+            return WhisperCppCoreMLClient.available()
         return True
 
     def _quit(self) -> None:
