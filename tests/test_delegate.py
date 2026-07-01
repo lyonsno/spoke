@@ -1537,6 +1537,23 @@ class TestModelPicker:
         monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
+    def test_model_allowed_requires_seated_whisper_cpp_coreml(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.WhisperCppCoreMLClient, "available", return_value=False
+        ) as available:
+            assert d._model_allowed(main_module._WHISPER_CPP_COREML_MODEL_ID) is False
+
+        available.assert_called_once_with()
+
+        with patch.object(
+            main_module.WhisperCppCoreMLClient, "available", return_value=True
+        ):
+            assert d._model_allowed(main_module._WHISPER_CPP_COREML_MODEL_ID) is True
+
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
@@ -6467,6 +6484,17 @@ class TestBuildClientRouting:
         d = _make_delegate(main_module, monkeypatch)
         client = d._build_client("", "mlx-community/whisper-base.en-mlx-8bit")
         assert isinstance(client, main_module.LocalTranscriptionClient)
+
+    def test_whisper_cpp_coreml_model_returns_coreml_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module, "WhisperCppCoreMLClient") as MockClient:
+            client = d._build_client("", main_module._WHISPER_CPP_COREML_MODEL_ID)
+
+        MockClient.assert_called_once_with()
+        assert client is MockClient.return_value
 
     def test_sidecar_takes_precedence_over_qwen_prefix(self, main_module, monkeypatch):
         """When URL is set, sidecar wins even if model starts with Qwen/."""
