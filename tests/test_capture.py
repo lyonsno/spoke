@@ -847,6 +847,24 @@ class TestVADSlicing:
         assert np.any(samples != 0)
 
     @patch("spoke.capture.sd")
+    def test_vad_state_callback_alone_does_not_trim_final_wav(self, mock_sd):
+        """UI-only VAD state must not replace the raw recording with speech chunks."""
+        cap = AudioCapture()
+        cap.start(vad_state_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        first = np.full(1024, 0.5, dtype=np.float32)
+        second = np.full(1024, 0.25, dtype=np.float32)
+        cap._frames = [first, second]
+        cap._speech_chunks = [first]
+        cap._is_speech = True
+
+        samples = _decode_wav_samples(cap.stop())
+
+        assert samples.size == 2048
+        assert samples[0] != samples[-1]
+
+    @patch("spoke.capture.sd")
     def test_zero_chunk_stop_does_not_reset_global_portaudio(self, mock_sd):
         """Zero-chunk release should not run global PortAudio teardown inline."""
         cap = AudioCapture()
