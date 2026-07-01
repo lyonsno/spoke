@@ -234,6 +234,7 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_DEFAULT_PREVIEW_REMOTE_TIMEOUT_S = 1.25
 _LOCAL_PREVIEW_INTERVAL_S = 0.4
 _COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S = 0.4
 _DEFAULT_COMMAND_BACKEND = "local"
@@ -1117,7 +1118,10 @@ class SpokeAppDelegate(NSObject):
             transcription_url, self._transcription_model_id, transcription_api_key,
         )
         self._preview_client = self._get_client(
-            preview_url, self._preview_model_id, preview_api_key,
+            preview_url,
+            self._preview_model_id,
+            preview_api_key,
+            timeout=_DEFAULT_PREVIEW_REMOTE_TIMEOUT_S,
         )
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
@@ -4673,11 +4677,15 @@ class SpokeAppDelegate(NSObject):
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe then send command to OMLX."""
         self._command_tool_used_tts = False
-        self._wait_for_preview_finalization()
+        release_cutover = getattr(self, "_preview_cancelled_on_release", False)
+        self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         # Step 1: Transcribe the audio
         try:
-            utterance = self._transcribe_final_buffer(wav_bytes)
+            utterance = self._transcribe_final_buffer(
+                wav_bytes,
+                release_cutover=release_cutover,
+            )
         except Exception as exc:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -6425,19 +6433,43 @@ class SpokeAppDelegate(NSObject):
             self._whisper_backend = "cloud"
         self._relaunch()
 
-    def _get_client(self, whisper_url: str, model_id: str, api_key: str = ""):
-        cache_key = (whisper_url, model_id, api_key)
+    def _get_client(
+        self,
+        whisper_url: str,
+        model_id: str,
+        api_key: str = "",
+        timeout: float | None = None,
+    ):
+        remote_timeout = timeout if whisper_url else None
+        cache_key = (whisper_url, model_id, api_key, remote_timeout)
         if cache_key in self._client_cache:
             return self._client_cache[cache_key]
-        client = self._build_client(whisper_url, model_id, api_key=api_key)
+        client = self._build_client(
+            whisper_url,
+            model_id,
+            api_key=api_key,
+            timeout=timeout,
+        )
         self._client_cache[cache_key] = client
         return client
 
-    def _build_client(self, whisper_url: str, model_id: str, api_key: str = ""):
+    def _build_client(
+        self,
+        whisper_url: str,
+        model_id: str,
+        api_key: str = "",
+        timeout: float | None = None,
+    ):
         if whisper_url:
             logger.info("Using remote transcription: %s (%s)", whisper_url, model_id)
+            kwargs = {}
+            if timeout is not None:
+                kwargs["timeout"] = timeout
             return TranscriptionClient(
-                base_url=whisper_url, model=model_id, api_key=api_key,
+                base_url=whisper_url,
+                model=model_id,
+                api_key=api_key,
+                **kwargs,
             )
         if model_id == _PARAKEET_MODEL_ID:
             model_dir = self._resolve_parakeet_model_dir()
