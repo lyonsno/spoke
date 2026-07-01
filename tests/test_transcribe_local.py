@@ -128,6 +128,43 @@ class TestLocalTranscriptionClient:
         assert call_kwargs.kwargs["decode_timeout"] == 12.5
         assert call_kwargs.kwargs["eager_eval"] is True
 
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_rejects_partial_segment_coverage_for_long_capture(
+        self, mock_mlx_whisper
+    ):
+        """A front-slice result must not count as a successful final decode."""
+        from spoke.transcribe_local import (
+            IncompleteLocalTranscriptionError,
+            LocalTranscriptionClient,
+        )
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Only the beginning survived.",
+            "segments": [{"start": 0.0, "end": 18.0, "text": "Only the beginning survived."}],
+        }
+        client = LocalTranscriptionClient(model="test/model")
+
+        with pytest.raises(IncompleteLocalTranscriptionError) as excinfo:
+            client.transcribe(_make_wav_bytes(n_samples=16000 * 48))
+
+        assert excinfo.value.duration_seconds == pytest.approx(48.0)
+        assert excinfo.value.coverage_end_seconds == pytest.approx(18.0)
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_accepts_segment_coverage_near_capture_end(self, mock_mlx_whisper):
+        """A normal full-buffer result can end slightly before the WAV tail."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "The whole thing survived.",
+            "segments": [{"start": 0.0, "end": 46.5, "text": "The whole thing survived."}],
+        }
+        client = LocalTranscriptionClient(model="test/model")
+
+        assert client.transcribe(_make_wav_bytes(n_samples=16000 * 48)) == (
+            "The whole thing survived."
+        )
+
     @patch("spoke.transcribe_local.supports_eager_eval", return_value=False)
     @patch("spoke.transcribe_local.logger")
     @patch("spoke.transcribe_local.mlx_whisper", create=True)

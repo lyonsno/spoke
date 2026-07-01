@@ -234,7 +234,6 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
-_LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT = 8.0
 _LOCAL_PREVIEW_INTERVAL_S = 0.4
 _COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S = 0.4
 _DEFAULT_COMMAND_BACKEND = "local"
@@ -3138,25 +3137,21 @@ class SpokeAppDelegate(NSObject):
     def _transcribe_local_whisper_with_recovery(
         self, wav_bytes: bytes, client: LocalTranscriptionClient
     ) -> str:
-        """Retry local Whisper finalization from cached audio with bounded settings."""
+        """Retry local Whisper finalization from cached audio without shortening it."""
         current_timeout = getattr(
             client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
         )
         current_eager_eval = getattr(
             client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
         )
-        bounded_timeout = current_timeout
-        if (
-            bounded_timeout is None
-            or bounded_timeout > _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
-        ):
-            bounded_timeout = _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
 
         attempts: list[tuple[str, float | None, bool]] = [
-            ("bounded-config", bounded_timeout, current_eager_eval),
+            ("current-config", current_timeout, current_eager_eval),
         ]
+        if current_timeout is not None:
+            attempts.append(("full-decode-current-eager", None, current_eager_eval))
         if supports_eager_eval():
-            attempts.append(("bounded-eager-eval", bounded_timeout, not current_eager_eval))
+            attempts.append(("full-decode-eager-toggle", None, not current_eager_eval))
 
         errors: list[str] = []
         attempted_settings: set[tuple[float | None, bool]] = set()
@@ -3198,8 +3193,8 @@ class SpokeAppDelegate(NSObject):
                     if callable(unload):
                         unload()
 
-        detail = "; ".join(errors) if errors else "no bounded local Whisper attempt ran"
-        raise RuntimeError(f"Local transcription timed out after bounded retries: {detail}")
+        detail = "; ".join(errors) if errors else "no local Whisper attempt ran"
+        raise RuntimeError(f"Local transcription failed after local retries: {detail}")
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
