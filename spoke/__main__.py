@@ -5174,7 +5174,9 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
         ("whisperkit/medium.en", "Medium.en (WhisperKit ANE)"),
+        ("whisperkit/small.en", "Small.en (WhisperKit ANE)"),
         ("whisperkit/base.en", "Base.en (WhisperKit ANE)"),
+        ("whisperkit/tiny.en", "Tiny.en (WhisperKit ANE)"),
         (_PARAKEET_MODEL_ID, "Parakeet CTC-110M (CoreML/ANE, preview only)"),
     ]
 
