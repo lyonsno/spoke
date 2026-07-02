@@ -26,12 +26,24 @@ WHISPERKIT_PREFIX = "whisperkit/"
 DEFAULT_WHISPERKIT_MODEL = "medium.en"
 
 
+_HOMEBREW_PATHS = [
+    "/opt/homebrew/bin/whisperkit-cli",
+    "/usr/local/bin/whisperkit-cli",
+]
+
+
 def _find_whisperkit_cli() -> str | None:
     """Locate the whisperkit-cli binary."""
     env_path = os.environ.get("SPOKE_WHISPERKIT_CLI")
     if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
         return env_path
-    return shutil.which("whisperkit-cli")
+    found = shutil.which("whisperkit-cli")
+    if found:
+        return found
+    for path in _HOMEBREW_PATHS:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
 
 
 class WhisperKitClient:
