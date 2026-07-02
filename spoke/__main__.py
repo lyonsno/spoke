@@ -193,6 +193,7 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
+from .transcribe_whisperkit import WhisperKitClient, WHISPERKIT_PREFIX
 from .tts import TTSClient, RemoteTTSClient, CloudTTSClient, GEMINI_VOICES, _DEFAULT_VOICE
 from .heartbeat import (
     HeartbeatManager,
@@ -5172,6 +5173,8 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
+        ("whisperkit/medium.en", "Medium.en (WhisperKit ANE)"),
+        ("whisperkit/base.en", "Base.en (WhisperKit ANE)"),
         (_PARAKEET_MODEL_ID, "Parakeet CTC-110M (CoreML/ANE, preview only)"),
     ]
 
@@ -6411,6 +6414,10 @@ class SpokeAppDelegate(NSObject):
             model_dir = self._resolve_parakeet_model_dir()
             logger.info("Using Parakeet CoreML: %s", model_dir)
             return ParakeetCoreMLClient(model_dir=model_dir)
+        if model_id.startswith(WHISPERKIT_PREFIX):
+            variant = model_id[len(WHISPERKIT_PREFIX):]
+            logger.info("Using WhisperKit ANE transcription: %s", variant)
+            return WhisperKitClient(model=variant)
         if model_id.startswith("Qwen/"):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
@@ -7497,6 +7504,8 @@ class SpokeAppDelegate(NSObject):
         """Guard: some models require specific hardware or installed files."""
         if "large-v3-turbo" in model_id and _RAM_GB < _MIN_RAM_GB_FOR_V3_TURBO:
             return False
+        if model_id.startswith(WHISPERKIT_PREFIX):
+            return WhisperKitClient.available()
         if model_id == _PARAKEET_MODEL_ID:
             # Only show if the model files are present or the user has pointed us at them
             env_dir = os.environ.get("SPOKE_PARAKEET_MODEL_DIR", "")
