@@ -2,3 +2,12 @@
 # Pin transcription to WhisperKit medium for this smoke target. Global
 # preferences may point elsewhere; launcher smoke should remain self-contained.
 export SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"
+
+# Preserve the manual Throughglass primitive smoke contract expected by the
+# passport tests without auto-opening Throughglass on this transcription target.
+export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE="0"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL="1"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH="0"
+export SPOKE_PERCEPTASIA_THROUGHGLASS_URL="http://localhost:8753"

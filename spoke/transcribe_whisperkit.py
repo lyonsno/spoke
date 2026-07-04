@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import wave
 
 from .dedup import truncate_repetition, is_hallucination, repair_ontology_terms
@@ -24,6 +25,8 @@ WHISPERKIT_PREFIX = "whisperkit/"
 
 # Default WhisperKit model variant
 DEFAULT_WHISPERKIT_MODEL = "medium.en"
+DEFAULT_WHISPERKIT_CHUNKING_STRATEGY = "none"
+_WHISPERKIT_CHUNKING_STRATEGIES = {"none", "vad"}
 
 
 _HOMEBREW_PATHS = [
@@ -44,6 +47,22 @@ def _find_whisperkit_cli() -> str | None:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
+
+
+def _whisperkit_chunking_strategy() -> str:
+    """Return the effective WhisperKit CLI chunking strategy for Spoke utterances."""
+    requested = os.environ.get(
+        "SPOKE_WHISPERKIT_CHUNKING_STRATEGY",
+        DEFAULT_WHISPERKIT_CHUNKING_STRATEGY,
+    ).strip()
+    if requested in _WHISPERKIT_CHUNKING_STRATEGIES:
+        return requested
+    logger.warning(
+        "Invalid SPOKE_WHISPERKIT_CHUNKING_STRATEGY=%r; using %s",
+        requested,
+        DEFAULT_WHISPERKIT_CHUNKING_STRATEGY,
+    )
+    return DEFAULT_WHISPERKIT_CHUNKING_STRATEGY
 
 
 class WhisperKitClient:
@@ -84,11 +103,15 @@ class WhisperKitClient:
             logger.error("whisperkit-cli not found — cannot transcribe")
             return ""
 
+        total_start = time.perf_counter()
+        write_start = total_start
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp.write(wav_bytes)
             tmp_path = tmp.name
+        write_ms = (time.perf_counter() - write_start) * 1000
 
         try:
+            chunking_strategy = _whisperkit_chunking_strategy()
             cmd = [
                 cli, "transcribe",
                 "--audio-path", tmp_path,
@@ -96,20 +119,34 @@ class WhisperKitClient:
                 "--language", "en",
                 "--audio-encoder-compute-units", "cpuAndNeuralEngine",
                 "--text-decoder-compute-units", "cpuAndNeuralEngine",
+                "--chunking-strategy", chunking_strategy,
                 "--skip-special-tokens",
                 "--without-timestamps",
             ]
-            logger.debug("WhisperKit command: %s", " ".join(cmd))
+            logger.debug(
+                "WhisperKit command: %s (model=%s, chunking=%s, bytes=%d)",
+                " ".join(cmd),
+                self._model,
+                chunking_strategy,
+                len(wav_bytes),
+            )
+            subprocess_start = time.perf_counter()
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
+            subprocess_ms = (time.perf_counter() - subprocess_start) * 1000
             if result.returncode != 0:
                 logger.error(
-                    "whisperkit-cli failed (exit %d): %s",
+                    "whisperkit-cli failed (exit %d, model=%s, chunking=%s, "
+                    "write=%.0fms, subprocess=%.0fms): %s",
                     result.returncode,
+                    self._model,
+                    chunking_strategy,
+                    write_ms,
+                    subprocess_ms,
                     result.stderr.strip(),
                 )
                 return ""
@@ -121,14 +158,26 @@ class WhisperKitClient:
             except OSError:
                 pass
 
+        postprocess_start = time.perf_counter()
         text = truncate_repetition(text)
         text = repair_ontology_terms(text)
+        postprocess_ms = (time.perf_counter() - postprocess_start) * 1000
+        total_ms = (time.perf_counter() - total_start) * 1000
         if is_hallucination(text):
             logger.info("Discarding hallucination: %r", text)
             return ""
         logger.info(
-            "WhisperKit ANE transcription (%s): %r (%d bytes audio)",
-            self._model, text, len(wav_bytes),
+            "WhisperKit ANE transcription (%s): %r "
+            "(%d bytes audio; chunking=%s; write=%.0fms, subprocess=%.0fms, "
+            "postprocess=%.0fms, total=%.0fms)",
+            self._model,
+            text,
+            len(wav_bytes),
+            chunking_strategy,
+            write_ms,
+            subprocess_ms,
+            postprocess_ms,
+            total_ms,
         )
         return text
 

@@ -84,6 +84,9 @@ class TestWhisperKitClientSubprocess:
         assert "--audio-encoder-compute-units" in cmd
         assert "cpuAndNeuralEngine" in cmd
         assert "--text-decoder-compute-units" in cmd
+        assert "--chunking-strategy" in cmd
+        chunking_idx = cmd.index("--chunking-strategy")
+        assert cmd[chunking_idx + 1] == "none"
         assert "--skip-special-tokens" in cmd
 
     @patch("spoke.transcribe_whisperkit.subprocess.run")
