@@ -1,3 +1,4 @@
 # WhisperKit ANE smoke surface
-# Select whisperkit/medium.en from the model picker menu to use ANE.
-# No env overrides — model selection goes through the persistent prefs.
+# Pin transcription to WhisperKit medium for this smoke target. Global
+# preferences may point elsewhere; launcher smoke should remain self-contained.
+export SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"
