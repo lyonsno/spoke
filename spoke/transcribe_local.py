@@ -188,12 +188,10 @@ class LocalTranscriptionClient:
             "language": "en",
         }
         if supports_eager_eval():
-            # Do not let Spoke's default timeout mask the eager_eval path.
-            # Explicit non-default timeout choices still take precedence.
-            if not (
-                self._eager_eval and self._decode_timeout == _DEFAULT_DECODE_TIMEOUT
-            ):
-                kwargs["decode_timeout"] = self._decode_timeout
+            # Keep Spoke's timeout guard explicit even when eager_eval is enabled.
+            # mlx-whisper's package default is shorter than Spoke's contention
+            # contract and can return timeout-tainted partial text under load.
+            kwargs["decode_timeout"] = self._decode_timeout
             kwargs["eager_eval"] = self._eager_eval
         elif self._eager_eval and not self._warned_eager_eval_unsupported:
             kwargs["decode_timeout"] = self._decode_timeout

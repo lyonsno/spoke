@@ -86,10 +86,10 @@ class TestLocalTranscriptionClient:
 
     @patch("spoke.transcribe_local.supports_eager_eval", return_value=True)
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
-    def test_transcribe_omits_default_timeout_when_eager_eval_enabled(
+    def test_transcribe_preserves_default_timeout_when_eager_eval_enabled(
         self, mock_mlx_whisper, _mock_supports_eager_eval
     ):
-        """Default timeout guard should not mask the eager_eval path."""
+        """Eager eval must not silently fall back to mlx-whisper's shorter timeout."""
         from spoke.transcribe_local import LocalTranscriptionClient
 
         mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
@@ -103,7 +103,7 @@ class TestLocalTranscriptionClient:
 
         assert result == "hello world"
         call_kwargs = mock_mlx_whisper.transcribe.call_args
-        assert "decode_timeout" not in call_kwargs.kwargs
+        assert call_kwargs.kwargs["decode_timeout"] == 30.0
         assert call_kwargs.kwargs["eager_eval"] is True
 
     @patch("spoke.transcribe_local.supports_eager_eval", return_value=True)
