@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import wave
+from pathlib import Path
 from unittest.mock import MagicMock, patch, ANY
 
 import numpy as np
@@ -170,3 +171,13 @@ class TestWhisperKitRouting:
         client = delegate._build_client("", "whisperkit/base.en")
         assert isinstance(client, WhisperKitClient)
         assert client._model == "base.en"
+
+
+class TestWhisperKitSmokeEnv:
+    """Smoke-surface contract for replayable WhisperKit-vs-standard autopsy."""
+
+    def test_whisperkit_smoke_env_preserves_raw_audio_for_replay(self):
+        smoke_env = Path(".spoke-smoke-env").read_text()
+
+        assert 'SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"' in smoke_env
+        assert 'SPOKE_AUDIO_SPOOL_ENABLED="1"' in smoke_env
