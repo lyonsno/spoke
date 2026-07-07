@@ -652,6 +652,43 @@ class TestHoldCallbacks:
         assert d._transcribing is True
         assert d._preview_cancelled_on_release is True
 
+    def test_hold_end_uses_raw_pre_stop_audio_when_no_segments(
+        self, main_module, monkeypatch
+    ):
+        """Final transcription should not trust VAD-trimmed stop() audio."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._segment_accumulator = main_module.SegmentAccumulator()
+        d._capture.get_buffer.return_value = b"raw-full-wav"
+        d._capture.stop.return_value = b"vad-trimmed-wav"
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end()
+
+        thread_args = MockThread.call_args.kwargs["args"]
+        assert thread_args[0] == b"raw-full-wav"
+
+    def test_hold_end_preserves_segment_tail_path_when_segments_exist(
+        self, main_module, monkeypatch
+    ):
+        """Segment-accelerated routes still use cached segments plus pre-stop tail."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        acc = main_module.SegmentAccumulator()
+        d._segment_accumulator = acc
+        acc._results = ["cached text"]
+        d._capture.get_tail_buffer.return_value = b"tail-wav"
+        d._capture.get_buffer.return_value = b"raw-full-wav"
+        d._capture.stop.return_value = b"vad-trimmed-wav"
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end()
+
+        d._capture.get_tail_buffer.assert_called_once_with()
+        d._capture.get_buffer.assert_not_called()
+        thread_args = MockThread.call_args.kwargs["args"]
+        assert thread_args[0] == b"vad-trimmed-wav"
+
     def test_hold_end_starts_release_ui_before_capture_stop(
         self, main_module, monkeypatch
     ):

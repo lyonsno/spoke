@@ -2776,9 +2776,24 @@ class SpokeAppDelegate(NSObject):
         if acc is not None and acc.count > 0:
             self._pre_stop_tail_wav = self._capture.get_tail_buffer()
             self._pre_stop_segment_count = acc.count
+            pre_stop_raw_wav = None
         else:
             self._pre_stop_tail_wav = None
             self._pre_stop_segment_count = 0
+            try:
+                raw_snapshot = self._capture.get_buffer()
+            except Exception:
+                logger.exception("Failed to snapshot raw pre-stop audio")
+                pre_stop_raw_wav = None
+            else:
+                if isinstance(raw_snapshot, (bytes, bytearray)):
+                    pre_stop_raw_wav = bytes(raw_snapshot)
+                else:
+                    logger.warning(
+                        "Ignoring non-bytes raw pre-stop audio snapshot: %s",
+                        type(raw_snapshot).__name__,
+                    )
+                    pre_stop_raw_wav = None
 
         # Start visible release feedback before synchronous capture teardown
         # and WAV assembly. Even small stop/encode hiccups are felt as a
@@ -2789,6 +2804,11 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
         wav_bytes = self._capture.stop()
+        if pre_stop_raw_wav:
+            # VAD is allowed to drive status and segment dispatch, but final
+            # non-segment transcription must not depend on a possibly stale
+            # speech-chunk view under load.
+            wav_bytes = pre_stop_raw_wav
 
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
             logger.info("New utterance captured while approval remains pending")
