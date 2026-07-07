@@ -6540,7 +6540,7 @@ class TestSegmentAcceleratedTranscription:
     def test_transcribe_worker_retries_local_whisper_after_initial_failure(
         self, main_module, monkeypatch
     ):
-        """Local Whisper finalization should retry from cached audio with bounded settings."""
+        """Local Whisper finalization should retry without lowering the configured timeout."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
         d._transcribe_start = time.monotonic()
@@ -6570,12 +6570,47 @@ class TestSegmentAcceleratedTranscription:
 
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "recovered text"
-        assert attempts == [(8.0, False), (8.0, True)]
+        assert attempts == [(30.0, False), (30.0, True)]
+
+    def test_transcribe_worker_recovery_preserves_disabled_timeout(
+        self, main_module, monkeypatch
+    ):
+        """A disabled local-Whisper decode timeout must not be reintroduced by recovery."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._transcribe_start = time.monotonic()
+        d._segment_accumulator = main_module.SegmentAccumulator()
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-large-v3-turbo",
+            decode_timeout=None,
+            eager_eval=False,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        attempts: list[tuple[float | None, bool]] = []
+
+        def fake_transcribe(self, wav_bytes):
+            attempts.append((self._decode_timeout, self._eager_eval))
+            if len(attempts) == 1:
+                raise TimeoutError("decode timed out")
+            return "recovered without timeout"
+
+        monkeypatch.setattr(
+            main_module.LocalTranscriptionClient,
+            "transcribe",
+            fake_transcribe,
+            raising=False,
+        )
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "recovered without timeout"
+        assert attempts == [(None, False), (None, True)]
 
     def test_local_whisper_recovery_reuses_warmed_client_for_bounded_attempt(
         self, main_module, monkeypatch
     ):
-        """Bounded finalization should not load a throwaway Whisper client on release."""
+        """Local Whisper recovery should not load a throwaway Whisper client on release."""
         d = _make_delegate(main_module, monkeypatch)
         d._client = main_module.LocalTranscriptionClient(
             model="mlx-community/whisper-large-v3-turbo",
