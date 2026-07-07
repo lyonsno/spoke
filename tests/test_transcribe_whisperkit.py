@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch, ANY
@@ -62,9 +63,10 @@ class TestWhisperKitClientSubprocess:
 
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
-    def test_transcribe_calls_cli_with_correct_args(self, mock_find, mock_run):
+    def test_transcribe_calls_cli_with_correct_args(self, mock_find, mock_run, monkeypatch):
         from spoke.transcribe_whisperkit import WhisperKitClient
 
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="Hello world",
@@ -93,9 +95,10 @@ class TestWhisperKitClientSubprocess:
 
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
-    def test_transcribe_returns_empty_on_failure(self, mock_find, mock_run):
+    def test_transcribe_returns_empty_on_failure(self, mock_find, mock_run, monkeypatch):
         from spoke.transcribe_whisperkit import WhisperKitClient
 
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
         mock_run.return_value = MagicMock(
             returncode=1,
             stdout="",
@@ -118,6 +121,7 @@ class TestWhisperKitClientSubprocess:
     ):
         from spoke.transcribe_whisperkit import WhisperKitClient
 
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
         recovered_text = (
             "This recovered retry contains enough words to be plausible for a "
             "medium-length operator dictation, so the first tiny success should "
@@ -158,6 +162,7 @@ class TestWhisperKitClientSubprocess:
     ):
         from spoke.transcribe_whisperkit import WhisperKitClient
 
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="Tiny.", stderr=""),
             MagicMock(returncode=0, stdout="Still tiny.", stderr=""),
@@ -180,9 +185,10 @@ class TestWhisperKitClientSubprocess:
         assert Path(report["audio_path"]).read_bytes() == _make_wav_bytes(duration_s=30.0)
 
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value=None)
-    def test_transcribe_returns_empty_when_cli_missing(self, mock_find):
+    def test_transcribe_returns_empty_when_cli_missing(self, mock_find, monkeypatch):
         from spoke.transcribe_whisperkit import WhisperKitClient
 
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
         client = WhisperKitClient()
         result = client.transcribe(_make_wav_bytes())
 
@@ -199,6 +205,124 @@ class TestWhisperKitClientSubprocess:
         from spoke.transcribe_whisperkit import WhisperKitClient
 
         assert WhisperKitClient.available() is False
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class TestWhisperKitResidentServer:
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_resident_mode_starts_server_and_posts_audio_without_transcribe_cli(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51234")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_START_TIMEOUT", "0")
+        mock_popen.return_value = MagicMock(pid=4242, poll=MagicMock(return_value=None))
+        mock_urlopen.return_value = _FakeHTTPResponse({"text": "Hello resident"})
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "Hello resident"
+        mock_run.assert_not_called()
+        mock_popen.assert_called_once()
+        serve_cmd = mock_popen.call_args.args[0]
+        assert serve_cmd[:2] == ["/usr/local/bin/whisperkit-cli", "serve"]
+        assert "--model" in serve_cmd
+        assert serve_cmd[serve_cmd.index("--model") + 1] == "medium.en"
+        assert "--port" in serve_cmd
+        assert serve_cmd[serve_cmd.index("--port") + 1] == "51234"
+        request = mock_urlopen.call_args.args[0]
+        assert request.full_url == "http://localhost:51234/v1/audio/transcriptions"
+        assert request.get_method() == "POST"
+
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_resident_failure_falls_back_to_cli_with_loud_reason(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        monkeypatch,
+        caplog,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51235")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_START_TIMEOUT", "0")
+        mock_popen.return_value = MagicMock(pid=4243, poll=MagicMock(return_value=None))
+        mock_urlopen.side_effect = urllib.error.URLError("server unavailable")
+        mock_run.return_value = MagicMock(returncode=0, stdout="Fallback text", stderr="")
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "Fallback text"
+        assert "falling back to CLI subprocess" in caplog.text
+        mock_run.assert_called_once()
+        fallback_cmd = mock_run.call_args.args[0]
+        assert fallback_cmd[:2] == ["/usr/local/bin/whisperkit-cli", "transcribe"]
+
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_owned_resident_server_is_restarted_if_process_dies(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51236")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_START_TIMEOUT", "0")
+        first_proc = MagicMock(pid=5001)
+        first_proc.poll.return_value = None
+        second_proc = MagicMock(pid=5002)
+        second_proc.poll.return_value = None
+        mock_popen.side_effect = [first_proc, second_proc]
+        mock_urlopen.side_effect = [
+            _FakeHTTPResponse({"text": "First"}),
+            _FakeHTTPResponse({"text": "Second"}),
+        ]
+
+        client = WhisperKitClient(model="medium.en")
+        assert client.transcribe(_make_wav_bytes()) == "First"
+        first_proc.poll.return_value = 1
+        assert client.transcribe(_make_wav_bytes()) == "Second"
+
+        mock_run.assert_not_called()
+        assert mock_popen.call_count == 2
 
 
 def _import_delegate():
@@ -253,4 +377,5 @@ class TestWhisperKitSmokeEnv:
         smoke_env = Path(".spoke-smoke-env").read_text()
 
         assert 'SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"' in smoke_env
+        assert 'SPOKE_WHISPERKIT_RESIDENT="1"' in smoke_env
         assert 'SPOKE_AUDIO_SPOOL_ENABLED="1"' in smoke_env

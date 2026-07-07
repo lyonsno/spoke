@@ -3,6 +3,10 @@
 # preferences may point elsewhere; launcher smoke should remain self-contained.
 export SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"
 
+# Keep WhisperKit warm behind its OpenAI-compatible local server instead of
+# paying a fresh CLI process/model setup tax for every dictation.
+export SPOKE_WHISPERKIT_RESIDENT="1"
+
 # Keep exact WAVs for WhisperKit-vs-standard replay after bad utterances. This
 # target does not force contention mode; the spool is evidence custody only.
 export SPOKE_AUDIO_SPOOL_ENABLED="1"
