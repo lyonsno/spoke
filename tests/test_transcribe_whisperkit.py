@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch, ANY
@@ -105,6 +106,78 @@ class TestWhisperKitClientSubprocess:
         result = client.transcribe(_make_wav_bytes())
 
         assert result == ""
+
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_suspicious_success_retries_and_returns_recovered_text(
+        self,
+        mock_find,
+        mock_run,
+        monkeypatch,
+        tmp_path,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        recovered_text = (
+            "This recovered retry contains enough words to be plausible for a "
+            "medium-length operator dictation, so the first tiny success should "
+            "not be trusted as the final output."
+        )
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="Too short.", stderr=""),
+            MagicMock(returncode=0, stdout=recovered_text, stderr=""),
+        ]
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SUSPECT_SPOOL_DIR", str(tmp_path))
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes(duration_s=30.0))
+
+        assert result == recovered_text
+        assert mock_run.call_count == 2
+        reports = list(tmp_path.glob("*.json"))
+        assert len(reports) == 1
+        report = json.loads(reports[0].read_text())
+        assert report["status"] == "recovered_by_retry"
+        assert report["effective_model"] == "medium.en"
+        assert report["effective_cli_path"] == "/usr/local/bin/whisperkit-cli"
+        assert report["audio_bytes"] > 0
+        assert report["duration_seconds"] == pytest.approx(30.0)
+        assert report["chosen_output"] == recovered_text
+        assert report["attempts"][0]["suspicious"] is True
+        assert report["attempts"][1]["suspicious"] is False
+        assert Path(report["audio_path"]).exists()
+
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_suspicious_success_preserves_replay_bundle_when_retry_still_short(
+        self,
+        mock_find,
+        mock_run,
+        monkeypatch,
+        tmp_path,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="Tiny.", stderr=""),
+            MagicMock(returncode=0, stdout="Still tiny.", stderr=""),
+        ]
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SUSPECT_SPOOL_DIR", str(tmp_path))
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes(duration_s=30.0))
+
+        assert result == "Still tiny."
+        assert mock_run.call_count == 2
+        reports = list(tmp_path.glob("*.json"))
+        assert len(reports) == 1
+        report = json.loads(reports[0].read_text())
+        assert report["status"] == "suspicious_unrecovered"
+        assert report["chosen_output"] == "Still tiny."
+        assert report["attempts"][0]["stdout_len"] == 5
+        assert report["attempts"][1]["stdout_len"] == 11
+        assert report["attempts"][0]["suspicion_reason"] == "too_short_for_audio_duration"
+        assert Path(report["audio_path"]).read_bytes() == _make_wav_bytes(duration_s=30.0)
 
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value=None)
     def test_transcribe_returns_empty_when_cli_missing(self, mock_find):
