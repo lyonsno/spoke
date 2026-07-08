@@ -25,7 +25,7 @@ import numpy as np
 
 _INDEX_PATH = Path.home() / ".config" / "spoke" / "attractor-index.npz"
 _ATTRACTOR_SOURCES = [
-    ("project", Path.home() / "dev" / "epistaxis" / "attractors"),
+    ("project", Path.home() / "dev" / "operator-memory" / "attractors"),
     ("personal", Path.home() / ".config" / "spoke" / "attractors"),
 ]
 

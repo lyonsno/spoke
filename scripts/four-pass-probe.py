@@ -23,7 +23,7 @@ _ATTRACTORS_DIR = Path.home() / ".config" / "spoke" / "attractors"
 # Three diverse samples:
 #   19: subagent async reasoning (likely real attractor + maybe policy)
 #  143: "look in the attractors directory" (ephemeral — should be [] on most surfaces)
-#  178: "compact our context, merge into epistaxis" (ephemeral + maybe topos)
+#  178: "compact our context, merge into operator-memory" (ephemeral + maybe topos)
 _SAMPLE_INDICES = [19, 143, 178]
 
 # Import the prompts from the branch

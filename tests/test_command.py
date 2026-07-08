@@ -99,10 +99,10 @@ class TestCommandClient:
         assert "cancel_subagent" in _SYSTEM_PROMPT
         assert "do not spin" in _SYSTEM_PROMPT.lower()
 
-    def test_system_prompt_does_not_advertise_epistaxis_ops_helper(self):
+    def test_system_prompt_does_not_advertise_operator_memory_ops_helper(self):
         from spoke.command import _SYSTEM_PROMPT
 
-        assert "run_epistaxis_ops" not in _SYSTEM_PROMPT
+        assert "run_operator_memory_ops" not in _SYSTEM_PROMPT
 
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""

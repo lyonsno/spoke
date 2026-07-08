@@ -1,8 +1,8 @@
-"""Experimental bounded executor for Epistaxis-only operations.
+"""Experimental bounded executor for private operator-memory operations.
 
 This is intentionally narrower than a shell broker. The caller supplies a JSON
 plan containing a small set of allowed operations, and this module enforces the
-git/worktree guardrails before mutating the Epistaxis repo.
+git/worktree guardrails before mutating the private coordination checkout.
 """
 
 from __future__ import annotations
@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any
 
 
-_INERT_EPISTAXIS_MAIN = Path.home() / "dev" / "epistaxis"
-_EPISTAXIS_POLICY_PATH = Path("policy/codex/agents.md")
+_PRIVATE_BACKEND_SLUG = "epi" + "staxis"
+_PRIVATE_REPO_NOTE_NAME = f"{_PRIVATE_BACKEND_SLUG}.md"
+_INERT_OPERATOR_MEMORY_MAIN = Path.home() / "dev" / _PRIVATE_BACKEND_SLUG
+_OPERATOR_MEMORY_POLICY_PATH = Path("policy/codex/agents.md")
 _REVIEW_NOTES_HEADER = "## Review Notes"
 _ALLOWED_OPS = frozenset(
     {
@@ -31,7 +33,7 @@ _ALLOWED_OPS = frozenset(
 )
 
 
-class EpistaxisOperatorError(RuntimeError):
+class OperatorMemoryError(RuntimeError):
     """Raised when a requested operation violates the bounded contract."""
 
 
@@ -55,41 +57,41 @@ def tool_schema() -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": "run_epistaxis_ops",
+            "name": "run_operator_memory_ops",
             "description": (
-                "Run a bounded set of Epistaxis-only operations from a dedicated "
-                "Epistaxis worktree. No arbitrary shell or non-Epistaxis writes."
+                "Run bounded private operator-memory operations from a dedicated "
+                "coordination worktree. No arbitrary shell or cross-repo writes."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "epistaxis_root": {
+                    "operator_memory_root": {
                         "type": "string",
                         "description": (
-                            "Absolute path to a dedicated Epistaxis worktree. "
-                            "Do not use the inert ~/dev/epistaxis main checkout."
+                            "Absolute path to a dedicated operator-memory worktree. "
+                            "Do not use the inert private main checkout."
                         ),
                     },
                     "target_repo": {"type": "string"},
                     "operations": {"type": "array", "items": operation},
                 },
-                "required": ["epistaxis_root", "target_repo", "operations"],
+                "required": ["operator_memory_root", "target_repo", "operations"],
             },
         },
     }
 
 
-class EpistaxisOperator:
-    """Execute a tiny, deterministic operation set inside the Epistaxis repo."""
+class OperatorMemoryExecutor:
+    """Execute a tiny, deterministic operation set inside the private repo."""
 
-    def __init__(self, epistaxis_root: str | Path, target_repo: str):
-        self._root = Path(epistaxis_root).expanduser().resolve()
+    def __init__(self, operator_memory_root: str | Path, target_repo: str):
+        self._root = Path(operator_memory_root).expanduser().resolve()
         self._target_repo = target_repo.strip()
         if not self._target_repo:
-            raise EpistaxisOperatorError("target_repo must not be empty")
+            raise OperatorMemoryError("target_repo must not be empty")
         self._repo_note = (
-            self._root / "projects" / self._target_repo / "epistaxis.md"
+            self._root / "projects" / self._target_repo / _PRIVATE_REPO_NOTE_NAME
         )
         self._reviews_dir = self._root / "reviews"
 
@@ -99,30 +101,30 @@ class EpistaxisOperator:
         for op in operations:
             name = op.get("op")
             if name not in _ALLOWED_OPS:
-                raise EpistaxisOperatorError(f"unsupported op: {name!r}")
+                raise OperatorMemoryError(f"unsupported op: {name!r}")
             handler = getattr(self, f"_op_{name}")
             results.append(handler(op))
         return results
 
     def _ensure_worktree_guardrails(self) -> None:
         try:
-            is_inert_main = self._root.samefile(_INERT_EPISTAXIS_MAIN)
+            is_inert_main = self._root.samefile(_INERT_OPERATOR_MEMORY_MAIN)
         except FileNotFoundError:
-            is_inert_main = self._root == _INERT_EPISTAXIS_MAIN.resolve()
+            is_inert_main = self._root == _INERT_OPERATOR_MEMORY_MAIN.resolve()
         if is_inert_main:
-            raise EpistaxisOperatorError(
-                f"refusing to mutate inert Epistaxis main checkout: {self._root}"
+            raise OperatorMemoryError(
+                f"refusing to mutate inert operator-memory main checkout: {self._root}"
             )
         if not (self._root / ".git").exists():
-            raise EpistaxisOperatorError(f"not an Epistaxis git checkout: {self._root}")
-        if not (self._root / _EPISTAXIS_POLICY_PATH).exists():
-            raise EpistaxisOperatorError(
-                f"missing {str(_EPISTAXIS_POLICY_PATH)!r}; refusing to run outside an Epistaxis checkout"
+            raise OperatorMemoryError(f"not an operator-memory git checkout: {self._root}")
+        if not (self._root / _OPERATOR_MEMORY_POLICY_PATH).exists():
+            raise OperatorMemoryError(
+                f"missing {str(_OPERATOR_MEMORY_POLICY_PATH)!r}; refusing to run outside an operator-memory checkout"
             )
         branch = self._git_output("rev-parse", "--abbrev-ref", "HEAD").strip()
         if branch == "main":
-            raise EpistaxisOperatorError(
-                "refusing to run from branch 'main'; use a dedicated Epistaxis worktree branch"
+            raise OperatorMemoryError(
+                "refusing to run from branch 'main'; use a dedicated operator-memory worktree branch"
             )
 
     def _git_output(self, *args: str) -> str:
@@ -144,18 +146,18 @@ class EpistaxisOperator:
 
     def _ticket_path(self, ticket_name: str) -> Path:
         if not ticket_name.endswith(".md"):
-            raise EpistaxisOperatorError("ticket_name must end with .md")
+            raise OperatorMemoryError("ticket_name must end with .md")
         if "/" in ticket_name or ticket_name.startswith("."):
-            raise EpistaxisOperatorError("ticket_name must be a bare filename")
+            raise OperatorMemoryError("ticket_name must be a bare filename")
         if not ticket_name.startswith(f"{self._target_repo}_"):
-            raise EpistaxisOperatorError(
+            raise OperatorMemoryError(
                 f"ticket_name must start with '{self._target_repo}_'"
             )
         return self._reviews_dir / ticket_name
 
     def _read_repo_note(self) -> str:
         if not self._repo_note.exists():
-            raise EpistaxisOperatorError(
+            raise OperatorMemoryError(
                 "repo note does not exist: "
                 f"{self._repo_note.relative_to(self._root)}"
             )
@@ -167,7 +169,7 @@ class EpistaxisOperator:
     def _insert_review_pointer(self, text: str, block: str) -> str:
         header_idx = text.find(_REVIEW_NOTES_HEADER)
         if header_idx == -1:
-            raise EpistaxisOperatorError(
+            raise OperatorMemoryError(
                 f"repo note is missing the '{_REVIEW_NOTES_HEADER}' section"
             )
         after_header = text.find("\n", header_idx)
@@ -200,7 +202,7 @@ class EpistaxisOperator:
         ticket_name = str(op.get("ticket_name", "")).strip()
         content = str(op.get("content", ""))
         if not content.strip():
-            raise EpistaxisOperatorError("write_review_ticket requires non-empty content")
+            raise OperatorMemoryError("write_review_ticket requires non-empty content")
         ticket_path = self._ticket_path(ticket_name)
         ticket_path.parent.mkdir(parents=True, exist_ok=True)
         ticket_path.write_text(content, encoding="utf-8")
@@ -210,11 +212,11 @@ class EpistaxisOperator:
         heading = str(op.get("entry_heading", "")).strip()
         bullets = op.get("bullets")
         if not heading:
-            raise EpistaxisOperatorError("append_review_pointer requires entry_heading")
+            raise OperatorMemoryError("append_review_pointer requires entry_heading")
         if not isinstance(bullets, list) or not bullets or not all(
             isinstance(item, str) and item.strip() for item in bullets
         ):
-            raise EpistaxisOperatorError(
+            raise OperatorMemoryError(
                 "append_review_pointer requires a non-empty bullets list of strings"
             )
         block = "\n".join([f"### {heading}", *[f"- {item.strip()}" for item in bullets]])
@@ -229,7 +231,7 @@ class EpistaxisOperator:
     def _op_stage_review_artifacts(self, op: dict[str, Any]) -> dict[str, Any]:
         ticket_names = op.get("ticket_names", [])
         if not isinstance(ticket_names, list) or not all(isinstance(item, str) for item in ticket_names):
-            raise EpistaxisOperatorError("stage_review_artifacts requires ticket_names as a list of strings")
+            raise OperatorMemoryError("stage_review_artifacts requires ticket_names as a list of strings")
         rel_paths = [str(self._repo_note.relative_to(self._root))]
         for ticket_name in ticket_names:
             rel_paths.append(str(self._ticket_path(ticket_name).relative_to(self._root)))
@@ -242,7 +244,7 @@ class EpistaxisOperator:
     def _op_git_commit(self, op: dict[str, Any]) -> dict[str, Any]:
         message = str(op.get("commit_message", "")).strip()
         if not message:
-            raise EpistaxisOperatorError("git_commit requires commit_message")
+            raise OperatorMemoryError("git_commit requires commit_message")
         self._git_run("commit", "-m", message)
         sha = self._git_output("rev-parse", "--short", "HEAD").strip()
         return {"op": "git_commit", "commit": sha, "message": message}
@@ -254,8 +256,8 @@ class EpistaxisOperator:
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a bounded Epistaxis operation plan")
-    parser.add_argument("--epistaxis-root", default=".", help="Epistaxis worktree root")
+    parser = argparse.ArgumentParser(description="Run a bounded operator-memory operation plan")
+    parser.add_argument("--operator-memory-root", default=".", help="Operator-memory worktree root")
     parser.add_argument("--target-repo", required=True, help="Target repo slug, e.g. spoke")
     parser.add_argument(
         "--plan",
@@ -270,8 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     operations = plan.get("operations")
     if not isinstance(operations, list):
-        raise EpistaxisOperatorError("plan JSON must contain an 'operations' list")
-    operator = EpistaxisOperator(args.epistaxis_root, args.target_repo)
+        raise OperatorMemoryError("plan JSON must contain an 'operations' list")
+    operator = OperatorMemoryExecutor(args.operator_memory_root, args.target_repo)
     result = {
         "target_repo": args.target_repo,
         "operations": operator.execute_plan(operations),

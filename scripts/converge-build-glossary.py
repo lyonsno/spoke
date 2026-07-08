@@ -2,7 +2,7 @@
 """Converge glossary builder — produce a cheap one-liner index of all attractors.
 
 The two-layer attractor architecture:
-- Full attractors: rich markdown files (epistaxis project + personal)
+- Full attractors: rich markdown files (operator-memory project + personal)
 - Glossary: single JSON file with one-line summaries, cheap to load into context
 
 The glossary is the working surface for guided compaction. Full attractors are
@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 
 _ATTRACTOR_SOURCES = [
-    ("project", Path.home() / "dev" / "epistaxis" / "attractors"),
+    ("project", Path.home() / "dev" / "operator-memory" / "attractors"),
     ("personal", Path.home() / ".config" / "spoke" / "attractors"),
 ]
 _GLOSSARY_PATH = Path.home() / ".config" / "spoke" / "attractor-glossary.json"

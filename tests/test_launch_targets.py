@@ -90,12 +90,12 @@ def test_parse_env_overrides_expands_home_variables(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     env_file = tmp_path / ".spoke-smoke-env"
     env_file.write_text(
-        'export SPOKE_OPERATOR_PING_EVENTS_PATH="$HOME/.local/state/epistaxis/events.jsonl"\n',
+        'export SPOKE_OPERATOR_PING_EVENTS_PATH="$HOME/.local/state/operator_memory/events.jsonl"\n',
         encoding="utf-8",
     )
 
     overrides = parse_env_overrides(env_file)
 
     assert overrides["SPOKE_OPERATOR_PING_EVENTS_PATH"] == (
-        str(home / ".local/state/epistaxis/events.jsonl")
+        str(home / ".local/state/operator_memory/events.jsonl")
     )
