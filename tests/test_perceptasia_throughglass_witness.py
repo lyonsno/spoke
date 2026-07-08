@@ -137,7 +137,7 @@ def test_throughglass_witness_defaults_to_passive_capture(tmp_path, monkeypatch,
     assert calls[0]["duration_seconds"] == 1.25
     assert calls[0]["capture_profile"] == "low_perturbation"
     assert calls[0]["lane"] == "perceptasia-throughglass-graft"
-    assert calls[0]["diaulos"] == "Warpstorm Pit Boss"
+    assert calls[0]["diaulos"] == "Spoke Retina Lasso"
     assert calls[0]["source_window"] == "Perceptasia Throughglass / Assistant Overlay"
     assert calls[0]["stimulus"] == {"mode": "passive-throughglass"}
     assert "witness-index.json" in capsys.readouterr().out

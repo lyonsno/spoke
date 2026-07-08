@@ -90,7 +90,7 @@ class TestWhisperKitClientSubprocess:
         assert "--text-decoder-compute-units" in cmd
         assert "--chunking-strategy" in cmd
         chunking_idx = cmd.index("--chunking-strategy")
-        assert cmd[chunking_idx + 1] == "none"
+        assert cmd[chunking_idx + 1] == "vad"
         assert "--skip-special-tokens" in cmd
 
     @patch("spoke.transcribe_whisperkit.subprocess.run")
@@ -282,6 +282,8 @@ class TestWhisperKitResidentServer:
         assert serve_cmd[serve_cmd.index("--model") + 1] == "medium.en"
         assert "--port" in serve_cmd
         assert serve_cmd[serve_cmd.index("--port") + 1] == "51234"
+        assert "--chunking-strategy" in serve_cmd
+        assert serve_cmd[serve_cmd.index("--chunking-strategy") + 1] == "vad"
         request = mock_urlopen.call_args.args[0]
         assert request.full_url == "http://localhost:51234/v1/audio/transcriptions"
         assert request.get_method() == "POST"

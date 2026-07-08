@@ -38,8 +38,8 @@ def test_build_retina_lasso_command_prefers_global_capture_custody(tmp_path):
         output_dir=tmp_path,
         count=3,
         interval_seconds=0.125,
-        lane="warpstorm-pit-boss",
-        diaulos="Warpstorm Pit Boss",
+        lane="spoke-retina-lasso",
+        diaulos="Spoke Retina Lasso",
         source_app="Spoke",
         source_window="Command Overlay",
         trace_path=tmp_path / "trace.jsonl",
@@ -52,8 +52,8 @@ def test_build_retina_lasso_command_prefers_global_capture_custody(tmp_path):
     assert command[command.index("--count") + 1] == "3"
     assert command[command.index("--interval") + 1] == "0.125000"
     assert command[command.index("--capture-profile") + 1] == "low-perturbation"
-    assert command[command.index("--lane") + 1] == "warpstorm-pit-boss"
-    assert command[command.index("--diaulos") + 1] == "Warpstorm Pit Boss"
+    assert command[command.index("--lane") + 1] == "spoke-retina-lasso"
+    assert command[command.index("--diaulos") + 1] == "Spoke Retina Lasso"
     assert command[command.index("--source-app") + 1] == "Spoke"
     assert command[command.index("--source-window") + 1] == "Command Overlay"
     assert command[command.index("--trace-path") + 1] == str(tmp_path / "trace.jsonl")
@@ -64,8 +64,8 @@ def test_build_retina_lasso_command_passes_bounded_global_capture_args(tmp_path)
         output_dir=tmp_path,
         count=3,
         interval_seconds=0.125,
-        lane="warpstorm-pit-boss",
-        diaulos="Warpstorm Pit Boss",
+        lane="spoke-retina-lasso",
+        diaulos="Spoke Retina Lasso",
         source_app="Spoke",
         source_window="Command Overlay",
         trace_path=tmp_path / "trace.jsonl",
@@ -89,8 +89,8 @@ def test_build_retina_lasso_command_rejects_bounded_legacy_fallback(tmp_path, mo
             output_dir=tmp_path,
             count=1,
             interval_seconds=1.0,
-            lane="warpstorm-pit-boss",
-            diaulos="Warpstorm Pit Boss",
+            lane="spoke-retina-lasso",
+            diaulos="Spoke Retina Lasso",
             source_app="Spoke",
             source_window="Command Overlay",
             capture_mode="rect",
@@ -110,8 +110,8 @@ def test_build_retina_lasso_command_uses_healthy_global_capture_by_default(tmp_p
         output_dir=tmp_path,
         count=1,
         interval_seconds=1.0,
-        lane="warpstorm-pit-boss",
-        diaulos="Warpstorm Pit Boss",
+        lane="spoke-retina-lasso",
+        diaulos="Spoke Retina Lasso",
         source_app="Spoke",
         source_window="Command Overlay",
     )
@@ -157,8 +157,8 @@ def test_build_retina_lasso_command_skips_unhealthy_global_capture(tmp_path, mon
         output_dir=tmp_path,
         count=1,
         interval_seconds=1.0,
-        lane="warpstorm-pit-boss",
-        diaulos="Warpstorm Pit Boss",
+        lane="spoke-retina-lasso",
+        diaulos="Spoke Retina Lasso",
         source_app="Spoke",
         source_window="Command Overlay",
     )
@@ -174,8 +174,8 @@ def test_build_retina_lasso_command_uses_absolute_uv_from_env(tmp_path, monkeypa
         output_dir=tmp_path,
         count=1,
         interval_seconds=1.0,
-        lane="warpstorm-pit-boss",
-        diaulos="Warpstorm Pit Boss",
+        lane="spoke-retina-lasso",
+        diaulos="Spoke Retina Lasso",
         source_app="Spoke",
         source_window="Command Overlay",
     )
@@ -198,8 +198,8 @@ def test_build_retina_lasso_command_uses_common_uv_path_without_shell_path(tmp_p
         output_dir=tmp_path,
         count=1,
         interval_seconds=1.0,
-        lane="warpstorm-pit-boss",
-        diaulos="Warpstorm Pit Boss",
+        lane="spoke-retina-lasso",
+        diaulos="Spoke Retina Lasso",
         source_app="Spoke",
         source_window="Command Overlay",
     )

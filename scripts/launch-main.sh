@@ -215,9 +215,9 @@ def _start_retina_lasso_witness(
             "--capture-profile",
             child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
             "--lane",
-            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
+            child_env.get("SPOKE_RETINA_LASSO_LANE", "spoke-retina-lasso"),
             "--diaulos",
-            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Spoke Retina Lasso"),
             "--source-app",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
             "--source-window",
@@ -239,9 +239,9 @@ def _start_retina_lasso_witness(
             "--capture-profile",
             child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
             "--lane",
-            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
+            child_env.get("SPOKE_RETINA_LASSO_LANE", "spoke-retina-lasso"),
             "--diaulos",
-            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Spoke Retina Lasso"),
             "--source-app",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
             "--source-window",
@@ -371,7 +371,7 @@ if repo_root is None:
 # (e.g. ~/.zshenv). Automator runs this launcher under non-interactive
 # /bin/bash which does not source any zsh profile, so without this
 # block secrets placed in shell profiles never reach spoke.
-# See ~/dev/epistaxis/system/secrets.md for the cross-project pattern.
+# See the local cross-project secret registry for the shop-wide pattern.
 child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
