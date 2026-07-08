@@ -226,6 +226,34 @@ class TestWhisperKitResidentServer:
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
     @patch("urllib.request.urlopen")
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_resident_server_is_default_for_whisperkit_client(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.delenv("SPOKE_WHISPERKIT_RESIDENT", raising=False)
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51233")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_START_TIMEOUT", "0")
+        mock_popen.return_value = MagicMock(pid=4241, poll=MagicMock(return_value=None))
+        mock_urlopen.return_value = _FakeHTTPResponse({"text": "Default resident"})
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "Default resident"
+        mock_run.assert_not_called()
+        serve_cmd = mock_popen.call_args.args[0]
+        assert serve_cmd[:2] == ["/usr/local/bin/whisperkit-cli", "serve"]
+
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
     def test_resident_mode_starts_server_and_posts_audio_without_transcribe_cli(
         self,
         mock_find,

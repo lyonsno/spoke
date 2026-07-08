@@ -1,9 +1,9 @@
 """WhisperKit ANE transcription — runs encoder+decoder on Apple Neural Engine.
 
-Calls whisperkit-cli (brew install whisperkit-cli) as a subprocess.
-Both encoder and decoder run on the ANE by default, leaving the GPU
-free for other workloads. First run for a given model is slow (~4 min)
-due to ANE compilation; subsequent runs use the cached compilation.
+Calls whisperkit-cli (brew install whisperkit-cli). The default path keeps a
+resident OpenAI-compatible WhisperKit server warm; one-shot CLI transcription is
+an explicit fallback/escape hatch because spawning a fresh model process per
+utterance is too slow and brittle under heavy box contention.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _whisperkit_resident_enabled() -> bool:
-    return _truthy_env("SPOKE_WHISPERKIT_RESIDENT", default=False)
+    return _truthy_env("SPOKE_WHISPERKIT_RESIDENT", default=True)
 
 
 def _find_available_port() -> int:
