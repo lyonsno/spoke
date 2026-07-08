@@ -178,10 +178,10 @@ class TestLocalTranscriptionClient:
         """Observed launch-log ontology failures should normalize on the local Whisper path."""
         from spoke.transcribe_local import LocalTranscriptionClient
 
-        mock_mlx_whisper.transcribe.return_value = {"text": "Read Epistaxistopos and an Afro."}
+        mock_mlx_whisper.transcribe.return_value = {"text": "Read Operator Memorytopos and an Afro."}
         client = LocalTranscriptionClient()
 
-        assert client.transcribe(_make_wav_bytes()) == "Read Epístaxis tópos and anaphorá."
+        assert client.transcribe(_make_wav_bytes()) == "Read operator memory tópos and anaphorá."
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_repairs_recent_ontology_failures(self, mock_mlx_whisper):
@@ -218,14 +218,14 @@ class TestLocalTranscriptionClient:
 
         mock_mlx_whisper.transcribe.return_value = {
             "text": (
-                "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+                "Nice work. Thank you. I'm gonna test now operator_memory Epinorthosis lysis, "
                 "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus"
             )
         }
         client = LocalTranscriptionClient()
 
         assert client.transcribe(_make_wav_bytes()) == (
-            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Nice work. Thank you. I'm gonna test now operator memory Epanórthosis lýsis, "
             "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis"
         )
 

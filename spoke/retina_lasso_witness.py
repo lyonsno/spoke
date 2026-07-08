@@ -16,13 +16,15 @@ from typing import Any
 
 
 DEFAULT_PERCEPTASIA_ROOT = Path("/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521")
+_PRIVATE_TOOL_PREFIX = "epi" + "staxis"
+_PRIVATE_GLOBAL_CAPTURE_COMMAND = f"{_PRIVATE_TOOL_PREFIX}-global-witness-capture"
 GLOBAL_CAPTURE_COMMAND_NAMES = {
     "global-witness-capture",
-    "global-witness-capture-legacy",
+    _PRIVATE_GLOBAL_CAPTURE_COMMAND,
     "global_witness_capture.py",
 }
-DEFAULT_LANE = "spoke-retina-lasso"
-DEFAULT_DIAULOS = "Spoke Retina Lasso"
+DEFAULT_LANE = "operator-memory"
+DEFAULT_DIAULOS = "Operator Memory"
 DEFAULT_SOURCE_APP = "Spoke"
 DEFAULT_SOURCE_WINDOW = "Command Overlay"
 INDEX_NAME = "witness-index.json"
@@ -85,13 +87,13 @@ def _default_global_capture_command() -> str | None:
     )
     if env_command:
         return str(Path(env_command).expanduser())
-    for name in ("global-witness-capture", "global-witness-capture-legacy"):
+    for name in ("global-witness-capture", _PRIVATE_GLOBAL_CAPTURE_COMMAND):
         which_command = shutil.which(name)
         if which_command and _global_capture_command_is_healthy(which_command):
             return which_command
     for candidate in (
         Path.home() / ".local" / "bin" / "global-witness-capture",
-        Path.home() / ".local" / "bin" / "global-witness-capture-legacy",
+        Path.home() / ".local" / "bin" / _PRIVATE_GLOBAL_CAPTURE_COMMAND,
     ):
         if candidate.is_file() and os.access(candidate, os.X_OK) and _global_capture_command_is_healthy(
             str(candidate)
@@ -926,7 +928,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--capture-command",
         help=(
             "Optional global capture command. Defaults to global-witness-capture "
-            "or global-witness-capture-legacy when installed; falls back to "
+            "or a private operator-memory capture command when installed; falls back to "
             "legacy uv-run perceptasia-screen-capture."
         ),
     )

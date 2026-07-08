@@ -4,7 +4,7 @@
 
 The canonical repo and product name is `spoke`.
 
-When writing or updating docs, reviews, Epistaxis notes, PR text, release
+When writing or updating docs, reviews, Operator Memory notes, PR text, release
 notes, or other outward-facing references for this repo, use `spoke` rather
 than `donttype` or `dictate`.
 
@@ -39,9 +39,9 @@ remote-merged, and then cleaned up.
 Unless the user explicitly says otherwise, push commits after creating them.
 If commit/push is the required next step, needing sandbox/escalation approval is not a reason to defer it or leave work local-only. Request the permission and continue.
 
-## Epistaxis
+## Operator Memory
 
-When reading Epistaxis, if recorded state conflicts with what you observe in
+When reading Operator Memory, if recorded state conflicts with what you observe in
 the code, repo, or thread, flag the mismatch before proceeding. Multiple
 sessions may write concurrently; merge your changes without overwriting
 entries you did not author.
@@ -58,4 +58,4 @@ When the launch-target menu feature is in play:
 - when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
 - do not silently assume the selected target also carries the launch-target affordance; if the target branch lacks the feature, say so when preparing the surface
 - smoke-worthy surfaces must carry the launcher/menu commits that make the target selectable and legible in the menubar; registry prep alone is not enough
-- record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently
+- record durable registry conventions or machine-local target changes in `spoke` Operator Memory when another session would need them to resume coherently

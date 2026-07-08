@@ -202,12 +202,12 @@ class TestTranscriptionFiltering:
         """Observed launch-log ontology failures should normalize on the Whisper path."""
         client = TranscriptionClient(base_url="http://x")
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {"text": "Read Nepistaxis and update the Topoie."}
+        mock_resp.json.return_value = {"text": "Read Noperator_memory and update the Topoie."}
         mock_client = MagicMock()
         mock_client.post.return_value = mock_resp
         client._client = mock_client
 
-        assert client.transcribe(b"wav") == "Read Epístaxis and update the Tópoi."
+        assert client.transcribe(b"wav") == "Read operator memory and update the Tópoi."
 
     def test_recent_ontology_failures_are_repaired(self):
         """Recent launch-log variants should normalize on the Whisper path."""
@@ -245,7 +245,7 @@ class TestTranscriptionFiltering:
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "text": (
-                "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+                "Nice work. Thank you. I'm gonna test now operator_memory Epinorthosis lysis, "
                 "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus"
             )
         }
@@ -254,7 +254,7 @@ class TestTranscriptionFiltering:
         client._client = mock_client
 
         assert client.transcribe(b"wav") == (
-            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Nice work. Thank you. I'm gonna test now operator memory Epanórthosis lýsis, "
             "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis"
         )
 

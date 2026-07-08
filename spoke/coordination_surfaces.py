@@ -717,7 +717,7 @@ def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
     The input is intentionally dict-shaped for now because the authoritative
     Diaulos resolver surfaces are still settling. This function preserves only
     identity/display facts and refuses to imply live pane focus, directive
-    sending, or Epistaxis write authority.
+    sending, or operator-memory write authority.
     """
     diaulos = str(record.get("diaulos") or "").strip()
     diaulos_id = str(record.get("diaulos_id") or "").strip()
@@ -1024,7 +1024,7 @@ def _operator_ping_sort_key(event: dict[str, Any]) -> tuple[str, str]:
 
 
 def load_operator_ping_events_from_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    """Load operator ping rows from an Epistaxis Spark-Tendon JSONL stream."""
+    """Load operator ping rows from a private coordination JSONL stream."""
     event_log = Path(path).expanduser()
     if not event_log.exists():
         return []
@@ -1057,7 +1057,7 @@ def derive_operator_ping_tokens(
 ) -> list[OperatorPingToken]:
     """Project unresolved operator pings into ephemeral source-linked tokens.
 
-    Replays append-only Epistaxis events: latest create for a ping id wins,
+    Replays append-only coordination events: latest create for a ping id wins,
     clear removes that id from the unresolved set. The optional stack argument
     is accepted to make the non-mutation contract explicit; it is never
     inspected or mutated.

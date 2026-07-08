@@ -282,7 +282,7 @@ class TestDiaulosCardStackHook:
         assert cards[0].payload["diaulos"] == "chairside-sparkwright"
         assert cards[0].payload["diaulos_id"] == "dia-f054023f-d93b-485c-af0c-942698434d11"
         assert cards[0].payload["source_topoi"] == [
-            "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+            "projects/spoke/operator-memory.md#codex-diaulos-stack-current-main-graft-0523"
         ]
         assert cards[0].payload["warnings"] == ["current_topos_not_registry_source_topos"]
         assert d._tray_stack[0].kind == "diaulos_card"
@@ -315,8 +315,8 @@ class TestDiaulosCardStackHook:
             json.dumps(
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:real-ping",
-                    "source_tool": "epistaxis ping-operator",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:real-ping",
+                    "source_tool": "operator_memory ping-operator",
                     "operator_ping": {
                         "ping_id": "real-ping",
                         "created_at": "2026-05-22T12:00:00Z",
@@ -352,8 +352,8 @@ class TestDiaulosCardStackHook:
             json.dumps(
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:body-ping",
-                    "source_tool": "epistaxis ping-operator",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:body-ping",
+                    "source_tool": "operator_memory ping-operator",
                     "operator_ping": {
                         "ping_id": "body-ping",
                         "created_at": "2026-05-24T12:00:00Z",
@@ -396,8 +396,8 @@ class TestDiaulosCardStackHook:
             json.dumps(
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ready-ping",
-                    "source_tool": "epistaxis ping-operator",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ready-ping",
+                    "source_tool": "operator_memory ping-operator",
                     "operator_ping": {
                         "ping_id": "ready-ping",
                         "created_at": "2026-05-24T12:05:00Z",
@@ -442,8 +442,8 @@ class TestDiaulosCardStackHook:
             json.dumps(
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:preview-ping",
-                    "source_tool": "epistaxis ping-operator",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:preview-ping",
+                    "source_tool": "operator_memory ping-operator",
                     "operator_ping": {
                         "ping_id": "preview-ping",
                         "created_at": "2026-05-22T12:00:00Z",
@@ -939,8 +939,8 @@ class TestPreviewFinalizationContract:
             json.dumps(
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:live-bar-ping",
-                    "source_tool": "epistaxis ping-operator",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:live-bar-ping",
+                    "source_tool": "operator_memory ping-operator",
                     "operator_ping": {
                         "ping_id": "live-bar-ping",
                         "created_at": "2026-05-24T12:10:00Z",

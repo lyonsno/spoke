@@ -74,7 +74,7 @@ Apply the EXTINGUISHMENT TEST before carving:
   moment you compact. Do not carve it.
 
 The user speaks via voice dictation with transcription artifacts. Read through
-them to the intent. "Tractor" is almost certainly "attractor." "Epístaxis"
+them to the intent. "Tractor" is almost certainly "attractor." "operator memory"
 is correct Greek, not a typo.
 
 Look across ALL recent turns together, not just the current utterance in

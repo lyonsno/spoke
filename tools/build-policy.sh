@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build-policy.sh — concatenate shared core + tool stubs into deliverable policy files.
-# Mirrors the epistaxis pattern. Run from repo root or any location.
+# Mirrors the operator-memory pattern. Run from repo root or any location.
 
 set -euo pipefail
 

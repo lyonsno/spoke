@@ -366,7 +366,7 @@ moving the right hand:
 ```
 
 Seven keys. Each can be bound to a different destination: operator shell
-modes, Epistaxis interaction, read-aloud, web research, or user-defined
+modes, Operator Memory interaction, read-aloud, web research, or user-defined
 shortcuts. Modifiers (shift, etc.) could extend the surface later.
 
 ### Visual presentation
@@ -409,7 +409,7 @@ Three flavors:
 1. **Persistent.** Activates a mode that stays on after release. The mode
    persists across subsequent recordings until explicitly deactivated (tap
    the route key again during a future recording, or the mode times out, or
-   an exit command is spoken). Example: entering Epistaxis interaction mode,
+   an exit command is spoken). Example: entering Operator Memory interaction mode,
    read-aloud mode, web research mode.
 
 2. **Contingent.** Activates silently for the current utterance and continues
@@ -431,7 +431,7 @@ route key's configuration determines what happens after delivery.
 Route key bindings are configurable. The initial set will be opinionated
 (specific modes and destinations wired to specific keys), but the mapping
 should be a data structure, not hardcoded routing logic. Future operator
-shell modes, Epistaxis verbs, or user-defined shortcuts can be bound to
+shell modes, Operator Memory verbs, or user-defined shortcuts can be bound to
 route keys without changing the grammar machinery.
 
 ### The send chord: Enter + `]`
@@ -443,7 +443,7 @@ everywhere text can be sent:
 - The `]` key specifies *where*. Enter specifies *go*. Together they are
   unambiguous and cannot fire by accident.
 
-If a different route key is active (sticky routed to an Epistaxis mode, for
+If a different route key is active (sticky routed to an Operator Memory mode, for
 example), Enter + that route key sends to that destination instead. The
 pattern is always **Enter + route key = send to that route**.
 
@@ -465,8 +465,8 @@ Sticky routing captures the keyboard. While locked, typing goes to the hot
 route — keystrokes are intercepted by Spoke and delivered to whatever
 destination is currently locked, not to the frontmost app. This is the
 full keyboard capture mode: if you're sticky-routed to the assistant,
-typing goes to the assistant. If you're sticky-routed to an Epistaxis
-mode, typing goes to the Epistaxis interaction surface.
+typing goes to the assistant. If you're sticky-routed to an Operator Memory
+mode, typing goes to the Operator Memory interaction surface.
 
 This means sticky routing is a deliberate mode shift. You are choosing
 to give Spoke the keyboard. The toggle chord (Space + Enter + `]` again)
@@ -501,7 +501,7 @@ editing and review step.
 ### Relationship to operator modes
 
 Route keys can activate operator modes, but they are not the only way to
-enter a mode. A voice command ("enter Epistaxis mode") can also activate a
+enter a mode. A voice command ("enter Operator Memory mode") can also activate a
 mode. Route keys are a physical shortcut into mode activation — faster and
 more reliable than voice for known, frequent destinations.
 
@@ -535,7 +535,7 @@ to the current operative mode. This connects to the route key grammar (Lane R in
 the ButterfingerFinalFuckers packet) and to a consensus-based intent resolution
 architecture for the default home layer.
 
-Design thread and architecture: `~/dev/epistaxis/spoke-operative-modes-and-consensus-intent-resolution_2026-05-08.md`
+Design thread and architecture: `~/dev/operator-memory/spoke-operative-modes-and-consensus-intent-resolution_2026-05-08.md`
 
 ## Key source files
 

@@ -55,7 +55,7 @@ Things the user expressed uncertainty about, or things that were left unresolved
 These are the pickup points for a future session.
 
 ## Substrate diff
-If you were writing a one-paragraph update to this user's epistaxis scoped local
+If you were writing a one-paragraph update to this user's operator-memory scoped local
 state, what would it say? Write it as if you are updating a topos status field.
 
 Rules:

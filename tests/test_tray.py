@@ -545,7 +545,7 @@ class TestDirectiveInboxStackPressure:
         payload = [
             {
                 "path": "metadosis/upstream-directives/route-smoke.md",
-                "target_path": "projects/epistaxis/topoi/badgestall.md",
+                "target_path": "projects/operator_memory/topoi/badgestall.md",
                 "target_diaulos": "badgestall-proctocolips-cartographer",
                 "target_diaulos_id": None,
                 "packet_exists": True,
@@ -554,7 +554,7 @@ class TestDirectiveInboxStackPressure:
                     "sign": "opus-miserena-id-cartographer",
                     "diaulos": "opus-miserena-id-cartographer",
                     "diaulos_id": "dia-b715a7f9-ec67-4dcd-80a3-12688844f177",
-                    "topos": "projects/epistaxis/topoi/codex-opus.md",
+                    "topos": "projects/operator_memory/topoi/codex-opus.md",
                     "refs": [
                         "metadosis/coordination-packets/perceptasia-spoke_switchblade-reticule-post-office_2026-05-22.md"
                     ],
@@ -602,7 +602,7 @@ class TestDirectiveInboxStackPressure:
         payload = [
             {
                 "path": "metadosis/upstream-directives/route-smoke.md",
-                "target_path": "projects/epistaxis/topoi/badgestall.md",
+                "target_path": "projects/operator_memory/topoi/badgestall.md",
                 "target_diaulos": "badgestall-proctocolips-cartographer",
                 "target_diaulos_id": "dia-target",
                 "packet_exists": True,
@@ -637,12 +637,12 @@ class TestDirectiveInboxStackPressure:
 
     def test_directive_inbox_accepts_spool_envelope_rows(self, main_module):
         payload = {
-            "schema": "epistaxis.directive_inbox_spool.v1",
+            "schema": "coordination.directive_inbox_spool.v1",
             "generated_at": "2026-05-23T00:00:00Z",
             "rows": [
                 {
                     "path": "metadosis/upstream-directives/pending.md",
-                    "target_path": "projects/epistaxis/topoi/badgestall.md",
+                    "target_path": "projects/operator_memory/topoi/badgestall.md",
                     "target_diaulos": "badgestall-proctocolips-cartographer",
                     "target_diaulos_id": None,
                     "packet_exists": True,
@@ -664,7 +664,7 @@ class TestDirectiveInboxStackPressure:
                 },
                 {
                     "path": "metadosis/upstream-directives/consumed.md",
-                    "target_path": "projects/epistaxis/topoi/badgestall.md",
+                    "target_path": "projects/operator_memory/topoi/badgestall.md",
                     "target_diaulos": "badgestall-proctocolips-cartographer",
                     "target_diaulos_id": None,
                     "packet_exists": True,
@@ -709,7 +709,7 @@ class TestDirectiveInboxStackPressure:
         with pytest.raises(ValueError, match="spool envelope rows must be a list"):
             main_module.directive_inbox_json_to_tray_entries(
                 main_module.json.dumps({
-                    "schema": "epistaxis.directive_inbox_spool.v1",
+                    "schema": "coordination.directive_inbox_spool.v1",
                     "rows": {"not": "a list"},
                 })
             )
@@ -821,7 +821,7 @@ class TestOperatorPingTokenVisualDelegate:
             [
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
                     "operator_ping": {
                         "ping_id": "ping-1",
                         "created_at": "2026-05-22T12:00:00Z",

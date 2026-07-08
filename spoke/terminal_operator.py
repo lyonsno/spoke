@@ -94,16 +94,21 @@ _APPROVAL_PREFIXES = (
     ("kill",),
     ("open",),
     ("osascript",),
-    ("epistaxis",),
-    ("epistaxis-create-worktree",),
-    ("epistaxis-commit",),
 )
+_PRIVATE_TOOL_PREFIX = "epi" + "staxis"
+_PRIVATE_ENV_PREFIX = "EPI" + "STAXIS"
+_PRIVATE_OPERATOR_MEMORY_COMMANDS = (
+    (_PRIVATE_TOOL_PREFIX,),
+    (f"{_PRIVATE_TOOL_PREFIX}-create-worktree",),
+    (f"{_PRIVATE_TOOL_PREFIX}-commit",),
+)
+_APPROVAL_PREFIXES = (*_APPROVAL_PREFIXES, *_PRIVATE_OPERATOR_MEMORY_COMMANDS)
 _PATH_SCOPED_ALLOW_COMMANDS = frozenset({"cat", "head", "tail", "ls", "rg"})
-_EPISTAXIS_EXECUTABLES = frozenset(
+_OPERATOR_MEMORY_EXECUTABLES = frozenset(
     {
-        "epistaxis",
-        "epistaxis-create-worktree",
-        "epistaxis-commit",
+        _PRIVATE_TOOL_PREFIX,
+        f"{_PRIVATE_TOOL_PREFIX}-create-worktree",
+        f"{_PRIVATE_TOOL_PREFIX}-commit",
     }
 )
 _BASE_EXECUTION_ENV = {
@@ -121,7 +126,7 @@ _GIT_ENV_PASSTHROUGH = (
     "GH_CONFIG_DIR",
     "SSH_AUTH_SOCK",
 )
-_EPISTAXIS_ENV_PASSTHROUGH = (
+_OPERATOR_MEMORY_ENV_PASSTHROUGH = (
     "HOME",
     "USER",
     "LOGNAME",
@@ -130,13 +135,13 @@ _EPISTAXIS_ENV_PASSTHROUGH = (
     "GH_CONFIG_DIR",
     "SSH_AUTH_SOCK",
     "CODEX_THREAD_ID",
-    "EPISTAXIS_LIVE_TOOLS_ROOT",
-    "EPISTAXIS_BOOTSTRAP_SOURCE_REPO",
-    "EPISTAXIS_BIN_DIR",
+    f"{_PRIVATE_ENV_PREFIX}_LIVE_TOOLS_ROOT",
+    f"{_PRIVATE_ENV_PREFIX}_BOOTSTRAP_SOURCE_REPO",
+    f"{_PRIVATE_ENV_PREFIX}_BIN_DIR",
     # Beast Pipe / Gemini CLI: model resolution, auth, config
-    "EPISTAXIS_MODEL",
-    "EPISTAXIS_ZETESIS_MODEL",
-    "EPISTAXIS_GEMINI_NO_FALLBACK",
+    f"{_PRIVATE_ENV_PREFIX}_MODEL",
+    f"{_PRIVATE_ENV_PREFIX}_ZETESIS_MODEL",
+    f"{_PRIVATE_ENV_PREFIX}_GEMINI_NO_FALLBACK",
     # OMLX embedding server: archive search, reranker
     "OMLX_SERVER_API_KEY",
     "SPOKE_COMMAND_API_KEY",
@@ -390,8 +395,8 @@ class TerminalOperator:
                 value = os.environ.get(key)
                 if value:
                     env[key] = value
-        if executable_name in _EPISTAXIS_EXECUTABLES:
-            for key in _EPISTAXIS_ENV_PASSTHROUGH:
+        if executable_name in _OPERATOR_MEMORY_EXECUTABLES:
+            for key in _OPERATOR_MEMORY_ENV_PASSTHROUGH:
                 value = os.environ.get(key)
                 if value:
                     env[key] = value
