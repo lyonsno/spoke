@@ -85,7 +85,7 @@ by natural language.
 by the model at runtime. Each entry carries: content (or truncation for large
 blobs), semantic key, optional context for why it was saved, and timestamp.
 Bounded at ~50 entries by default, prunable by the model when it gets stale.
-This is a tiny inward-facing Epistaxis — same pattern, narrower scope.
+This is a tiny inward-facing Operator Memory — same pattern, narrower scope.
 
 **MCP tool schema:** `scratch_store`, `scratch_retrieve`, `scratch_list`,
 `scratch_remove`. This is the proving ground for the entire tool-calling
@@ -157,7 +157,7 @@ destination. Chat is an occasion.
 
 ### Layer 6 — Continuity Substrate
 
-Inward-facing Epistaxis. Lighter than the full cross-project version, but
+Inward-facing Operator Memory. Lighter than the full cross-project version, but
 governed by the same principles:
 
 - **Strands** carry scoped state: app, window, repo, recent action lineage,
@@ -177,7 +177,7 @@ governed by the same principles:
   revision carries a record of what contradiction forced the change.
 
 This is the layer that turns a collection of features into a coherent
-organism. It is also the layer most informed by Epistaxis — the law is already
+organism. It is also the layer most informed by Operator Memory — the law is already
 written and battle-tested across hundreds of sessions, it just needs to be
 transposed into a runtime state substrate.
 
@@ -199,7 +199,7 @@ transposed into a runtime state substrate.
 5. **Layer 5: output surface refinement.** Provenance ghosts, summoned
    strands, the full visual language. This builds on top of the V1 output
    overlay from Layer 1 — it's iterative refinement, not a rewrite.
-6. **Layer 6: continuity substrate.** Runtime Epistaxis. Strand state,
+6. **Layer 6: continuity substrate.** Runtime Operator Memory. Strand state,
    lifecycle management, intent layering, incoherence surfacing. Last because
    it requires all other layers to exist before it has something to govern.
 
@@ -241,7 +241,7 @@ surprisingly effective for conversational context.
   continue the current thread.
 - **Compressed manifests.** When the chat index grows large, the model
   maintains a compressed summary of each chat for fast lookup. Same
-  Epistaxis pattern: compress signal, discard process.
+  Operator Memory pattern: compress signal, discard process.
 - **Lifecycle states.** Chats can be active, idle, or archived. Idle chats
   are still quickly resumable. Archived chats are compressed to title +
   summary only.
@@ -314,7 +314,7 @@ persistent KV caches, MCP tool routing, and batch parallel inference.
 
 - **Spoke** (this repo) is the product. All layers live here. The repo does
   not split.
-- **Epistaxis** is the governance substrate that taught the concurrency
+- **Operator Memory** is the governance substrate that taught the concurrency
   semantics, state management, and coherence law that Layer 6 will transpose
   into runtime. It remains the cross-project memory surface.
 - **OMLX** is the inference backend. Spoke talks to it over HTTP. Model
@@ -332,7 +332,7 @@ The roadmap's Layer 1 (telos routing) and Layer 2 (mode detection) are being
 extended with a concrete architecture: Spoke's default home layer becomes an
 intent resolver backed by parallel consensus (N calls to a small local quant,
 no reasoning, convergence as confidence signal). Operative modes (agent harness,
-research, epistaxis front end, settings, read-aloud, tray) each own their
+research, operator-memory front end, settings, read-aloud, tray) each own their
 system prompt, tool vocabulary, UI layout, and rocking-axis binding.
 
-Design thread and architecture: `~/dev/epistaxis/spoke-operative-modes-and-consensus-intent-resolution_2026-05-08.md`
+Design thread and architecture: `~/dev/operator-memory/spoke-operative-modes-and-consensus-intent-resolution_2026-05-08.md`

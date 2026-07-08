@@ -12,5 +12,5 @@ wheels/
 # macOS
 .DS_Store
 
-# Epistaxis session state (tooling artifact, not repo content)
-.epistaxis-session.json
+# Operator Memory session state (tooling artifact, not repo content)
+.operator-memory-session.json

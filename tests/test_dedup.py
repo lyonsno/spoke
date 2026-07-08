@@ -96,17 +96,17 @@ class TestIsHallucination:
 class TestRepairOntologyTerms:
     """Test log-backed ontology vocabulary repairs."""
 
-    def test_repairs_observed_epistaxis_variants(self):
-        text = "Leave a review ticket for it in Epistaxes and read Nepistaxis."
-        assert repair_ontology_terms(text) == "Leave a review ticket for it in Epístaxis and read Epístaxis."
+    def test_repairs_observed_operator_memory_variants(self):
+        text = "Leave a review ticket for it in up as taxes and read Noperator_memory."
+        assert repair_ontology_terms(text) == "Leave a review ticket for it in operator memory and read operator memory."
 
-    def test_repairs_concatenated_epistaxis_topos(self):
-        text = "Are we including that in our Epistaxistopos?"
-        assert repair_ontology_terms(text) == "Are we including that in our Epístaxis tópos?"
+    def test_repairs_concatenated_operator_memory_topos(self):
+        text = "Are we including that in our Operator Memorytopos?"
+        assert repair_ontology_terms(text) == "Are we including that in our operator memory tópos?"
 
     def test_repairs_observed_topoi_and_anaphora_variants(self):
-        text = "Epistexis Topoie and an Afro are both wrong."
-        assert repair_ontology_terms(text) == "Epístaxis Tópoi and anaphorá are both wrong."
+        text = "operator_memory Topoie and an Afro are both wrong."
+        assert repair_ontology_terms(text) == "operator memory Tópoi and anaphorá are both wrong."
 
     def test_repairs_recent_high_frequency_variants(self):
         text = (
@@ -114,7 +114,7 @@ class TestRepairOntologyTerms:
             "document, and compile our tipos into a Syllogy."
         )
         assert repair_ontology_terms(text) == (
-            "Read spoke Epístaxis, chase the Metádosis, check the Aúxesis "
+            "Read spoke operator memory, chase the Metádosis, check the Aúxesis "
             "document, and compile our tópos into a Syllogé."
         )
 
@@ -131,21 +131,21 @@ class TestRepairOntologyTerms:
         )
 
     def test_repairs_in_his_taxes_phrase(self):
-        text = "When you see in his taxes in the logs, that should be Epistaxis."
+        text = "When you see in his taxes in the logs, that should be Operator Memory."
         assert repair_ontology_terms(text) == (
-            "When you see Epístaxis in the logs, that should be Epístaxis."
+            "When you see operator memory in the logs, that should be operator memory."
         )
 
     def test_repairs_recent_smoke_sentence_to_accented_canonical_forms(self):
         text = (
-            "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+            "Nice work. Thank you. I'm gonna test now operator_memory Epinorthosis lysis, "
             "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus "
-            "Epistaxis Epinorthosis Semian Charygma Semian"
+            "Operator Memory Epinorthosis Semian Charygma Semian"
         )
         assert repair_ontology_terms(text) == (
-            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Nice work. Thank you. I'm gonna test now operator memory Epanórthosis lýsis, "
             "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis "
-            "Epístaxis Epanórthosis Sēmeion Kérygma Sēmeion"
+            "operator memory Epanórthosis Sēmeion Kérygma Sēmeion"
         )
 
     def test_repairs_safe_nonword_followup_regressions(self):
@@ -168,9 +168,9 @@ class TestRepairOntologyTerms:
 
     def test_logs_when_repair_fires(self, caplog):
         with caplog.at_level(logging.INFO, logger="spoke.dedup"):
-            repaired = repair_ontology_terms("And then read Epistaxes.")
+            repaired = repair_ontology_terms("And then read up as taxes.")
 
-        assert repaired == "And then read Epístaxis."
+        assert repaired == "And then read operator memory."
         assert "Repaired ontology vocabulary" in caplog.text
 
     def test_leaves_unrelated_text_unchanged(self):
@@ -178,11 +178,11 @@ class TestRepairOntologyTerms:
         assert repair_ontology_terms(text) == text
 
     def test_reports_ranges_for_plain_and_accented_ontology_forms(self):
-        text = "Epístaxis and sēmeion beside plain Epistaxis."
+        text = "operator memory and sēmeion beside plain Operator Memory."
         spans = ontology_term_spans(text)
 
         assert [text[start:end] for start, end in spans] == [
-            "Epístaxis",
+            "operator memory",
             "sēmeion",
-            "Epistaxis",
+            "Operator Memory",
         ]

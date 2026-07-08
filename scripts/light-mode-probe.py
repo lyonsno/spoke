@@ -55,7 +55,7 @@ need to keep enforcing it forever, it belongs in rough (as policy/standing
 rule). If it can be completed by a single action right now, it is nothing.
 
 The user speaks via voice dictation with transcription artifacts. Read
-through them to the intent. "Tractor" is "attractor." "Epístaxis" is
+through them to the intent. "Tractor" is "attractor." "operator memory" is
 correct Greek.
 
 You will be given EXISTING attractors and rough entries. Do not duplicate

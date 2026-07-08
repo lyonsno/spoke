@@ -5,7 +5,7 @@ Whisper has two known failure modes:
 2. Silence hallucination: outputs "Thank you." or similar on silent input
 
 This module also carries bounded post-transcription repairs for observed
-Epistaxis ontology vocabulary failures.
+operator-memory ontology vocabulary failures.
 """
 
 from __future__ import annotations
@@ -17,16 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 _ONTOLOGY_REPAIRS = (
-    (r"\bspoke-up as taxes\b", "spoke Epístaxis", False),
-    (r"\bup as taxes\b", "Epístaxis", False),
-    (r"\bin his taxes\b", "Epístaxis", False),
-    (r"\bepistaxism\b", "Epístaxis main", False),
-    (r"\bepistaxistopos\b", "Epístaxis tópos", False),
-    (
-        r"\b(?:epistaxis|epistaxes|epistax|epistaxists|nepistaxis|epistexis|epistek|epistaxity)\b",
-        "Epístaxis",
-        False,
-    ),
+    (r"\bspoke-up as taxes\b", "spoke operator memory", False),
+    (r"\bup as taxes\b", "operator memory", False),
+    (r"\bin his taxes\b", "operator memory", False),
+    (r"\b(?:noperator_memory|operator_memory)\b", "operator memory", False),
+    (r"\boperator memorytopos\b", "operator memory tópos", False),
+    (r"\boperator memory\b", "operator memory", False),
     (r"\b(?:metadose(?:\s+(?:ii|so))?|metadosis)\b", "metádosis", True),
     (r"\b(?:uxis|of seizes|auxesis|oxygesis|oxesis|oxysis|buxies|auxesus)\b", "aúxesis", True),
     (r"\b(?:sylloge|syllogy|silagee|sueji|silegy|sylergy)\b", "syllogé", True),
@@ -66,7 +62,6 @@ _ONTOLOGY_REPAIRS = (
 _ONTOLOGY_DISPLAY_FORMS = tuple(
     sorted(
         {
-            "Epístaxis",
             "tópos",
             "tópoi",
             "metádosis",
@@ -83,7 +78,8 @@ _ONTOLOGY_DISPLAY_FORMS = tuple(
             "probolé",
             "autopoíesis",
             "lýsis",
-            "Epistaxis",
+            "operator memory",
+            "operator_memory",
             "topos",
             "topoi",
             "metadosis",
@@ -221,7 +217,7 @@ def is_hallucination(text: str) -> bool:
 
 
 def repair_ontology_terms(text: str) -> str:
-    """Repair observed Epistaxis ontology vocabulary failures.
+    """Repair observed operator-memory ontology vocabulary failures.
 
     This is intentionally log-backed and bounded. Only variants seen in
     launch logs are repaired here.

@@ -8,7 +8,7 @@
 
 The canonical repo and product name is `spoke`.
 
-When writing or updating docs, reviews, Epistaxis notes, PR text, release notes, or other outward-facing references for this repo, use `spoke` rather than `donttype` or `dictate`.
+When writing or updating docs, reviews, Operator Memory notes, PR text, release notes, or other outward-facing references for this repo, use `spoke` rather than `donttype` or `dictate`.
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
@@ -134,7 +134,7 @@ When changing or resetting local smoke hotkeys:
 - if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
 - treat missing target-worktree `.venv` bootstrap as launcher responsibility by default
 - if a launcher needs a known-good interpreter, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path
-- record any durable remap or reset rule in repo docs and `spoke` Epistaxis
+- record any durable remap or reset rule in repo docs and `spoke` Operator Memory
 
 ## Launch target registry policy
 
@@ -148,7 +148,7 @@ When the launch-target menu feature is in play:
 - when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
 - do not silently assume the selected target also carries the launch-target affordance; if the target branch lacks the feature, say so when preparing the surface
 - smoke-worthy surfaces must carry the launcher/menu commits that make the target selectable and legible in the menubar; registry prep alone is not enough
-- record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently
+- record durable registry conventions or machine-local target changes in `spoke` Operator Memory when another session would need them to resume coherently
 
 ## Secrets
 
@@ -172,7 +172,7 @@ chmod 600 ~/.config/spoke/secrets.env
 
 The single cross-project registry that lists secret-file locations,
 provenance, and rotation history (never values) lives at
-`~/dev/epistaxis/system/secrets.md`. Consult that rather than
+`~/dev/operator-memory/system/secrets.md`. Consult that rather than
 re-deriving where to put things. When adding a new secret to spoke,
 update both `scripts/secrets.env.example` and that registry.
 
@@ -238,15 +238,15 @@ Without `Utterance-ID`, Grapheus cannot group calls into logical requests.
 `X-Spoke-Turn` (round number) and `X-Spoke-Step` (pipeline stage) are
 optional but recommended for multi-round or multi-step pathways.
 
-## Epistaxis
+## Operator Memory
 
-When reading epistaxis, if any recorded state doesn't match what you observe
+When reading operator-memory, if any recorded state doesn't match what you observe
 in the code or thread, flag it before proceeding — even if the mismatch might
 just be stale rather than wrong. Multiple sessions may write to the same
-epistaxis file concurrently; merge your changes without overwriting entries
+operator-memory file concurrently; merge your changes without overwriting entries
 you didn't write.
 
-## Epistaxis Intent Model
+## Operator Memory Intent Model
 
 For `spoke`, do not treat `Repo/task` in `**Current intent**` as a single
 repo-global active intent that must summarize the whole repository.
@@ -258,10 +258,10 @@ surfaces proceed in parallel. In this repo, use the layers below:
 - `Repo/task:` the specific surface, branch, worktree, or task this session is
   advancing. It does not need to summarize unrelated concurrent work.
 - Strategic direction: durable product-level direction belongs in repo
-  Epistaxis status/decisions or roadmap surfaces, not in the per-session
+  Operator Memory status/decisions or roadmap surfaces, not in the per-session
   `Repo/task` line.
 
-When updating `spoke` Epistaxis state:
+When updating `spoke` Operator Memory state:
 
 - Keep concurrent surfaces as separate scoped local state entries.
 - Name a default continuation surface only when one is actually intended as the

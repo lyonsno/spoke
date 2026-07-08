@@ -626,7 +626,7 @@ class TestDiaulosCardSurface:
         entry = diaulos_surface_from_record(
             {
                 "diaulos": "kynormous-bastards",
-                "topos": "projects/epistaxis/topoi/codex-kynormous-weight-of-staggering-kinesthesia-0514.md",
+                "topos": "projects/operator_memory/topoi/codex-kynormous-weight-of-staggering-kinesthesia-0514.md",
             }
         )
 
@@ -644,9 +644,9 @@ class TestDiaulosCardSurface:
                 "diaulos": "opus-miserena-id-cartographer",
                 "diaulos_id": "dia-b715a7f9-ec67-4dcd-80a3-12688844f177",
                 "display_name": "Opus Miserena",
-                "topos": "projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md",
+                "topos": "projects/operator_memory/topoi/codex-opus-miserena-id-cartographer-0521.md",
                 "source_topoi": [
-                    "projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md"
+                    "projects/operator_memory/topoi/codex-opus-miserena-id-cartographer-0521.md"
                 ],
                 "status": "Κίνησις",
                 "summary": "Diaulos ID coherence and switchboard routing custody.",
@@ -662,7 +662,7 @@ class TestDiaulosCardSurface:
         assert "Handle: opus-miserena-id-cartographer" in expanded
         assert "ID: dia-b715a7f9-ec67-4dcd-80a3-12688844f177" in expanded
         assert "Registry source: codex-opus-miserena-id-cartographer-0521.md" in expanded
-        assert "projects/epistaxis/topoi/" not in expanded
+        assert "projects/operator_memory/topoi/" not in expanded
         assert "Read-only card" in expanded
         assert "Send directive" not in expanded
         assert "Focus pane" not in expanded
@@ -675,7 +675,7 @@ class TestDiaulosCardSurface:
                 "display_name": "Chairside Sparkwright",
                 "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
                 "source_topoi": [
-                    "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+                    "projects/spoke/operator_memory.md#codex-diaulos-stack-current-main-graft-0523"
                 ],
                 "custody_refs": [
                     "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
@@ -688,10 +688,10 @@ class TestDiaulosCardSurface:
         assert entry.routing is not None
         assert entry.routing.reread_refs == [
             "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
-            "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523",
+            "projects/spoke/operator_memory.md#codex-diaulos-stack-current-main-graft-0523",
         ]
         assert entry.payload["source_topoi"] == [
-            "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+            "projects/spoke/operator_memory.md#codex-diaulos-stack-current-main-graft-0523"
         ]
         assert entry.payload["custody_refs"] == [
             "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
@@ -708,7 +708,7 @@ class TestDiaulosCardSurface:
                 "display_name": "Chairside Sparkwright",
                 "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
                 "source_topoi": [
-                    "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+                    "projects/spoke/operator_memory.md#codex-diaulos-stack-current-main-graft-0523"
                 ],
                 "custody_refs": [
                     "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
@@ -740,7 +740,7 @@ class TestDiaulosCardSurface:
         stack = CoordinationStack(registry=build_default_registry())
         ping = {
             "kind": "operator_ping.created",
-            "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+            "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
             "operator_ping": {
                 "ping_id": "ping-1",
                 "created_at": "2026-05-24T14:00:00Z",
@@ -867,7 +867,7 @@ class TestOperatorPingTokenProjection:
         events = [
             {
                 "kind": "operator_ping.created",
-                "event_id": f"epistaxis.event.v1:operator_ping.created:spoke:ping-{index}",
+                "event_id": f"operator_memory.event.v1:operator_ping.created:spoke:ping-{index}",
                 "operator_ping": {
                     "ping_id": f"ping-{index}",
                     "created_at": f"2026-05-22T12:{index:02d}:00Z",
@@ -895,13 +895,13 @@ class TestOperatorPingTokenProjection:
         events = [
             {
                 "kind": "operator_ping.created",
-                "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
-                "source_tool": "epistaxis ping-operator",
+                "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
+                "source_tool": "operator_memory ping-operator",
                 "operator_ping": {
                     "ping_id": "ping-1",
                     "created_at": "2026-05-22T12:00:00Z",
                     "diaulos": "chairside-sparkwright",
-                    "topos": "projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522",
+                    "topos": "projects/spoke/operator_memory.md#codex-source-sparks-near-the-chair-0522",
                     "thread_id": "019e50eb-1a5f-7cc1-96e0-ea9adb751ef8",
                     "pane_id": "77",
                     "message": "assay needs operator glance",
@@ -911,19 +911,19 @@ class TestOperatorPingTokenProjection:
             },
             {
                 "kind": "operator_ping.created",
-                "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-2",
-                "source_tool": "epistaxis ping-operator",
+                "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-2",
+                "source_tool": "operator_memory ping-operator",
                 "operator_ping": {
                     "ping_id": "ping-2",
                     "created_at": "2026-05-22T12:01:00Z",
-                    "topos": "projects/spoke/epistaxis.md#other-lane",
+                    "topos": "projects/spoke/operator_memory.md#other-lane",
                     "message": "already handled",
                     "reason_token": "done",
                 },
             },
             {
                 "kind": "operator_ping.cleared",
-                "event_id": "epistaxis.event.v1:operator_ping.cleared:spoke:ping-2",
+                "event_id": "operator_memory.event.v1:operator_ping.cleared:spoke:ping-2",
                 "operator_ping": {
                     "ping_id": "ping-2",
                     "cleared_at": "2026-05-22T12:02:00Z",
@@ -939,7 +939,7 @@ class TestOperatorPingTokenProjection:
         assert token.source_signature == "Diaulos: chairside-sparkwright"
         assert token.label == "question"
         assert token.reason_token == "question"
-        assert token.source_event_id == "epistaxis.event.v1:operator_ping.created:spoke:ping-1"
+        assert token.source_event_id == "operator_memory.event.v1:operator_ping.created:spoke:ping-1"
         assert token.message == "assay needs operator glance"
 
     def test_operator_ping_tokens_do_not_enter_or_focus_durable_stack_rows(self):
@@ -952,7 +952,7 @@ class TestOperatorPingTokenProjection:
             [
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
                     "operator_ping": {
                         "ping_id": "ping-1",
                         "created_at": "2026-05-22T12:00:00Z",
@@ -974,15 +974,15 @@ class TestOperatorPingTokenProjection:
             [
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
                     "refs": {
-                        "topoi": ["projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522"],
+                        "topoi": ["projects/spoke/operator_memory.md#codex-source-sparks-near-the-chair-0522"],
                     },
                     "operator_ping": {
                         "ping_id": "ping-1",
                         "created_at": "2026-05-22T12:00:00Z",
                         "diaulos": "chairside-sparkwright",
-                        "topos": "projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522",
+                        "topos": "projects/spoke/operator_memory.md#codex-source-sparks-near-the-chair-0522",
                         "thread_id": "019e50eb-1a5f-7cc1-96e0-ea9adb751ef8",
                         "pane_id": "77",
                         "session_address": "codex resume 019e50eb-1a5f-7cc1-96e0-ea9adb751ef8",
@@ -998,11 +998,11 @@ class TestOperatorPingTokenProjection:
         assert routing.destination_kind == SurfaceDestinationKind.SOURCE_ORGAN
         assert routing.destination_id == "operator_ping:ping-1"
         assert routing.reread_refs == [
-            "projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522"
+            "projects/spoke/operator_memory.md#codex-source-sparks-near-the-chair-0522"
         ]
         assert routing.scope == {
             "operator_pings": ["ping-1"],
-            "topoi": ["projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522"],
+            "topoi": ["projects/spoke/operator_memory.md#codex-source-sparks-near-the-chair-0522"],
         }
         assert routing.writeback_target == ""
         assert routing.cargo["gesture"] == "select"
@@ -1020,7 +1020,7 @@ class TestOperatorPingTokenVisualAssay:
             [
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
                     "operator_ping": {
                         "ping_id": "ping-1",
                         "created_at": "2026-05-22T12:00:00Z",
@@ -1056,7 +1056,7 @@ class TestOperatorPingTokenVisualAssay:
             [
                 {
                     "kind": "operator_ping.created",
-                    "event_id": f"epistaxis.event.v1:operator_ping.created:spoke:ping-{index}",
+                    "event_id": f"operator_memory.event.v1:operator_ping.created:spoke:ping-{index}",
                     "operator_ping": {
                         "ping_id": f"ping-{index}",
                         "created_at": f"2026-05-22T12:{index:02d}:00Z",
@@ -1090,7 +1090,7 @@ class TestOperatorPingTokenVisualAssay:
             [
                 {
                     "kind": "operator_ping.created",
-                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "event_id": "operator_memory.event.v1:operator_ping.created:spoke:ping-1",
                     "operator_ping": {
                         "ping_id": "ping-1",
                         "created_at": "2026-05-22T12:00:00Z",

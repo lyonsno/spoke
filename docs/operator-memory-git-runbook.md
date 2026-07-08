@@ -1,14 +1,14 @@
-# Epistaxis Git Runbook
+# Operator Memory Git Runbook
 
 Reference for the spoke assistant when performing git operations in the
-Epistaxis repo (`~/dev/epistaxis`).
+Operator Memory repo (`~/dev/operator-memory`).
 
 ## Repo layout
 
 | Path | Role |
 |------|------|
-| `~/dev/epistaxis` | Main checkout. Always on `main`. Inert sync surface — do not do feature work here. |
-| `~/dev/epistaxis-wt` | Active worktree. Feature branches live here. |
+| `~/dev/operator-memory` | Main checkout. Always on `main`. Inert sync surface — do not do feature work here. |
+| `~/dev/operator-memory-wt` | Active worktree. Feature branches live here. |
 
 The main checkout and the worktree share the same `.git` directory, so
 they see each other's branches and refs. Git will refuse to checkout a
@@ -30,13 +30,13 @@ authored them). The rebase drops the duplicates and fast-forwards.
 
 ## Merging a feature branch to main
 
-This is the standard flow for landing Epistaxis work from a worktree
+This is the standard flow for landing Operator Memory work from a worktree
 branch onto main:
 
 ### Step 1: Push the branch (from the worktree)
 
 ```
-cd ~/dev/epistaxis-wt
+cd ~/dev/operator-memory-wt
 git push origin <branch-name>
 ```
 
@@ -49,7 +49,7 @@ git push -u origin <branch-name>
 ### Step 2: Sync main (from the main checkout)
 
 ```
-cd ~/dev/epistaxis
+cd ~/dev/operator-memory
 ```
 
 If the working tree is dirty (staged or unstaged changes), commit or
@@ -84,12 +84,12 @@ git push origin --delete <branch-name>
 ## Common mistakes
 
 - **Trying to checkout main in the worktree.** Git won't allow this
-  because main is checked out in `~/dev/epistaxis`. Operate from the
+  because main is checked out in `~/dev/operator-memory`. Operate from the
   main checkout instead.
 - **Panicking about divergence.** A diverged main just means the local
   checkout hasn't synced recently. `git pull --rebase` fixes it.
 - **Skipping the dirty-tree step.** The main checkout often has staged
-  review artifacts or modified epistaxis.md from other lanes. Commit
+  review artifacts or modified operator-memory.md from other lanes. Commit
   or stash before pulling.
 - **Trying to merge from the worktree.** The merge onto main must
   happen from the main checkout where main is checked out.
