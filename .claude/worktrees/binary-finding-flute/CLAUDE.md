@@ -39,11 +39,11 @@ Always run `uv run pytest -q` after code changes and before committing. All test
 - Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
 - After rebuilding and relaunching, **ask the user if the spacebar is working** before doing anything else. There is no way to verify event tap functionality from logs or process state.
 
-## Epistaxis
+## Operator Memory
 
-When reading epistaxis, if any recorded state doesn't match what you observe in the code or thread, flag it before proceeding — even if the mismatch might just be stale rather than wrong. Multiple sessions may write to the same epistaxis file concurrently; merge your changes without overwriting entries you didn't write.
+When reading operator-memory, if any recorded state doesn't match what you observe in the code or thread, flag it before proceeding — even if the mismatch might just be stale rather than wrong. Multiple sessions may write to the same operator-memory file concurrently; merge your changes without overwriting entries you didn't write.
 
-Epistaxis entries that describe durable discoveries (architecture insights, upstream bugs, performance characteristics) should be written without box/branch context — they're true regardless of where they were found. Entries that describe current branch state, in-progress work, or local decisions should include explicit box/branch context. Conflicting information about current branch state across entries is definitionally incoherent and must be reported to the user immediately. All epistaxis mutations (writes, updates, deletions) must be reported in the session's output — silent edits are indistinguishable from data loss to the next reader.
+Operator Memory entries that describe durable discoveries (architecture insights, upstream bugs, performance characteristics) should be written without box/branch context — they're true regardless of where they were found. Entries that describe current branch state, in-progress work, or local decisions should include explicit box/branch context. Conflicting information about current branch state across entries is definitionally incoherent and must be reported to the user immediately. All operator-memory mutations (writes, updates, deletions) must be reported in the session's output — silent edits are indistinguishable from data loss to the next reader.
 
 ## Commits
 

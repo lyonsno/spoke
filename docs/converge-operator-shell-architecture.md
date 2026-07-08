@@ -5,7 +5,7 @@ already is, what Converge adds to it, and what the operator shell is growing
 toward.
 
 It is intentionally not a public README surface. Some of the load-bearing
-architecture here depends on private Epistaxis custody, and some adjacent
+architecture here depends on private Operator Memory custody, and some adjacent
 features are still branch-only or partially staged. The point of this document
 is to describe the real system honestly, not to market a cleaner version of it.
 
@@ -16,7 +16,7 @@ a local operator shell with three coupled layers:
 
 1. a voice-native command surface
 2. a bounded local tool surface
-3. a continuity substrate that starts in the private Epistaxis world and is now
+3. a continuity substrate that starts in the private Operator Memory world and is now
    being ported inward through Converge
 
 The important architectural move is not "voice plus tools." It is that the same
@@ -26,7 +26,7 @@ local command model can now:
 - call bounded local tools
 - write into a lighter-weight substrate of personal attractors and embedding
   caches in the background
-- read both private Epistaxis state and its own local Converge state as context
+- read both private Operator Memory state and its own local Converge state as context
   for future turns
 
 That is the beginning of an operator shell with memory, coordination, and
@@ -228,7 +228,7 @@ all four surfaces' candidates together and catches cross-surface duplication
 and misrouting that no individual pass can see.
 
 This is the inward-facing substrate port in substantial form. It is still
-lighter than full Epistaxis, but it is now multi-surface, species-filtered,
+lighter than full Operator Memory, but it is now multi-surface, species-filtered,
 recompile-on-write, and semantically aware:
 
 ### 7. Compaction has crossed into semantic territory
@@ -269,7 +269,7 @@ From that default fuzzy-intent mode, an utterance can fall into several shapes:
   the user explicitly restate context on every turn. This is a silent/warm mode:
   "keep helping with this kind of thing until the interaction naturally ends."
 - **explicit mode entry** — enter a named operational mode such as read-aloud,
-  web research, Epistaxis coordination, or code review. In this shape, the
+  web research, Operator Memory coordination, or code review. In this shape, the
   prompt, tool priors, context capture strategy, and Converge carving hints
   change together.
 - **packet-backed work** — open or join a coordination packet, skill packet, or
@@ -314,22 +314,22 @@ This is the bridge between "assistant with many tools" and "operator shell."
 The tools remain bounded, but the user's experience becomes one of entering
 intent-shaped work frames rather than choosing tools directly.
 
-### 9. Epistaxis access is real, but the old helper is demoted
+### 9. Operator Memory access is real, but the old helper is demoted
 
-The command shell can read Epistaxis directly through file tools and bounded
+The command shell can read Operator Memory directly through file tools and bounded
 terminal reads, and current trunk also carries a runbook-gated terminal path
-for Epistaxis git operations. The important design shift is that the assistant
-is no longer supposed to rely on `run_epistaxis_ops` as a default first-class
+for Operator Memory git operations. The important design shift is that the assistant
+is no longer supposed to rely on `run_operator-memory_ops` as a default first-class
 surface.
 
-`run_epistaxis_ops` still exists in the implementation, but it has been demoted
+`run_operator-memory_ops` still exists in the implementation, but it has been demoted
 from the default advertised tool surface because the old shape was too easy to
 mix incoherently with normal file tools and terminal git. The current system is
 biased toward:
 
-- direct file reads and bounded file writes for Epistaxis contents
+- direct file reads and bounded file writes for Operator Memory contents
 - bounded terminal git with an explicit runbook gate for merge/push flows
-- a future stricter Epistaxis write membrane rather than the old partial helper
+- a future stricter Operator Memory write membrane rather than the old partial helper
 
 That demotion is load-bearing. The operator shell needs access to private
 coordination state, but it also needs one coherent mutation story rather than
@@ -460,21 +460,21 @@ Planned next surfaces:
   of 5) where the carver routes to attractor or rough, and periodic beast
   reconciliation promotes rough entries to their correct surfaces
 
-This is not full runtime Epistaxis yet, but it is already a multi-surface
+This is not full runtime Operator Memory yet, but it is already a multi-surface
 continuity substrate with species-filtered routing inside `spoke`.
 
 ### Layer D: private substrate adjacency
 
-This is the relationship to the existing private Epistaxis world:
+This is the relationship to the existing private Operator Memory world:
 
-- the command prompt knows the Epistaxis layout
-- the file tools can read Epistaxis directly
-- bounded terminal git can operate against Epistaxis under a runbook gate
+- the command prompt knows the Operator Memory layout
+- the file tools can read Operator Memory directly
+- bounded terminal git can operate against Operator Memory under a runbook gate
 - the legacy helper exists but is not part of the default advertised surface
 - the external private substrate remains the source of truth for project-level
   coordination, reviews, attractors, topoi, and metadosis
 
-The important distinction is that the command shell is not replacing Epistaxis.
+The important distinction is that the command shell is not replacing Operator Memory.
 It is learning how to participate in it.
 
 ## What Has Recently Crossed From Staged To Live
@@ -519,7 +519,7 @@ The future direction now looks more specific than the original roadmap did.
 
 ### 1. More internal background workers
 
-The active Converge lane in Epistaxis has already named the key realization:
+The active Converge lane in Operator Memory has already named the key realization:
 OMLX batch-parallel scaling makes local background jobs cheap enough that the
 shell does not have to stay single-threaded.
 
@@ -550,42 +550,42 @@ The obvious next expansions are:
 The system is moving toward "bounded operator affordances with clear contracts,"
 not toward arbitrary shell freedom.
 
-### 3. A real Epistaxis workspace membrane
+### 3. A real Operator Memory workspace membrane
 
-The current demotion of `run_epistaxis_ops` is not the end state. It is a
-holding pattern until the shell can offer an Epistaxis mutation surface that is
+The current demotion of `run_operator-memory_ops` is not the end state. It is a
+holding pattern until the shell can offer an Operator Memory mutation surface that is
 actually simpler than mixing file tools, bounded terminal git, and a partial
 helper.
 
 The direction we want is:
 
-- explicit Epistaxis workspace handles rather than raw filesystem paths
-- no hidden mutable "current Epistaxis workspace" state machine
+- explicit Operator Memory workspace handles rather than raw filesystem paths
+- no hidden mutable "current Operator Memory workspace" state machine
 - one workspace per ops call
-- one canonical write membrane for Epistaxis mutation flows
+- one canonical write membrane for Operator Memory mutation flows
 
 The likely shape is:
 
-- `ensure_epistaxis_workspace(...)` or equivalent
-  - resolves or creates a named Epistaxis worktree
+- `ensure_operator-memory_workspace(...)` or equivalent
+  - resolves or creates a named Operator Memory worktree
   - returns a stable session-local handle plus metadata like path, branch, base,
     dirty/clean state, and detached/not-detached state
-- `list_epistaxis_workspaces()`
+- `list_operator-memory_workspaces()`
   - exposes the currently known handles and enough summary information to pick
     the right one without raw path recall
-- `run_epistaxis_ops(workspace_handle=..., operations=[...])`
+- `run_operator-memory_ops(workspace_handle=..., operations=[...])`
   - executes bounded operations against exactly one explicit workspace handle
   - no cross-worktree mutation plan in one call
 
 The important architectural decision is that this should become the canonical
-Epistaxis write path if it exists at all. If the shell is going to pay the
-prompt and cognitive cost of an Epistaxis-specific helper, it has to collapse
+Operator Memory write path if it exists at all. If the shell is going to pay the
+prompt and cognitive cost of an Operator Memory-specific helper, it has to collapse
 friction and ambiguity, not add a second half-overlapping mutation surface.
 
 That means the target contract is not "another way to do some git and file
 steps." It is:
 
-- prepare or resolve the right Epistaxis workspace
+- prepare or resolve the right Operator Memory workspace
 - perform bounded writes inside that one workspace
 - stage / commit / push through one coherent membrane
 
@@ -593,7 +593,7 @@ Until that exists, the honest default remains direct file access plus
 runbook-gated terminal git, because that is less magical and less confusing
 than the older partial helper shape.
 
-### 4. A deeper inward Epistaxis
+### 4. A deeper inward Operator Memory
 
 The bigger architectural target is still what the original Converge thread
 described:
@@ -611,7 +611,7 @@ species-filtered routing. It does not yet have the full runtime equivalents of
 metadosis or lifecycle governance, but tópoi and policy are now landed surfaces
 rather than future-adjacent ideas.
 
-The direction is now legible and partially realized: private Epistaxis remains
+The direction is now legible and partially realized: private Operator Memory remains
 the full cross-session coordination substrate, while Converge builds a
 runtime-local substrate inside `spoke` that already supports four-surface
 continuity for voice interaction, with the coherence gardener and Paint Dry
@@ -621,7 +621,7 @@ observability layer as the next expansions.
 
 The shell is not trying to become a bigger chat window.
 
-The command pathway, tool surfaces, Converge background work, and Epistaxis
+The command pathway, tool surfaces, Converge background work, and Operator Memory
 adjacency all point in the same direction:
 
 - speech is the ingress
@@ -644,7 +644,7 @@ If you need the short version:
 - The bounded local tool surface is real.
 - `edit_file` is real and now good enough to count as a serious operator tool.
 - Gmail query is real.
-- Epistaxis access is real; the legacy helper still exists, but the shell is
+- Operator Memory access is real; the legacy helper still exists, but the shell is
   now biased toward direct files plus runbook-gated terminal git.
 - search subagents are real in a narrow local-search form.
 - Converge is real in substantial form: four-pass background carving with beast

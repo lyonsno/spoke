@@ -75,11 +75,11 @@ class TestToolSchemas:
             params["properties"]["source_ref"]["description"]
         )
 
-    def test_epistaxis_ops_is_not_exposed_in_default_tool_surface(self):
+    def test_operator_memory_ops_is_not_exposed_in_default_tool_surface(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
         names = {s["function"]["name"] for s in schemas}
-        assert "run_epistaxis_ops" not in names
+        assert "run_operator_memory_ops" not in names
 
     def test_query_gmail_schema(self):
         mod = _import_tools()
@@ -114,11 +114,11 @@ class TestToolSchemas:
         assert "argv" in params.get("properties", {})
         assert "cwd" in params.get("properties", {})
         assert "timeout_seconds" in params.get("properties", {})
-    def test_epistaxis_ops_is_not_exposed_twice_in_default_tool_surface(self):
+    def test_operator_memory_ops_is_not_exposed_twice_in_default_tool_surface(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
         names = {s["function"]["name"] for s in schemas}
-        assert "run_epistaxis_ops" not in names
+        assert "run_operator_memory_ops" not in names
 
 
     def test_list_directory_schema(self):
@@ -794,17 +794,17 @@ class TestExecuteTool:
         result = mod.execute_tool(name="nonexistent", arguments={})
         assert "unknown tool" in result.lower() or "error" in result.lower()
 
-    def test_execute_epistaxis_ops(self):
+    def test_execute_operator_memory_ops(self):
         mod = _import_tools()
         fake_result = {"target_repo": "spoke", "operations": [{"op": "git_status", "status": ""}]}
         fake_operator = MagicMock()
         fake_operator.execute_plan.return_value = fake_result["operations"]
 
-        with patch("spoke.tool_dispatch.EpistaxisOperator", return_value=fake_operator):
+        with patch("spoke.tool_dispatch.OperatorMemoryExecutor", return_value=fake_operator):
             result = mod.execute_tool(
-                name="run_epistaxis_ops",
+                name="run_operator_memory_ops",
                 arguments={
-                    "epistaxis_root": "/tmp/epistaxis-spoke-operator",
+                    "operator_memory_root": "/tmp/operator-memory-spoke-operator",
                     "target_repo": "spoke",
                     "operations": [{"op": "git_status"}],
                 },
@@ -813,16 +813,16 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert parsed == fake_result
 
-    def test_execute_epistaxis_ops_error(self):
+    def test_execute_operator_memory_ops_error(self):
         mod = _import_tools()
         with patch(
-            "spoke.tool_dispatch.EpistaxisOperator",
-            side_effect=mod.EpistaxisOperatorError("bad worktree"),
+            "spoke.tool_dispatch.OperatorMemoryExecutor",
+            side_effect=mod.OperatorMemoryError("bad worktree"),
         ):
             result = mod.execute_tool(
-                name="run_epistaxis_ops",
+                name="run_operator_memory_ops",
                 arguments={
-                    "epistaxis_root": "/Users/noahlyons/dev/epistaxis",
+                    "operator_memory_root": "/Users/noahlyons/dev/operator-memory",
                     "target_repo": "spoke",
                     "operations": [{"op": "git_status"}],
                 },
@@ -831,25 +831,25 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert parsed["error"] == "bad worktree"
 
-    def test_epistaxis_runbook_gate_ignores_path_substring_false_positive(self):
+    def test_operator_memory_runbook_gate_ignores_path_substring_false_positive(self):
         mod = _import_tools()
-        assert not mod._is_epistaxis_git_command(
+        assert not mod._is_operator_memory_git_command(
             ["git", "status"],
-            "/tmp/not-epistaxis-but-only-a-name-collision",
+            "/tmp/not-operator-memory-but-only-a-name-collision",
         )
-        assert not mod._is_epistaxis_git_command(
-            ["git", "-C", "/tmp/my-epistaxis-notebook", "status"],
+        assert not mod._is_operator_memory_git_command(
+            ["git", "-C", "/tmp/my-operator-memory-notebook", "status"],
             None,
         )
 
-    def test_epistaxis_runbook_gate_matches_epistaxis_path_components(self):
+    def test_operator_memory_runbook_gate_matches_operator_memory_path_components(self):
         mod = _import_tools()
-        assert mod._is_epistaxis_git_command(
+        assert mod._is_operator_memory_git_command(
             ["git", "status"],
-            "/Users/noahlyons/dev/epistaxis",
+            f"/Users/noahlyons/dev/{mod._PRIVATE_BACKEND_SLUG}",
         )
-        assert mod._is_epistaxis_git_command(
-            ["git", "-C", "/private/tmp/epistaxis-spoke-operator", "status"],
+        assert mod._is_operator_memory_git_command(
+            ["git", "-C", f"/private/tmp/{mod._PRIVATE_BACKEND_SLUG}-spoke-operator", "status"],
             None,
         )
 
@@ -1797,31 +1797,31 @@ class TestExecuteToolIntegration:
 # ── Output capping ───────────────────────────────────────────────
 
 
-class TestEpistaxisRunbookGate:
-    """First git command targeting epistaxis should return the runbook, not execute."""
+class TestOperatorMemoryRunbookGate:
+    """First git command targeting operator memory should return the runbook, not execute."""
 
-    def test_gate_fires_on_epistaxis_cwd(self, tmp_path):
+    def test_gate_fires_on_operator_memory_cwd(self, tmp_path):
         mod = _import_tools()
         # Reset session flag
-        mod._epistaxis_runbook_injected = False
+        mod._operator_memory_runbook_injected = False
         runbook = tmp_path / "runbook.md"
         runbook.write_text("# Test Runbook\nStep 1: do the thing.")
-        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+        with patch.object(mod, "_OPERATOR_MEMORY_RUNBOOK_PATH", runbook):
             result = json.loads(mod._execute_run_terminal_command(
-                {"argv": ["git", "status"], "cwd": "/Users/me/dev/epistaxis-wt"},
+                {"argv": ["git", "status"], "cwd": f"/Users/me/dev/{mod._PRIVATE_BACKEND_SLUG}-wt"},
             ))
         assert result["executed"] is False
-        assert result["gate"] == "epistaxis_runbook"
+        assert result["gate"] == "operator_memory_runbook"
         assert "Test Runbook" in result["runbook"]
 
     def test_gate_does_not_fire_twice(self, tmp_path):
         mod = _import_tools()
-        mod._epistaxis_runbook_injected = False
+        mod._operator_memory_runbook_injected = False
         runbook = tmp_path / "runbook.md"
         runbook.write_text("# Runbook")
-        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+        with patch.object(mod, "_OPERATOR_MEMORY_RUNBOOK_PATH", runbook):
             first = json.loads(mod._execute_run_terminal_command(
-                {"argv": ["git", "status"], "cwd": "/Users/me/dev/epistaxis"},
+                {"argv": ["git", "status"], "cwd": f"/Users/me/dev/{mod._PRIVATE_BACKEND_SLUG}"},
             ))
             assert first["executed"] is False
             # Second call should go through (mock the operator)
@@ -1830,16 +1830,16 @@ class TestEpistaxisRunbookGate:
                     "executed": True, "exit_code": 0, "stdout": "on main\n",
                 }
                 second = json.loads(mod._execute_run_terminal_command(
-                    {"argv": ["git", "status"], "cwd": "/Users/me/dev/epistaxis"},
+                    {"argv": ["git", "status"], "cwd": f"/Users/me/dev/{mod._PRIVATE_BACKEND_SLUG}"},
                 ))
             assert second["executed"] is True
 
-    def test_gate_does_not_fire_on_non_epistaxis(self, tmp_path):
+    def test_gate_does_not_fire_on_non_operator_memory(self, tmp_path):
         mod = _import_tools()
-        mod._epistaxis_runbook_injected = False
+        mod._operator_memory_runbook_injected = False
         runbook = tmp_path / "runbook.md"
         runbook.write_text("# Runbook")
-        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+        with patch.object(mod, "_OPERATOR_MEMORY_RUNBOOK_PATH", runbook):
             with patch("spoke.tool_dispatch.TerminalOperator") as mock_op:
                 mock_op.return_value.execute_command.return_value = {
                     "executed": True, "exit_code": 0, "stdout": "ok\n",
@@ -1851,28 +1851,28 @@ class TestEpistaxisRunbookGate:
 
     def test_gate_detects_git_c_flag(self, tmp_path):
         mod = _import_tools()
-        mod._epistaxis_runbook_injected = False
+        mod._operator_memory_runbook_injected = False
         runbook = tmp_path / "runbook.md"
         runbook.write_text("# Runbook")
-        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+        with patch.object(mod, "_OPERATOR_MEMORY_RUNBOOK_PATH", runbook):
             result = json.loads(mod._execute_run_terminal_command(
-                {"argv": ["git", "-C", "/Users/me/dev/epistaxis", "log"]},
+                {"argv": ["git", "-C", f"/Users/me/dev/{mod._PRIVATE_BACKEND_SLUG}", "log"]},
             ))
         assert result["executed"] is False
-        assert result["gate"] == "epistaxis_runbook"
+        assert result["gate"] == "operator_memory_runbook"
 
     def test_gate_does_not_fire_on_non_git(self, tmp_path):
         mod = _import_tools()
-        mod._epistaxis_runbook_injected = False
+        mod._operator_memory_runbook_injected = False
         runbook = tmp_path / "runbook.md"
         runbook.write_text("# Runbook")
-        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+        with patch.object(mod, "_OPERATOR_MEMORY_RUNBOOK_PATH", runbook):
             with patch("spoke.tool_dispatch.TerminalOperator") as mock_op:
                 mock_op.return_value.execute_command.return_value = {
                     "executed": True, "exit_code": 0, "stdout": "ok\n",
                 }
                 result = json.loads(mod._execute_run_terminal_command(
-                    {"argv": ["ls"], "cwd": "/Users/me/dev/epistaxis"},
+                    {"argv": ["ls"], "cwd": f"/Users/me/dev/{mod._PRIVATE_BACKEND_SLUG}"},
                 ))
         assert result["executed"] is True
 

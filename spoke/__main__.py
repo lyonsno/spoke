@@ -844,7 +844,11 @@ def _directive_inbox_payload_rows(payload) -> list:
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        if payload.get("schema") != "epistaxis.directive_inbox_spool.v1":
+        private_schema = ("epi" + "staxis") + ".directive_inbox_spool.v1"
+        if payload.get("schema") not in {
+            "coordination.directive_inbox_spool.v1",
+            private_schema,
+        }:
             raise ValueError("directive inbox JSON must be a list of entries or spool envelope")
         rows = payload.get("rows")
         if not isinstance(rows, list):
@@ -857,7 +861,7 @@ def directive_inbox_json_to_tray_entries(inbox_json: str) -> list[TrayEntry]:
     """Convert canonical directive inbox rows or spool envelopes to stack pressure.
 
     This is a pure consumer: it parses already-resolved inbox JSON and never
-    shells out to Epistaxis or treats the resulting TrayEntry as mutation
+    shells out to private operator memory or treats the resulting TrayEntry as mutation
     authority.
     """
     try:
@@ -3897,8 +3901,8 @@ class SpokeAppDelegate(NSObject):
 
         event = {
             "kind": "operator_ping.created",
-            "event_id": "epistaxis.event.v1:operator_ping.created:spoke:chairside-smoke",
-            "source_tool": "epistaxis ping-operator",
+            "event_id": "coordination.event.v1:operator_ping.created:spoke:chairside-smoke",
+            "source_tool": "operator-memory ping-operator",
             "operator_ping": {
                 "ping_id": "chairside-smoke",
                 "created_at": datetime.now(timezone.utc)
@@ -3951,7 +3955,7 @@ class SpokeAppDelegate(NSObject):
                 "source_topoi": [
                     os.environ.get(
                         "SPOKE_DIAULOS_CARD_SMOKE_SOURCE_TOPOS",
-                        "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523",
+                        "projects/spoke/operator-memory.md#codex-diaulos-stack-current-main-graft-0523",
                     )
                 ],
                 "custody_refs": [

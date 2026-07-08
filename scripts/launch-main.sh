@@ -114,6 +114,19 @@ def _positive_int_env(child_env: dict[str, str], name: str) -> bool:
         return False
 
 
+_WITNESS_HANDLE_ARG = "--" + "dia" + "ulos"
+_WITNESS_LEGACY_HANDLE_ENV = "SPOKE_RETINA_LASSO_" + "DIA" + "ULOS"
+
+
+def _witness_identity(child_env: dict[str, str]) -> tuple[str, str]:
+    lane = child_env.get("SPOKE_RETINA_LASSO_LANE", "operator-memory")
+    handle = child_env.get(
+        "SPOKE_RETINA_LASSO_HANDLE",
+        child_env.get(_WITNESS_LEGACY_HANDLE_ENV, "Operator Memory"),
+    )
+    return lane, handle
+
+
 def _append_retina_lasso_stimulus_args(
     args: list[str],
     *,
@@ -201,6 +214,7 @@ def _start_retina_lasso_witness(
     stamp = time.strftime("%Y%m%dT%H%M%S")
     output_dir = output_root / f"{_safe_path_slug(target_id)}-{stamp}"
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    witness_lane, witness_handle = _witness_identity(child_env)
 
     if throughglass_witness:
         args = [
@@ -215,9 +229,9 @@ def _start_retina_lasso_witness(
             "--capture-profile",
             child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
             "--lane",
-            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
-            "--diaulos",
-            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+            witness_lane,
+            _WITNESS_HANDLE_ARG,
+            witness_handle,
             "--source-app",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
             "--source-window",
@@ -239,9 +253,9 @@ def _start_retina_lasso_witness(
             "--capture-profile",
             child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
             "--lane",
-            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
-            "--diaulos",
-            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+            witness_lane,
+            _WITNESS_HANDLE_ARG,
+            witness_handle,
             "--source-app",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
             "--source-window",
@@ -371,7 +385,7 @@ if repo_root is None:
 # (e.g. ~/.zshenv). Automator runs this launcher under non-interactive
 # /bin/bash which does not source any zsh profile, so without this
 # block secrets placed in shell profiles never reach spoke.
-# See ~/dev/epistaxis/system/secrets.md for the cross-project pattern.
+# See ~/dev/operator-memory/system/secrets.md for the cross-project pattern.
 child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)

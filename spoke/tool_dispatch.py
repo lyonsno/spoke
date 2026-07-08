@@ -17,15 +17,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-# Filesystem tools resolve relative paths against ~/dev so the model
-# can use short paths like "epistaxis/projects/spoke/epistaxis.md"
-# regardless of which launcher target started the process.
+# Filesystem tools resolve relative paths against ~/dev so the model can use
+# short project paths regardless of which launcher target started the process.
 _TOOLS_HOME = os.path.expanduser("~/dev")
 
-from spoke.epistaxis_operator import (
-    EpistaxisOperator,
-    EpistaxisOperatorError,
-    tool_schema as epistaxis_tool_schema,
+from spoke.operator_memory import (
+    OperatorMemoryExecutor,
+    OperatorMemoryError,
+    _PRIVATE_BACKEND_SLUG,
+    tool_schema as operator_memory_tool_schema,
 )
 from spoke.brave_search_operator import (
     BraveSearchOperator,
@@ -183,7 +183,7 @@ _LIST_DIRECTORY_SCHEMA = {
             "type": "object",
             "properties": {
                 "dir_path": {"type": "string", "description": "Absolute or relative directory path"},
-                "pattern": {"type": "string", "description": "Optional glob pattern to filter entries (e.g. '*.md', 'epistaxis*')"},
+                "pattern": {"type": "string", "description": "Optional glob pattern to filter entries (e.g. '*.md', 'operator-memory*')"},
             },
             "required": ["dir_path"]
         }
@@ -265,21 +265,21 @@ _FIND_FILE_SCHEMA = {
         "name": "find_file",
         "description": (
             "Find files by name pattern. Recursively searches a directory for "
-            "files matching a glob pattern (e.g. 'epistaxis.md', '*.py', "
+            "files matching a glob pattern (e.g. 'operator-memory.md', '*.py', "
             "'spoke/**/attractors/*.md'). Returns matching paths with size and "
             "modification date. Much faster than listing directories one by one."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Glob pattern to match filenames (e.g. '*.md', 'epistaxis.md', '**/*.py')"},
+                "pattern": {"type": "string", "description": "Glob pattern to match filenames (e.g. '*.md', 'operator-memory.md', '**/*.py')"},
                 "dir_path": {"type": "string", "description": "Root directory to search from (recursive)"},
             },
             "required": ["pattern", "dir_path"]
         }
     }
 }
-_RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
+_RUN_OPERATOR_MEMORY_OPS_SCHEMA = operator_memory_tool_schema()
 _SEARCH_WEB_SCHEMA = brave_search_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 _RUN_TERMINAL_COMMAND_SCHEMA = terminal_tool_schema()
@@ -740,7 +740,7 @@ def _resolve_tool_path(p: str) -> str:
     """Resolve a path for filesystem tools.
 
     Expands ``~``, and resolves relative paths against ``_TOOLS_HOME``
-    (~/dev) so the model can use short paths like ``epistaxis/...``.
+    (~/dev) so the model can use short paths like ``operator-memory/...``.
     """
     expanded = os.path.expanduser(p)
     if os.path.isabs(expanded):
@@ -1797,22 +1797,22 @@ def _execute_find_file(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-def _execute_epistaxis_ops(arguments: dict) -> str:
-    """Execute a bounded Epistaxis operation plan and return JSON."""
-    epistaxis_root = arguments.get("epistaxis_root", "")
+def _execute_operator_memory_ops(arguments: dict) -> str:
+    """Execute a bounded operator-memory operation plan and return JSON."""
+    operator_memory_root = arguments.get("operator_memory_root", "")
     target_repo = arguments.get("target_repo", "")
     operations = arguments.get("operations", [])
     try:
         if not isinstance(operations, list):
-            raise EpistaxisOperatorError("operations must be a list")
-        operator = EpistaxisOperator(epistaxis_root, target_repo)
+            raise OperatorMemoryError("operations must be a list")
+        operator = OperatorMemoryExecutor(operator_memory_root, target_repo)
         return json.dumps(
             {
                 "target_repo": target_repo,
                 "operations": operator.execute_plan(operations),
             }
         )
-    except EpistaxisOperatorError as exc:
+    except OperatorMemoryError as exc:
         return json.dumps({"error": str(exc)})
 
 
@@ -1844,63 +1844,63 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
-_EPISTAXIS_RUNBOOK_PATH = Path(__file__).resolve().parent.parent / "docs" / "epistaxis-git-runbook.md"
+_OPERATOR_MEMORY_RUNBOOK_PATH = Path(__file__).resolve().parent.parent / "docs" / "operator-memory-git-runbook.md"
 # Session-level flag: set to True once the runbook has been returned
 # as a gate response, so we only block the first attempt per session.
-_epistaxis_runbook_injected = False
+_operator_memory_runbook_injected = False
 
 
-def _is_epistaxis_git_command(argv: list | None, cwd: str | None) -> bool:
-    """Return True if this looks like a git command targeting the Epistaxis repo."""
+def _is_operator_memory_git_command(argv: list | None, cwd: str | None) -> bool:
+    """Return True if this looks like a git command targeting the private operator-memory repo."""
     if not argv or not isinstance(argv, list):
         return False
     if str(argv[0]) != "git":
         return False
 
-    def targets_epistaxis(path_text: str) -> bool:
+    def targets_operator_memory(path_text: str) -> bool:
         if not path_text:
             return False
         parts = Path(path_text).expanduser().parts
         return any(
-            part == "epistaxis"
-            or part == "epistaxis-wt"
-            or part.startswith("epistaxis-")
-            or part.startswith("epistaxis_wt")
+            part == _PRIVATE_BACKEND_SLUG
+            or part == f"{_PRIVATE_BACKEND_SLUG}-wt"
+            or part.startswith(f"{_PRIVATE_BACKEND_SLUG}-")
+            or part.startswith(f"{_PRIVATE_BACKEND_SLUG}_wt")
             for part in parts
         )
 
-    if targets_epistaxis(str(cwd or "")):
+    if targets_operator_memory(str(cwd or "")):
         return True
     for i, arg in enumerate(argv):
         if str(arg) == "-C" and i + 1 < len(argv):
-            if targets_epistaxis(str(argv[i + 1])):
+            if targets_operator_memory(str(argv[i + 1])):
                 return True
     return False
 
 
-def _epistaxis_runbook_gate(argv: list, cwd: str | None) -> str | None:
-    """If this is an Epistaxis git command and the runbook hasn't been
+def _operator_memory_runbook_gate(argv: list, cwd: str | None) -> str | None:
+    """If this is an operator-memory git command and the runbook hasn't been
     injected yet this session, return the runbook content as a blocking
     response instead of executing the command.  Returns None if the
     command should proceed normally."""
-    global _epistaxis_runbook_injected
-    if _epistaxis_runbook_injected:
+    global _operator_memory_runbook_injected
+    if _operator_memory_runbook_injected:
         return None
-    if not _is_epistaxis_git_command(argv, cwd):
+    if not _is_operator_memory_git_command(argv, cwd):
         return None
     # Read the runbook
     try:
-        runbook_text = _EPISTAXIS_RUNBOOK_PATH.read_text(encoding="utf-8")
+        runbook_text = _OPERATOR_MEMORY_RUNBOOK_PATH.read_text(encoding="utf-8")
     except (FileNotFoundError, PermissionError):
         return None  # no runbook available, let the command through
-    _epistaxis_runbook_injected = True
+    _operator_memory_runbook_injected = True
     return json.dumps({
         "executed": False,
-        "gate": "epistaxis_runbook",
+        "gate": "operator_memory_runbook",
         "message": (
             "COMMAND NOT EXECUTED. Before performing git operations in "
-            "the Epistaxis repo, you must read and follow the runbook below. "
-            "The Epistaxis repo has a two-checkout layout with specific "
+            "the private operator-memory repo, you must read and follow the runbook below. "
+            "The operator-memory repo has a two-checkout layout with specific "
             "merge and push conventions. Do not assume you know the correct "
             "flow. Read the runbook carefully, then rethink your approach "
             "with the runbook's instructions in mind before retrying."
@@ -1919,9 +1919,9 @@ def _execute_run_terminal_command(arguments: dict, *, approval_granted: bool = F
     cwd = arguments.get("cwd")
     timeout_seconds = arguments.get("timeout_seconds", 10)
 
-    # Epistaxis runbook gate: block the first git command targeting
-    # the Epistaxis repo until the assistant has seen the runbook.
-    gate_response = _epistaxis_runbook_gate(argv, cwd)
+    # Operator-memory runbook gate: block the first git command targeting the
+    # private coordination repo until the assistant has seen the runbook.
+    gate_response = _operator_memory_runbook_gate(argv, cwd)
     if gate_response is not None:
         return gate_response
 
@@ -2065,8 +2065,8 @@ def execute_tool(
         return json.dumps(_execute_search_file(arguments))
     elif name == "find_file":
         return json.dumps(_execute_find_file(arguments))
-    elif name == "run_epistaxis_ops":
-        return _execute_epistaxis_ops(arguments)
+    elif name == "run_operator_memory_ops":
+        return _execute_operator_memory_ops(arguments)
     elif name == "search_web":
         return _execute_search_web(arguments)
     elif name == "query_gmail":

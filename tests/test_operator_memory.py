@@ -4,23 +4,23 @@ from pathlib import Path
 
 import pytest
 
-import spoke.epistaxis_operator as epistaxis_operator
+import spoke.operator_memory as operator_memory
 
-EpistaxisOperator = epistaxis_operator.EpistaxisOperator
-EpistaxisOperatorError = epistaxis_operator.EpistaxisOperatorError
-main = epistaxis_operator.main
+OperatorMemoryExecutor = operator_memory.OperatorMemoryExecutor
+OperatorMemoryError = operator_memory.OperatorMemoryError
+main = operator_memory.main
 
 
-def _make_epistaxis_root(tmp_path: Path) -> Path:
-    root = tmp_path / "epistaxis-worktree"
+def _make_operator_memory_root(tmp_path: Path) -> Path:
+    root = tmp_path / "operator-memory-worktree"
     root.mkdir()
     (root / ".git").write_text("gitdir: /fake/common.git/worktrees/test\n", encoding="utf-8")
     (root / "policy" / "codex").mkdir(parents=True)
     (root / "policy" / "codex" / "agents.md").write_text("# policy\n", encoding="utf-8")
     (root / "reviews").mkdir()
     (root / "projects" / "spoke").mkdir(parents=True)
-    (root / "projects" / "spoke" / "epistaxis.md").write_text(
-        "# Spoke Epistaxis\n\n"
+    (root / "projects" / "spoke" / operator_memory._PRIVATE_REPO_NOTE_NAME).write_text(
+        "# Spoke Operator Memory\n\n"
         "## Review Notes\n"
         "Full review documents and review tickets live in `reviews/`.\n\n"
         "## Open Questions\n"
@@ -35,17 +35,17 @@ def _completed(*, stdout: str = "") -> subprocess.CompletedProcess[str]:
 
 
 def test_refuses_inert_main_checkout(tmp_path, monkeypatch):
-    root = _make_epistaxis_root(tmp_path)
-    monkeypatch.setattr(epistaxis_operator, "_INERT_EPISTAXIS_MAIN", root)
-    operator = EpistaxisOperator(root, "spoke")
+    root = _make_operator_memory_root(tmp_path)
+    monkeypatch.setattr(operator_memory, "_INERT_OPERATOR_MEMORY_MAIN", root)
+    operator = OperatorMemoryExecutor(root, "spoke")
 
-    with pytest.raises(EpistaxisOperatorError, match="inert Epistaxis main checkout"):
+    with pytest.raises(OperatorMemoryError, match="inert operator-memory main checkout"):
         operator.execute_plan([{"op": "git_status"}])
 
 
 def test_refuses_main_branch(tmp_path, monkeypatch):
-    root = _make_epistaxis_root(tmp_path)
-    operator = EpistaxisOperator(root, "spoke")
+    root = _make_operator_memory_root(tmp_path)
+    operator = OperatorMemoryExecutor(root, "spoke")
 
     def _run(cmd, capture_output, text, check):
         assert cmd[:3] == ["git", "-C", str(root)]
@@ -53,22 +53,22 @@ def test_refuses_main_branch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _run)
 
-    with pytest.raises(EpistaxisOperatorError, match="branch 'main'"):
+    with pytest.raises(OperatorMemoryError, match="branch 'main'"):
         operator.execute_plan([{"op": "git_status"}])
 
 
-def test_refuses_non_epistaxis_checkout(tmp_path):
-    root = _make_epistaxis_root(tmp_path)
+def test_refuses_non_operator_memory_checkout(tmp_path):
+    root = _make_operator_memory_root(tmp_path)
     (root / "policy" / "codex" / "agents.md").unlink()
-    operator = EpistaxisOperator(root, "spoke")
+    operator = OperatorMemoryExecutor(root, "spoke")
 
-    with pytest.raises(EpistaxisOperatorError, match="refusing to run outside an Epistaxis checkout"):
+    with pytest.raises(OperatorMemoryError, match="refusing to run outside an operator-memory checkout"):
         operator.execute_plan([{"op": "git_status"}])
 
 
 def test_write_ticket_and_append_pointer(tmp_path, monkeypatch):
-    root = _make_epistaxis_root(tmp_path)
-    operator = EpistaxisOperator(root, "spoke")
+    root = _make_operator_memory_root(tmp_path)
+    operator = OperatorMemoryExecutor(root, "spoke")
 
     def _run(cmd, capture_output, text, check):
         if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
@@ -98,17 +98,17 @@ def test_write_ticket_and_append_pointer(tmp_path, monkeypatch):
     ticket_path = root / "reviews" / "spoke_demo-review-ticket_2026-03-29.md"
     assert results[0]["path"] == str(ticket_path)
     assert ticket_path.read_text(encoding="utf-8") == "# Demo\n"
-    note = (root / "projects" / "spoke" / "epistaxis.md").read_text(encoding="utf-8")
+    note = (root / "projects" / "spoke" / operator_memory._PRIVATE_REPO_NOTE_NAME).read_text(encoding="utf-8")
     assert "### 2026-03-29 Review ticket: demo" in note
     assert "- `reviews/spoke_demo-review-ticket_2026-03-29.md`" in note
     assert "## Open Questions" in note
 
 
 def test_stage_commit_and_push_current_branch(tmp_path, monkeypatch):
-    root = _make_epistaxis_root(tmp_path)
+    root = _make_operator_memory_root(tmp_path)
     ticket_name = "spoke_demo-review-ticket_2026-03-29.md"
     (root / "reviews" / ticket_name).write_text("# Demo\n", encoding="utf-8")
-    operator = EpistaxisOperator(root, "spoke")
+    operator = OperatorMemoryExecutor(root, "spoke")
     calls: list[list[str]] = []
 
     def _run(cmd, capture_output, text, check):
@@ -130,26 +130,26 @@ def test_stage_commit_and_push_current_branch(tmp_path, monkeypatch):
     )
 
     assert results[0]["paths"] == [
-        "projects/spoke/epistaxis.md",
+        f"projects/spoke/{operator_memory._PRIVATE_REPO_NOTE_NAME}",
         f"reviews/{ticket_name}",
     ]
     assert results[1]["commit"] == "abc1234"
     assert results[2]["branch"] == "codex/spoke-demo"
-    assert ["git", "-C", str(root), "add", "projects/spoke/epistaxis.md", f"reviews/{ticket_name}"] in calls
+    assert ["git", "-C", str(root), "add", f"projects/spoke/{operator_memory._PRIVATE_REPO_NOTE_NAME}", f"reviews/{ticket_name}"] in calls
     assert ["git", "-C", str(root), "commit", "-m", "Demo ticket"] in calls
     assert ["git", "-C", str(root), "push", "-u", "origin", "codex/spoke-demo"] in calls
 
 
 def test_rejects_bad_ticket_name(tmp_path, monkeypatch):
-    root = _make_epistaxis_root(tmp_path)
-    operator = EpistaxisOperator(root, "spoke")
+    root = _make_operator_memory_root(tmp_path)
+    operator = OperatorMemoryExecutor(root, "spoke")
 
     def _run(cmd, capture_output, text, check):
         return _completed(stdout="codex/spoke-demo\n")
 
     monkeypatch.setattr(subprocess, "run", _run)
 
-    with pytest.raises(EpistaxisOperatorError, match="must start with 'spoke_'"):
+    with pytest.raises(OperatorMemoryError, match="must start with 'spoke_'"):
         operator.execute_plan(
             [
                 {
@@ -162,10 +162,10 @@ def test_rejects_bad_ticket_name(tmp_path, monkeypatch):
 
 
 def test_main_cli_reads_json_plan_and_prints_results(tmp_path, monkeypatch, capsys):
-    root = _make_epistaxis_root(tmp_path)
+    root = _make_operator_memory_root(tmp_path)
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps({"operations": [{"op": "list_reviews"}]}), encoding="utf-8")
-    operator = EpistaxisOperator(root, "spoke")
+    operator = OperatorMemoryExecutor(root, "spoke")
     (root / "reviews" / "spoke_demo_2026-03-29.md").write_text("# Demo\n", encoding="utf-8")
 
     def _run(cmd, capture_output, text, check):
@@ -173,14 +173,14 @@ def test_main_cli_reads_json_plan_and_prints_results(tmp_path, monkeypatch, caps
 
     monkeypatch.setattr(subprocess, "run", _run)
     monkeypatch.setattr(
-        epistaxis_operator,
-        "EpistaxisOperator",
-        lambda epistaxis_root, target_repo: operator,
+        operator_memory,
+        "OperatorMemoryExecutor",
+        lambda operator_memory_root, target_repo: operator,
     )
 
     assert main(
         [
-            "--epistaxis-root",
+            "--operator-memory-root",
             str(root),
             "--target-repo",
             "spoke",

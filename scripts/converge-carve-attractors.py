@@ -4,7 +4,7 @@
 Reads the spoke operator ring buffer or Grapheus logs and asks the model to
 identify personal attractors: recurring themes, concerns, and interests that
 persist across conversations. These are NOT project attractors (which live in
-epistaxis) — they're personal patterns that help guided compaction know what
+operator-memory) — they're personal patterns that help guided compaction know what
 matters to this user regardless of project context.
 
 Output: markdown files at ~/.config/spoke/attractors/<slug>.md

@@ -71,21 +71,22 @@ class TestTerminalOperator:
         assert result["stdout_truncated"] is False
         assert result["stderr_truncated"] is False
 
-    def test_epistaxis_helper_resolves_from_user_local_bin_after_approval(self, tmp_path):
+    def test_operator_memory_helper_resolves_from_user_local_bin_after_approval(self, tmp_path):
         from spoke import terminal_operator as terminal_operator
 
         user_local_bin = str(Path.home() / ".local" / "bin")
-        resolved = f"{user_local_bin}/epistaxis"
+        command_name = terminal_operator._PRIVATE_TOOL_PREFIX
+        resolved = f"{user_local_bin}/{command_name}"
 
         def fake_which(name, path):
-            assert name == "epistaxis"
+            assert name == command_name
             assert user_local_bin in path.split(os.pathsep)
             return resolved
 
         def fake_run(cmd, capture_output, cwd, text, timeout, env):
             assert cmd == [resolved, "zetesis", "what is current state?"]
             assert user_local_bin in env["PATH"].split(os.pathsep)
-            assert env["HOME"] == "/tmp/epistaxis-home"
+            assert env["HOME"] == "/tmp/operator-memory-home"
             assert env["CODEX_THREAD_ID"] == "thread-123"
             return subprocess.CompletedProcess(
                 args=cmd,
@@ -98,7 +99,7 @@ class TestTerminalOperator:
             patch.dict(
                 os.environ,
                 {
-                    "HOME": "/tmp/epistaxis-home",
+                    "HOME": "/tmp/operator-memory-home",
                     "CODEX_THREAD_ID": "thread-123",
                 },
                 clear=False,
@@ -107,7 +108,7 @@ class TestTerminalOperator:
             patch("subprocess.run", side_effect=fake_run),
         ):
             result = terminal_operator.TerminalOperator().execute_command(
-                ["epistaxis", "zetesis", "what is current state?"],
+                [command_name, "zetesis", "what is current state?"],
                 cwd=str(tmp_path),
                 approval_granted=True,
             )
