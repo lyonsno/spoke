@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import socket
 import urllib.error
 import wave
 from pathlib import Path
@@ -56,6 +58,56 @@ class TestWhisperKitClientInterface:
 
         client = WhisperKitClient()
         assert client._model == "medium.en"
+
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_prepare_starts_resident_server_before_first_transcription(
+        self,
+        mock_find,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        client = WhisperKitClient(model="medium.en")
+
+        with patch.object(
+            client,
+            "_ensure_resident_server",
+            return_value=("http://localhost:51232", client._cli_path, 4240),
+        ) as ensure_server:
+            client.prepare()
+
+        ensure_server.assert_called_once_with()
+
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_prepare_failure_preserves_cli_fallback_for_app_warmup(
+        self,
+        mock_find,
+        monkeypatch,
+        caplog,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        client = WhisperKitClient(model="medium.en")
+
+        with patch.object(
+            client,
+            "_ensure_resident_server",
+            side_effect=TimeoutError("listener ownership timed out"),
+        ):
+            client.prepare()
+
+        assert "resident preload failed" in caplog.text.lower()
+        assert client.last_route_report == {
+            "requested_route": "resident-server",
+            "effective_route": None,
+            "fallback_reason": (
+                "preload:TimeoutError:listener ownership timed out"
+            ),
+            "status": "preload_failed",
+            "model": "medium.en",
+        }
 
 
 class TestWhisperKitClientSubprocess:
@@ -112,7 +164,7 @@ class TestWhisperKitClientSubprocess:
 
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
-    def test_suspicious_success_retries_and_returns_recovered_text(
+    def test_suspicious_success_is_preserved_without_identical_retry(
         self,
         mock_find,
         mock_run,
@@ -122,67 +174,49 @@ class TestWhisperKitClientSubprocess:
         from spoke.transcribe_whisperkit import WhisperKitClient
 
         monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
-        recovered_text = (
-            "This recovered retry contains enough words to be plausible for a "
-            "medium-length operator dictation, so the first tiny success should "
-            "not be trusted as the final output."
-        )
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="Too short.", stderr=""),
-            MagicMock(returncode=0, stdout=recovered_text, stderr=""),
-        ]
+        mock_run.return_value = MagicMock(returncode=0, stdout="Too short.", stderr="")
         monkeypatch.setenv("SPOKE_WHISPERKIT_SUSPECT_SPOOL_DIR", str(tmp_path))
 
         client = WhisperKitClient(model="medium.en")
         result = client.transcribe(_make_wav_bytes(duration_s=30.0))
 
-        assert result == recovered_text
-        assert mock_run.call_count == 2
-        reports = list(tmp_path.glob("*.json"))
-        assert len(reports) == 1
-        report = json.loads(reports[0].read_text())
-        assert report["status"] == "recovered_by_retry"
-        assert report["effective_model"] == "medium.en"
-        assert report["effective_cli_path"] == "/usr/local/bin/whisperkit-cli"
-        assert report["audio_bytes"] > 0
-        assert report["duration_seconds"] == pytest.approx(30.0)
-        assert report["chosen_output"] == recovered_text
-        assert report["attempts"][0]["suspicious"] is True
-        assert report["attempts"][1]["suspicious"] is False
-        assert Path(report["audio_path"]).exists()
-
-    @patch("spoke.transcribe_whisperkit.subprocess.run")
-    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
-    def test_suspicious_success_preserves_replay_bundle_when_retry_still_short(
-        self,
-        mock_find,
-        mock_run,
-        monkeypatch,
-        tmp_path,
-    ):
-        from spoke.transcribe_whisperkit import WhisperKitClient
-
-        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="Tiny.", stderr=""),
-            MagicMock(returncode=0, stdout="Still tiny.", stderr=""),
-        ]
-        monkeypatch.setenv("SPOKE_WHISPERKIT_SUSPECT_SPOOL_DIR", str(tmp_path))
-
-        client = WhisperKitClient(model="medium.en")
-        result = client.transcribe(_make_wav_bytes(duration_s=30.0))
-
-        assert result == "Still tiny."
-        assert mock_run.call_count == 2
+        assert result == "Too short."
+        assert mock_run.call_count == 1
         reports = list(tmp_path.glob("*.json"))
         assert len(reports) == 1
         report = json.loads(reports[0].read_text())
         assert report["status"] == "suspicious_unrecovered"
-        assert report["chosen_output"] == "Still tiny."
-        assert report["attempts"][0]["stdout_len"] == 5
-        assert report["attempts"][1]["stdout_len"] == 11
-        assert report["attempts"][0]["suspicion_reason"] == "too_short_for_audio_duration"
-        assert Path(report["audio_path"]).read_bytes() == _make_wav_bytes(duration_s=30.0)
+        assert report["effective_model"] == "medium.en"
+        assert report["effective_cli_path"] == "/usr/local/bin/whisperkit-cli"
+        assert report["audio_bytes"] > 0
+        assert report["duration_seconds"] == pytest.approx(30.0)
+        assert report["chosen_output"] == "Too short."
+        assert len(report["attempts"]) == 1
+        assert report["attempts"][0]["suspicious"] is True
+        assert Path(report["audio_path"]).exists()
+
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_compute_unit_overrides_reach_one_shot_cli(
+        self,
+        mock_find,
+        mock_run,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "0")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS", "all")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS", "cpuAndGPU")
+        mock_run.return_value = MagicMock(returncode=0, stdout="Configured route", stderr="")
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes())
+
+        assert result == "Configured route"
+        cmd = mock_run.call_args.args[0]
+        assert cmd[cmd.index("--audio-encoder-compute-units") + 1] == "all"
+        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuAndGPU"
 
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value=None)
     def test_transcribe_returns_empty_when_cli_missing(self, mock_find, monkeypatch):
@@ -222,6 +256,70 @@ class _FakeHTTPResponse:
 
 
 class TestWhisperKitResidentServer:
+    def test_tcp_readiness_rejects_listener_owned_by_another_process(self):
+        from spoke.transcribe_whisperkit import _wait_for_tcp_port
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("localhost", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            spawned_process = MagicMock(pid=os.getpid() + 100_000)
+            spawned_process.poll.return_value = None
+
+            assert _wait_for_tcp_port(
+                "localhost",
+                port,
+                0,
+                expected_pid=spawned_process.pid,
+                process=spawned_process,
+            ) is False
+
+    @patch("spoke.transcribe_whisperkit._tcp_listener_owner_pids", return_value=set())
+    def test_tcp_readiness_fails_closed_when_listener_owner_lookup_fails(
+        self,
+        mock_owners,
+    ):
+        from spoke.transcribe_whisperkit import _wait_for_tcp_port
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("localhost", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            process = MagicMock(pid=os.getpid())
+            process.poll.return_value = None
+
+            assert _wait_for_tcp_port(
+                "localhost",
+                port,
+                0,
+                expected_pid=process.pid,
+                process=process,
+            ) is False
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_prepare_rejects_listener_when_spawned_server_has_exited(
+        self,
+        mock_find,
+        mock_popen,
+        mock_wait,
+        monkeypatch,
+        tmp_path,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51231")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_LOG", str(tmp_path / "server.log"))
+        mock_popen.return_value = MagicMock(pid=4239, poll=MagicMock(return_value=48))
+
+        client = WhisperKitClient(model="medium.en")
+
+        with pytest.raises(RuntimeError, match="exited before owning listener"):
+            client._ensure_resident_server()
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
     @patch("urllib.request.urlopen")
@@ -232,6 +330,7 @@ class TestWhisperKitResidentServer:
         mock_urlopen,
         mock_popen,
         mock_run,
+        mock_wait,
         monkeypatch,
     ):
         from spoke.transcribe_whisperkit import WhisperKitClient
@@ -250,6 +349,7 @@ class TestWhisperKitResidentServer:
         serve_cmd = mock_popen.call_args.args[0]
         assert serve_cmd[:2] == ["/usr/local/bin/whisperkit-cli", "serve"]
 
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
     @patch("urllib.request.urlopen")
@@ -260,6 +360,7 @@ class TestWhisperKitResidentServer:
         mock_urlopen,
         mock_popen,
         mock_run,
+        mock_wait,
         monkeypatch,
     ):
         from spoke.transcribe_whisperkit import WhisperKitClient
@@ -287,7 +388,94 @@ class TestWhisperKitResidentServer:
         request = mock_urlopen.call_args.args[0]
         assert request.full_url == "http://localhost:51234/v1/audio/transcriptions"
         assert request.get_method() == "POST"
+        assert client.last_route_report["requested_route"] == "resident-server"
+        assert client.last_route_report["effective_route"] == "resident-server"
 
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_compute_unit_overrides_reach_resident_serve_command(
+        self,
+        mock_find,
+        mock_popen,
+        mock_wait,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS", "all")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS", "cpuAndGPU")
+        mock_popen.return_value = MagicMock(pid=4245, poll=MagicMock(return_value=None))
+
+        client = WhisperKitClient(model="medium.en")
+        client.prepare()
+
+        cmd = mock_popen.call_args.args[0]
+        assert cmd[cmd.index("--audio-encoder-compute-units") + 1] == "all"
+        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuAndGPU"
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_invalid_compute_units_warn_and_use_ane_defaults(
+        self,
+        mock_find,
+        mock_popen,
+        mock_wait,
+        monkeypatch,
+        caplog,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS", "turbo")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS", "warp")
+        mock_popen.return_value = MagicMock(pid=4246, poll=MagicMock(return_value=None))
+
+        client = WhisperKitClient(model="medium.en")
+        client.prepare()
+
+        cmd = mock_popen.call_args.args[0]
+        assert cmd[cmd.index("--audio-encoder-compute-units") + 1] == "cpuAndNeuralEngine"
+        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuAndNeuralEngine"
+        assert "Invalid SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS" in caplog.text
+        assert "Invalid SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS" in caplog.text
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_resident_suspicious_success_is_not_identically_retried(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        mock_wait,
+        monkeypatch,
+        tmp_path,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51237")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SUSPECT_SPOOL_DIR", str(tmp_path))
+        mock_popen.return_value = MagicMock(pid=4244, poll=MagicMock(return_value=None))
+        mock_urlopen.return_value = _FakeHTTPResponse({"text": "Too short."})
+
+        client = WhisperKitClient(model="medium.en")
+        result = client.transcribe(_make_wav_bytes(duration_s=30.0))
+
+        assert result == "Too short."
+        mock_urlopen.assert_called_once()
+        mock_run.assert_not_called()
+        report_path = next(tmp_path.glob("*.json"))
+        report = json.loads(report_path.read_text())
+        assert report["mode"] == "resident-server"
+        assert report["status"] == "suspicious_unrecovered"
+        assert len(report["attempts"]) == 1
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
     @patch("urllib.request.urlopen")
@@ -298,6 +486,7 @@ class TestWhisperKitResidentServer:
         mock_urlopen,
         mock_popen,
         mock_run,
+        mock_wait,
         monkeypatch,
         caplog,
     ):
@@ -315,10 +504,78 @@ class TestWhisperKitResidentServer:
 
         assert result == "Fallback text"
         assert "falling back to CLI subprocess" in caplog.text
+        assert "requested_route=resident-server" in caplog.text
+        assert "effective_route=cli-subprocess" in caplog.text
+        assert "server unavailable" in caplog.text
         mock_run.assert_called_once()
         fallback_cmd = mock_run.call_args.args[0]
         assert fallback_cmd[:2] == ["/usr/local/bin/whisperkit-cli", "transcribe"]
+        assert client.last_route_report["requested_route"] == "resident-server"
+        assert client.last_route_report["effective_route"] == "cli-subprocess"
+        assert "server unavailable" in client.last_route_report["fallback_reason"]
 
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_failed_cli_fallback_preserves_terminal_route_identity(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        mock_wait,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        mock_popen.return_value = MagicMock(pid=4247, poll=MagicMock(return_value=None))
+        mock_urlopen.side_effect = urllib.error.URLError("resident unavailable")
+        mock_run.return_value = MagicMock(returncode=7, stdout="", stderr="cli failed")
+
+        client = WhisperKitClient(model="medium.en")
+        assert client.transcribe(_make_wav_bytes()) == ""
+
+        assert client.last_route_report["requested_route"] == "resident-server"
+        assert client.last_route_report["effective_route"] == "cli-subprocess"
+        assert client.last_route_report["status"] == "failed"
+        assert "resident unavailable" in client.last_route_report["fallback_reason"]
+        assert client.last_route_report["terminal_error"] == "cli_exit:7:cli failed"
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.run")
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("urllib.request.urlopen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_suspicious_cli_fallback_bundle_preserves_route_identity(
+        self,
+        mock_find,
+        mock_urlopen,
+        mock_popen,
+        mock_run,
+        mock_wait,
+        monkeypatch,
+        tmp_path,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_RESIDENT", "1")
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SUSPECT_SPOOL_DIR", str(tmp_path))
+        mock_popen.return_value = MagicMock(pid=4248, poll=MagicMock(return_value=None))
+        mock_urlopen.side_effect = urllib.error.URLError("resident unavailable")
+        mock_run.return_value = MagicMock(returncode=0, stdout="Too short.", stderr="")
+
+        client = WhisperKitClient(model="medium.en")
+        assert client.transcribe(_make_wav_bytes(duration_s=30.0)) == "Too short."
+
+        report = json.loads(next(tmp_path.glob("*.json")).read_text())
+        assert report["requested_route"] == "resident-server"
+        assert report["effective_route"] == "cli-subprocess"
+        assert "resident unavailable" in report["fallback_reason"]
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
     @patch("urllib.request.urlopen")
@@ -329,6 +586,7 @@ class TestWhisperKitResidentServer:
         mock_urlopen,
         mock_popen,
         mock_run,
+        mock_wait,
         monkeypatch,
     ):
         from spoke.transcribe_whisperkit import WhisperKitClient

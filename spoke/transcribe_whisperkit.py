@@ -37,11 +37,19 @@ DEFAULT_WHISPERKIT_CHUNKING_STRATEGY = "vad"
 _WHISPERKIT_CHUNKING_STRATEGIES = {"none", "vad"}
 _WHISPERKIT_ENCODER_COMPUTE_UNITS = "cpuAndNeuralEngine"
 _WHISPERKIT_DECODER_COMPUTE_UNITS = "cpuAndNeuralEngine"
+_WHISPERKIT_COMPUTE_UNITS = {
+    "all",
+    "cpuOnly",
+    "cpuAndGPU",
+    "cpuAndNeuralEngine",
+    "random",
+}
 _WHISPERKIT_TIMEOUT_SECONDS = 120
 _WHISPERKIT_SUSPECT_MIN_SECONDS = 8.0
 _WHISPERKIT_SUSPECT_MIN_CHARS = 80
 _WHISPERKIT_SUSPECT_MIN_CHARS_PER_SECOND = 3.0
-_WHISPERKIT_SUSPECT_RETRY_COUNT = 1
+# Repeating the same deterministic decode added latency without changing route or recovery odds.
+_WHISPERKIT_SUSPECT_ATTEMPTS = 1
 _WHISPERKIT_SERVER_HOST = "localhost"
 _WHISPERKIT_SERVER_START_TIMEOUT_SECONDS = 20.0
 _WHISPERKIT_SERVER_REQUEST_TIMEOUT_SECONDS = 120.0
@@ -83,6 +91,28 @@ def _whisperkit_chunking_strategy() -> str:
     return DEFAULT_WHISPERKIT_CHUNKING_STRATEGY
 
 
+def _whisperkit_compute_units(env_name: str, default: str) -> str:
+    requested = os.environ.get(env_name, default).strip()
+    if requested in _WHISPERKIT_COMPUTE_UNITS:
+        return requested
+    logger.warning("Invalid %s=%r; using %s", env_name, requested, default)
+    return default
+
+
+def _whisperkit_encoder_compute_units() -> str:
+    return _whisperkit_compute_units(
+        "SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS",
+        _WHISPERKIT_ENCODER_COMPUTE_UNITS,
+    )
+
+
+def _whisperkit_decoder_compute_units() -> str:
+    return _whisperkit_compute_units(
+        "SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS",
+        _WHISPERKIT_DECODER_COMPUTE_UNITS,
+    )
+
+
 def _truthy_env(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -117,14 +147,46 @@ def _find_available_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_tcp_port(host: str, port: int, timeout_s: float) -> bool:
+def _tcp_listener_owner_pids(port: int) -> set[int]:
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
+    try:
+        result = subprocess.run(
+            [lsof, "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if result.returncode != 0:
+        return set()
+    owners: set[int] = set()
+    for raw_pid in result.stdout.splitlines():
+        try:
+            owners.add(int(raw_pid.strip()))
+        except ValueError:
+            continue
+    return owners
+
+
+def _wait_for_tcp_port(
+    host: str,
+    port: int,
+    timeout_s: float,
+    *,
+    expected_pid: int | None = None,
+    process: subprocess.Popen | None = None,
+) -> bool:
     deadline = time.monotonic() + max(0.0, timeout_s)
     while True:
+        if process is not None and process.poll() is not None:
+            return False
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.2)
             try:
                 sock.connect((host, port))
-                return True
+                if expected_pid is None or expected_pid in _tcp_listener_owner_pids(port):
+                    return True
             except OSError:
                 pass
         if time.monotonic() >= deadline:
@@ -179,6 +241,9 @@ def _record_whisperkit_suspect_bundle(
     chosen_output: str,
     server_url: str | None = None,
     server_pid: int | None = None,
+    requested_route: str | None = None,
+    effective_route: str | None = None,
+    fallback_reason: str | None = None,
 ) -> None:
     spool_dir = _whisperkit_suspect_spool_dir()
     try:
@@ -196,10 +261,13 @@ def _record_whisperkit_suspect_bundle(
             "effective_cli_path": cli_path,
             "effective_server_url": server_url,
             "server_pid": server_pid,
+            "requested_route": requested_route or mode,
+            "effective_route": effective_route or mode,
+            "fallback_reason": fallback_reason,
             "effective_model": model,
             "effective_chunking_strategy": chunking_strategy,
-            "audio_encoder_compute_units": _WHISPERKIT_ENCODER_COMPUTE_UNITS,
-            "text_decoder_compute_units": _WHISPERKIT_DECODER_COMPUTE_UNITS,
+            "audio_encoder_compute_units": _whisperkit_encoder_compute_units(),
+            "text_decoder_compute_units": _whisperkit_decoder_compute_units(),
             "timeout_seconds": _WHISPERKIT_TIMEOUT_SECONDS,
             "audio_path": str(audio_path),
             "audio_bytes": len(wav_bytes),
@@ -244,6 +312,9 @@ class WhisperKitClient:
         self._server_url: str | None = self._external_server_url
         self._server_port: int | None = None
         self._server_log_handle = None
+        self._server_ready = self._external_server_url is not None
+        self._resident_failure_reason: str | None = None
+        self._last_route_report: dict[str, object] = {}
 
     @staticmethod
     def available() -> bool:
@@ -251,13 +322,33 @@ class WhisperKitClient:
         return _find_whisperkit_cli() is not None
 
     def prepare(self) -> None:
-        """Verify the CLI is available. Model download happens on first transcribe."""
+        """Seat the selected resident server before the first transcription."""
         if self._cli_path is None:
             self._cli_path = _find_whisperkit_cli()
         if self._cli_path is None:
             logger.warning(
                 "whisperkit-cli not found. Install with: brew install whisperkit-cli"
             )
+            return
+        if _whisperkit_resident_enabled():
+            try:
+                self._ensure_resident_server()
+            except Exception as exc:
+                reason = f"preload:{type(exc).__name__}:{exc}"
+                self._resident_failure_reason = reason
+                self._last_route_report = {
+                    "requested_route": "resident-server",
+                    "effective_route": None,
+                    "fallback_reason": reason,
+                    "status": "preload_failed",
+                    "model": self._model,
+                }
+                logger.warning(
+                    "WhisperKit resident preload failed; app warmup will continue "
+                    "with CLI fallback available (model=%s, fallback_reason=%s)",
+                    self._model,
+                    reason,
+                )
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """Transcribe WAV audio bytes and return text."""
@@ -268,20 +359,57 @@ class WhisperKitClient:
             resident_text = self._transcribe_resident(wav_bytes)
             if resident_text is not None:
                 return resident_text
+            fallback_reason = self._resident_failure_reason or "unknown resident failure"
             logger.warning(
                 "WhisperKit resident server failed; falling back to CLI subprocess "
-                "(model=%s, server_url=%s)",
+                "(requested_route=resident-server, effective_route=cli-subprocess, "
+                "model=%s, server_url=%s, fallback_reason=%s)",
                 self._model,
                 self._server_url,
+                fallback_reason,
+            )
+            return self._transcribe_cli(
+                wav_bytes,
+                fallback_from="resident-server",
+                fallback_reason=fallback_reason,
             )
 
         return self._transcribe_cli(wav_bytes)
 
-    def _transcribe_cli(self, wav_bytes: bytes) -> str:
+    def _transcribe_cli(
+        self,
+        wav_bytes: bytes,
+        *,
+        fallback_from: str | None = None,
+        fallback_reason: str | None = None,
+    ) -> str:
         """Transcribe WAV bytes through one-shot ``whisperkit-cli transcribe``."""
+        requested_route = fallback_from or "cli-subprocess"
+        encoder_compute_units = _whisperkit_encoder_compute_units()
+        decoder_compute_units = _whisperkit_decoder_compute_units()
+        self._last_route_report = {
+            "requested_route": requested_route,
+            "effective_route": "cli-subprocess",
+            "fallback_reason": fallback_reason,
+            "status": "attempting",
+            "terminal_error": None,
+            "model": self._model,
+            "audio_encoder_compute_units": encoder_compute_units,
+            "text_decoder_compute_units": decoder_compute_units,
+        }
         cli = self._cli_path or _find_whisperkit_cli()
         if cli is None:
-            logger.error("whisperkit-cli not found — cannot transcribe")
+            self._last_route_report.update(
+                effective_route=None,
+                status="failed",
+                terminal_error="cli_missing",
+            )
+            logger.error(
+                "whisperkit-cli not found; cannot transcribe "
+                "(requested_route=%s, effective_route=None, fallback_reason=%s)",
+                requested_route,
+                fallback_reason,
+            )
             return ""
 
         total_start = time.perf_counter()
@@ -298,8 +426,8 @@ class WhisperKitClient:
                 "--audio-path", tmp_path,
                 "--model", self._model,
                 "--language", "en",
-                "--audio-encoder-compute-units", _WHISPERKIT_ENCODER_COMPUTE_UNITS,
-                "--text-decoder-compute-units", _WHISPERKIT_DECODER_COMPUTE_UNITS,
+                "--audio-encoder-compute-units", encoder_compute_units,
+                "--text-decoder-compute-units", decoder_compute_units,
                 "--chunking-strategy", chunking_strategy,
                 "--skip-special-tokens",
                 "--without-timestamps",
@@ -315,20 +443,33 @@ class WhisperKitClient:
             attempts: list[dict[str, object]] = []
             text = ""
             postprocess_ms = 0.0
-            final_suspicion_reason: str | None = None
-            for attempt_index in range(_WHISPERKIT_SUSPECT_RETRY_COUNT + 1):
+            for attempt_index in range(_WHISPERKIT_SUSPECT_ATTEMPTS):
                 subprocess_start = time.perf_counter()
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=_WHISPERKIT_TIMEOUT_SECONDS,
-                )
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=_WHISPERKIT_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:
+                    self._last_route_report.update(
+                        status="failed",
+                        terminal_error=f"cli_exception:{type(exc).__name__}:{exc}",
+                    )
+                    raise
                 subprocess_ms = (time.perf_counter() - subprocess_start) * 1000
                 raw_stdout = result.stdout or ""
                 raw_stderr = result.stderr or ""
                 raw_text = raw_stdout.strip()
                 if result.returncode != 0:
+                    terminal_error = (
+                        f"cli_exit:{result.returncode}:{raw_stderr.strip()}"
+                    )
+                    self._last_route_report.update(
+                        status="failed",
+                        terminal_error=terminal_error,
+                    )
                     attempts.append(
                         {
                             "attempt": attempt_index + 1,
@@ -374,29 +515,13 @@ class WhisperKitClient:
                     }
                 )
                 text = attempt_text
-                final_suspicion_reason = suspicion_reason
                 if suspicion_reason is None:
                     break
-                if attempt_index < _WHISPERKIT_SUSPECT_RETRY_COUNT:
-                    logger.warning(
-                        "WhisperKit returned suspiciously short success; retrying "
-                        "(model=%s, chunking=%s, duration=%s, stdout_len=%d, text_len=%d)",
-                        self._model,
-                        chunking_strategy,
-                        f"{duration_s:.1f}s" if duration_s is not None else "unknown",
-                        len(raw_stdout),
-                        len(attempt_text),
-                    )
             total_ms = (time.perf_counter() - total_start) * 1000
             if any(attempt["suspicious"] for attempt in attempts):
-                status = (
-                    "suspicious_unrecovered"
-                    if final_suspicion_reason is not None
-                    else "recovered_by_retry"
-                )
                 _record_whisperkit_suspect_bundle(
                     wav_bytes=wav_bytes,
-                    status=status,
+                    status="suspicious_unrecovered",
                     mode="cli-subprocess",
                     model=self._model,
                     cli_path=cli,
@@ -407,6 +532,9 @@ class WhisperKitClient:
                     total_ms=total_ms,
                     attempts=attempts,
                     chosen_output=text,
+                    requested_route=requested_route,
+                    effective_route="cli-subprocess",
+                    fallback_reason=fallback_reason,
                 )
         finally:
             try:
@@ -417,7 +545,8 @@ class WhisperKitClient:
         logger.info(
             "WhisperKit ANE transcription (%s): %r "
             "(%d bytes audio; chunking=%s; write=%.0fms, subprocess=%.0fms, "
-            "postprocess=%.0fms, total=%.0fms)",
+            "postprocess=%.0fms, total=%.0fms; requested_route=%s, "
+            "effective_route=cli-subprocess, fallback_reason=%s)",
             self._model,
             text,
             len(wav_bytes),
@@ -426,6 +555,16 @@ class WhisperKitClient:
             sum(float(attempt["subprocess_ms"]) for attempt in attempts),
             postprocess_ms,
             total_ms,
+            fallback_from or "cli-subprocess",
+            fallback_reason,
+        )
+        self._last_route_report.update(
+            status=(
+                "suspicious_success"
+                if any(attempt["suspicious"] for attempt in attempts)
+                else "succeeded"
+            ),
+            terminal_error=None,
         )
         return text
 
@@ -441,7 +580,12 @@ class WhisperKitClient:
             raise RuntimeError("whisperkit-cli not found")
         if self._external_server_url:
             return self._external_server_url.rstrip("/"), cli, None
-        if self._server_proc is not None and self._server_proc.poll() is None and self._server_port:
+        if (
+            self._server_proc is not None
+            and self._server_proc.poll() is None
+            and self._server_port
+            and self._server_ready
+        ):
             return f"http://{_WHISPERKIT_SERVER_HOST}:{self._server_port}", cli, self._server_proc.pid
         if self._server_proc is not None and self._server_proc.poll() is not None:
             logger.warning(
@@ -452,12 +596,12 @@ class WhisperKitClient:
                 self._model,
                 self._server_url,
             )
-            self._server_proc = None
-            self._server_url = None
-            self._server_port = None
+            self._close_owned_server()
 
         port = _find_available_port()
         chunking_strategy = _whisperkit_chunking_strategy()
+        encoder_compute_units = _whisperkit_encoder_compute_units()
+        decoder_compute_units = _whisperkit_decoder_compute_units()
         cmd = [
             cli,
             "serve",
@@ -470,9 +614,9 @@ class WhisperKitClient:
             "--language",
             "en",
             "--audio-encoder-compute-units",
-            _WHISPERKIT_ENCODER_COMPUTE_UNITS,
+            encoder_compute_units,
             "--text-decoder-compute-units",
-            _WHISPERKIT_DECODER_COMPUTE_UNITS,
+            decoder_compute_units,
             "--chunking-strategy",
             chunking_strategy,
             "--skip-special-tokens",
@@ -481,6 +625,7 @@ class WhisperKitClient:
         log_path = self._resident_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self._server_log_handle = log_path.open("ab")
+        start_time = time.perf_counter()
         self._server_proc = subprocess.Popen(
             cmd,
             stdout=self._server_log_handle,
@@ -492,23 +637,42 @@ class WhisperKitClient:
             "SPOKE_WHISPERKIT_SERVER_START_TIMEOUT",
             _WHISPERKIT_SERVER_START_TIMEOUT_SECONDS,
         )
-        if not _wait_for_tcp_port(_WHISPERKIT_SERVER_HOST, port, start_timeout):
-            logger.warning(
-                "WhisperKit resident server did not accept TCP before timeout "
-                "(pid=%s, model=%s, url=%s, log=%s)",
-                self._server_proc.pid,
-                self._model,
-                self._server_url,
-                log_path,
+        attempted_url = self._server_url
+        if not _wait_for_tcp_port(
+            _WHISPERKIT_SERVER_HOST,
+            port,
+            start_timeout,
+            expected_pid=self._server_proc.pid,
+            process=self._server_proc,
+        ):
+            self._close_owned_server()
+            raise TimeoutError(
+                "WhisperKit resident server did not accept its listener before "
+                f"timeout (model={self._model}, url={attempted_url}, log={log_path})"
             )
-        else:
-            logger.info(
-                "WhisperKit resident server started (pid=%s, model=%s, url=%s, log=%s)",
-                self._server_proc.pid,
-                self._model,
-                self._server_url,
-                log_path,
+        returncode = self._server_proc.poll()
+        if returncode is not None:
+            failed_pid = self._server_proc.pid
+            self._close_owned_server()
+            raise RuntimeError(
+                "WhisperKit resident server exited before owning listener "
+                f"(pid={failed_pid}, returncode={returncode}, model={self._model}, "
+                f"url={attempted_url}, log={log_path})"
             )
+        self._server_ready = True
+        startup_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            "WhisperKit resident server started "
+            "(pid=%s, model=%s, url=%s, log=%s, startup=%.0fms, "
+            "audio_encoder_compute_units=%s, text_decoder_compute_units=%s)",
+            self._server_proc.pid,
+            self._model,
+            self._server_url,
+            log_path,
+            startup_ms,
+            encoder_compute_units,
+            decoder_compute_units,
+        )
         return self._server_url, cli, self._server_proc.pid
 
     @staticmethod
@@ -558,10 +722,12 @@ class WhisperKitClient:
         return ""
 
     def _transcribe_resident(self, wav_bytes: bytes) -> str | None:
+        self._resident_failure_reason = None
         try:
             server_url, cli, server_pid = self._ensure_resident_server()
         except Exception as exc:
             logger.warning("WhisperKit resident server unavailable: %s", exc)
+            self._resident_failure_reason = f"server_start:{type(exc).__name__}:{exc}"
             return None
 
         total_start = time.perf_counter()
@@ -570,13 +736,12 @@ class WhisperKitClient:
         attempts: list[dict[str, object]] = []
         text = ""
         postprocess_ms = 0.0
-        final_suspicion_reason: str | None = None
         request_timeout = _float_env(
             "SPOKE_WHISPERKIT_SERVER_REQUEST_TIMEOUT",
             _WHISPERKIT_SERVER_REQUEST_TIMEOUT_SECONDS,
         )
 
-        for attempt_index in range(_WHISPERKIT_SUSPECT_RETRY_COUNT + 1):
+        for attempt_index in range(_WHISPERKIT_SUSPECT_ATTEMPTS):
             body, boundary = self._multipart_body(wav_bytes=wav_bytes, model=self._model)
             request = urllib.request.Request(
                 f"{server_url.rstrip('/')}/v1/audio/transcriptions",
@@ -599,6 +764,7 @@ class WhisperKitClient:
                     attempt_index + 1,
                     exc,
                 )
+                self._resident_failure_reason = f"request:{type(exc).__name__}:{exc}"
                 return None
             request_ms = (time.perf_counter() - request_start) * 1000
             try:
@@ -612,6 +778,7 @@ class WhisperKitClient:
                     len(raw_body),
                     exc,
                 )
+                self._resident_failure_reason = f"response_decode:{type(exc).__name__}:{exc}"
                 return None
 
             postprocess_start = time.perf_counter()
@@ -637,26 +804,14 @@ class WhisperKitClient:
                 }
             )
             text = attempt_text
-            final_suspicion_reason = suspicion_reason
             if suspicion_reason is None:
                 break
-            if attempt_index < _WHISPERKIT_SUSPECT_RETRY_COUNT:
-                logger.warning(
-                    "WhisperKit resident returned suspiciously short success; retrying "
-                    "(model=%s, url=%s, duration=%s, response_bytes=%d, text_len=%d)",
-                    self._model,
-                    server_url,
-                    f"{duration_s:.1f}s" if duration_s is not None else "unknown",
-                    len(raw_body),
-                    len(attempt_text),
-                )
 
         total_ms = (time.perf_counter() - total_start) * 1000
         if any(attempt["suspicious"] for attempt in attempts):
-            status = "suspicious_unrecovered" if final_suspicion_reason is not None else "recovered_by_retry"
             _record_whisperkit_suspect_bundle(
                 wav_bytes=wav_bytes,
-                status=status,
+                status="suspicious_unrecovered",
                 mode="resident-server",
                 model=self._model,
                 cli_path=cli,
@@ -669,12 +824,15 @@ class WhisperKitClient:
                 chosen_output=text,
                 server_url=server_url,
                 server_pid=server_pid,
+                requested_route="resident-server",
+                effective_route="resident-server",
             )
 
         logger.info(
             "WhisperKit resident transcription (%s): %r "
             "(%d bytes audio; url=%s; pid=%s; chunking=%s; request=%.0fms, "
-            "postprocess=%.0fms, total=%.0fms)",
+            "postprocess=%.0fms, total=%.0fms; requested_route=resident-server, "
+            "effective_route=resident-server)",
             self._model,
             text,
             len(wav_bytes),
@@ -685,6 +843,22 @@ class WhisperKitClient:
             postprocess_ms,
             total_ms,
         )
+        self._last_route_report = {
+            "requested_route": "resident-server",
+            "effective_route": "resident-server",
+            "fallback_reason": None,
+            "status": (
+                "suspicious_success"
+                if any(attempt["suspicious"] for attempt in attempts)
+                else "succeeded"
+            ),
+            "terminal_error": None,
+            "model": self._model,
+            "server_url": server_url,
+            "server_pid": server_pid,
+            "audio_encoder_compute_units": _whisperkit_encoder_compute_units(),
+            "text_decoder_compute_units": _whisperkit_decoder_compute_units(),
+        }
         return text
 
     def unload(self) -> None:
@@ -694,14 +868,23 @@ class WhisperKitClient:
     @property
     def is_loaded(self) -> bool:
         """Whether this client currently has a live resident server."""
-        return self._server_proc is not None and self._server_proc.poll() is None
+        return (
+            self._server_ready
+            and self._server_proc is not None
+            and self._server_proc.poll() is None
+        )
 
-    def close(self) -> None:
-        """Terminate the owned resident server process."""
+    @property
+    def last_route_report(self) -> dict[str, object]:
+        """Return the effective route identity for the latest transcription."""
+        return dict(self._last_route_report)
+
+    def _close_owned_server(self) -> None:
         proc = self._server_proc
         self._server_proc = None
         self._server_url = self._external_server_url
         self._server_port = None
+        self._server_ready = self._external_server_url is not None
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
@@ -714,3 +897,7 @@ class WhisperKitClient:
             except OSError:
                 pass
             self._server_log_handle = None
+
+    def close(self) -> None:
+        """Terminate the owned resident server process."""
+        self._close_owned_server()

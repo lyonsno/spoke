@@ -151,6 +151,7 @@ def _run_modal_with_paste(alert) -> int:
         NSEvent.removeMonitor_(monitor)
 
 from .capture import AudioCapture
+from .audio_spool import AudioSpool
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .command_overlay_trace import record_command_overlay_trace
 from .converge import TurnCarver, compact_history as compact_converge_history
@@ -1090,6 +1091,7 @@ class SpokeAppDelegate(NSObject):
         self._optical_shell_metrics = OpticalShellMetrics()
         self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
+        self._audio_spool = AudioSpool.from_env()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
@@ -2777,27 +2779,35 @@ class SpokeAppDelegate(NSObject):
         # Also snapshot the segment count so the worker can detect whether
         # stop() flushed an extra final segment (which overlaps the tail).
         acc = getattr(self, "_segment_accumulator", None)
-        if acc is not None and acc.count > 0:
+        has_segments = acc is not None and acc.count > 0
+        spool = getattr(self, "_audio_spool", None)
+        spool_enabled = bool(
+            spool is not None
+            and getattr(getattr(spool, "config", None), "enabled", False)
+        )
+        raw_evidence_wav = None
+        if not has_segments or spool_enabled:
+            try:
+                raw_snapshot = self._capture.get_buffer()
+            except Exception:
+                logger.exception("Failed to snapshot raw pre-stop audio")
+            else:
+                if isinstance(raw_snapshot, (bytes, bytearray)):
+                    raw_evidence_wav = bytes(raw_snapshot)
+                else:
+                    logger.warning(
+                        "Ignoring non-bytes raw pre-stop audio snapshot: %s",
+                        type(raw_snapshot).__name__,
+                    )
+
+        if has_segments:
             self._pre_stop_tail_wav = self._capture.get_tail_buffer()
             self._pre_stop_segment_count = acc.count
             pre_stop_raw_wav = None
         else:
             self._pre_stop_tail_wav = None
             self._pre_stop_segment_count = 0
-            try:
-                raw_snapshot = self._capture.get_buffer()
-            except Exception:
-                logger.exception("Failed to snapshot raw pre-stop audio")
-                pre_stop_raw_wav = None
-            else:
-                if isinstance(raw_snapshot, (bytes, bytearray)):
-                    pre_stop_raw_wav = bytes(raw_snapshot)
-                else:
-                    logger.warning(
-                        "Ignoring non-bytes raw pre-stop audio snapshot: %s",
-                        type(raw_snapshot).__name__,
-                    )
-                    pre_stop_raw_wav = None
+            pre_stop_raw_wav = raw_evidence_wav
 
         # Start visible release feedback before synchronous capture teardown
         # and WAV assembly. Even small stop/encode hiccups are felt as a
@@ -2814,12 +2824,28 @@ class SpokeAppDelegate(NSObject):
             # speech-chunk view under load.
             wav_bytes = pre_stop_raw_wav
 
+        elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
+        discarded_for_short_shift_hold = bool(shift_held and elapsed < 0.8)
+        self._spool_stopped_audio_capture(
+            raw_evidence_wav or wav_bytes,
+            pathway=(
+                "command"
+                if enter_held and self._command_client is not None
+                else "tray"
+                if shift_held
+                else "text"
+            ),
+            shift_held=shift_held,
+            enter_held=enter_held,
+            elapsed_seconds=elapsed,
+            discarded_for_short_shift_hold=discarded_for_short_shift_hold,
+        )
+
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
             logger.info("New utterance captured while approval remains pending")
 
         # Short shift-hold (under 800ms of recording) = recall into tray
-        elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
-        if shift_held and elapsed < 0.8:
+        if discarded_for_short_shift_hold:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
 
@@ -2938,6 +2964,55 @@ class SpokeAppDelegate(NSObject):
                 target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
             )
         thread.start()
+
+    def _spool_stopped_audio_capture(
+        self,
+        wav_bytes: bytes,
+        *,
+        pathway: str,
+        shift_held: bool,
+        enter_held: bool,
+        elapsed_seconds: float,
+        discarded_for_short_shift_hold: bool,
+    ) -> None:
+        if not wav_bytes:
+            return
+        spool = getattr(self, "_audio_spool", None)
+        if spool is None:
+            return
+        try:
+            record = spool.spool_capture(
+                wav_bytes,
+                metadata={
+                    "source": "manual_hold",
+                    "pathway": pathway,
+                    "shift_held": shift_held,
+                    "enter_held": enter_held,
+                    "elapsed_seconds": elapsed_seconds,
+                    "discarded_for_short_shift_hold": discarded_for_short_shift_hold,
+                    "preview_backend": getattr(self, "_preview_backend", None),
+                    "preview_model": getattr(self, "_preview_model_id", None),
+                    "transcription_backend": getattr(self, "_whisper_backend", None),
+                    "requested_transcription_model": getattr(
+                        self,
+                        "_transcription_model_id",
+                        None,
+                    ),
+                    "requested_transcription_client": type(
+                        getattr(self, "_client", None)
+                    ).__name__,
+                    "transcription_route_state": "requested_pre_transcription",
+                },
+            )
+        except Exception:
+            logger.exception("Failed to spool stopped audio capture")
+            return
+        if record is not None:
+            logger.info(
+                "Audio capture spooled: %s (%d bytes, route_state=requested_pre_transcription)",
+                record.wav_path,
+                record.byte_count,
+            )
 
     def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
         """Approve the pending command from the dedicated approval grammar."""

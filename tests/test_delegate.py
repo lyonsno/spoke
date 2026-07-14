@@ -71,6 +71,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._whisper_backend = "local"
     delegate._preview_backend = "local"
     delegate._segment_accumulator = main_module.SegmentAccumulator()
+    delegate._audio_spool = MagicMock()
+    delegate._audio_spool.config.enabled = False
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -686,6 +688,29 @@ class TestHoldCallbacks:
 
         d._capture.get_tail_buffer.assert_called_once_with()
         d._capture.get_buffer.assert_not_called()
+        thread_args = MockThread.call_args.kwargs["args"]
+        assert thread_args[0] == b"vad-trimmed-wav"
+
+    def test_hold_end_spools_raw_audio_while_preserving_segment_tail_path(
+        self, main_module, monkeypatch
+    ):
+        """Recovery evidence stays raw when transcription uses cached segments."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._audio_spool.config.enabled = True
+        acc = main_module.SegmentAccumulator()
+        d._segment_accumulator = acc
+        acc._results = ["cached text"]
+        d._capture.get_tail_buffer.return_value = b"tail-wav"
+        d._capture.get_buffer.return_value = b"raw-full-wav"
+        d._capture.stop.return_value = b"vad-trimmed-wav"
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end()
+
+        d._capture.get_buffer.assert_called_once_with()
+        d._audio_spool.spool_capture.assert_called_once()
+        assert d._audio_spool.spool_capture.call_args.args == (b"raw-full-wav",)
         thread_args = MockThread.call_args.kwargs["args"]
         assert thread_args[0] == b"vad-trimmed-wav"
 
@@ -5772,6 +5797,29 @@ class TestShortShiftHold:
         # Should not spawn transcription thread — audio was discarded
         MockThread.assert_not_called()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_short_shift_hold_spools_raw_audio_before_instant_empty_path(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.get_buffer.return_value = b"raw-full-wav"
+        d._capture.stop.return_value = b"vad-trimmed-wav"
+        d._record_start_time = time.monotonic() - 0.3
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._command_overlay = MagicMock(_visible=False)
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end(shift_held=True)
+
+        MockThread.assert_not_called()
+        d._audio_spool.spool_capture.assert_called_once()
+        args, kwargs = d._audio_spool.spool_capture.call_args
+        assert args == (b"raw-full-wav",)
+        assert kwargs["metadata"]["pathway"] == "tray"
+        assert kwargs["metadata"]["shift_held"] is True
+        assert kwargs["metadata"]["discarded_for_short_shift_hold"] is True
+        assert kwargs["metadata"]["transcription_route_state"] == "requested_pre_transcription"
 
     def test_long_shift_hold_keeps_audio(self, main_module, monkeypatch):
         """Shift-release over 800ms should proceed to transcription."""
