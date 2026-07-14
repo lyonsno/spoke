@@ -12,6 +12,7 @@ import io
 import logging
 import os
 from pathlib import Path
+import threading
 import wave
 
 import numpy as np
@@ -27,6 +28,22 @@ _DEFAULT_EAGER_EVAL = False
 mx = None
 mlx_whisper = None
 load_model = None
+
+
+class _DecodeTimeoutCapture(logging.Handler):
+    """Capture mlx-whisper decode-timeout warnings from one transcribe call."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self._thread_id = threading.get_ident()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread_id:
+            return
+        message = record.getMessage()
+        if message.startswith("Decode timeout"):
+            self.messages.append(message)
 
 
 def _huggingface_hub_cache_dir() -> Path:
@@ -202,7 +219,17 @@ class LocalTranscriptionClient:
         else:
             kwargs["decode_timeout"] = self._decode_timeout
 
-        result = runtime_whisper.transcribe(audio, **kwargs)
+        timeout_capture = _DecodeTimeoutCapture()
+        backend_logger = logging.getLogger("mlx_whisper")
+        backend_logger.addHandler(timeout_capture)
+        try:
+            result = runtime_whisper.transcribe(audio, **kwargs)
+        finally:
+            backend_logger.removeHandler(timeout_capture)
+
+        if timeout_capture.messages:
+            detail = "; ".join(timeout_capture.messages)
+            raise TimeoutError(f"mlx-whisper returned timeout-tainted text: {detail}")
 
         text = result.get("text", "").strip()
         text = truncate_repetition(text)

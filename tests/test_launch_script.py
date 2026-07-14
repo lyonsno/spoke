@@ -355,6 +355,21 @@ class TestLaunchTargetSecretsEnvLoading:
             "rather than open-coding a second parser"
         )
 
+    def test_launch_target_clears_inherited_model_before_target_smoke_env(self):
+        """A selected target's transcription route must survive inherited-env cleanup."""
+        text = _target_script_text()
+        clear_idx = text.find('child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)')
+        smoke_idx = text.find(
+            'child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))'
+        )
+
+        assert clear_idx != -1, "inherited transcription-model cleanup not found"
+        assert smoke_idx != -1, "selected target smoke-env application not found"
+        assert clear_idx < smoke_idx, (
+            "launch-target.sh must clear inherited model overrides before applying "
+            "the selected target's .spoke-smoke-env"
+        )
+
 
 class TestLauncherPythonOverride:
     """Both launcher paths must honor per-worktree Python overrides.

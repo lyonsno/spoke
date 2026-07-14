@@ -1,6 +1,7 @@
 """Tests for local MLX Whisper transcription client."""
 
 from unittest.mock import MagicMock, patch
+import logging
 import os
 import tempfile
 
@@ -310,6 +311,23 @@ class TestLocalTranscriptionClient:
         # First positional arg should be a numpy array, not a string path
         assert isinstance(call_args[0][0], np.ndarray)
         assert call_args[0][0].dtype == np.float32
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_decode_timeout_warning_rejects_partial_text(self, mock_mlx_whisper):
+        """mlx-whisper timeout warnings must not silently finalize partial text."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        def timeout_tainted_transcribe(*_args, **_kwargs):
+            logging.getLogger("mlx_whisper").warning(
+                "Decode timeout (30.0s) exceeded after iteration 123/224"
+            )
+            return {"text": "partial timeout-tainted text"}
+
+        mock_mlx_whisper.transcribe.side_effect = timeout_tainted_transcribe
+        client = LocalTranscriptionClient()
+
+        with pytest.raises(TimeoutError, match="Decode timeout"):
+            client.transcribe(_make_wav_bytes())
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_inference_error_propagates(self, mock_mlx_whisper):
