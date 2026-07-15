@@ -11,6 +11,8 @@ import io
 import time
 import threading
 import urllib.error
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 
@@ -30,6 +32,10 @@ def _make_delegate(main_module, monkeypatch):
     delegate._transcription_token = 0
     delegate._preview_active = False
     delegate._preview_thread = None
+    def _preview_loop(_token=None):
+        return None
+
+    delegate._preview_loop = _preview_loop
     delegate._preview_client = MagicMock()
     delegate._preview_model_id = "preview-model"
     delegate._transcription_model_id = "transcription-model"
@@ -871,6 +877,43 @@ class TestTranscriptionToken:
             "Local transcription timed out after bounded retries"
         )
 
+    def test_terminal_asr_failure_does_not_inject_preview_text(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 7
+        d._last_preview_text = "partial preview"
+        d._inject_result_text = MagicMock()
+
+        d.transcriptionFailed_(
+            {
+                "token": 7,
+                "error": "WhisperKit terminal failure",
+                "terminal_asr_failure": True,
+            }
+        )
+
+        d._inject_result_text.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("WhisperKit terminal failure")
+
+    def test_parallel_terminal_asr_failure_does_not_inject_preview_text(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 9
+        d._last_preview_text = "partial preview"
+        d._inject_result_text = MagicMock()
+
+        d.parallelTranscriptionFailed_(
+            {
+                "token": 9,
+                "error": "WhisperKit terminal failure",
+                "terminal_asr_failure": True,
+            }
+        )
+
+        d._inject_result_text.assert_not_called()
+
     def test_empty_text_not_injected(self, main_module, monkeypatch):
         """Empty transcription result should not call inject_text."""
         d = _make_delegate(main_module, monkeypatch)
@@ -933,6 +976,89 @@ class TestServerCrashResilience:
         call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
         assert call_args[0][0] == "transcriptionFailed:"
         assert call_args[0][1]["token"] == 1
+
+    def test_transcribe_worker_attaches_effective_lease_to_failure_bundle(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        lock_state = {"held": False}
+        augmentation_lock_states = []
+
+        @contextmanager
+        def inference_context(client):
+            lock_state["held"] = True
+            try:
+                yield
+            finally:
+                lock_state["held"] = False
+
+        failure = TimeoutError("resident timed out")
+        failure.failure_bundle_path = Path("/tmp/utterance-owned-failure.json")
+
+        def fail_while_locked(*args, **kwargs):
+            assert lock_state["held"] is True
+            raise failure
+
+        def record_augmentation_state(*args, **kwargs):
+            augmentation_lock_states.append(lock_state["held"])
+
+        d._local_inference_context = inference_context
+        d._client.transcribe.side_effect = fail_while_locked
+        d._client.augment_failure_bundle.side_effect = record_augmentation_state
+        lease = MagicMock()
+        lease.snapshot.return_value = {
+            "lease_id": "spoke-live-timeout",
+            "requested": True,
+            "effective": True,
+            "state": "effective",
+            "scheduling_posture": "lease-effective",
+        }
+
+        d._transcribe_worker(b"full authoritative wav", token=1, gpu_lease=lease)
+
+        d._client.augment_failure_bundle.assert_called_once_with(
+            failure.failure_bundle_path,
+            pathway="text",
+            lease_snapshot=lease.snapshot.return_value,
+        )
+        d._client.augment_last_failure_bundle.assert_not_called()
+        assert augmentation_lock_states == [True]
+        failure_payload = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args.args[1]
+        )
+        assert failure_payload["terminal_asr_failure"] is True
+
+    def test_terminal_marker_survives_missing_failure_bundle_and_blocks_preview(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 13
+        d._last_preview_text = "partial preview"
+        d._inject_result_text = MagicMock()
+        failure = TimeoutError("resident timed out")
+        failure.terminal_asr_failure = True
+        failure.failure_bundle_persisted = False
+        d._client.transcribe.side_effect = failure
+
+        d._transcribe_worker(b"full authoritative wav", token=13)
+
+        selector, payload, wait = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args.args
+        )
+        assert selector == "transcriptionFailed:"
+        assert wait is False
+        assert payload["terminal_asr_failure"] is True
+        assert payload["failure_bundle_persisted"] is False
+        assert "authoritative audio evidence could not be preserved" in payload["error"]
+
+        d.transcriptionFailed_(payload)
+
+        d._inject_result_text.assert_not_called()
+        d._menubar.set_status_text.assert_called_with(payload["error"])
 
     def test_transcribe_worker_catches_http_error(self, main_module, monkeypatch):
         """HTTP 500 from server should not crash the app."""
@@ -4506,6 +4632,29 @@ class TestCommandTranscribeWorker:
         # Should NOT have tried to stream
         d._command_client.stream_command_events.assert_not_called()
 
+    def test_terminal_transcription_failure_reports_bundle_persistence_failure(
+        self, main_module, monkeypatch
+    ):
+        d = self._make_command_delegate(main_module, monkeypatch)
+        failure = TimeoutError("resident timed out")
+        failure.terminal_asr_failure = True
+        failure.failure_bundle_persisted = False
+        d._client.transcribe.side_effect = failure
+        d._client.supports_streaming = False
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        failure_call = next(
+            call
+            for call in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+            if call.args[0] == "commandFailed:"
+        )
+        payload = failure_call.args[1]
+        assert payload["terminal_asr_failure"] is True
+        assert payload["failure_bundle_persisted"] is False
+        assert "authoritative audio evidence could not be preserved" in payload["error"]
+        d._command_client.stream_command_events.assert_not_called()
+
     def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
         """Streaming exception → commandFailed after utterance dispatched."""
         d = self._make_command_delegate(main_module, monkeypatch)
@@ -6606,6 +6755,59 @@ class TestSegmentAcceleratedTranscription:
         assert "seg one" in payload["text"]
         assert "seg two" in payload["text"]
         assert "tail text" in payload["text"]
+
+    def test_terminal_tail_failure_does_not_start_full_buffer_duplicate_decode(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribe_start = time.monotonic()
+        acc = main_module.SegmentAccumulator()
+        d._segment_accumulator = acc
+        d._client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"segment", d._client)
+        acc.wait(timeout=5.0)
+        d._client.transcribe.reset_mock()
+
+        d._pre_stop_tail_wav = b"tail wav"
+        d._pre_stop_segment_count = acc.count
+        failure = TimeoutError("resident tail timed out")
+        failure.failure_bundle_path = Path("/tmp/tail-terminal-failure.json")
+        d._client.transcribe.side_effect = failure
+        lease = MagicMock()
+        lease.snapshot.return_value = {"lease_id": "tail-lease", "effective": True}
+
+        d._transcribe_worker(b"authoritative full wav", token=1, gpu_lease=lease)
+
+        d._client.transcribe.assert_called_once_with(b"tail wav")
+        d._client.augment_failure_bundle.assert_called_once_with(
+            failure.failure_bundle_path,
+            pathway="text",
+            lease_snapshot=lease.snapshot.return_value,
+        )
+        selector, payload, wait = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args.args
+        )
+        assert selector == "transcriptionFailed:"
+        assert payload["terminal_asr_failure"] is True
+
+    def test_tray_terminal_asr_failure_does_not_use_preview_text(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 11
+        d._last_preview_text = "partial preview"
+        d._enter_tray = MagicMock()
+
+        d.trayTranscriptionFailed_(
+            {
+                "token": 11,
+                "error": "WhisperKit terminal failure",
+                "terminal_asr_failure": True,
+            }
+        )
+
+        d._enter_tray.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("WhisperKit terminal failure")
 
     def test_transcribe_worker_falls_back_without_segments(self, main_module, monkeypatch):
         """Without segments, _transcribe_worker should use full buffer."""

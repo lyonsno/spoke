@@ -3082,7 +3082,14 @@ class SpokeAppDelegate(NSObject):
         if tail_wav and not final_flushed:
             try:
                 tail_text = self._client.transcribe(tail_wav)
-            except Exception:
+            except Exception as exc:
+                if getattr(exc, "terminal_asr_failure", False) or getattr(
+                    exc, "failure_bundle_path", None
+                ) is not None:
+                    logger.exception(
+                        "Tail transcription failed terminally — refusing duplicate full-buffer decode"
+                    )
+                    raise
                 logger.exception("Tail transcription failed — falling back to full buffer")
                 return None
 
@@ -3095,13 +3102,31 @@ class SpokeAppDelegate(NSObject):
         )
         return text
 
-    def _transcribe_full_buffer(self, wav_bytes: bytes, client=None) -> str:
+    def _transcribe_full_buffer(
+        self,
+        wav_bytes: bytes,
+        client=None,
+        *,
+        failure_pathway: str | None = None,
+        gpu_lease=None,
+    ) -> str:
         """Run full-buffer transcription with local-Whisper recovery."""
         active_client = self._client if client is None else client
         if isinstance(active_client, LocalTranscriptionClient):
             return self._transcribe_local_whisper_with_recovery(wav_bytes, active_client)
         with self._local_inference_context(active_client):
-            return active_client.transcribe(wav_bytes)
+            try:
+                return active_client.transcribe(wav_bytes)
+            except Exception as exc:
+                if failure_pathway is not None:
+                    self._attach_final_asr_failure_context(
+                        failure_pathway,
+                        gpu_lease,
+                        failure=exc,
+                        client=active_client,
+                    )
+                    exc.spoke_failure_context_attached = True
+                raise
 
     def _transcribe_local_whisper_with_recovery(
         self, wav_bytes: bytes, client: LocalTranscriptionClient
@@ -3168,11 +3193,87 @@ class SpokeAppDelegate(NSObject):
     def _transcribe_worker(self, wav_bytes: bytes, token: int, gpu_lease=None) -> None:
         self._log_gpu_lease_posture(gpu_lease, "text")
         try:
-            self._transcribe_worker_body(wav_bytes, token)
+            self._transcribe_worker_body(wav_bytes, token, gpu_lease)
         finally:
             self._release_gpu_lease(gpu_lease, "text")
 
-    def _transcribe_worker_body(self, wav_bytes: bytes, token: int) -> None:
+    def _attach_final_asr_failure_context(
+        self,
+        pathway: str,
+        gpu_lease,
+        *,
+        failure: Exception | None = None,
+        client=None,
+    ) -> None:
+        active_client = self._client if client is None else client
+        report_path = getattr(failure, "failure_bundle_path", None)
+        augment_exact = getattr(active_client, "augment_failure_bundle", None)
+        augment_last = getattr(active_client, "augment_last_failure_bundle", None)
+        if report_path is None and callable(augment_exact):
+            return
+        if report_path is not None and not callable(augment_exact):
+            logger.error(
+                "ASR failure report %s cannot receive %s context: client lacks exact-path augmentation",
+                report_path,
+                pathway,
+            )
+            return
+        if report_path is None and not callable(augment_last):
+            return
+        lease_snapshot = None
+        if gpu_lease is not None:
+            try:
+                lease_snapshot = gpu_lease.snapshot()
+            except Exception:
+                logger.exception(
+                    "Failed to snapshot GPU lease for %s ASR failure evidence",
+                    pathway,
+                )
+        try:
+            if report_path is not None:
+                augment_exact(
+                    report_path,
+                    pathway=pathway,
+                    lease_snapshot=lease_snapshot,
+                )
+            else:
+                augment_last(pathway=pathway, lease_snapshot=lease_snapshot)
+        except Exception:
+            logger.exception(
+                "Failed to attach %s ASR failure evidence context",
+                pathway,
+            )
+
+    @staticmethod
+    def _final_asr_failure_payload(token: int, exc: Exception) -> dict:
+        """Preserve terminal failure truth independently from report persistence."""
+        report_path = getattr(exc, "failure_bundle_path", None)
+        terminal = bool(
+            getattr(exc, "terminal_asr_failure", False) or report_path is not None
+        )
+        persisted = getattr(
+            exc,
+            "failure_bundle_persisted",
+            report_path is not None if terminal else None,
+        )
+        error_text = str(exc)
+        if terminal and persisted is False:
+            error_text = (
+                f"{error_text}; authoritative audio evidence could not be preserved"
+            )
+        return {
+            "token": token,
+            "error": error_text,
+            "terminal_asr_failure": terminal,
+            "failure_bundle_persisted": persisted,
+        }
+
+    def _transcribe_worker_body(
+        self,
+        wav_bytes: bytes,
+        token: int,
+        gpu_lease=None,
+    ) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
@@ -3201,7 +3302,11 @@ class SpokeAppDelegate(NSObject):
                     cancel_stream = getattr(self._client, "cancel_stream", None)
                     if callable(cancel_stream):
                         cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        failure_pathway="text",
+                        gpu_lease=gpu_lease,
+                    )
                 elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
@@ -3210,12 +3315,22 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
                 else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        failure_pathway="text",
+                        gpu_lease=gpu_lease,
+                    )
         except Exception as exc:
             logger.exception("Transcription failed")
+            if not getattr(exc, "spoke_failure_context_attached", False):
+                self._attach_final_asr_failure_context(
+                    "text",
+                    gpu_lease,
+                    failure=exc,
+                )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "transcriptionFailed:",
-                {"token": token, "error": str(exc)},
+                self._final_asr_failure_payload(token, exc),
                 False,
             )
             return
@@ -3232,11 +3347,16 @@ class SpokeAppDelegate(NSObject):
     ) -> None:
         self._log_gpu_lease_posture(gpu_lease, "parallel-insert")
         try:
-            self._parallel_insert_worker_body(wav_bytes, token)
+            self._parallel_insert_worker_body(wav_bytes, token, gpu_lease)
         finally:
             self._release_gpu_lease(gpu_lease, "parallel-insert")
 
-    def _parallel_insert_worker_body(self, wav_bytes: bytes, token: int) -> None:
+    def _parallel_insert_worker_body(
+        self,
+        wav_bytes: bytes,
+        token: int,
+        gpu_lease=None,
+    ) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -3259,7 +3379,11 @@ class SpokeAppDelegate(NSObject):
                     cancel_stream = getattr(self._client, "cancel_stream", None)
                     if callable(cancel_stream):
                         cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        failure_pathway="parallel-insert",
+                        gpu_lease=gpu_lease,
+                    )
                 elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
@@ -3268,12 +3392,22 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
                 else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        failure_pathway="parallel-insert",
+                        gpu_lease=gpu_lease,
+                    )
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
+            if not getattr(exc, "spoke_failure_context_attached", False):
+                self._attach_final_asr_failure_context(
+                    "parallel-insert",
+                    gpu_lease,
+                    failure=exc,
+                )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "parallelTranscriptionFailed:",
-                {"token": token, "error": str(exc)},
+                self._final_asr_failure_payload(token, exc),
                 False,
             )
             return
@@ -3370,7 +3504,7 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return  # stale failure, ignore
         self._transcribing = False
-        if self._last_preview_text:
+        if self._last_preview_text and not payload.get("terminal_asr_failure", False):
             logger.warning(
                 "Final transcription failed — falling back to latest preview text"
             )
@@ -3387,7 +3521,7 @@ class SpokeAppDelegate(NSObject):
         """Main thread: handle failure on the parallel insert lane."""
         if payload["token"] != self._parallel_insert_token:
             return
-        if self._last_preview_text:
+        if self._last_preview_text and not payload.get("terminal_asr_failure", False):
             logger.warning("Parallel transcription failed — falling back to latest preview text")
             self._inject_result_text(self._last_preview_text, "Pasted preview")
             return
@@ -3633,11 +3767,16 @@ class SpokeAppDelegate(NSObject):
     ) -> None:
         self._log_gpu_lease_posture(gpu_lease, "tray")
         try:
-            self._tray_transcribe_worker_body(wav_bytes, token)
+            self._tray_transcribe_worker_body(wav_bytes, token, gpu_lease)
         finally:
             self._release_gpu_lease(gpu_lease, "tray")
 
-    def _tray_transcribe_worker_body(self, wav_bytes: bytes, token: int) -> None:
+    def _tray_transcribe_worker_body(
+        self,
+        wav_bytes: bytes,
+        token: int,
+        gpu_lease=None,
+    ) -> None:
         """Background thread: transcribe audio, then enter tray on main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
@@ -3660,7 +3799,11 @@ class SpokeAppDelegate(NSObject):
                     cancel_stream = getattr(self._client, "cancel_stream", None)
                     if callable(cancel_stream):
                         cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        failure_pathway="tray",
+                        gpu_lease=gpu_lease,
+                    )
                 elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
@@ -3669,12 +3812,22 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
                 else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        failure_pathway="tray",
+                        gpu_lease=gpu_lease,
+                    )
         except Exception as exc:
             logger.exception("Tray transcription failed")
+            if not getattr(exc, "spoke_failure_context_attached", False):
+                self._attach_final_asr_failure_context(
+                    "tray",
+                    gpu_lease,
+                    failure=exc,
+                )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "trayTranscriptionFailed:",
-                {"token": token, "error": str(exc)},
+                self._final_asr_failure_payload(token, exc),
                 False,
             )
             return
@@ -3715,7 +3868,7 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._last_preview_text:
+        if self._last_preview_text and not payload.get("terminal_asr_failure", False):
             logger.warning("Tray transcription failed — using preview text")
             self._enter_tray(self._last_preview_text)
             return
@@ -4763,12 +4916,18 @@ class SpokeAppDelegate(NSObject):
         self._command_tool_used_tts = False
         self._log_gpu_lease_posture(gpu_lease, "command")
         try:
-            utterance = self._command_transcribe_audio(wav_bytes)
+            utterance = self._command_transcribe_audio(wav_bytes, gpu_lease=gpu_lease)
         except Exception as exc:
             logger.exception("Command transcription failed")
+            if not getattr(exc, "spoke_failure_context_attached", False):
+                self._attach_final_asr_failure_context(
+                    "command",
+                    gpu_lease,
+                    failure=exc,
+                )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandFailed:",
-                {"token": token, "error": str(exc)},
+                self._final_asr_failure_payload(token, exc),
                 False,
             )
             return
@@ -4794,7 +4953,7 @@ class SpokeAppDelegate(NSObject):
 
         self._command_stream_response(utterance, token)
 
-    def _command_transcribe_audio(self, wav_bytes: bytes) -> str:
+    def _command_transcribe_audio(self, wav_bytes: bytes, *, gpu_lease=None) -> str:
         """Transcribe command audio while the per-recording GPU lease is held."""
         if self._preview_thread is not None:
             if getattr(self, "_preview_done", None) is not None:
@@ -4812,7 +4971,11 @@ class SpokeAppDelegate(NSObject):
                 with self._local_inference_context(self._client):
                     utterance = self._client.finish_stream()
             else:
-                utterance = self._transcribe_full_buffer(wav_bytes)
+                utterance = self._transcribe_full_buffer(
+                    wav_bytes,
+                    failure_pathway="command",
+                    gpu_lease=gpu_lease,
+                )
         return utterance
 
     def _command_stream_response(self, utterance: str, token: int) -> None:

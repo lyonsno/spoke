@@ -299,6 +299,98 @@ def _record_whisperkit_suspect_bundle(
         logger.error("Failed to preserve WhisperKit suspect bundle in %s: %s", spool_dir, exc)
 
 
+def _record_whisperkit_terminal_failure_bundle(
+    *,
+    wav_bytes: bytes,
+    model: str,
+    cli_path: str | None,
+    route_report: dict[str, object],
+    terminal_error: str,
+    fallback_attempted: bool,
+) -> Path | None:
+    """Preserve authoritative audio and route identity for a terminal failure."""
+    spool_dir = _whisperkit_suspect_spool_dir()
+    try:
+        spool_dir.mkdir(parents=True, exist_ok=True)
+        audio_sha256 = hashlib.sha256(wav_bytes).hexdigest()
+        stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stem = f"whisperkit-failure-{stamp}-{audio_sha256[:12]}"
+        audio_path = spool_dir / f"{stem}.wav"
+        report_path = spool_dir / f"{stem}.json"
+        with audio_path.open("xb") as audio_file:
+            audio_file.write(wav_bytes)
+        report = {
+            "phase": "whisperkit_terminal_failure",
+            "status": "failed",
+            "requested_route": route_report.get("requested_route"),
+            "effective_route": route_report.get("effective_route"),
+            "fallback_reason": route_report.get("fallback_reason"),
+            "fallback_attempted": fallback_attempted,
+            "terminal_error": terminal_error,
+            "effective_model": model,
+            "effective_cli_path": cli_path,
+            "effective_server_url": route_report.get("server_url"),
+            "server_pid": route_report.get("server_pid"),
+            "effective_chunking_strategy": route_report.get(
+                "effective_chunking_strategy",
+                _whisperkit_chunking_strategy(),
+            ),
+            "audio_encoder_compute_units": route_report.get(
+                "audio_encoder_compute_units",
+                _whisperkit_encoder_compute_units(),
+            ),
+            "text_decoder_compute_units": route_report.get(
+                "text_decoder_compute_units",
+                _whisperkit_decoder_compute_units(),
+            ),
+            "timeout_seconds": route_report.get(
+                "timeout_seconds",
+                _whisperkit_timeout_seconds(),
+            ),
+            "prompt": route_report.get("prompt", {}),
+            "attempts": route_report.get("attempts", []),
+            "chosen_output": route_report.get("chosen_output"),
+            "lease": {
+                "requested": _truthy_env("SPOKE_GPU_INTERACTIVE_LEASE"),
+                "effective": None,
+                "authority": "not-visible-at-whisperkit-client-boundary",
+            },
+            "audio_path": str(audio_path),
+            "audio_sha256": audio_sha256,
+            "audio_bytes": len(wav_bytes),
+            "duration_seconds": _wav_duration_seconds(wav_bytes),
+        }
+        with report_path.open("x", encoding="utf-8") as report_file:
+            json.dump(report, report_file, indent=2, sort_keys=True)
+            report_file.write("\n")
+        logger.error(
+            "WhisperKit terminal failure bundle preserved at %s "
+            "(requested_route=%s, effective_route=%s, model=%s, bytes=%d)",
+            report_path,
+            report["requested_route"],
+            report["effective_route"],
+            model,
+            len(wav_bytes),
+        )
+        return report_path
+    except OSError as exc:
+        logger.error(
+            "Failed to preserve WhisperKit terminal failure bundle in %s: %s",
+            spool_dir,
+            exc,
+        )
+        return None
+
+
+def _bind_failure_bundle_path(exc: Exception, report_path: Path | None) -> Exception:
+    """Bind durable evidence to the exact failed utterance represented by ``exc``."""
+    exc.terminal_asr_failure = True
+    exc.failure_bundle_persisted = report_path is not None
+    if report_path is not None:
+        exc.failure_bundle_path = report_path
+    return exc
+
+
 class WhisperKitClient:
     """Transcribe audio via whisperkit-cli on the Apple Neural Engine.
 
@@ -329,6 +421,7 @@ class WhisperKitClient:
         self._server_ready = self._external_server_url is not None
         self._resident_failure_reason: str | None = None
         self._last_route_report: dict[str, object] = {}
+        self._last_failure_bundle_path: Path | None = None
         self._server_lifecycle_lock = threading.RLock()
         self._closed = False
 
@@ -382,6 +475,7 @@ class WhisperKitClient:
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """Transcribe WAV audio bytes and return text."""
+        self._last_failure_bundle_path = None
         if not wav_bytes:
             return ""
 
@@ -402,23 +496,41 @@ class WhisperKitClient:
         )
 
         if _whisperkit_resident_enabled():
-            resident_text = self._transcribe_resident(wav_bytes, prompt)
+            total_timeout = _whisperkit_timeout_seconds()
+            deadline = time.monotonic() + total_timeout
+            resident_text = self._transcribe_resident(
+                wav_bytes,
+                prompt,
+                deadline=deadline,
+            )
             if resident_text is not None:
                 return resident_text
             fallback_reason = self._resident_failure_reason or "unknown resident failure"
-            logger.warning(
-                "WhisperKit resident server failed; falling back to CLI subprocess "
-                "(requested_route=resident-server, effective_route=cli-subprocess, "
-                "model=%s, server_url=%s, fallback_reason=%s)",
-                self._model,
-                self._server_url,
-                fallback_reason,
-            )
+            if deadline <= time.monotonic():
+                logger.error(
+                    "WhisperKit resident server failed after exhausting the total "
+                    "deadline; CLI fallback will not be attempted "
+                    "(requested_route=resident-server, effective_route=%s, "
+                    "model=%s, fallback_reason=%s)",
+                    self._last_route_report.get("effective_route"),
+                    self._model,
+                    fallback_reason,
+                )
+            else:
+                logger.warning(
+                    "WhisperKit resident server failed; falling back to CLI subprocess "
+                    "(requested_route=resident-server, effective_route=cli-subprocess, "
+                    "model=%s, server_url=%s, fallback_reason=%s)",
+                    self._model,
+                    self._server_url,
+                    fallback_reason,
+                )
             return self._transcribe_cli(
                 wav_bytes,
                 prompt,
                 fallback_from="resident-server",
                 fallback_reason=fallback_reason,
+                deadline=deadline,
             )
 
         return self._transcribe_cli(wav_bytes, prompt)
@@ -430,13 +542,37 @@ class WhisperKitClient:
         *,
         fallback_from: str | None = None,
         fallback_reason: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         """Transcribe WAV bytes through one-shot ``whisperkit-cli transcribe``."""
         requested_route = fallback_from or "cli-subprocess"
         encoder_compute_units = _whisperkit_encoder_compute_units()
         decoder_compute_units = _whisperkit_decoder_compute_units()
         chunking_strategy = _whisperkit_chunking_strategy()
-        timeout_seconds = _whisperkit_timeout_seconds()
+        configured_timeout = _whisperkit_timeout_seconds()
+        timeout_seconds = configured_timeout
+        if deadline is not None:
+            timeout_seconds = max(0.0, min(configured_timeout, deadline - time.monotonic()))
+        cli = self._cli_path or _find_whisperkit_cli()
+        if timeout_seconds <= 0:
+            exc = TimeoutError(
+                "WhisperKit total transcription deadline was exhausted before CLI fallback"
+            )
+            terminal_error = f"cli_deadline_exhausted:{type(exc).__name__}:{exc}"
+            self._last_route_report.update(
+                status="failed",
+                terminal_error=terminal_error,
+            )
+            self._last_failure_bundle_path = _record_whisperkit_terminal_failure_bundle(
+                wav_bytes=wav_bytes,
+                model=self._model,
+                cli_path=cli,
+                route_report=self._last_route_report,
+                terminal_error=terminal_error,
+                fallback_attempted=False,
+            )
+            raise _bind_failure_bundle_path(exc, self._last_failure_bundle_path)
+
         self._last_route_report = {
             "requested_route": requested_route,
             "effective_route": "cli-subprocess",
@@ -450,7 +586,6 @@ class WhisperKitClient:
             "timeout_seconds": timeout_seconds,
             "prompt": dict(self._last_prompt_receipt or {}),
         }
-        cli = self._cli_path or _find_whisperkit_cli()
         if cli is None:
             self._last_route_report.update(
                 effective_route=None,
@@ -463,7 +598,16 @@ class WhisperKitClient:
                 requested_route,
                 fallback_reason,
             )
-            return ""
+            self._last_failure_bundle_path = _record_whisperkit_terminal_failure_bundle(
+                wav_bytes=wav_bytes,
+                model=self._model,
+                cli_path=None,
+                route_report=self._last_route_report,
+                terminal_error="cli_missing",
+                fallback_attempted=fallback_from is not None,
+            )
+            exc = RuntimeError("whisperkit-cli not found; transcription cannot continue")
+            raise _bind_failure_bundle_path(exc, self._last_failure_bundle_path)
 
         total_start = time.perf_counter()
         write_start = total_start
@@ -507,11 +651,22 @@ class WhisperKitClient:
                         timeout=timeout_seconds,
                     )
                 except Exception as exc:
+                    terminal_error = f"cli_exception:{type(exc).__name__}:{exc}"
                     self._last_route_report.update(
                         status="failed",
-                        terminal_error=f"cli_exception:{type(exc).__name__}:{exc}",
+                        terminal_error=terminal_error,
                     )
-                    raise
+                    self._last_failure_bundle_path = (
+                        _record_whisperkit_terminal_failure_bundle(
+                            wav_bytes=wav_bytes,
+                            model=self._model,
+                            cli_path=cli,
+                            route_report=self._last_route_report,
+                            terminal_error=terminal_error,
+                            fallback_attempted=fallback_from is not None,
+                        )
+                    )
+                    raise _bind_failure_bundle_path(exc, self._last_failure_bundle_path)
                 subprocess_ms = (time.perf_counter() - subprocess_start) * 1000
                 raw_stdout = result.stdout or ""
                 raw_stderr = result.stderr or ""
@@ -545,7 +700,21 @@ class WhisperKitClient:
                         subprocess_ms,
                         raw_stderr.strip(),
                     )
-                    return ""
+                    self._last_failure_bundle_path = (
+                        _record_whisperkit_terminal_failure_bundle(
+                            wav_bytes=wav_bytes,
+                            model=self._model,
+                            cli_path=cli,
+                            route_report=self._last_route_report,
+                            terminal_error=terminal_error,
+                            fallback_attempted=fallback_from is not None,
+                        )
+                    )
+                    exc = RuntimeError(
+                        f"whisperkit-cli failed with exit {result.returncode}: "
+                        f"{raw_stderr.strip()}"
+                    )
+                    raise _bind_failure_bundle_path(exc, self._last_failure_bundle_path)
 
                 postprocess_start = time.perf_counter()
                 attempt_text = truncate_repetition(raw_text)
@@ -573,23 +742,26 @@ class WhisperKitClient:
                     break
             total_ms = (time.perf_counter() - total_start) * 1000
             if any(attempt["suspicious"] for attempt in attempts):
-                _record_whisperkit_suspect_bundle(
-                    wav_bytes=wav_bytes,
-                    status="suspicious_unrecovered",
-                    mode="cli-subprocess",
-                    model=self._model,
-                    cli_path=cli,
-                    chunking_strategy=chunking_strategy,
-                    duration_s=duration_s,
-                    write_ms=write_ms,
-                    postprocess_ms=postprocess_ms,
-                    total_ms=total_ms,
+                terminal_error = "cli_suspicious_output:long_audio_decode_was_empty_or_too_short"
+                self._last_route_report.update(
+                    status="failed",
+                    terminal_error=terminal_error,
                     attempts=attempts,
                     chosen_output=text,
-                    requested_route=requested_route,
-                    effective_route="cli-subprocess",
-                    fallback_reason=fallback_reason,
                 )
+                self._last_failure_bundle_path = _record_whisperkit_terminal_failure_bundle(
+                    wav_bytes=wav_bytes,
+                    model=self._model,
+                    cli_path=cli,
+                    route_report=self._last_route_report,
+                    terminal_error=terminal_error,
+                    fallback_attempted=fallback_from is not None,
+                )
+                exc = RuntimeError(
+                    "WhisperKit returned suspicious output for long audio; "
+                    "authoritative audio was preserved"
+                )
+                raise _bind_failure_bundle_path(exc, self._last_failure_bundle_path)
         finally:
             try:
                 os.unlink(tmp_path)
@@ -628,13 +800,21 @@ class WhisperKitClient:
             return Path(configured).expanduser()
         return Path.home() / "Library" / "Logs" / "Spoke" / "whisperkit-server.log"
 
-    def _ensure_resident_server(self) -> tuple[str, str, int | None]:
+    def _ensure_resident_server(
+        self,
+        *,
+        deadline: float | None = None,
+    ) -> tuple[str, str, int | None]:
         with self._server_lifecycle_lock:
             if self._closed:
                 raise RuntimeError("WhisperKit client is closed")
-            return self._ensure_resident_server_locked()
+            return self._ensure_resident_server_locked(deadline=deadline)
 
-    def _ensure_resident_server_locked(self) -> tuple[str, str, int | None]:
+    def _ensure_resident_server_locked(
+        self,
+        *,
+        deadline: float | None = None,
+    ) -> tuple[str, str, int | None]:
         cli = self._cli_path or _find_whisperkit_cli()
         if cli is None:
             raise RuntimeError("whisperkit-cli not found")
@@ -697,6 +877,8 @@ class WhisperKitClient:
             "SPOKE_WHISPERKIT_SERVER_START_TIMEOUT",
             _WHISPERKIT_SERVER_START_TIMEOUT_SECONDS,
         )
+        if deadline is not None:
+            start_timeout = max(0.0, min(start_timeout, deadline - time.monotonic()))
         attempted_url = self._server_url
         if not _wait_for_tcp_port(
             _WHISPERKIT_SERVER_HOST,
@@ -705,11 +887,15 @@ class WhisperKitClient:
             expected_pid=self._server_proc.pid,
             process=self._server_proc,
         ):
-            self._close_owned_server()
-            raise TimeoutError(
+            failed_pid = self._server_proc.pid
+            exc = TimeoutError(
                 "WhisperKit resident server did not accept its listener before "
                 f"timeout (model={self._model}, url={attempted_url}, log={log_path})"
             )
+            exc.server_url = attempted_url
+            exc.server_pid = failed_pid
+            self._close_owned_server()
+            raise exc
         returncode = self._server_proc.poll()
         if returncode is not None:
             failed_pid = self._server_proc.pid
@@ -788,13 +974,30 @@ class WhisperKitClient:
         self,
         wav_bytes: bytes,
         prompt: TranscriptionPrompt,
+        *,
+        deadline: float,
     ) -> str | None:
         self._resident_failure_reason = None
         try:
-            server_url, cli, server_pid = self._ensure_resident_server()
+            server_url, cli, server_pid = self._ensure_resident_server(deadline=deadline)
         except Exception as exc:
             logger.warning("WhisperKit resident server unavailable: %s", exc)
             self._resident_failure_reason = f"server_start:{type(exc).__name__}:{exc}"
+            self._last_route_report = {
+                "requested_route": "resident-server",
+                "effective_route": "resident-server-startup",
+                "fallback_reason": self._resident_failure_reason,
+                "status": "startup_failed",
+                "terminal_error": None,
+                "model": self._model,
+                "server_url": getattr(exc, "server_url", None),
+                "server_pid": getattr(exc, "server_pid", None),
+                "effective_chunking_strategy": _whisperkit_chunking_strategy(),
+                "audio_encoder_compute_units": _whisperkit_encoder_compute_units(),
+                "text_decoder_compute_units": _whisperkit_decoder_compute_units(),
+                "timeout_seconds": max(0.0, deadline - time.monotonic()),
+                "prompt": dict(self._last_prompt_receipt or {}),
+            }
             return None
 
         total_start = time.perf_counter()
@@ -803,9 +1006,13 @@ class WhisperKitClient:
         attempts: list[dict[str, object]] = []
         text = ""
         postprocess_ms = 0.0
-        request_timeout = _float_env(
+        configured_request_timeout = _float_env(
             "SPOKE_WHISPERKIT_SERVER_REQUEST_TIMEOUT",
             _whisperkit_timeout_seconds(),
+        )
+        request_timeout = max(
+            0.0,
+            min(configured_request_timeout, deadline - time.monotonic()),
         )
 
         for attempt_index in range(_WHISPERKIT_SUSPECT_ATTEMPTS):
@@ -825,6 +1032,8 @@ class WhisperKitClient:
             )
             request_start = time.perf_counter()
             try:
+                if request_timeout <= 0:
+                    raise TimeoutError("total transcription deadline exhausted")
                 with urllib.request.urlopen(request, timeout=request_timeout) as response:
                     raw_body = response.read()
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -836,6 +1045,49 @@ class WhisperKitClient:
                     exc,
                 )
                 self._resident_failure_reason = f"request:{type(exc).__name__}:{exc}"
+                timeout_reason = isinstance(exc, TimeoutError) or (
+                    isinstance(exc, urllib.error.URLError)
+                    and isinstance(exc.reason, TimeoutError)
+                )
+                failed_server_url = server_url
+                failed_server_pid = server_pid
+                if self._server_proc is not None:
+                    self._close_owned_server()
+                if timeout_reason:
+                    terminal_error = self._resident_failure_reason
+                    self._last_route_report = {
+                        "requested_route": "resident-server",
+                        "effective_route": "resident-server",
+                        "fallback_reason": None,
+                        "status": "failed",
+                        "terminal_error": terminal_error,
+                        "model": self._model,
+                        "server_url": failed_server_url,
+                        "server_pid": failed_server_pid,
+                        "effective_chunking_strategy": chunking_strategy,
+                        "audio_encoder_compute_units": _whisperkit_encoder_compute_units(),
+                        "text_decoder_compute_units": _whisperkit_decoder_compute_units(),
+                        "timeout_seconds": request_timeout,
+                        "prompt": dict(self._last_prompt_receipt or {}),
+                    }
+                    self._last_failure_bundle_path = (
+                        _record_whisperkit_terminal_failure_bundle(
+                            wav_bytes=wav_bytes,
+                            model=self._model,
+                            cli_path=cli,
+                            route_report=self._last_route_report,
+                            terminal_error=terminal_error,
+                            fallback_attempted=False,
+                        )
+                    )
+                    exc = TimeoutError(
+                        "WhisperKit resident request exceeded the total transcription "
+                        f"deadline ({request_timeout:.1f}s)"
+                    )
+                    raise _bind_failure_bundle_path(
+                        exc,
+                        self._last_failure_bundle_path,
+                    ) from exc
                 return None
             request_ms = (time.perf_counter() - request_start) * 1000
             try:
@@ -880,24 +1132,37 @@ class WhisperKitClient:
 
         total_ms = (time.perf_counter() - total_start) * 1000
         if any(attempt["suspicious"] for attempt in attempts):
-            _record_whisperkit_suspect_bundle(
+            terminal_error = "resident_suspicious_output:long_audio_decode_was_empty_or_too_short"
+            self._last_route_report = {
+                "requested_route": "resident-server",
+                "effective_route": "resident-server",
+                "fallback_reason": None,
+                "status": "failed",
+                "terminal_error": terminal_error,
+                "model": self._model,
+                "server_url": server_url,
+                "server_pid": server_pid,
+                "effective_chunking_strategy": chunking_strategy,
+                "audio_encoder_compute_units": _whisperkit_encoder_compute_units(),
+                "text_decoder_compute_units": _whisperkit_decoder_compute_units(),
+                "timeout_seconds": request_timeout,
+                "prompt": dict(self._last_prompt_receipt or {}),
+                "attempts": attempts,
+                "chosen_output": text,
+            }
+            self._last_failure_bundle_path = _record_whisperkit_terminal_failure_bundle(
                 wav_bytes=wav_bytes,
-                status="suspicious_unrecovered",
-                mode="resident-server",
                 model=self._model,
                 cli_path=cli,
-                chunking_strategy=chunking_strategy,
-                duration_s=duration_s,
-                write_ms=0.0,
-                postprocess_ms=postprocess_ms,
-                total_ms=total_ms,
-                attempts=attempts,
-                chosen_output=text,
-                server_url=server_url,
-                server_pid=server_pid,
-                requested_route="resident-server",
-                effective_route="resident-server",
+                route_report=self._last_route_report,
+                terminal_error=terminal_error,
+                fallback_attempted=False,
             )
+            exc = RuntimeError(
+                "WhisperKit returned suspicious output for long audio; "
+                "authoritative audio was preserved"
+            )
+            raise _bind_failure_bundle_path(exc, self._last_failure_bundle_path)
 
         logger.info(
             "WhisperKit resident transcription (%s): %r "
@@ -959,6 +1224,54 @@ class WhisperKitClient:
         if self._last_prompt_receipt is None:
             return None
         return dict(self._last_prompt_receipt)
+
+    @property
+    def last_failure_bundle_path(self) -> Path | None:
+        """Return the durable report path for the latest terminal failure."""
+        return self._last_failure_bundle_path
+
+    def augment_last_failure_bundle(
+        self,
+        *,
+        pathway: str,
+        lease_snapshot: dict | None,
+    ) -> None:
+        """Attach app-owned pathway and scheduling evidence to the last report."""
+        report_path = self._last_failure_bundle_path
+        self.augment_failure_bundle(
+            report_path,
+            pathway=pathway,
+            lease_snapshot=lease_snapshot,
+        )
+
+    def augment_failure_bundle(
+        self,
+        report_path: Path | None,
+        *,
+        pathway: str,
+        lease_snapshot: dict | None,
+    ) -> None:
+        """Attach app context to one utterance-owned terminal failure report."""
+        if report_path is None:
+            return
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["pathway"] = pathway
+            if lease_snapshot is not None:
+                report["lease"] = dict(lease_snapshot)
+            temp_path = report_path.with_name(
+                f".{report_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            with temp_path.open("x", encoding="utf-8") as temp_file:
+                json.dump(report, temp_file, indent=2, sort_keys=True)
+                temp_file.write("\n")
+            os.replace(temp_path, report_path)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.error(
+                "Failed to attach app context to WhisperKit failure bundle %s: %s",
+                report_path,
+                exc,
+            )
 
     def _close_owned_server(self) -> None:
         with self._server_lifecycle_lock:

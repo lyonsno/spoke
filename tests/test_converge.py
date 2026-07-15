@@ -42,7 +42,7 @@ def _is_turn_carver_background_thread(thread: threading.Thread) -> bool:
 
 
 @pytest.fixture(autouse=True)
-def _drain_turn_carver_background_threads():
+def _drain_turn_carver_background_threads(monkeypatch):
     yield
     for thread in list(threading.enumerate()):
         if not _is_turn_carver_background_thread(thread):
