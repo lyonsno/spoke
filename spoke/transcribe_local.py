@@ -8,6 +8,7 @@ avoid requiring ffmpeg.
 from __future__ import annotations
 
 import importlib
+import inspect
 import io
 import logging
 import os
@@ -17,6 +18,7 @@ import wave
 import numpy as np
 
 from .dedup import truncate_repetition, is_hallucination, repair_ontology_terms
+from .transcription_prompt import TranscriptionPromptProvider
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,21 @@ def supports_eager_eval() -> bool:
     return _supports_decode_option("eager_eval")
 
 
+def supports_initial_prompt() -> bool:
+    """Whether the installed mlx-whisper transcribe entry accepts a prompt."""
+    runtime_whisper = mlx_whisper
+    if runtime_whisper is None:
+        _, runtime_whisper, _ = _ensure_mlx_whisper_runtime()
+    try:
+        signature = inspect.signature(runtime_whisper.transcribe)
+    except (TypeError, ValueError):
+        return False
+    return "initial_prompt" in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
 class LocalTranscriptionClient:
     """Transcribe audio locally via mlx-whisper.
 
@@ -127,10 +144,15 @@ class LocalTranscriptionClient:
         *,
         decode_timeout: float | None = _DEFAULT_DECODE_TIMEOUT,
         eager_eval: bool = _DEFAULT_EAGER_EVAL,
+        prompt_provider: TranscriptionPromptProvider | None = None,
     ) -> None:
         self._model = model
         self._decode_timeout = decode_timeout
         self._eager_eval = eager_eval
+        self._prompt_provider = (
+            prompt_provider or TranscriptionPromptProvider.from_environment()
+        )
+        self._last_prompt_receipt: dict | None = None
         self._loaded = False
         self._model_instance = None
         self._warned_eager_eval_unsupported = False
@@ -187,6 +209,25 @@ class LocalTranscriptionClient:
             "path_or_hf_repo": self._model,
             "language": "en",
         }
+        prompt = self._prompt_provider.resolve()
+        prompt_supported = supports_initial_prompt()
+        prompt_effective = bool(prompt.text) and prompt_supported
+        if prompt_effective:
+            kwargs["initial_prompt"] = prompt.text
+        self._last_prompt_receipt = prompt.receipt(
+            supported=prompt_supported,
+            effective=prompt_effective,
+        )
+        logger.info(
+            "Local transcription prompt: requested=%s supported=%s effective=%s "
+            "sha256=%s chars=%d sources=%s",
+            self._last_prompt_receipt["requested"],
+            prompt_supported,
+            prompt_effective,
+            prompt.sha256,
+            prompt.char_count,
+            ",".join(prompt.sources) or "none",
+        )
         if supports_eager_eval():
             # Do not let Spoke's default timeout mask the eager_eval path.
             # Explicit non-default timeout choices still take precedence.

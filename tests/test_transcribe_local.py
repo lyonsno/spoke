@@ -84,6 +84,63 @@ class TestLocalTranscriptionClient:
         assert call_kwargs[1]["decode_timeout"] is None
         assert call_kwargs[1]["eager_eval"] is True
 
+    @patch("spoke.transcribe_local.supports_initial_prompt", return_value=True)
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_applies_effective_prompt_with_identity_receipt(
+        self, mock_mlx_whisper, _mock_supports_initial_prompt, tmp_path
+    ):
+        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcription_prompt import TranscriptionPromptProvider
+
+        prompt_path = tmp_path / "prompt.txt"
+        prompt_path.write_text("Kaminos, CoreML, ANE.", encoding="utf-8")
+        provider = TranscriptionPromptProvider(
+            path=prompt_path,
+            include_builtin=False,
+        )
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
+        client = LocalTranscriptionClient(
+            model="test/model",
+            prompt_provider=provider,
+        )
+
+        assert client.transcribe(_make_wav_bytes()) == "hello world"
+
+        call_kwargs = mock_mlx_whisper.transcribe.call_args.kwargs
+        assert call_kwargs["initial_prompt"] == "Kaminos, CoreML, ANE."
+        assert client._last_prompt_receipt["requested"] is True
+        assert client._last_prompt_receipt["supported"] is True
+        assert client._last_prompt_receipt["effective"] is True
+        assert client._last_prompt_receipt["sources"] == [f"file:{prompt_path}"]
+
+    @patch("spoke.transcribe_local.supports_initial_prompt", return_value=False)
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_downgrades_prompt_when_runtime_does_not_support_it(
+        self, mock_mlx_whisper, _mock_supports_initial_prompt, tmp_path
+    ):
+        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcription_prompt import TranscriptionPromptProvider
+
+        prompt_path = tmp_path / "prompt.txt"
+        prompt_path.write_text("Kaminos, CoreML, ANE.", encoding="utf-8")
+        provider = TranscriptionPromptProvider(
+            path=prompt_path,
+            include_builtin=False,
+        )
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
+        client = LocalTranscriptionClient(
+            model="test/model",
+            prompt_provider=provider,
+        )
+
+        assert client.transcribe(_make_wav_bytes()) == "hello world"
+
+        assert "initial_prompt" not in mock_mlx_whisper.transcribe.call_args.kwargs
+        assert client._last_prompt_receipt["requested"] is True
+        assert client._last_prompt_receipt["supported"] is False
+        assert client._last_prompt_receipt["effective"] is False
+
+
     @patch("spoke.transcribe_local.supports_eager_eval", return_value=True)
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_omits_default_timeout_when_eager_eval_enabled(

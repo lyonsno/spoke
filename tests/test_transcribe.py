@@ -73,6 +73,60 @@ class TestTranscriptionClient:
         assert call_kwargs[1]["data"]["model"] == "test-model"
 
     @patch("spoke.transcribe.httpx.Client")
+    def test_transcribe_applies_prompt_with_effective_identity_receipt(
+        self, MockClient, tmp_path
+    ):
+        from spoke.transcription_prompt import TranscriptionPromptProvider
+
+        prompt_path = tmp_path / "prompt.txt"
+        prompt_path.write_text("Kaminos, Trellis2MLX.", encoding="utf-8")
+        provider = TranscriptionPromptProvider(
+            path=prompt_path,
+            include_builtin=False,
+        )
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "hello world"}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client = TranscriptionClient(
+            base_url="http://sidecar:8000",
+            model="test-model",
+            prompt_provider=provider,
+        )
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == "hello world"
+
+        call_kwargs = mock_client.post.call_args.kwargs
+        assert call_kwargs["data"]["prompt"] == "Kaminos, Trellis2MLX."
+        assert client._last_prompt_receipt["requested"] is True
+        assert client._last_prompt_receipt["supported"] is True
+        assert client._last_prompt_receipt["effective"] is True
+        assert client._last_prompt_receipt["sources"] == [f"file:{prompt_path}"]
+
+    @patch("spoke.transcribe.httpx.Client")
+    def test_transcribe_does_not_claim_or_send_an_empty_prompt(self, MockClient):
+        from spoke.transcription_prompt import TranscriptionPromptProvider
+
+        provider = TranscriptionPromptProvider(include_builtin=False)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "hello world"}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client = TranscriptionClient(
+            base_url="http://sidecar:8000",
+            prompt_provider=provider,
+        )
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == "hello world"
+
+        assert "prompt" not in mock_client.post.call_args.kwargs["data"]
+        assert client._last_prompt_receipt["requested"] is False
+        assert client._last_prompt_receipt["supported"] is True
+        assert client._last_prompt_receipt["effective"] is False
+
+    @patch("spoke.transcribe.httpx.Client")
     def test_transcribe_strips_whitespace(self, MockClient):
         """Transcription result should be stripped of leading/trailing whitespace."""
         mock_resp = MagicMock()

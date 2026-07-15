@@ -11,6 +11,7 @@ import logging
 import httpx
 
 from .dedup import truncate_repetition, is_hallucination, repair_ontology_terms
+from .transcription_prompt import TranscriptionPromptProvider
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,14 @@ class TranscriptionClient:
         model: str = _DEFAULT_MODEL,
         timeout: float = 60.0,
         api_key: str = "",
+        prompt_provider: TranscriptionPromptProvider | None = None,
     ) -> None:
         self._url = f"{base_url.rstrip('/')}/v1/audio/transcriptions"
         self._model = model
+        self._prompt_provider = (
+            prompt_provider or TranscriptionPromptProvider.from_environment()
+        )
+        self._last_prompt_receipt: dict | None = None
         headers = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -52,10 +58,27 @@ class TranscriptionClient:
         if not wav_bytes:
             return ""
 
+        prompt = self._prompt_provider.resolve()
+        data = {"model": self._model}
+        if prompt.text:
+            data["prompt"] = prompt.text
+        self._last_prompt_receipt = prompt.receipt(
+            supported=True,
+            effective=bool(prompt.text),
+        )
+        logger.info(
+            "Remote transcription prompt: requested=%s supported=true effective=%s "
+            "sha256=%s chars=%d sources=%s",
+            self._last_prompt_receipt["requested"],
+            self._last_prompt_receipt["effective"],
+            prompt.sha256,
+            prompt.char_count,
+            ",".join(prompt.sources) or "none",
+        )
         resp = self._client.post(
             self._url,
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-            data={"model": self._model},
+            data=data,
         )
         resp.raise_for_status()
 

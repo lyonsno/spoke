@@ -13,6 +13,22 @@ The implementation currently lives in [`spoke/dedup.py`](../spoke/dedup.py),
 and README omission is intentional unless the repair pass becomes a visible
 user-facing control or configuration surface.
 
+## Transcription Vocabulary Prompt
+
+Prompt-capable transcription backends resolve live context for every utterance
+from bounded built-in vocabulary, the caller-owned
+`SPOKE_TRANSCRIPTION_PROMPT_PATH` file (default
+`~/.config/spoke/transcription_prompt.txt`), and optional inline
+`SPOKE_TRANSCRIPTION_PROMPT` text. Prompt content is not capped or logged.
+Route diagnostics record sources, character count, SHA-256 identity, backend
+support, and whether the backend actually applied the requested prompt.
+
+`SPOKE_TRANSCRIPTION_PROMPT_BUILTIN=0` disables the built-in vocabulary while
+preserving file and inline sources. MLX Whisper applies supported context via
+`initial_prompt`; OpenAI-compatible transcription routes send multipart
+`prompt`. An unsupported runtime must omit the prompt and report it as
+requested but ineffective.
+
 ## Optical Witness Debug Surfaces
 
 Optical witness frame-strip manifests are developer-facing debug records, not
