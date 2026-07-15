@@ -70,6 +70,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_retry_pending = False
     delegate._whisper_backend = "local"
     delegate._preview_backend = "local"
+    delegate._vad_enabled = True
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
@@ -6615,6 +6616,21 @@ class TestSegmentAcceleratedTranscription:
 
         call_kwargs = d._capture.start.call_args[1]
         assert call_kwargs.get("segment_callback") is None
+
+    def test_hold_start_vad_disabled_uses_full_buffer_only(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._vad_enabled = False
+        d._whisper_backend = "sidecar"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("vad_state_callback") is None
+        assert call_kwargs.get("segment_callback") is None
+        assert d._segment_accumulator is None
+        assert d._is_speech is True
 
     def test_preview_batch_uses_cached_segments_plus_tail(self, main_module, monkeypatch):
         """Preview loop should use cached segment text + tail when segments exist."""

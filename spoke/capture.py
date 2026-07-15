@@ -104,8 +104,15 @@ class AudioCapture:
         Sample rate in Hz. Default 16000 (optimal for Whisper).
     """
 
-    def __init__(self, sample_rate: int = SAMPLE_RATE, metrics=None) -> None:
+    def __init__(
+        self,
+        sample_rate: int = SAMPLE_RATE,
+        metrics=None,
+        *,
+        vad_enabled: bool = True,
+    ) -> None:
         self._sample_rate = sample_rate
+        self._vad_enabled = bool(vad_enabled)
         self._stream: sd.InputStream | None = None
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
@@ -125,7 +132,10 @@ class AudioCapture:
         self._grace_chunks_remaining: int = 0
 
         # Silero VAD model (loaded once, reused across recordings)
-        self._silero_model, self._silero_sr = _load_silero_vad()
+        if self._vad_enabled:
+            self._silero_model, self._silero_sr = _load_silero_vad()
+        else:
+            self._silero_model, self._silero_sr = None, None
         self._torch = None
         self._silero_warned = False
         if self._silero_model is not None:
@@ -284,6 +294,11 @@ class AudioCapture:
             Called with bounded WAV bytes when a silence boundary is reached.
             Invoked from a background worker thread.
         """
+        if not self._vad_enabled and (
+            segment_callback is not None or vad_state_callback is not None
+        ):
+            raise RuntimeError("VAD is disabled; VAD and segment callbacks are unavailable")
+
         # Stop any existing stream to avoid leaking PortAudio resources
         if self._stream is not None:
             logger.warning("start() called while already recording — stopping previous stream")
