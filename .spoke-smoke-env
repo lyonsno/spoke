@@ -16,6 +16,7 @@ export SPOKE_WHISPERKIT_CHUNKING_STRATEGY="none"
 export SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS="cpuAndNeuralEngine"
 export SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS="cpuOnly"
 export SPOKE_WHISPERKIT_TIMEOUT_SECONDS="30"
+export SPOKE_WHISPERKIT_TERMINAL_RECOVERY_MODEL="mlx-community/whisper-large-v3-turbo"
 
 # Request the reviewed GPU Greenroom interactive holder as soon as real audio
 # capture begins. The holder excludes new Greenroom jobs while effective; it

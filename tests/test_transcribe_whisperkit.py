@@ -1025,6 +1025,30 @@ class TestWhisperKitResidentServer:
         assert second_report["pathway"] == "command"
         assert second_report["lease"]["lease_id"] == "lease-two"
 
+    def test_recovery_outcome_is_attached_to_exact_terminal_report(self, tmp_path):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        first_path = tmp_path / "first.json"
+        second_path = tmp_path / "second.json"
+        first_path.write_text('{"phase": "whisperkit_terminal_failure"}\n')
+        second_path.write_text('{"phase": "whisperkit_terminal_failure"}\n')
+        client = WhisperKitClient.__new__(WhisperKitClient)
+        recovery = {
+            "requested_route": "local-mlx-whisper",
+            "effective_route": "local-mlx-whisper",
+            "model": "mlx-community/whisper-large-v3-turbo",
+            "decode_timeout_seconds": None,
+            "eager_eval": True,
+            "status": "succeeded",
+            "elapsed_seconds": 17.25,
+            "transcript_chars": 143,
+        }
+
+        client.record_recovery_outcome(first_path, recovery)
+
+        assert json.loads(first_path.read_text())["recovery"] == recovery
+        assert "recovery" not in json.loads(second_path.read_text())
+
     @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.run")
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
@@ -1233,4 +1257,8 @@ class TestWhisperKitSmokeEnv:
         )
         assert 'SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS="cpuOnly"' in smoke_env
         assert 'SPOKE_WHISPERKIT_TIMEOUT_SECONDS="30"' in smoke_env
+        assert (
+            'SPOKE_WHISPERKIT_TERMINAL_RECOVERY_MODEL='
+            '"mlx-community/whisper-large-v3-turbo"'
+        ) in smoke_env
         assert 'SPOKE_VAD_ENABLED="0"' in smoke_env

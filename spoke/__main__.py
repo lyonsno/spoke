@@ -214,6 +214,9 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_DEFAULT_WHISPERKIT_TERMINAL_RECOVERY_MODEL = (
+    "mlx-community/whisper-large-v3-turbo"
+)
 _LOCAL_PREVIEW_INTERVAL_S = 0.4
 _COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S = 0.4
 _DEFAULT_COMMAND_BACKEND = "local"
@@ -3114,6 +3117,7 @@ class SpokeAppDelegate(NSObject):
         active_client = self._client if client is None else client
         if isinstance(active_client, LocalTranscriptionClient):
             return self._transcribe_local_whisper_with_recovery(wav_bytes, active_client)
+        primary_failure = None
         with self._local_inference_context(active_client):
             try:
                 return active_client.transcribe(wav_bytes)
@@ -3126,7 +3130,138 @@ class SpokeAppDelegate(NSObject):
                         client=active_client,
                     )
                     exc.spoke_failure_context_attached = True
-                raise
+                if not (
+                    isinstance(active_client, WhisperKitClient)
+                    and self._is_terminal_asr_failure(exc)
+                ):
+                    raise
+                primary_failure = exc
+        return self._recover_terminal_whisperkit_failure(
+            wav_bytes,
+            primary_client=active_client,
+            primary_failure=primary_failure,
+        )
+
+    @staticmethod
+    def _is_terminal_asr_failure(exc: Exception) -> bool:
+        return bool(
+            getattr(exc, "terminal_asr_failure", False)
+            or getattr(exc, "failure_bundle_path", None) is not None
+        )
+
+    @staticmethod
+    def _whisperkit_terminal_recovery_model() -> str:
+        return (
+            os.environ.get("SPOKE_WHISPERKIT_TERMINAL_RECOVERY_MODEL", "").strip()
+            or _DEFAULT_WHISPERKIT_TERMINAL_RECOVERY_MODEL
+        )
+
+    def _get_whisperkit_terminal_recovery_client(self) -> LocalTranscriptionClient:
+        model = self._whisperkit_terminal_recovery_model()
+        cached = getattr(self, "_whisperkit_terminal_recovery_client", None)
+        cached_model = getattr(self, "_whisperkit_terminal_recovery_model_id", None)
+        if cached is not None and cached_model == model:
+            return cached
+        recovery_client = LocalTranscriptionClient(
+            model=model,
+            decode_timeout=None,
+            eager_eval=True,
+        )
+        self._whisperkit_terminal_recovery_client = recovery_client
+        self._whisperkit_terminal_recovery_model_id = model
+        return recovery_client
+
+    def _recover_terminal_whisperkit_failure(
+        self,
+        wav_bytes: bytes,
+        *,
+        primary_client: WhisperKitClient,
+        primary_failure: Exception,
+    ) -> str:
+        """Run one serial MLX Turbo decode after terminal WhisperKit failure."""
+        model = self._whisperkit_terminal_recovery_model()
+        report_path = getattr(primary_failure, "failure_bundle_path", None)
+        started = time.monotonic()
+        recovery = {
+            "requested_route": "local-mlx-whisper",
+            "effective_route": None,
+            "model": model,
+            "decode_timeout_seconds": None,
+            "eager_eval": True,
+            "status": "started",
+        }
+        logger.warning(
+            "Terminal WhisperKit failure; starting serial recovery via local MLX Whisper (%s)",
+            model,
+        )
+        try:
+            recovery_client = self._get_whisperkit_terminal_recovery_client()
+            recovery["effective_route"] = "local-mlx-whisper"
+            with self._local_inference_context(recovery_client):
+                text = recovery_client.transcribe(wav_bytes)
+            if not text.strip():
+                raise RuntimeError("MLX terminal recovery returned a blank transcript")
+        except Exception as recovery_failure:
+            recovery.update(
+                {
+                    "status": "failed",
+                    "elapsed_seconds": round(time.monotonic() - started, 6),
+                    "error": f"{type(recovery_failure).__name__}: {recovery_failure}",
+                }
+            )
+            primary_failure.recovery_error = recovery["error"]
+            primary_failure.recovery_route_report = dict(recovery)
+            self._record_whisperkit_recovery_outcome(
+                primary_client,
+                report_path,
+                recovery,
+            )
+            logger.exception(
+                "Serial MLX Whisper recovery failed; preserving primary terminal failure"
+            )
+            raise primary_failure from recovery_failure
+
+        recovery.update(
+            {
+                "status": "succeeded",
+                "elapsed_seconds": round(time.monotonic() - started, 6),
+                "transcript_chars": len(text),
+            }
+        )
+        primary_failure.recovery_route_report = dict(recovery)
+        self._record_whisperkit_recovery_outcome(
+            primary_client,
+            report_path,
+            recovery,
+        )
+        logger.info(
+            "Serial MLX Whisper recovery succeeded in %.3fs (%d chars)",
+            recovery["elapsed_seconds"],
+            recovery["transcript_chars"],
+        )
+        return text
+
+    @staticmethod
+    def _record_whisperkit_recovery_outcome(
+        primary_client,
+        report_path: Path | None,
+        recovery: dict,
+    ) -> None:
+        record = getattr(primary_client, "record_recovery_outcome", None)
+        if not callable(record):
+            if report_path is not None:
+                logger.error(
+                    "WhisperKit failure report %s cannot receive recovery outcome",
+                    report_path,
+                )
+            return
+        try:
+            record(report_path, recovery)
+        except Exception:
+            logger.exception(
+                "Failed to attach recovery outcome to WhisperKit failure report %s",
+                report_path,
+            )
 
     def _transcribe_local_whisper_with_recovery(
         self, wav_bytes: bytes, client: LocalTranscriptionClient
@@ -7393,6 +7528,7 @@ class SpokeAppDelegate(NSObject):
         for client in list(getattr(self, "_client_cache", {}).values()) + [
             getattr(self, "_client", None),
             getattr(self, "_preview_client", None),
+            getattr(self, "_whisperkit_terminal_recovery_client", None),
         ]:
             if client is None or any(existing is client for existing in seen_clients):
                 continue
@@ -7476,6 +7612,7 @@ class SpokeAppDelegate(NSObject):
         candidates = list(getattr(self, "_client_cache", {}).values()) + [
             getattr(self, "_client", None),
             getattr(self, "_preview_client", None),
+            getattr(self, "_whisperkit_terminal_recovery_client", None),
             getattr(self, "_tts_client", None),
         ]
         for client in candidates:

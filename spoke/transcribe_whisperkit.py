@@ -1248,17 +1248,21 @@ class WhisperKitClient:
         self,
         report_path: Path | None,
         *,
-        pathway: str,
-        lease_snapshot: dict | None,
+        pathway: str | None = None,
+        lease_snapshot: dict | None = None,
+        recovery: dict | None = None,
     ) -> None:
         """Attach app context to one utterance-owned terminal failure report."""
         if report_path is None:
             return
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            report["pathway"] = pathway
+            if pathway is not None:
+                report["pathway"] = pathway
             if lease_snapshot is not None:
                 report["lease"] = dict(lease_snapshot)
+            if recovery is not None:
+                report["recovery"] = dict(recovery)
             temp_path = report_path.with_name(
                 f".{report_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
             )
@@ -1272,6 +1276,14 @@ class WhisperKitClient:
                 report_path,
                 exc,
             )
+
+    def record_recovery_outcome(
+        self,
+        report_path: Path | None,
+        recovery: dict,
+    ) -> None:
+        """Attach one explicit alternate-route outcome to an exact report."""
+        self.augment_failure_bundle(report_path, recovery=recovery)
 
     def _close_owned_server(self) -> None:
         with self._server_lifecycle_lock:

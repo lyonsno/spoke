@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 
 def _make_delegate(main_module, monkeypatch):
     """Create a SpokeAppDelegate with mocked sub-components."""
@@ -960,6 +962,192 @@ class TestTranscriptionToken:
 
 class TestServerCrashResilience:
     """Test that the app survives server errors without crashing."""
+
+    def test_terminal_whisperkit_failure_recovers_serially_with_uncapped_mlx_turbo(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        events = []
+        recovery_settings = {}
+        failure = TimeoutError("resident timed out")
+        failure.terminal_asr_failure = True
+        failure.failure_bundle_path = Path("/tmp/utterance-owned-failure.json")
+
+        class FakeWhisperKitClient:
+            supports_streaming = False
+
+            def transcribe(self, wav_bytes):
+                events.append(("primary", wav_bytes))
+                raise failure
+
+            def augment_failure_bundle(self, *args, **kwargs):
+                events.append(("primary-report", args, kwargs))
+
+            def record_recovery_outcome(self, report_path, recovery):
+                events.append(("recovery-report", report_path, dict(recovery)))
+
+        class FakeLocalTranscriptionClient:
+            def __init__(self, **kwargs):
+                recovery_settings.update(kwargs)
+                self._decode_timeout = kwargs["decode_timeout"]
+                self._eager_eval = kwargs["eager_eval"]
+
+            def transcribe(self, wav_bytes):
+                events.append(("recovery", wav_bytes))
+                return "recovered authoritative text"
+
+        monkeypatch.setattr(main_module, "WhisperKitClient", FakeWhisperKitClient)
+        monkeypatch.setattr(
+            main_module,
+            "LocalTranscriptionClient",
+            FakeLocalTranscriptionClient,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = FakeWhisperKitClient()
+
+        text = d._transcribe_full_buffer(
+            b"full authoritative wav",
+            failure_pathway="text",
+        )
+
+        assert text == "recovered authoritative text"
+        assert [event[0] for event in events] == [
+            "primary",
+            "primary-report",
+            "recovery",
+            "recovery-report",
+        ]
+        recovery_report = events[-1][2]
+        assert recovery_report["status"] == "succeeded"
+        assert recovery_report["transcript_chars"] == len(text)
+        assert recovery_settings == {
+            "model": "mlx-community/whisper-large-v3-turbo",
+            "decode_timeout": None,
+            "eager_eval": True,
+        }
+
+    def test_failed_whisperkit_recovery_preserves_primary_terminal_failure(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        primary_failure = TimeoutError("resident timed out")
+        primary_failure.terminal_asr_failure = True
+
+        class FakeWhisperKitClient:
+            supports_streaming = False
+
+            def transcribe(self, _wav_bytes):
+                raise primary_failure
+
+        class FakeLocalTranscriptionClient:
+            def __init__(self, **_kwargs):
+                self._decode_timeout = None
+                self._eager_eval = True
+
+            def transcribe(self, _wav_bytes):
+                raise RuntimeError("MLX recovery failed")
+
+        monkeypatch.setattr(main_module, "WhisperKitClient", FakeWhisperKitClient)
+        monkeypatch.setattr(
+            main_module,
+            "LocalTranscriptionClient",
+            FakeLocalTranscriptionClient,
+        )
+        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = FakeWhisperKitClient()
+
+        with pytest.raises(TimeoutError, match="resident timed out") as exc_info:
+            d._transcribe_full_buffer(b"full authoritative wav")
+
+        assert exc_info.value is primary_failure
+        assert "MLX recovery failed" in primary_failure.recovery_error
+
+    def test_nonterminal_whisperkit_failure_does_not_switch_backends(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        recovery_constructed = False
+
+        class FakeWhisperKitClient:
+            supports_streaming = False
+
+            def transcribe(self, _wav_bytes):
+                raise RuntimeError("ordinary request failure")
+
+        class FakeLocalTranscriptionClient:
+            def __init__(self, **_kwargs):
+                nonlocal recovery_constructed
+                recovery_constructed = True
+
+        monkeypatch.setattr(main_module, "WhisperKitClient", FakeWhisperKitClient)
+        monkeypatch.setattr(
+            main_module,
+            "LocalTranscriptionClient",
+            FakeLocalTranscriptionClient,
+        )
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = FakeWhisperKitClient()
+
+        with pytest.raises(RuntimeError, match="ordinary request failure"):
+            d._transcribe_full_buffer(b"full authoritative wav")
+
+        assert recovery_constructed is False
+
+    def test_blank_whisperkit_recovery_does_not_pretend_to_succeed(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        primary_failure = TimeoutError("resident timed out")
+        primary_failure.terminal_asr_failure = True
+
+        class FakeWhisperKitClient:
+            supports_streaming = False
+
+            def transcribe(self, _wav_bytes):
+                raise primary_failure
+
+        class FakeLocalTranscriptionClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def transcribe(self, _wav_bytes):
+                return "   "
+
+        monkeypatch.setattr(main_module, "WhisperKitClient", FakeWhisperKitClient)
+        monkeypatch.setattr(
+            main_module,
+            "LocalTranscriptionClient",
+            FakeLocalTranscriptionClient,
+        )
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = FakeWhisperKitClient()
+
+        with pytest.raises(TimeoutError, match="resident timed out"):
+            d._transcribe_full_buffer(b"full authoritative wav")
+
+        assert "blank transcript" in primary_failure.recovery_error
+
+    def test_cached_whisperkit_recovery_client_joins_client_lifecycle(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._client_cache = {}
+        recovery_client = MagicMock()
+        d._whisperkit_terminal_recovery_client = recovery_client
+
+        assert recovery_client in list(d._iter_unique_clients())
+
+        d._close_clients()
+
+        recovery_client.close.assert_called_once_with()
 
     def test_transcribe_worker_catches_connection_error(self, main_module, monkeypatch):
         """Server going down mid-request should not crash the app."""
