@@ -3,6 +3,10 @@
 # Machine-local secrets are sourced by scripts/launch-main.sh from
 # ~/.config/spoke/secrets.env before this file is applied.
 
+# VAD and silence-bounded segment acceleration are deliberately disabled for
+# the ASR contention smoke. Final transcription consumes the full raw buffer.
+export SPOKE_VAD_ENABLED="0"
+
 export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/operator-memory-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
 export SPOKE_BACKDROP_FRAME_TIMING="1"
 

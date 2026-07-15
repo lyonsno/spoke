@@ -72,6 +72,8 @@ def _mock_silero_vad(monkeypatch):
 
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
+        if not kwargs.get("vad_enabled", True):
+            return
         self._silero_model = _FakeSileroVAD()
         self._silero_sr = torch.tensor(SAMPLE_RATE)
         self._torch = torch
@@ -132,6 +134,43 @@ class TestWavEncoding:
             assert pcm[0] == 32767   # clipped to max
             assert pcm[1] == -32768  # clipped to min
 
+
+class TestVADDisable:
+    def test_disabled_vad_does_not_load_silero(self):
+        cap = AudioCapture(vad_enabled=False)
+
+        assert cap._vad_enabled is False
+        assert cap._silero_model is None
+        assert cap._silero_sr is None
+        assert cap._torch is None
+
+    @patch("spoke.capture.sd")
+    def test_disabled_vad_rejects_vad_callbacks(self, mock_sd):
+        cap = AudioCapture(vad_enabled=False)
+
+        with pytest.raises(RuntimeError, match="VAD is disabled"):
+            cap.start(vad_state_callback=MagicMock())
+
+        mock_sd.InputStream.assert_not_called()
+
+    @patch("spoke.capture.sd")
+    def test_disabled_vad_returns_untrimmed_full_buffer(self, mock_sd):
+        cap = AudioCapture(vad_enabled=False)
+        cap.start()
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        cap._frames = [
+            np.zeros(256, dtype=np.float32),
+            np.full(256, 0.25, dtype=np.float32),
+            np.zeros(256, dtype=np.float32),
+        ]
+
+        samples = _decode_wav_samples(cap.stop())
+
+        assert len(samples) == 768
+        assert np.all(samples[:256] == 0)
+        assert np.any(samples[256:512] != 0)
+        assert np.all(samples[512:] == 0)
 
 class TestAudioCallback:
     """Test the audio callback's frame accumulation and amplitude reporting."""

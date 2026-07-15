@@ -1088,7 +1088,23 @@ class SpokeAppDelegate(NSObject):
             self._preview_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
         self._optical_shell_metrics = OpticalShellMetrics()
-        self._capture = AudioCapture(metrics=self._optical_shell_metrics)
+        self._vad_enabled = os.environ.get("SPOKE_VAD_ENABLED", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        self._capture = AudioCapture(
+            metrics=self._optical_shell_metrics,
+            vad_enabled=self._vad_enabled,
+        )
+        if self._vad_enabled:
+            logger.info("VAD pathway enabled")
+        else:
+            logger.info(
+                "VAD pathway disabled by SPOKE_VAD_ENABLED; "
+                "full-buffer audio is authoritative"
+            )
         self._capture.warmup()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
@@ -2323,8 +2339,11 @@ class SpokeAppDelegate(NSObject):
         # Set up opportunistic segment transcription for remote backends.
         # Each silence-bounded segment is dispatched to the final client as it
         # arrives, so that on release we only need to transcribe the tail.
-        self._segment_accumulator = SegmentAccumulator()
-        use_segments = getattr(self, "_whisper_backend", "local") in ("sidecar", "cloud")
+        vad_enabled = getattr(self, "_vad_enabled", True)
+        self._segment_accumulator = SegmentAccumulator() if vad_enabled else None
+        use_segments = vad_enabled and getattr(
+            self, "_whisper_backend", "local"
+        ) in ("sidecar", "cloud")
         segment_cb = None
         if use_segments:
             def segment_cb(wav_bytes: bytes):
@@ -2345,11 +2364,13 @@ class SpokeAppDelegate(NSObject):
             )
 
         try:
-            def on_vad_state(is_speech: bool):
-                if self._menubar is not None:
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "updateVadState:", is_speech, False
-                    )
+            on_vad_state = None
+            if vad_enabled:
+                def on_vad_state(is_speech: bool):
+                    if self._menubar is not None:
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "updateVadState:", is_speech, False
+                        )
             self._capture.start(
                 amplitude_callback=self._on_amplitude,
                 vad_state_callback=on_vad_state,
@@ -2381,7 +2402,8 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
-        self._is_speech = False
+        # Preview must not wait for VAD state when the pathway is disabled.
+        self._is_speech = not vad_enabled
         self._force_preview_update = False
         if getattr(self, "_preview_done", None) is not None:
             self._preview_done.clear()
