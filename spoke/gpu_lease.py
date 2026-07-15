@@ -231,6 +231,27 @@ class GPUInteractiveLease:
             )
             return
         with self._lock:
+            current_state = self._report["state"]
+            if current_state in {"failed", "released", "released-unacquired"}:
+                logger.warning(
+                    "Ignoring GPU lease event after terminal state: lease=%s "
+                    "current=%s event=%s",
+                    self.lease_id,
+                    current_state,
+                    state,
+                )
+                return
+            if self._release_requested and state not in {
+                "released",
+                "released-unacquired",
+            }:
+                logger.warning(
+                    "Ignoring nonterminal GPU lease event after release request: "
+                    "lease=%s event=%s",
+                    self.lease_id,
+                    state,
+                )
+                return
             self._report["state"] = state
             self._report["effective"] = state == "effective"
             self._report["scheduling_posture"] = (

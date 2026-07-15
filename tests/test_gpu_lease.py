@@ -190,6 +190,99 @@ def test_effective_event_without_timestamp_fails_protocol_validation(tmp_path):
     assert report["last_trustworthy_event"] == "invalid-effective-event"
 
 
+def test_protocol_failure_cannot_be_resurrected_to_effective(tmp_path):
+    from spoke.gpu_lease import GPUInteractiveLeaseManager
+
+    binary = tmp_path / "gpu-greenroom"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    manager = GPUInteractiveLeaseManager(
+        enabled=True,
+        binary=binary,
+        queue_dir=tmp_path / "queue",
+        receipt_dir=tmp_path / "receipts",
+        popen_factory=MagicMock(return_value=_fake_process()),
+        thread_factory=lambda **kwargs: _DeferredThread(**kwargs),
+    )
+    lease = manager.request("utterance-bad-then-effective")
+
+    lease._fail("protocol", "invalid-jsonl-event", "bad holder output")
+    lease._handle_event({
+        "schema": "gpu-greenroom.interactive-lease.v1",
+        "lease_id": "utterance-bad-then-effective",
+        "state": "effective",
+        "effective_at": 123.0,
+    })
+
+    report = lease.snapshot()
+    assert report["state"] == "failed"
+    assert report["effective"] is False
+    assert report["scheduling_posture"] == "scheduler-unverified"
+    assert report["last_trustworthy_event"] == "invalid-jsonl-event"
+
+
+def test_release_requested_cannot_be_resurrected_to_effective(tmp_path):
+    from spoke.gpu_lease import GPUInteractiveLeaseManager
+
+    binary = tmp_path / "gpu-greenroom"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    manager = GPUInteractiveLeaseManager(
+        enabled=True,
+        binary=binary,
+        queue_dir=tmp_path / "queue",
+        receipt_dir=tmp_path / "receipts",
+        popen_factory=MagicMock(return_value=_fake_process()),
+        thread_factory=lambda **kwargs: _DeferredThread(**kwargs),
+    )
+    lease = manager.request("utterance-release-race")
+
+    lease.release()
+    lease._handle_event({
+        "schema": "gpu-greenroom.interactive-lease.v1",
+        "lease_id": "utterance-release-race",
+        "state": "effective",
+        "effective_at": 123.0,
+    })
+
+    report = lease.snapshot()
+    assert report["state"] == "release-requested"
+    assert report["effective"] is False
+    assert report["scheduling_posture"] == "scheduler-unverified"
+    assert report["last_trustworthy_event"] == "spoke-release-requested"
+
+
+def test_release_requested_accepts_terminal_holder_event(tmp_path):
+    from spoke.gpu_lease import GPUInteractiveLeaseManager
+
+    binary = tmp_path / "gpu-greenroom"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    manager = GPUInteractiveLeaseManager(
+        enabled=True,
+        binary=binary,
+        queue_dir=tmp_path / "queue",
+        receipt_dir=tmp_path / "receipts",
+        popen_factory=MagicMock(return_value=_fake_process()),
+        thread_factory=lambda **kwargs: _DeferredThread(**kwargs),
+    )
+    lease = manager.request("utterance-release-terminal")
+
+    lease.release()
+    lease._handle_event({
+        "schema": "gpu-greenroom.interactive-lease.v1",
+        "lease_id": "utterance-release-terminal",
+        "state": "released",
+        "effective_at": None,
+    })
+
+    report = lease.snapshot()
+    assert report["state"] == "released"
+    assert report["effective"] is False
+    assert report["scheduling_posture"] == "scheduler-unverified"
+    assert report["last_trustworthy_event"] == "greenroom-released"
+
+
 def test_release_is_nonblocking_and_manager_close_releases_all(tmp_path):
     from spoke.gpu_lease import GPUInteractiveLeaseManager
 
