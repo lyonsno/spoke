@@ -682,6 +682,89 @@ class TestHoldCallbacks:
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
+    def test_real_recording_requests_gpu_lease_after_capture_starts(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._gpu_lease_manager = MagicMock()
+        lease = MagicMock()
+        order = []
+        d._capture.start.side_effect = lambda **_kwargs: order.append("capture")
+        d._gpu_lease_manager.request.side_effect = (
+            lambda _lease_id: order.append("lease") or lease
+        )
+
+        d._on_hold_start()
+
+        assert order[:2] == ["capture", "lease"]
+        assert d._active_recording_gpu_lease is lease
+
+    def test_capture_start_failure_does_not_request_gpu_lease(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._gpu_lease_manager = MagicMock()
+        d._capture.start.side_effect = RuntimeError("mic failed")
+
+        d._on_hold_start()
+
+        d._gpu_lease_manager.request.assert_not_called()
+
+    def test_empty_audio_releases_detached_recording_lease(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        lease = MagicMock()
+        d._active_recording_gpu_lease = lease
+        d._capture.stop.return_value = b""
+
+        d._on_hold_end()
+
+        lease.release.assert_called_once_with()
+        assert d._active_recording_gpu_lease is None
+
+    def test_capture_stop_failure_releases_recording_lease(
+        self, main_module, monkeypatch
+    ):
+        import pytest
+
+        d = _make_delegate(main_module, monkeypatch)
+        lease = MagicMock()
+        d._active_recording_gpu_lease = lease
+        d._capture.stop.side_effect = RuntimeError("stop failed")
+
+        with pytest.raises(RuntimeError, match="stop failed"):
+            d._on_hold_end()
+
+        lease.release.assert_called_once_with()
+
+    def test_transcription_worker_releases_its_own_lease_on_success_and_failure(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._segment_accumulator = main_module.SegmentAccumulator()
+        first = MagicMock()
+        d._client.transcribe.return_value = "hello"
+
+        d._transcribe_worker(b"wav", token=1, gpu_lease=first)
+
+        first.release.assert_called_once_with()
+
+        second = MagicMock()
+        d._client.transcribe.side_effect = RuntimeError("decode failed")
+        d._transcribe_worker(b"wav", token=2, gpu_lease=second)
+
+        second.release.assert_called_once_with()
+
+    def test_quit_releases_all_gpu_leases(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._gpu_lease_manager = MagicMock()
+
+        with patch.object(main_module.NSApp, "terminate_"):
+            d._quit()
+
+        d._gpu_lease_manager.close_all.assert_called_once_with()
+
     def test_result_inject_delayed_restores_wakeword_listener_after_hold(
         self, main_module, monkeypatch
     ):

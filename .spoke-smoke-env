@@ -7,6 +7,13 @@
 # the ASR contention smoke. Final transcription consumes the full raw buffer.
 export SPOKE_VAD_ENABLED="0"
 
+# Request the reviewed GPU Greenroom interactive holder as soon as real audio
+# capture begins. The holder excludes new Greenroom jobs while effective; it
+# does not claim preemption of a running job or control of other Metal clients.
+export SPOKE_GPU_INTERACTIVE_LEASE="1"
+export SPOKE_GPU_GREENROOM_BINARY="/private/tmp/gpu-greenroom-interactive-asr-lease-0714/.venv/bin/gpu-greenroom"
+export SPOKE_GPU_GREENROOM_ROUTE_ID="gpu-greenroom@733554a"
+
 export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/operator-memory-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
 export SPOKE_BACKDROP_FRAME_TIMING="1"
 

@@ -156,6 +156,7 @@ from .command_overlay_trace import record_command_overlay_trace
 from .converge import TurnCarver, compact_history as compact_converge_history
 from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input
+from .gpu_lease import GPUInteractiveLeaseManager
 from .handsfree import (
     HandsFreeController,
     HandsFreeState,
@@ -1096,6 +1097,15 @@ class SpokeAppDelegate(NSObject):
         self._capture = AudioCapture(
             metrics=self._optical_shell_metrics,
             vad_enabled=self._vad_enabled,
+        )
+        self._gpu_lease_manager = GPUInteractiveLeaseManager.from_environment()
+        self._active_recording_gpu_lease = None
+        logger.info(
+            "GPU interactive lease scheduling: enabled=%s binary=%s queue=%s receipts=%s",
+            self._gpu_lease_manager.enabled,
+            self._gpu_lease_manager.binary,
+            self._gpu_lease_manager.queue_dir,
+            self._gpu_lease_manager.receipt_dir,
         )
         if self._vad_enabled:
             logger.info("VAD pathway enabled")
@@ -2395,6 +2405,7 @@ class SpokeAppDelegate(NSObject):
                 )
             self._resume_handsfree_after_hold()
             return
+        self._request_recording_gpu_lease()
         self._suspend_handsfree_for_hold_async()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
@@ -2414,6 +2425,50 @@ class SpokeAppDelegate(NSObject):
             target=self._preview_loop, args=(token,), daemon=True
         )
         self._preview_thread.start()
+
+    def _request_recording_gpu_lease(self) -> None:
+        manager = getattr(self, "_gpu_lease_manager", None)
+        self._active_recording_gpu_lease = None
+        if manager is None:
+            return
+        lease_id = f"spoke-{uuid.uuid4().hex}"
+        try:
+            self._active_recording_gpu_lease = manager.request(lease_id)
+        except Exception:
+            logger.exception("GPU interactive lease request failed before launch")
+
+    def _take_recording_gpu_lease(self):
+        lease = getattr(self, "_active_recording_gpu_lease", None)
+        self._active_recording_gpu_lease = None
+        return lease
+
+    def _log_gpu_lease_posture(self, lease, pathway: str) -> None:
+        if lease is None:
+            return
+        try:
+            report = lease.snapshot()
+        except Exception:
+            logger.exception("GPU lease snapshot failed for %s transcription", pathway)
+            return
+        logger.info(
+            "GPU lease at %s transcription: requested=%s effective=%s posture=%s state=%s "
+            "pid=%s report=%s",
+            pathway,
+            report.get("requested"),
+            report.get("effective"),
+            report.get("scheduling_posture", "scheduler-unverified"),
+            report.get("state"),
+            report.get("holder_pid"),
+            report.get("report_path"),
+        )
+
+    def _release_gpu_lease(self, lease, pathway: str) -> None:
+        if lease is None:
+            return
+        try:
+            lease.release()
+        except Exception:
+            logger.exception("GPU lease release failed after %s transcription", pathway)
 
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — coalesce and marshal to main thread."""
@@ -2785,6 +2840,7 @@ class SpokeAppDelegate(NSObject):
 
         # ── Normal recording end ──
         logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
+        gpu_lease = self._take_recording_gpu_lease()
         self._manual_hold_active = False
         self._preview_active = False
         self._preview_cancelled_on_release = True
@@ -2813,7 +2869,11 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
-        wav_bytes = self._capture.stop()
+        try:
+            wav_bytes = self._capture.stop()
+        except Exception:
+            self._release_gpu_lease(gpu_lease, "capture-stop-failure")
+            raise
 
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
             logger.info("New utterance captured while approval remains pending")
@@ -2825,6 +2885,7 @@ class SpokeAppDelegate(NSObject):
             wav_bytes = b""  # force the empty-audio path
 
         if not wav_bytes:
+            self._release_gpu_lease(gpu_lease, "empty-audio")
             logger.info(
                 "No audio — instant path (shift=%s, enter=%s)",
                 shift_held,
@@ -2897,10 +2958,18 @@ class SpokeAppDelegate(NSObject):
                 self._glow.hide()
             thread = threading.Thread(
                 target=self._parallel_insert_worker,
-                args=(wav_bytes, parallel_token),
+                args=(
+                    (wav_bytes, parallel_token, gpu_lease)
+                    if gpu_lease is not None
+                    else (wav_bytes, parallel_token)
+                ),
                 daemon=True,
             )
-            thread.start()
+            try:
+                thread.start()
+            except Exception:
+                self._release_gpu_lease(gpu_lease, "parallel-thread-start-failure")
+                raise
             return
 
         # Invalidate any in-flight transcription so its result is discarded
@@ -2916,7 +2985,11 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Transcribing command…")
             thread = threading.Thread(
                 target=self._command_transcribe_worker,
-                args=(wav_bytes, token),
+                args=(
+                    (wav_bytes, token, gpu_lease)
+                    if gpu_lease is not None
+                    else (wav_bytes, token)
+                ),
                 daemon=True,
             )
         elif shift_held:
@@ -2928,7 +3001,11 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Transcribing…")
             thread = threading.Thread(
                 target=self._tray_transcribe_worker,
-                args=(wav_bytes, token),
+                args=(
+                    (wav_bytes, token, gpu_lease)
+                    if gpu_lease is not None
+                    else (wav_bytes, token)
+                ),
                 daemon=True,
             )
         else:
@@ -2936,9 +3013,19 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Transcribing…")
             thread = threading.Thread(
-                target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
+                target=self._transcribe_worker,
+                args=(
+                    (wav_bytes, token, gpu_lease)
+                    if gpu_lease is not None
+                    else (wav_bytes, token)
+                ),
+                daemon=True,
             )
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._release_gpu_lease(gpu_lease, "transcription-thread-start-failure")
+            raise
 
     def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
         """Approve the pending command from the dedicated approval grammar."""
@@ -3077,7 +3164,14 @@ class SpokeAppDelegate(NSObject):
             f"Local transcription timed out after local Whisper retries: {detail}"
         )
 
-    def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _transcribe_worker(self, wav_bytes: bytes, token: int, gpu_lease=None) -> None:
+        self._log_gpu_lease_posture(gpu_lease, "text")
+        try:
+            self._transcribe_worker_body(wav_bytes, token)
+        finally:
+            self._release_gpu_lease(gpu_lease, "text")
+
+    def _transcribe_worker_body(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
@@ -3132,7 +3226,16 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
-    def _parallel_insert_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _parallel_insert_worker(
+        self, wav_bytes: bytes, token: int, gpu_lease=None
+    ) -> None:
+        self._log_gpu_lease_posture(gpu_lease, "parallel-insert")
+        try:
+            self._parallel_insert_worker_body(wav_bytes, token)
+        finally:
+            self._release_gpu_lease(gpu_lease, "parallel-insert")
+
+    def _parallel_insert_worker_body(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -3524,7 +3627,16 @@ class SpokeAppDelegate(NSObject):
 
     # ── tray ───────────────────────────────────────────────
 
-    def _tray_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _tray_transcribe_worker(
+        self, wav_bytes: bytes, token: int, gpu_lease=None
+    ) -> None:
+        self._log_gpu_lease_posture(gpu_lease, "tray")
+        try:
+            self._tray_transcribe_worker_body(wav_bytes, token)
+        finally:
+            self._release_gpu_lease(gpu_lease, "tray")
+
+    def _tray_transcribe_worker_body(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe audio, then enter tray on main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
@@ -4643,30 +4755,14 @@ class SpokeAppDelegate(NSObject):
             )
         return _executor
 
-    def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _command_transcribe_worker(
+        self, wav_bytes: bytes, token: int, gpu_lease=None
+    ) -> None:
         """Background thread: transcribe then send command to OMLX."""
         self._command_tool_used_tts = False
-        # Wait for preview loop to finish
-        if self._preview_thread is not None:
-            if getattr(self, "_preview_done", None) is not None:
-                self._preview_done.wait(timeout=2.0)
-            self._preview_thread.join(timeout=2.0)
-            self._preview_thread = None
-
-        # Step 1: Transcribe the audio
+        self._log_gpu_lease_posture(gpu_lease, "command")
         try:
-            # Fast path: use cached segment transcriptions + tail only.
-            utterance = self._transcribe_segments_and_tail(wav_bytes)
-            if utterance is None:
-                if (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    with self._local_inference_context(self._client):
-                        utterance = self._client.finish_stream()
-                else:
-                    utterance = self._transcribe_full_buffer(wav_bytes)
+            utterance = self._command_transcribe_audio(wav_bytes)
         except Exception as exc:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4675,6 +4771,8 @@ class SpokeAppDelegate(NSObject):
                 False,
             )
             return
+        finally:
+            self._release_gpu_lease(gpu_lease, "command")
 
         if not utterance:
             # No speech with shift held = recall last response
@@ -4693,10 +4791,34 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
-        # Step 2: Stream the command response
+        self._command_stream_response(utterance, token)
+
+    def _command_transcribe_audio(self, wav_bytes: bytes) -> str:
+        """Transcribe command audio while the per-recording GPU lease is held."""
+        if self._preview_thread is not None:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.wait(timeout=2.0)
+            self._preview_thread.join(timeout=2.0)
+            self._preview_thread = None
+
+        utterance = self._transcribe_segments_and_tail(wav_bytes)
+        if utterance is None:
+            if (
+                getattr(self._client, 'supports_streaming', False)
+                and self._client is self._preview_client
+                and getattr(self._client, "has_active_stream", False)
+            ):
+                with self._local_inference_context(self._client):
+                    utterance = self._client.finish_stream()
+            else:
+                utterance = self._transcribe_full_buffer(wav_bytes)
+        return utterance
+
+    def _command_stream_response(self, utterance: str, token: int) -> None:
+        """Stream the command response after transcription releases its GPU lease."""
         full_response = ""
         stale_break = False
-        narrator_started = False  # tracks thinking narrator state, NOT vamp
+        narrator_started = False
         vamp_started = False
         first_event_received = False
         try:
@@ -7541,6 +7663,9 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         self._detector.uninstall()
         self._preview_active = False
+        gpu_lease_manager = getattr(self, "_gpu_lease_manager", None)
+        if gpu_lease_manager is not None:
+            gpu_lease_manager.close_all()
         hf = getattr(self, "_handsfree", None)
         if hf is not None and hf.is_active:
             hf.disable(reason="app quit")
@@ -7706,6 +7831,9 @@ def main() -> None:
         )
         _record_runtime_phase("signal.sigterm", lock_pid=lock_pid)
         delegate._detector.uninstall()
+        gpu_lease_manager = getattr(delegate, "_gpu_lease_manager", None)
+        if gpu_lease_manager is not None:
+            gpu_lease_manager.close_all()
         if hasattr(delegate, "_preview_warp_hud") and delegate._preview_warp_hud is not None:
             delegate._preview_warp_hud.cleanup()
         if hasattr(delegate, "_seam_pucker_hud") and delegate._seam_pucker_hud is not None:
