@@ -6,6 +6,8 @@ import io
 import json
 import os
 import socket
+import threading
+import time
 import urllib.error
 import wave
 from pathlib import Path
@@ -146,10 +148,10 @@ class TestWhisperKitClientSubprocess:
         assert "--audio-encoder-compute-units" in cmd
         assert "cpuAndNeuralEngine" in cmd
         assert "--text-decoder-compute-units" in cmd
-        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuAndNeuralEngine"
+        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuOnly"
         assert "--chunking-strategy" in cmd
         chunking_idx = cmd.index("--chunking-strategy")
-        assert cmd[chunking_idx + 1] == "vad"
+        assert cmd[chunking_idx + 1] == "none"
         assert cmd[cmd.index("--prompt") + 1] == "Kaminos, Trellis2MLX."
         assert "--skip-special-tokens" in cmd
         assert client.last_prompt_receipt["requested"] is True
@@ -477,7 +479,7 @@ class TestWhisperKitResidentServer:
     @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.Popen")
     @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
-    def test_invalid_compute_units_warn_and_use_ane_defaults(
+    def test_invalid_compute_units_warn_and_use_split_defaults(
         self,
         mock_find,
         mock_popen,
@@ -496,9 +498,91 @@ class TestWhisperKitResidentServer:
 
         cmd = mock_popen.call_args.args[0]
         assert cmd[cmd.index("--audio-encoder-compute-units") + 1] == "cpuAndNeuralEngine"
-        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuAndNeuralEngine"
+        assert cmd[cmd.index("--text-decoder-compute-units") + 1] == "cpuOnly"
         assert "Invalid SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS" in caplog.text
         assert "Invalid SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS" in caplog.text
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_terminal_close_serializes_with_inflight_resident_spawn(
+        self,
+        mock_find,
+        mock_wait,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51238")
+        spawn_entered = threading.Event()
+        release_spawn = threading.Event()
+        proc = MagicMock(pid=5003)
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+
+        def blocked_spawn(*args, **kwargs):
+            spawn_entered.set()
+            assert release_spawn.wait(timeout=2)
+            return proc
+
+        client = WhisperKitClient(model="medium.en")
+        prepare_errors = []
+
+        def ensure_server():
+            try:
+                client._ensure_resident_server()
+            except Exception as exc:  # pragma: no cover - asserted below
+                prepare_errors.append(exc)
+
+        with patch("spoke.transcribe_whisperkit.subprocess.Popen", side_effect=blocked_spawn):
+            prepare_thread = threading.Thread(target=ensure_server)
+            prepare_thread.start()
+            assert spawn_entered.wait(timeout=2)
+
+            close_thread = threading.Thread(target=client.close)
+            close_thread.start()
+            time.sleep(0.05)
+            release_spawn.set()
+
+            prepare_thread.join(timeout=2)
+            close_thread.join(timeout=2)
+
+        assert prepare_errors == []
+        assert not prepare_thread.is_alive()
+        assert not close_thread.is_alive()
+        proc.terminate.assert_called_once_with()
+        assert client._server_proc is None
+
+        with pytest.raises(RuntimeError, match="client is closed"):
+            client._ensure_resident_server()
+
+    @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
+    @patch("spoke.transcribe_whisperkit.subprocess.Popen")
+    @patch("spoke.transcribe_whisperkit._find_whisperkit_cli", return_value="/usr/local/bin/whisperkit-cli")
+    def test_unload_stops_resident_but_allows_lazy_restart(
+        self,
+        mock_find,
+        mock_popen,
+        mock_wait,
+        monkeypatch,
+    ):
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        monkeypatch.setenv("SPOKE_WHISPERKIT_SERVER_PORT", "51239")
+        first_proc = MagicMock(pid=5004)
+        first_proc.poll.return_value = None
+        first_proc.wait.return_value = 0
+        second_proc = MagicMock(pid=5005)
+        second_proc.poll.return_value = None
+        mock_popen.side_effect = [first_proc, second_proc]
+
+        client = WhisperKitClient(model="medium.en")
+        client.prepare()
+        client.unload()
+        client.prepare()
+
+        first_proc.terminate.assert_called_once_with()
+        assert mock_popen.call_count == 2
+        assert client._server_proc is second_proc
 
     @patch("spoke.transcribe_whisperkit._wait_for_tcp_port", return_value=True)
     @patch("spoke.transcribe_whisperkit.subprocess.run")
@@ -716,6 +800,49 @@ class TestWhisperKitRouting:
         client = delegate._build_client("", "whisperkit/base.en")
         assert isinstance(client, WhisperKitClient)
         assert client._model == "base.en"
+
+    def test_role_env_overrides_saved_model_preferences(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        SpokeAppDelegate = main_module.SpokeAppDelegate
+
+        delegate = SpokeAppDelegate.__new__(SpokeAppDelegate)
+        delegate._load_model_preferences = MagicMock(
+            return_value={
+                "preview_model": "mlx-community/whisper-tiny.en-mlx",
+                "transcription_model": "mlx-community/whisper-small.en-mlx",
+            }
+        )
+        delegate._model_allowed = MagicMock(return_value=True)
+        monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "whisperkit/medium.en")
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+
+        preview_model, transcription_model = delegate._resolve_model_ids()
+
+        assert preview_model == "mlx-community/whisper-tiny.en-mlx"
+        assert transcription_model == "whisperkit/medium.en"
+
+    def test_explicit_unavailable_whisperkit_does_not_silently_become_mlx(
+        self,
+        main_module,
+        monkeypatch,
+    ):
+        SpokeAppDelegate = main_module.SpokeAppDelegate
+        from spoke.transcribe_whisperkit import WhisperKitClient
+
+        delegate = SpokeAppDelegate.__new__(SpokeAppDelegate)
+        monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "whisperkit/medium.en")
+
+        with patch.object(WhisperKitClient, "available", return_value=False):
+            effective = delegate._sanitize_model_id(
+                "whisperkit/medium.en",
+                role="transcription",
+            )
+
+        assert effective == "whisperkit/medium.en"
 
 
 class TestWhisperKitSmokeEnv:

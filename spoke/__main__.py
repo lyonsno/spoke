@@ -5880,6 +5880,20 @@ class SpokeAppDelegate(NSObject):
             return fallback
         if self._model_allowed(model_id):
             return model_id
+        role_env = (
+            os.environ.get("SPOKE_PREVIEW_MODEL")
+            if role == "preview"
+            else os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+        )
+        explicit_model = role_env or os.environ.get("SPOKE_WHISPER_MODEL")
+        if model_id.startswith(WHISPERKIT_PREFIX) and explicit_model == model_id:
+            logger.error(
+                "Explicit %s model %s is unavailable; preserving the requested "
+                "route so startup fails loud instead of falling back to MLX",
+                role,
+                model_id,
+            )
+            return model_id
         fallback = self._fallback_model_for_role(role)
         logger.warning(
             "%s model %s not available on this machine (%.0fGB RAM) — falling back to %s",
@@ -5910,15 +5924,15 @@ class SpokeAppDelegate(NSObject):
         prefs = self._load_model_preferences()
         legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
         raw_preview_model = (
-            prefs.get("preview_model")
-            or os.environ.get("SPOKE_PREVIEW_MODEL")
+            os.environ.get("SPOKE_PREVIEW_MODEL")
             or legacy_model
+            or prefs.get("preview_model")
             or _DEFAULT_PREVIEW_MODEL
         )
         raw_transcription_model = (
-            prefs.get("transcription_model")
-            or os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or legacy_model
+            or prefs.get("transcription_model")
             or self._default_transcription_model()
         )
         preview_model, transcription_model = self._sanitize_model_ids(

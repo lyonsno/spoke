@@ -18,6 +18,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -34,10 +35,10 @@ WHISPERKIT_PREFIX = "whisperkit/"
 
 # Default WhisperKit model variant
 DEFAULT_WHISPERKIT_MODEL = "medium.en"
-DEFAULT_WHISPERKIT_CHUNKING_STRATEGY = "vad"
+DEFAULT_WHISPERKIT_CHUNKING_STRATEGY = "none"
 _WHISPERKIT_CHUNKING_STRATEGIES = {"none", "vad"}
 _WHISPERKIT_ENCODER_COMPUTE_UNITS = "cpuAndNeuralEngine"
-_WHISPERKIT_DECODER_COMPUTE_UNITS = "cpuAndNeuralEngine"
+_WHISPERKIT_DECODER_COMPUTE_UNITS = "cpuOnly"
 _WHISPERKIT_COMPUTE_UNITS = {
     "all",
     "cpuOnly",
@@ -328,6 +329,8 @@ class WhisperKitClient:
         self._server_ready = self._external_server_url is not None
         self._resident_failure_reason: str | None = None
         self._last_route_report: dict[str, object] = {}
+        self._server_lifecycle_lock = threading.RLock()
+        self._closed = False
 
     @staticmethod
     def available() -> bool:
@@ -626,6 +629,12 @@ class WhisperKitClient:
         return Path.home() / "Library" / "Logs" / "Spoke" / "whisperkit-server.log"
 
     def _ensure_resident_server(self) -> tuple[str, str, int | None]:
+        with self._server_lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("WhisperKit client is closed")
+            return self._ensure_resident_server_locked()
+
+    def _ensure_resident_server_locked(self) -> tuple[str, str, int | None]:
         cli = self._cli_path or _find_whisperkit_cli()
         if cli is None:
             raise RuntimeError("whisperkit-cli not found")
@@ -927,8 +936,8 @@ class WhisperKitClient:
         return text
 
     def unload(self) -> None:
-        """Stop the resident server if this client owns one."""
-        self.close()
+        """Stop the resident server while allowing a later lazy restart."""
+        self._close_owned_server()
 
     @property
     def is_loaded(self) -> bool:
@@ -952,6 +961,10 @@ class WhisperKitClient:
         return dict(self._last_prompt_receipt)
 
     def _close_owned_server(self) -> None:
+        with self._server_lifecycle_lock:
+            self._close_owned_server_locked()
+
+    def _close_owned_server_locked(self) -> None:
         proc = self._server_proc
         self._server_proc = None
         self._server_url = self._external_server_url
@@ -972,4 +985,6 @@ class WhisperKitClient:
 
     def close(self) -> None:
         """Terminate the owned resident server process."""
-        self._close_owned_server()
+        with self._server_lifecycle_lock:
+            self._closed = True
+            self._close_owned_server_locked()
