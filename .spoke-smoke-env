@@ -7,6 +7,16 @@
 # the ASR contention smoke. Final transcription consumes the full raw buffer.
 export SPOKE_VAD_ENABLED="0"
 
+# Controlled WhisperKit comparison: keep the model resident, send the full
+# capture as one chunk, and move only the encoder onto ANE. The decoder stays
+# on CPU so Metal contention cannot stall final decoding.
+export SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"
+export SPOKE_WHISPERKIT_RESIDENT="1"
+export SPOKE_WHISPERKIT_CHUNKING_STRATEGY="none"
+export SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS="cpuAndNeuralEngine"
+export SPOKE_WHISPERKIT_DECODER_COMPUTE_UNITS="cpuOnly"
+export SPOKE_WHISPERKIT_TIMEOUT_SECONDS="30"
+
 # Request the reviewed GPU Greenroom interactive holder as soon as real audio
 # capture begins. The holder excludes new Greenroom jobs while effective; it
 # does not claim preemption of a running job or control of other Metal clients.
