@@ -356,6 +356,39 @@ class TestLaunchTargetSecretsEnvLoading:
         )
 
 
+class TestLauncherModelRouteOverrides:
+    """Inherited model choices must not beat the selected worktree route."""
+
+    @pytest.mark.parametrize(
+        ("script_text", "smoke_env_application"),
+        [
+            (_main_script_text, "_apply_env_file(smoke_env)"),
+            (
+                _target_script_text,
+                'child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))',
+            ),
+        ],
+    )
+    def test_inherited_models_are_cleared_before_target_env_is_applied(
+        self,
+        script_text,
+        smoke_env_application,
+    ):
+        text = script_text()
+        target_env_index = text.index(smoke_env_application)
+
+        for model_env in (
+            "SPOKE_PREVIEW_MODEL",
+            "SPOKE_TRANSCRIPTION_MODEL",
+            "SPOKE_WHISPER_MODEL",
+        ):
+            clear_index = text.index(f'child_env.pop("{model_env}", None)')
+            assert clear_index < target_env_index, (
+                f"{model_env} must be cleared before .spoke-smoke-env is applied "
+                "so the selected target's model route survives into the child"
+            )
+
+
 class TestLauncherPythonOverride:
     """Both launcher paths must honor per-worktree Python overrides.
 
