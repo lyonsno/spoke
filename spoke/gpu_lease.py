@@ -278,6 +278,21 @@ class GPUInteractiveLease:
 
     def _fail(self, phase: str, event: str, error: str) -> None:
         with self._lock:
+            current_state = self._report["state"]
+            local_authority_closed = self._release_requested or current_state in {
+                "failed",
+                "released",
+                "released-unacquired",
+            }
+            if local_authority_closed:
+                logger.warning(
+                    "Ignoring GPU lease failure after local authority closed: "
+                    "lease=%s current=%s event=%s",
+                    self.lease_id,
+                    current_state,
+                    event,
+                )
+                return
             self._report["state"] = "failed"
             self._report["effective"] = False
             self._report["scheduling_posture"] = "scheduler-unverified"
