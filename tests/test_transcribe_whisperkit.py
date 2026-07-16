@@ -1189,14 +1189,27 @@ class TestWhisperKitRouting:
         assert isinstance(client, WhisperKitClient)
         assert client._model == "medium.en"
 
-    def test_build_client_extracts_variant(self):
+    @pytest.mark.parametrize(
+        "model_id, expected_variant",
+        [
+            (
+                "whisperkit/large-v3-v20240930",
+                "large-v3-v20240930",
+            ),
+            (
+                "whisperkit/large-v3-v20240930_turbo",
+                "large-v3-v20240930_turbo",
+            ),
+        ],
+    )
+    def test_build_client_extracts_large_variant(self, model_id, expected_variant):
         SpokeAppDelegate = _import_delegate()
         from spoke.transcribe_whisperkit import WhisperKitClient
 
         delegate = SpokeAppDelegate.__new__(SpokeAppDelegate)
-        client = delegate._build_client("", "whisperkit/base.en")
+        client = delegate._build_client("", model_id)
         assert isinstance(client, WhisperKitClient)
-        assert client._model == "base.en"
+        assert client._model == expected_variant
 
     def test_role_env_overrides_saved_model_preferences(
         self,
@@ -1248,7 +1261,10 @@ class TestWhisperKitSmokeEnv:
     def test_whisperkit_smoke_env_selects_split_compute_without_vad(self):
         smoke_env = Path(".spoke-smoke-env").read_text()
 
-        assert 'SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"' in smoke_env
+        assert (
+            'SPOKE_TRANSCRIPTION_MODEL="whisperkit/large-v3-v20240930_turbo"'
+            in smoke_env
+        )
         assert 'SPOKE_WHISPERKIT_RESIDENT="1"' in smoke_env
         assert 'SPOKE_WHISPERKIT_CHUNKING_STRATEGY="none"' in smoke_env
         assert (

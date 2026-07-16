@@ -7,10 +7,10 @@
 # the ASR contention smoke. Final transcription consumes the full raw buffer.
 export SPOKE_VAD_ENABLED="0"
 
-# Controlled WhisperKit comparison: keep the model resident, send the full
-# capture as one chunk, and move only the encoder onto ANE. The decoder stays
-# on CPU so Metal contention cannot stall final decoding.
-export SPOKE_TRANSCRIPTION_MODEL="whisperkit/medium.en"
+# Controlled WhisperKit Large V3 Turbo comparison: keep the model resident,
+# send the full capture as one chunk, and move only the encoder onto ANE. The
+# decoder stays on CPU so Metal contention cannot stall final decoding.
+export SPOKE_TRANSCRIPTION_MODEL="whisperkit/large-v3-v20240930_turbo"
 export SPOKE_WHISPERKIT_RESIDENT="1"
 export SPOKE_WHISPERKIT_CHUNKING_STRATEGY="none"
 export SPOKE_WHISPERKIT_ENCODER_COMPUTE_UNITS="cpuAndNeuralEngine"

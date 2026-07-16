@@ -1903,6 +1903,24 @@ class TestModelPicker:
         assert "mlx-community/whisper-large-v3-turbo" in labels_by_id
         assert labels_by_id["mlx-community/whisper-large-v3-turbo"] == "v3 Large Turbo (float16)"
 
+    def test_select_model_none_includes_whisperkit_large_variants(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        with patch.object(main_module.WhisperKitClient, "available", return_value=True):
+            models = d._select_model(None)
+        labels_by_id = {model_id: label for model_id, label, _enabled in models}
+
+        assert (
+            labels_by_id["whisperkit/large-v3-v20240930"]
+            == "Large V3 (WhisperKit)"
+        )
+        assert (
+            labels_by_id["whisperkit/large-v3-v20240930_turbo"]
+            == "Large V3 Turbo (WhisperKit)"
+        )
+
 
 class TestDualModelConfiguration:
     """Test separate preview/final model selection and persistence hooks."""

@@ -5614,6 +5614,11 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
+        ("whisperkit/large-v3-v20240930", "Large V3 (WhisperKit)"),
+        (
+            "whisperkit/large-v3-v20240930_turbo",
+            "Large V3 Turbo (WhisperKit)",
+        ),
         ("whisperkit/medium.en", "Medium.en (WhisperKit)"),
         ("whisperkit/small.en", "Small.en (WhisperKit)"),
         ("whisperkit/base.en", "Base.en (WhisperKit)"),
