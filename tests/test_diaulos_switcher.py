@@ -87,6 +87,14 @@ def test_parse_live_inventory_rejects_duplicate_action_authority():
         parse_live_inventory(payload)
 
 
+def test_parse_live_inventory_rejects_multiple_handles_for_one_pane():
+    payload = _payload(2)
+    payload["entries"][1]["pane_id"] = payload["entries"][0]["pane_id"]
+
+    with pytest.raises(DiaulosInventoryError, match="multiple handles"):
+        parse_live_inventory(payload)
+
+
 def test_model_filters_handles_aliases_and_titles_without_mutating_inventory():
     candidates = parse_live_inventory(_payload())
     model = DiaulosSwitcherModel(candidates)

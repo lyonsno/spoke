@@ -60,6 +60,7 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
     candidates: list[DiaulosCandidate] = []
     identities: set[tuple[str, int]] = set()
     panes_by_handle: dict[str, set[int]] = {}
+    handles_by_pane: dict[int, set[str]] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise DiaulosInventoryError(f"live Diaulos row {index} is not an object")
@@ -74,6 +75,12 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
                 f"live Diaulos inventory gives {handle} authority over multiple panes"
             )
         handle_panes.add(pane_id)
+        pane_handles = handles_by_pane.setdefault(pane_id, set())
+        if pane_handles and handle not in pane_handles:
+            raise DiaulosInventoryError(
+                f"live Diaulos inventory gives pane {pane_id} authority over multiple handles"
+            )
+        pane_handles.add(handle)
         if identity in identities:
             raise DiaulosInventoryError(
                 f"live Diaulos inventory repeats {handle} on pane {pane_id}"
