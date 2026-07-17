@@ -28,6 +28,7 @@ class TestSpacebarStateMachine:
         det._awaiting_space_release = False
         det.tray_active = False
         det._on_tray_deck_switch = None
+        det._on_diaulos_switcher_toggle = None
         return det, on_start, on_end
 
     def test_tap_spacebar_passes_through_on_quick_release(self, input_tap_module):
@@ -134,6 +135,47 @@ class TestSpacebarStateMachine:
 
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE) is True
         assert det._awaiting_space_release is False
+
+    def test_semicolon_alone_passes_through(self, input_tap_module):
+        det, _, _ = self._make_detector(input_tap_module)
+        mod = input_tap_module
+        det._on_diaulos_switcher_toggle = MagicMock()
+
+        assert det.handle_key_down(mod.SEMICOLON_KEYCODE, 0) is False
+        assert det.handle_key_up(mod.SEMICOLON_KEYCODE) is False
+        det._on_diaulos_switcher_toggle.assert_not_called()
+
+    def test_space_semicolon_toggles_diaulos_switcher_once(self, input_tap_module):
+        det, on_start, _ = self._make_detector(input_tap_module)
+        mod = input_tap_module
+        det._on_diaulos_switcher_toggle = MagicMock()
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det._state == mod._State.WAITING
+        assert det.handle_key_down(mod.SEMICOLON_KEYCODE, 0) is True
+        assert det.handle_key_down(mod.SEMICOLON_KEYCODE, 0) is True
+        assert det.handle_key_up(mod.SEMICOLON_KEYCODE) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE) is True
+
+        det._on_diaulos_switcher_toggle.assert_called_once_with()
+        on_start.assert_not_called()
+        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is False
+
+    def test_space_shift_semicolon_uses_physical_keycode(self, input_tap_module):
+        det, _, _ = self._make_detector(input_tap_module)
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+        det._on_diaulos_switcher_toggle = MagicMock()
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det.handle_key_down(
+            mod.SEMICOLON_KEYCODE,
+            Quartz.kCGEventFlagMaskShift,
+        ) is True
+        assert det.handle_key_up(mod.SEMICOLON_KEYCODE) is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE) is True
+        det._on_diaulos_switcher_toggle.assert_called_once_with()
 
     def test_key_repeat_suppressed_while_waiting(self, input_tap_module):
         """Repeated keyDown events while WAITING should be suppressed."""

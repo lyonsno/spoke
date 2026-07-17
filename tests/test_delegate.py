@@ -616,11 +616,13 @@ class TestHoldCallbacks:
         d = _make_delegate(main_module, monkeypatch)
         d._handsfree = MagicMock()
         d._handsfree.is_active = True
+        d._diaulos_switcher = MagicMock()
 
         with patch.object(main_module.NSApp, "terminate_") as terminate:
             d._quit()
 
         d._handsfree.disable.assert_called_once_with(reason="app quit")
+        d._diaulos_switcher.cleanup.assert_called_once_with()
         terminate.assert_called_once_with(None)
 
     def test_hold_end_with_empty_audio_restores_wakeword_listener(
@@ -748,6 +750,26 @@ class TestTranscriptionToken:
         assert mock_inject.call_args[0][0] == "hello world"
         assert d._transcribing is False
 
+    def test_current_token_filters_visible_diaulos_switcher_without_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": "kynormous bastard"})
+
+        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
+            "kynormous bastard"
+        )
+        assert d._transcribing is False
+        assert getattr(d, "_grace_pending_text", None) is None
+        d._overlay.start_insert_windup.assert_not_called()
+        mock_inject.assert_not_called()
+
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):
         """Failed transcription with old token should be silently ignored."""
         d = _make_delegate(main_module, monkeypatch)
@@ -769,6 +791,25 @@ class TestTranscriptionToken:
 
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Error — try again")
+
+    def test_current_failure_filters_visible_diaulos_switcher_from_preview(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 3
+        d._transcribing = True
+        d._last_preview_text = "handy fucker man"
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._inject_result_text = MagicMock()
+
+        d.transcriptionFailed_({"token": 3, "error": "final decode failed"})
+
+        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
+            "handy fucker man"
+        )
+        d._inject_result_text.assert_not_called()
+        d._overlay.hide.assert_called_once_with()
 
     def test_current_failure_surfaces_specific_error_when_present(
         self, main_module, monkeypatch
@@ -4180,6 +4221,24 @@ class TestEnvValidation:
 
         assert result is not None
         assert detector_instance._on_throughglass_crown_key == d._toggle_perceptasia_throughglass
+
+    def test_init_binds_diaulos_switcher_chord(self, main_module, monkeypatch):
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+
+        class Detector:
+            command_overlay_active = False
+
+        detector_instance = Detector()
+
+        with patch.object(main_module.SpacebarHoldDetector, "alloc") as mock_alloc:
+            mock_alloc.return_value.initWithHoldStart_holdEnd_holdMs_.return_value = (
+                detector_instance
+            )
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert detector_instance._on_diaulos_switcher_toggle == d._toggle_diaulos_switcher
 
 
 class TestRecordingCap:

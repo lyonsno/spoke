@@ -1107,6 +1107,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
         self._detector._on_tray_deck_switch = self._tray_switch_deck
+        self._detector._on_diaulos_switcher_toggle = self._toggle_diaulos_switcher
         # Bare Enter should belong to the foreground app; tray actions stay
         # on explicit space-rooted gestures instead of ambient key capture.
         self._detector._on_enter_pressed = None
@@ -1122,6 +1123,7 @@ class SpokeAppDelegate(NSObject):
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
         self._overlay_compositor_registry = None
+        self._diaulos_switcher = None
         self._transcribing = False
         self._transcription_token = 0
         self._parallel_insert_token = 0
@@ -3171,6 +3173,20 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         text = payload["text"]
+        diaulos_switcher = getattr(self, "_diaulos_switcher", None)
+        if diaulos_switcher is not None and getattr(
+            diaulos_switcher, "visible", False
+        ):
+            if text:
+                diaulos_switcher.set_dictation_filter(text)
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Diaulos filter updated")
+            else:
+                diaulos_switcher.show_error("No speech recognized")
+            if self._overlay is not None:
+                self._overlay.hide()
+            self._resume_handsfree_after_hold()
+            return
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info("Transcribed: %r (%.0fms) — starting insert grace window", text, elapsed_ms)
@@ -3245,6 +3261,23 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return  # stale failure, ignore
         self._transcribing = False
+        diaulos_switcher = getattr(self, "_diaulos_switcher", None)
+        if diaulos_switcher is not None and getattr(
+            diaulos_switcher, "visible", False
+        ):
+            if self._last_preview_text:
+                logger.warning(
+                    "Final transcription failed — filtering Diauloi from preview text"
+                )
+                diaulos_switcher.set_dictation_filter(self._last_preview_text)
+            else:
+                diaulos_switcher.show_error(
+                    payload.get("error") or "No speech recognized"
+                )
+            if self._overlay is not None:
+                self._overlay.hide()
+            self._resume_handsfree_after_hold()
+            return
         if self._last_preview_text:
             logger.warning(
                 "Final transcription failed — falling back to latest preview text"
@@ -4064,6 +4097,16 @@ class SpokeAppDelegate(NSObject):
         self._detector.tray_active = True
         logger.info("Tray deck switch -> %s index=%d", target_deck, target_index)
         self._show_tray_current(acknowledge=True)
+
+    def _toggle_diaulos_switcher(self) -> None:
+        """Open or close the voice-native live Diaulos switcher."""
+        if self._diaulos_switcher is None:
+            from .diaulos_switcher_overlay import DiaulosSwitcherOverlay
+
+            self._diaulos_switcher = (
+                DiaulosSwitcherOverlay.alloc().initWithDelegate_(self)
+            )
+        self._diaulos_switcher.toggle()
 
     def _tray_entry_allows_text_action(self, entry: TrayEntry | str) -> bool:
         """Return whether a tray entry can be pasted or sent as plain text."""
@@ -7532,6 +7575,8 @@ class SpokeAppDelegate(NSObject):
             and self._perceptasia_throughglass is not None
         ):
             self._perceptasia_throughglass.cleanup()
+        if self._diaulos_switcher is not None:
+            self._diaulos_switcher.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 
@@ -7694,6 +7739,8 @@ def main() -> None:
             and delegate._perceptasia_throughglass is not None
         ):
             delegate._perceptasia_throughglass.cleanup()
+        if delegate._diaulos_switcher is not None:
+            delegate._diaulos_switcher.cleanup()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
         # Remove heartbeat so next launch doesn't see us as a zombie.
