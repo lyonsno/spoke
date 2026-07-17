@@ -225,6 +225,7 @@ class TestSigtermMenuBarCleanup:
                     delegate = MagicMock()
                     delegate._menubar = MagicMock()
                     delegate._detector = MagicMock()
+                    delegate._diaulos_switcher = MagicMock()
 
                     with patch.object(
                         main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
@@ -242,6 +243,7 @@ class TestSigtermMenuBarCleanup:
         captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
 
         delegate._menubar.cleanup.assert_called_once()
+        delegate._diaulos_switcher.cleanup.assert_called_once()
 
     def test_sigterm_handler_logs_pid_context(self, main_module, monkeypatch):
         """The SIGTERM handler should log PID context for disappearance forensics."""
