@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
+import sys
+import threading
+import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -38,6 +43,14 @@ def _payload(count: int = 3) -> dict:
         ],
         "excluded": [],
     }
+
+
+@pytest.fixture
+def overlay_module(mock_pyobjc):
+    sys.modules.pop("spoke.diaulos_switcher_overlay", None)
+    module = importlib.import_module("spoke.diaulos_switcher_overlay")
+    yield module
+    sys.modules.pop("spoke.diaulos_switcher_overlay", None)
 
 
 def test_parse_live_inventory_is_uncapped_and_preserves_observation_identity():
@@ -189,3 +202,115 @@ def test_client_reports_malformed_activation_receipt_as_activation_error():
 
     with pytest.raises(DiaulosActivationError, match="pane_id is not an integer"):
         client.activate(candidate)
+
+
+def test_activation_commit_cannot_be_dismissed_or_superseded(overlay_module):
+    candidate = parse_live_inventory(_payload(2))[0]
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class BlockingClient:
+        def activate(self, selected):
+            calls.append(selected)
+            started.set()
+            assert release.wait(timeout=2.0)
+            return {
+                "diaulos": selected.handle,
+                "pane_id": selected.pane_id,
+                "expected_pane_id": selected.pane_id,
+            }
+
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._client = BlockingClient()
+    overlay._model = DiaulosSwitcherModel([candidate])
+    overlay._activation_generation = 0
+    overlay._load_generation = 0
+    overlay._panel = MagicMock()
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._previous_app = MagicMock()
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
+
+    overlay.activate_selected()
+    assert started.wait(timeout=1.0)
+    try:
+        assert overlay.hide() is False
+        overlay.toggle()
+        overlay.activate_selected()
+        deadline = time.monotonic() + 0.5
+        while len(calls) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert overlay.visible is True
+        assert calls == [candidate]
+        overlay.cleanup()
+        assert overlay.visible is False
+        assert overlay._activation_in_flight is True
+    finally:
+        release.set()
+
+
+def test_activation_failure_restores_visible_interaction(overlay_module):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._activation_generation = 4
+    overlay._activation_in_flight = True
+    overlay._activation_handle = "thing-0"
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+
+    overlay.activationFinished_({"generation": 4, "error": "route moved"})
+
+    assert overlay.visible is True
+    assert overlay._activation_in_flight is False
+    assert overlay._activation_handle is None
+    overlay._search_field.setEnabled_.assert_called_once_with(True)
+    overlay._panel.makeFirstResponder_.assert_called_once_with(
+        overlay._search_field
+    )
+    overlay._status_label.setStringValue_.assert_called_once_with("route moved")
+
+
+def test_show_discards_prior_inventory_before_refresh(overlay_module, monkeypatch):
+    old_candidate = parse_live_inventory(_payload(1))[0]
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.setup = MagicMock()
+    overlay._model = DiaulosSwitcherModel([old_candidate])
+    overlay._search_field = MagicMock()
+    overlay._count_label = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._scroll_view = MagicMock()
+    overlay._document_view = MagicMock()
+    overlay._previous_app = None
+    overlay._load_generation = 0
+    overlay._activation_generation = 0
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay.visible = False
+    thread = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.threading,
+        "Thread",
+        MagicMock(return_value=thread),
+    )
+
+    overlay.show()
+
+    assert overlay.visible is True
+    assert overlay._model.selected is None
+    assert overlay._model.all_candidates == []
+    overlay._search_field.setStringValue_.assert_called_once_with("")
+    overlay._search_field.setEnabled_.assert_called_once_with(True)
+    thread.start.assert_called_once_with()

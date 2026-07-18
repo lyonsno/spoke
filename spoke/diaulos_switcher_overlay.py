@@ -114,6 +114,8 @@ class DiaulosSwitcherOverlay(NSObject):
         self._previous_app = None
         self._load_generation = 0
         self._activation_generation = 0
+        self._activation_in_flight = False
+        self._activation_handle = None
         self.visible = False
         return self
 
@@ -228,9 +230,13 @@ class DiaulosSwitcherOverlay(NSObject):
         self.setup()
         workspace = NSWorkspace.sharedWorkspace()
         self._previous_app = workspace.frontmostApplication()
+        self._model = DiaulosSwitcherModel([])
+        self._search_field.setStringValue_("")
+        self._search_field.setEnabled_(True)
         self.visible = True
         self._set_status("Loading live Diauloi")
         self._count_label.setStringValue_("")
+        self._render_rows()
         self._panel.makeKeyAndOrderFront_(None)
         app = NSApp()
         if app is not None:
@@ -244,7 +250,12 @@ class DiaulosSwitcherOverlay(NSObject):
             daemon=True,
         ).start()
 
-    def hide(self, *, restore_previous: bool = True) -> None:
+    def hide(self, *, restore_previous: bool = True, force: bool = False) -> bool:
+        if self._activation_in_flight and not force:
+            self._set_status(
+                f"Focus committed to {self._activation_handle or 'selected Diaulos'}"
+            )
+            return False
         self._load_generation += 1
         self._activation_generation += 1
         if self._panel is not None:
@@ -258,13 +269,18 @@ class DiaulosSwitcherOverlay(NSObject):
             except Exception:
                 logger.debug("Could not restore prior foreground app", exc_info=True)
         self._previous_app = None
+        return True
 
     def cleanup(self) -> None:
-        self.hide(restore_previous=False)
+        if self._activation_in_flight:
+            logger.info(
+                "Hiding during shutdown without cancelling committed Diaulos focus"
+            )
+        self.hide(restore_previous=False, force=True)
         self._panel = None
 
     def set_dictation_filter(self, text: str) -> None:
-        if not self.visible:
+        if not self.visible or self._activation_in_flight:
             return
         self._search_field.setStringValue_(text)
         self._apply_query(text)
@@ -275,20 +291,32 @@ class DiaulosSwitcherOverlay(NSObject):
         self._set_status(message, error=True)
 
     def controlTextDidChange_(self, notification) -> None:
+        if self._activation_in_flight:
+            return
         self._apply_query(str(self._search_field.stringValue() or ""))
 
     def move_selection(self, delta: int) -> None:
+        if self._activation_in_flight:
+            return
         self._model.move(delta)
         self._render_rows()
 
     def activate_selected(self) -> None:
+        if self._activation_in_flight:
+            self._set_status(
+                f"Focus committed to {self._activation_handle or 'selected Diaulos'}"
+            )
+            return
         candidate = self._model.selected
         if candidate is None:
             self._set_status("No live Diaulos matches this filter", error=True)
             return
+        self._activation_in_flight = True
+        self._activation_handle = candidate.handle
+        self._search_field.setEnabled_(False)
         self._activation_generation += 1
         generation = self._activation_generation
-        self._set_status(f"Focusing {candidate.handle}")
+        self._set_status(f"Focusing {candidate.handle} (committed)")
         threading.Thread(
             target=self._activation_worker,
             args=(generation, candidate),
@@ -315,8 +343,12 @@ class DiaulosSwitcherOverlay(NSObject):
     def activationFinished_(self, payload: dict) -> None:
         if payload["generation"] != self._activation_generation or not self.visible:
             return
+        self._activation_in_flight = False
+        self._activation_handle = None
+        self._search_field.setEnabled_(True)
         if payload.get("error"):
             self._set_status(str(payload["error"]), error=True)
+            self._panel.makeFirstResponder_(self._search_field)
             return
         self.hide(restore_previous=False)
 
