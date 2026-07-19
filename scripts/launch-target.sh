@@ -290,8 +290,7 @@ def _start_retina_lasso_witness(
     log.write(f"Retina Lasso auto witness output: {output_dir}\n")
     log.write(
         "Retina Lasso auto witness route: "
-        f"{witness_route} "
-        f"(SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE={child_env.get('SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE', '')!r})\n"
+        f"{witness_route}\n"
     )
     log.write(f"Retina Lasso auto witness command: {command!r}\n")
     log.flush()
