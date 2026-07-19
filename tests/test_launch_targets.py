@@ -4,6 +4,7 @@ from spoke.launch_targets import (
     current_launch_target,
     current_launch_target_id,
     parse_env_overrides,
+    resolve_launch_target,
     save_selected_launch_target,
 )
 
@@ -99,3 +100,36 @@ def test_parse_env_overrides_expands_home_variables(tmp_path, monkeypatch):
     assert overrides["SPOKE_OPERATOR_PING_EVENTS_PATH"] == (
         str(home / ".local/state/epistaxis/events.jsonl")
     )
+
+
+def test_resolve_launch_target_preserves_string_env_overrides(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "switcher"
+    checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "switcher",
+                "targets": [
+                    {
+                        "id": "switcher",
+                        "label": "Live Diaulos Switcher",
+                        "path": str(checkout),
+                        "env": {
+                            "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE": "0",
+                            "SPOKE_RETINA_LASSO_AUTO_WITNESS": "0",
+                            "": "ignored-empty-key",
+                            "NOT_A_STRING": 7,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    target = resolve_launch_target("switcher", registry_path)
+
+    assert target["env"] == {
+        "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE": "0",
+        "SPOKE_RETINA_LASSO_AUTO_WITNESS": "0",
+    }

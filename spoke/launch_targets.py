@@ -51,14 +51,16 @@ def iter_launch_targets(path: Path | None = None) -> list[dict]:
         if not target_id or not target_path_raw:
             continue
         target_path = Path(target_path_raw).expanduser()
-        resolved_targets.append(
-            {
-                "id": target_id,
-                "label": str(raw_target.get("label") or target_id),
-                "path": target_path,
-                "enabled": target_path.is_dir(),
-            }
-        )
+        target = {
+            "id": target_id,
+            "label": str(raw_target.get("label") or target_id),
+            "path": target_path,
+            "enabled": target_path.is_dir(),
+        }
+        target_env = parse_target_env_overrides(raw_target.get("env"))
+        if target_env:
+            target["env"] = target_env
+        resolved_targets.append(target)
     return resolved_targets
 
 
@@ -141,3 +143,15 @@ def parse_env_overrides(env_file: Path) -> dict[str, str]:
         if key:
             overrides[key] = os.path.expanduser(os.path.expandvars(value))
     return overrides
+
+
+def parse_target_env_overrides(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key.strip(): os.path.expanduser(os.path.expandvars(raw_value))
+        for key, raw_value in value.items()
+        if isinstance(key, str)
+        and key.strip()
+        and isinstance(raw_value, str)
+    }

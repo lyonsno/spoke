@@ -356,6 +356,36 @@ class TestLaunchTargetSecretsEnvLoading:
         )
 
 
+class TestRegistryTargetEnvLoading:
+    """Invocation-scoped target env must win over shared worktree smoke state."""
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_launchers_apply_target_env_after_worktree_smoke_env(self, script_text):
+        text = script_text()
+        smoke_idx = text.find(".spoke-smoke-env")
+        target_env_idx = text.find('target.get("env")')
+
+        assert smoke_idx != -1, ".spoke-smoke-env reference not found"
+        assert target_env_idx != -1, "registry target env application not found"
+        assert smoke_idx < target_env_idx, (
+            "target-scoped env must be applied after worktree smoke env so one "
+            "launch target can disable inherited fixtures without mutating the worktree"
+        )
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_launchers_clear_inherited_models_before_target_env(self, script_text):
+        text = script_text()
+        clear_idx = text.rfind('child_env.pop("SPOKE_PREVIEW_MODEL"')
+        target_env_idx = text.find('target.get("env")')
+
+        assert clear_idx != -1, "inherited model cleanup not found"
+        assert target_env_idx != -1, "registry target env application not found"
+        assert clear_idx < target_env_idx, (
+            "inherited route cleanup must happen before explicit target env so "
+            "the launcher cannot silently erase a requested target model route"
+        )
+
+
 class TestLauncherPythonOverride:
     """Both launcher paths must honor per-worktree Python overrides.
 
