@@ -312,8 +312,7 @@ def _start_retina_lasso_witness(
     log.write(f"Retina Lasso auto witness output: {output_dir}\n")
     log.write(
         "Retina Lasso auto witness route: "
-        f"{witness_route} "
-        f"(SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE={child_env.get('SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE', '')!r})\n"
+        f"{witness_route}\n"
     )
     log.write(f"Retina Lasso auto witness command: {command!r}\n")
     log.flush()
@@ -360,6 +359,7 @@ else:
 if repo_root is None:
     repo_root = fallback_repo_root
     target_source = f"fallback:{fallback_repo_root}"
+effective_target = None if is_fallback else target
 
 # Build child env: clear inherited overrides, then apply machine-wide
 # ~/.config/spoke/secrets.env (sourced first so per-worktree values can
@@ -410,7 +410,7 @@ _apply_env_file(secrets_env)
 # Per-worktree overrides — win over machine-wide secrets.
 smoke_env = repo_root / ".spoke-smoke-env"
 _apply_env_file(smoke_env)
-target_env = target.get("env") if target is not None else None
+target_env = effective_target.get("env") if effective_target is not None else None
 effective_target_env = {}
 if isinstance(target_env, dict):
     effective_target_env = {
@@ -421,8 +421,8 @@ if isinstance(target_env, dict):
         and isinstance(value, str)
     }
     child_env.update(effective_target_env)
-if target is not None:
-    child_env["SPOKE_LAUNCH_TARGET_ID"] = target.get("id", "")
+if effective_target is not None:
+    child_env["SPOKE_LAUNCH_TARGET_ID"] = effective_target.get("id", "")
 
 uv_bin = _resolve_uv_bin(repo_root)
 
@@ -465,7 +465,7 @@ with log_file.open("a", encoding="utf-8") as log:
         )
         _start_retina_lasso_witness(
             repo_root=repo_root,
-            target_id=target.get("id", "selected") if target is not None else "fallback",
+            target_id=effective_target.get("id", "selected") if effective_target is not None else "fallback",
             python_exe=python_exe,
             uv_bin=uv_bin,
             child_env=child_env,

@@ -385,6 +385,21 @@ class TestRegistryTargetEnvLoading:
             "the launcher cannot silently erase a requested target model route"
         )
 
+    def test_main_fallback_discards_invalid_selected_target_authority(self):
+        text = _main_script_text()
+
+        assert "effective_target = None if is_fallback else target" in text
+        assert 'target_env = effective_target.get("env")' in text
+        assert "if effective_target is not None:" in text
+        assert 'target_id=effective_target.get("id", "selected")' in text
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_witness_route_log_does_not_echo_target_env_values(self, script_text):
+        text = script_text()
+
+        assert "Retina Lasso auto witness route:" in text
+        assert "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE={" not in text
+
 
 class TestLauncherPythonOverride:
     """Both launcher paths must honor per-worktree Python overrides.
