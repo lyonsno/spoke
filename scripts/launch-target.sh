@@ -332,14 +332,19 @@ with log_file.open("a", encoding="utf-8") as log:
         # Clear inherited runtime overrides so the target's own env wins
         child_env.pop("SPOKE_VENV_PYTHON", None)
         child_env.pop("PYTHONPATH", None)
-        secrets_env = Path.home() / ".config/spoke/secrets.env"
-        child_env.update(parse_env_overrides(secrets_env))
-        child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))
-        child_env["REPO_ROOT"] = str(repo_root)
-        child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id
         child_env.pop("SPOKE_PREVIEW_MODEL", None)
         child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
         child_env.pop("SPOKE_WHISPER_MODEL", None)
+        secrets_env = Path.home() / ".config/spoke/secrets.env"
+        child_env.update(parse_env_overrides(secrets_env))
+        child_env.update(parse_env_overrides(repo_root / ".spoke-smoke-env"))
+        target_env = target.get("env")
+        if isinstance(target_env, dict):
+            child_env.update(target_env)
+        child_env["REPO_ROOT"] = str(repo_root)
+        child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id
+        if isinstance(target_env, dict):
+            log.write(f"Target env override keys: {sorted(target_env)}\n")
 
         python_exe = Path(
             child_env.get("SPOKE_VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python"))

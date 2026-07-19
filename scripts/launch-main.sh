@@ -410,6 +410,17 @@ _apply_env_file(secrets_env)
 # Per-worktree overrides — win over machine-wide secrets.
 smoke_env = repo_root / ".spoke-smoke-env"
 _apply_env_file(smoke_env)
+target_env = target.get("env") if target is not None else None
+effective_target_env = {}
+if isinstance(target_env, dict):
+    effective_target_env = {
+        key.strip(): os.path.expanduser(os.path.expandvars(value))
+        for key, value in target_env.items()
+        if isinstance(key, str)
+        and key.strip()
+        and isinstance(value, str)
+    }
+    child_env.update(effective_target_env)
 if target is not None:
     child_env["SPOKE_LAUNCH_TARGET_ID"] = target.get("id", "")
 
@@ -421,6 +432,8 @@ with log_file.open("a", encoding="utf-8") as log:
         log.write(f"Launcher PID {os.getpid()} (PPID {os.getppid()})\n")
         log.write(f"Launch target: {target_source}\n")
         log.write(f"Repo root: {repo_root}\n")
+        if effective_target_env:
+            log.write(f"Target env override keys: {sorted(effective_target_env)}\n")
         if is_fallback:
             log.write("WARNING: using fallback — registry target was missing or invalid\n")
         log.flush()
