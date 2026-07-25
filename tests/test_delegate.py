@@ -891,6 +891,66 @@ class TestServerCrashResilience:
         assert call_args[0][0] == "transcriptionFailed:"
         assert call_args[0][1]["token"] == 1
 
+    def test_transcribe_worker_reports_token_bound_spool_failure(
+        self, main_module, monkeypatch
+    ):
+        """Final decode failure must name the missing raw recovery artifact."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcription_spool_failures = {5: "disk full"}
+        d._client.transcribe.side_effect = RuntimeError("decode failed")
+
+        d._transcribe_worker(b"raw-wav", token=5)
+
+        selector, payload, wait = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0]
+        )
+        assert selector == "transcriptionFailed:"
+        assert payload["token"] == 5
+        assert "decode failed" in payload["error"]
+        assert "raw audio recovery unavailable: disk full" in payload["error"]
+        assert wait is False
+
+    def test_parallel_worker_reports_token_bound_spool_failure(
+        self, main_module, monkeypatch
+    ):
+        """Parallel decode failure must name its own missing recovery artifact."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 3
+        d._parallel_spool_failures = {3: "volume read-only"}
+        d._client.transcribe.side_effect = RuntimeError("parallel decode failed")
+
+        d._parallel_insert_worker(b"raw-wav", token=3)
+
+        selector, payload, wait = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0]
+        )
+        assert selector == "parallelTranscriptionFailed:"
+        assert payload["token"] == 3
+        assert "parallel decode failed" in payload["error"]
+        assert "raw audio recovery unavailable: volume read-only" in payload["error"]
+        assert wait is False
+
+    def test_tray_worker_reports_token_bound_spool_failure(
+        self, main_module, monkeypatch
+    ):
+        """Tray decode failure must not hide that raw recovery also failed."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 4
+        d._transcription_spool_failures = {4: "permission denied"}
+        d._client.transcribe.side_effect = RuntimeError("tray decode failed")
+
+        d._tray_transcribe_worker(b"raw-wav", token=4)
+
+        selector, payload, wait = (
+            d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0]
+        )
+        assert selector == "trayTranscriptionFailed:"
+        assert payload["token"] == 4
+        assert "tray decode failed" in payload["error"]
+        assert "raw audio recovery unavailable: permission denied" in payload["error"]
+        assert wait is False
+
     def test_transcribe_worker_catches_http_error(self, main_module, monkeypatch):
         """HTTP 500 from server should not crash the app."""
         import httpx
@@ -4479,6 +4539,29 @@ class TestCommandTranscribeWorker:
         # Should NOT have tried to stream
         d._command_client.stream_command_events.assert_not_called()
 
+    def test_transcription_failure_reports_token_bound_spool_failure(
+        self, main_module, monkeypatch
+    ):
+        """Command decode failure must name the missing raw recovery artifact."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._transcription_spool_failures = {1: "disk full"}
+        d._client.transcribe.side_effect = RuntimeError("command decode failed")
+        d._client.supports_streaming = False
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        failure_call = next(
+            c
+            for c in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+            if c[0][0] == "commandFailed:"
+        )
+        assert "command decode failed" in failure_call[0][1]["error"]
+        assert (
+            "raw audio recovery unavailable: disk full"
+            in failure_call[0][1]["error"]
+        )
+        d._command_client.stream_command_events.assert_not_called()
+
     def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
         """Streaming exception → commandFailed after utterance dispatched."""
         d = self._make_command_delegate(main_module, monkeypatch)
@@ -5814,6 +5897,28 @@ class TestShortShiftHold:
         assert kwargs["metadata"]["pathway"] == "tray"
         assert kwargs["metadata"]["shift_held"] is True
         assert kwargs["metadata"]["discarded_for_short_shift_hold"] is True
+
+    def test_spool_failure_prevents_short_shift_audio_discard(
+        self, main_module, monkeypatch
+    ):
+        """Failed recovery custody must not fall through to the empty recall path."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"unspooled-audio"
+        d._audio_spool.spool_capture.side_effect = OSError("disk full")
+        d._record_start_time = time.monotonic() - 0.3
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+            d._on_hold_end(shift_held=True)
+
+        MockThread.assert_called_once()
+        mock_thread.start.assert_called_once_with()
+        assert d._unspooled_audio_recovery == b"unspooled-audio"
+        assert "disk full" in d._transcription_spool_failures[d._transcription_token]
+        d._menubar.set_status_text.assert_called_with(
+            "Transcribing - audio recovery unavailable"
+        )
 
     def test_long_shift_hold_keeps_audio(self, main_module, monkeypatch):
         """Shift-release over 800ms should proceed to transcription."""

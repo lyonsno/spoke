@@ -1088,6 +1088,9 @@ class SpokeAppDelegate(NSObject):
         self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
         self._audio_spool = AudioSpool.from_env()
+        self._transcription_spool_failures: dict[int, str] = {}
+        self._parallel_spool_failures: dict[int, str] = {}
+        self._unspooled_audio_recovery: bytes | None = None
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
@@ -2798,7 +2801,7 @@ class SpokeAppDelegate(NSObject):
             else 0
         )
         discarded_for_short_shift_hold = bool(shift_held and elapsed < 0.8)
-        self._spool_stopped_audio_capture(
+        spool_failure = self._spool_stopped_audio_capture(
             wav_bytes,
             pathway=(
                 "command"
@@ -2812,14 +2815,21 @@ class SpokeAppDelegate(NSObject):
             elapsed_seconds=elapsed,
             discarded_for_short_shift_hold=discarded_for_short_shift_hold,
         )
+        if spool_failure is not None:
+            self._unspooled_audio_recovery = wav_bytes
 
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
             logger.info("New utterance captured while approval remains pending")
 
         # Short shift-hold (under 800ms of recording) = recall into tray
-        if discarded_for_short_shift_hold:
+        if discarded_for_short_shift_hold and spool_failure is None:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
+        elif discarded_for_short_shift_hold:
+            logger.error(
+                "Short shift-hold recovery spool failed; preserving audio "
+                "through tray transcription instead of discarding it"
+            )
 
         if not wav_bytes:
             logger.info(
@@ -2884,6 +2894,12 @@ class SpokeAppDelegate(NSObject):
         if self._transcribing and not shift_held and not enter_held:
             self._parallel_insert_token += 1
             parallel_token = self._parallel_insert_token
+            if spool_failure is not None:
+                failures = getattr(self, "_parallel_spool_failures", None)
+                if failures is None:
+                    failures = {}
+                    self._parallel_spool_failures = failures
+                failures[parallel_token] = spool_failure
             logger.info(
                 "Plain hold during active turn — transcribing on parallel insert lane (token %d)",
                 parallel_token,
@@ -2903,6 +2919,12 @@ class SpokeAppDelegate(NSObject):
         # Invalidate any in-flight transcription so its result is discarded
         self._transcription_token += 1
         token = self._transcription_token
+        if spool_failure is not None:
+            failures = getattr(self, "_transcription_spool_failures", None)
+            if failures is None:
+                failures = {}
+                self._transcription_spool_failures = failures
+            failures[token] = spool_failure
 
         self._transcribing = True
         self._transcribe_start = time.monotonic()
@@ -2910,7 +2932,11 @@ class SpokeAppDelegate(NSObject):
         if enter_held and self._command_client is not None:
             # Command pathway (enter held): transcribe then send to OMLX
             if self._menubar is not None:
-                self._menubar.set_status_text("Transcribing command…")
+                self._menubar.set_status_text(
+                    "Transcribing command - audio recovery unavailable"
+                    if spool_failure is not None
+                    else "Transcribing command…"
+                )
             thread = threading.Thread(
                 target=self._command_transcribe_worker,
                 args=(wav_bytes, token),
@@ -2922,7 +2948,11 @@ class SpokeAppDelegate(NSObject):
             # from trayTranscriptionComplete_. Setting it prematurely would
             # let gestures fire on stale/empty stack state during transcription.
             if self._menubar is not None:
-                self._menubar.set_status_text("Transcribing…")
+                self._menubar.set_status_text(
+                    "Transcribing - audio recovery unavailable"
+                    if spool_failure is not None
+                    else "Transcribing…"
+                )
             thread = threading.Thread(
                 target=self._tray_transcribe_worker,
                 args=(wav_bytes, token),
@@ -2931,7 +2961,11 @@ class SpokeAppDelegate(NSObject):
         else:
             # Text pathway: transcribe and paste
             if self._menubar is not None:
-                self._menubar.set_status_text("Transcribing…")
+                self._menubar.set_status_text(
+                    "Transcribing - audio recovery unavailable"
+                    if spool_failure is not None
+                    else "Transcribing…"
+                )
             thread = threading.Thread(
                 target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
             )
@@ -2946,12 +2980,12 @@ class SpokeAppDelegate(NSObject):
         enter_held: bool,
         elapsed_seconds: float,
         discarded_for_short_shift_hold: bool,
-    ) -> None:
+    ) -> str | None:
         if not wav_bytes:
-            return
+            return None
         spool = getattr(self, "_audio_spool", None)
         if spool is None:
-            return
+            return None
         try:
             record = spool.spool_capture(
                 wav_bytes,
@@ -2970,15 +3004,57 @@ class SpokeAppDelegate(NSObject):
                     ),
                 },
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to spool stopped audio capture")
-            return
+            return str(exc) or type(exc).__name__
         if record is not None:
             logger.info(
                 "Audio capture spooled: %s (%d bytes)",
                 record.wav_path,
                 record.byte_count,
             )
+        return None
+
+    def _final_transcription_error(
+        self, error: Exception, token: int, *, parallel: bool = False
+    ) -> str:
+        failures_name = (
+            "_parallel_spool_failures"
+            if parallel
+            else "_transcription_spool_failures"
+        )
+        failures = getattr(self, failures_name, None)
+        spool_failure = failures.pop(token, None) if failures is not None else None
+        message = str(error)
+        if spool_failure is not None:
+            message = (
+                f"{message}; raw audio recovery unavailable: {spool_failure}"
+            )
+        return message
+
+    def _reject_unrecoverable_empty_final(
+        self, text: str, token: int, *, parallel: bool = False
+    ) -> None:
+        failures_name = (
+            "_parallel_spool_failures"
+            if parallel
+            else "_transcription_spool_failures"
+        )
+        failures = getattr(self, failures_name, None)
+        if not text and failures is not None and token in failures:
+            raise RuntimeError("final transcription returned empty")
+
+    def _clear_transcription_spool_failure(
+        self, token: int, *, parallel: bool = False
+    ) -> None:
+        failures_name = (
+            "_parallel_spool_failures"
+            if parallel
+            else "_transcription_spool_failures"
+        )
+        failures = getattr(self, failures_name, None)
+        if failures is not None:
+            failures.pop(token, None)
 
     def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
         """Approve the pending command from the dedicated approval grammar."""
@@ -3118,16 +3194,21 @@ class SpokeAppDelegate(NSObject):
                         text = self._client.finish_stream()
                 else:
                     text = self._transcribe_full_buffer(wav_bytes)
+            self._reject_unrecoverable_empty_final(text, token)
         except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "transcriptionFailed:",
-                {"token": token, "error": str(exc)},
+                {
+                    "token": token,
+                    "error": self._final_transcription_error(exc, token),
+                },
                 False,
             )
             return
 
         elapsed_ms = (time.monotonic() - self._transcribe_start) * 1000
+        self._clear_transcription_spool_failure(token)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "transcriptionComplete:",
             {"token": token, "text": text, "elapsed_ms": elapsed_ms},
@@ -3167,16 +3248,25 @@ class SpokeAppDelegate(NSObject):
                         text = self._client.finish_stream()
                 else:
                     text = self._transcribe_full_buffer(wav_bytes)
+            self._reject_unrecoverable_empty_final(
+                text, token, parallel=True
+            )
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "parallelTranscriptionFailed:",
-                {"token": token, "error": str(exc)},
+                {
+                    "token": token,
+                    "error": self._final_transcription_error(
+                        exc, token, parallel=True
+                    ),
+                },
                 False,
             )
             return
 
         elapsed_ms = (time.monotonic() - self._transcribe_start) * 1000
+        self._clear_transcription_spool_failure(token, parallel=True)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "parallelTranscriptionComplete:",
             {"token": token, "text": text, "elapsed_ms": elapsed_ms},
@@ -3578,15 +3668,20 @@ class SpokeAppDelegate(NSObject):
                         text = self._client.finish_stream()
                 else:
                     text = self._transcribe_full_buffer(wav_bytes)
+            self._reject_unrecoverable_empty_final(text, token)
         except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "trayTranscriptionFailed:",
-                {"token": token, "error": str(exc)},
+                {
+                    "token": token,
+                    "error": self._final_transcription_error(exc, token),
+                },
                 False,
             )
             return
 
+        self._clear_transcription_spool_failure(token)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "trayTranscriptionComplete:",
             {"token": token, "text": text},
@@ -3614,7 +3709,7 @@ class SpokeAppDelegate(NSObject):
         self._enter_tray(text)
 
     def trayTranscriptionFailed_(self, payload: dict) -> None:
-        """Main thread: tray transcription failed — fall back to preview text."""
+        """Main thread: report tray transcription failure without substituting preview."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
@@ -4689,15 +4784,20 @@ class SpokeAppDelegate(NSObject):
                         utterance = self._client.finish_stream()
                 else:
                     utterance = self._transcribe_full_buffer(wav_bytes)
+            self._reject_unrecoverable_empty_final(utterance, token)
         except Exception as exc:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandFailed:",
-                {"token": token, "error": str(exc)},
+                {
+                    "token": token,
+                    "error": self._final_transcription_error(exc, token),
+                },
                 False,
             )
             return
 
+        self._clear_transcription_spool_failure(token)
         if not utterance:
             # No speech with shift held = recall last response
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
