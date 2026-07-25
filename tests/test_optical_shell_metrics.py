@@ -35,8 +35,9 @@ def test_metrics_snapshot_reports_counts_and_cadence():
 
     assert snapshot["capture_ticks"] == 2
     assert snapshot["capture_polls"] == 2
-    assert snapshot["duplicate_frames"] == 1
-    assert snapshot["skipped_frames"] == 2
+    assert snapshot["empty_capture_polls"] == 1
+    assert snapshot["coalesced_capture_chunks"] == 2
+    assert snapshot["capture_status_events"] == 0
     assert snapshot["display_link_ticks"] == 2
     assert snapshot["presented_frames"] == 2
     assert snapshot["brightness_samples"] == 2

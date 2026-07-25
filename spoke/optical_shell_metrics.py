@@ -20,8 +20,9 @@ class OpticalShellMetrics:
     presented_frames: int = 0
     capture_ticks: int = 0
     capture_polls: int = 0
-    skipped_frames: int = 0
-    duplicate_frames: int = 0
+    empty_capture_polls: int = 0
+    coalesced_capture_chunks: int = 0
+    capture_status_events: int = 0
     brightness_samples: int = 0
     total_display_tick_ms: float = 0.0
     total_presented_frame_ms: float = 0.0
@@ -72,9 +73,14 @@ class OpticalShellMetrics:
                     )
                 self._last_capture_poll_at = now
             if new_chunk_count <= 0:
-                self.duplicate_frames += 1
+                self.empty_capture_polls += 1
             elif new_chunk_count > 1:
-                self.skipped_frames += new_chunk_count - 1
+                self.coalesced_capture_chunks += new_chunk_count - 1
+
+    def record_capture_status(self) -> None:
+        """Record a PortAudio status flag as actual continuity evidence."""
+        with self._lock:
+            self.capture_status_events += 1
 
     def record_display_tick(
         self, *, elapsed_ms: float | None = None, now: float | None = None
@@ -126,8 +132,9 @@ class OpticalShellMetrics:
                 "presented_frames": self.presented_frames,
                 "capture_ticks": self.capture_ticks,
                 "capture_polls": self.capture_polls,
-                "skipped_frames": self.skipped_frames,
-                "duplicate_frames": self.duplicate_frames,
+                "empty_capture_polls": self.empty_capture_polls,
+                "coalesced_capture_chunks": self.coalesced_capture_chunks,
+                "capture_status_events": self.capture_status_events,
                 "brightness_samples": self.brightness_samples,
                 "avg_display_tick_ms": self._average(
                     self.total_display_tick_ms, self.display_link_ticks

@@ -214,10 +214,6 @@ def _start_retina_lasso_witness(
             child_env.get("SPOKE_RETINA_LASSO_DURATION_SECONDS", "45"),
             "--capture-profile",
             child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
-            "--lane",
-            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
-            "--diaulos",
-            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
             "--source-app",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
             "--source-window",
@@ -238,10 +234,6 @@ def _start_retina_lasso_witness(
             child_env.get("SPOKE_RETINA_LASSO_DURATION_SECONDS", "45"),
             "--capture-profile",
             child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
-            "--lane",
-            child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
-            "--diaulos",
-            child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
             "--source-app",
             child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
             "--source-window",
@@ -371,7 +363,7 @@ effective_target = None if is_fallback else target
 # (e.g. ~/.zshenv). Automator runs this launcher under non-interactive
 # /bin/bash which does not source any zsh profile, so without this
 # block secrets placed in shell profiles never reach spoke.
-# See ~/dev/epistaxis/system/secrets.md for the cross-project pattern.
+# Machine-local secret locations are intentionally caller-owned.
 child_env = os.environ.copy()
 child_env.pop("SPOKE_PREVIEW_MODEL", None)
 child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)

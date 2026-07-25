@@ -27,6 +27,10 @@ def _decode_wav_samples(wav_bytes: bytes) -> np.ndarray:
     return np.frombuffer(raw, dtype=np.int16)
 
 
+def _wait_for_vad(cap: AudioCapture) -> None:
+    assert cap._wait_for_vad_dispatch(timeout=1.0), "VAD worker did not drain"
+
+
 class _FakeSileroVAD:
     """Mock Silero VAD that classifies based on RMS amplitude."""
 
@@ -206,6 +210,42 @@ class TestAudioCallback:
 
         cap._torch.from_numpy.assert_not_called()
 
+    @patch("spoke.capture.sd")
+    def test_callback_dispatches_vad_inference_off_portaudio_thread(self, mock_sd):
+        """The realtime callback must never execute Silero inference inline."""
+        inference_thread_ids: list[int] = []
+        inference_ran = threading.Event()
+
+        class RecordingVAD:
+            def __call__(self, tensor, sr):
+                import torch
+
+                inference_thread_ids.append(threading.get_ident())
+                inference_ran.set()
+                return torch.tensor(0.9)
+
+            def reset_states(self):
+                pass
+
+        cap = AudioCapture()
+        cap._silero_model = RecordingVAD()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        callback_thread_id = threading.get_ident()
+
+        cap._audio_callback(
+            np.full((1024, 1), 0.5, dtype=np.float32),
+            1024,
+            None,
+            0,
+        )
+
+        assert inference_ran.wait(timeout=1.0)
+        assert inference_thread_ids
+        assert all(thread_id != callback_thread_id for thread_id in inference_thread_ids)
+        cap.stop()
+
     def test_get_all_frames_concatenates(self):
         """_get_all_frames should return one contiguous array."""
         cap = AudioCapture()
@@ -225,7 +265,7 @@ class TestAudioCallback:
         assert result.size == 0
 
     def test_get_new_frames_updates_capture_poll_metrics(self):
-        """Polling the incremental buffer should count duplicates and skipped chunks."""
+        """Polling diagnostics distinguish empty polls from coalesced chunks."""
         metrics = OpticalShellMetrics()
         cap = AudioCapture(metrics=metrics)
         cap._frames = [
@@ -237,13 +277,32 @@ class TestAudioCallback:
         frames = cap.get_new_frames()
         assert frames.size == 24
         assert metrics.capture_polls == 1
-        assert metrics.skipped_frames == 2
-        assert metrics.duplicate_frames == 0
+        assert metrics.coalesced_capture_chunks == 2
+        assert metrics.empty_capture_polls == 0
 
         frames = cap.get_new_frames()
         assert frames.size == 0
         assert metrics.capture_polls == 2
-        assert metrics.duplicate_frames == 1
+        assert metrics.empty_capture_polls == 1
+
+    @patch("spoke.capture.sd")
+    def test_audio_callback_records_device_status_separately_from_polling(
+        self, mock_sd
+    ):
+        """A PortAudio status is real capture-continuity evidence."""
+        metrics = OpticalShellMetrics()
+        cap = AudioCapture(metrics=metrics)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        cap._audio_callback(
+            np.zeros((1024, 1), dtype=np.float32),
+            1024,
+            None,
+            "input overflow",
+        )
+
+        assert metrics.capture_status_events == 1
 
     @patch("spoke.capture.sd")
     def test_audio_callback_updates_capture_tick_metrics(self, mock_sd):
@@ -624,7 +683,8 @@ class TestVADSlicing:
         speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
         for _ in range(10):
             cap._audio_callback(speech_chunk, 1024, None, 0)
-            
+
+        _wait_for_vad(cap)
         cap._segment_cb.assert_not_called()
         assert cap._is_speech
 
@@ -644,13 +704,15 @@ class TestVADSlicing:
         speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
         for _ in range(5):
             cap._audio_callback(speech_chunk, 1024, None, 0)
-            
+
+        _wait_for_vad(cap)
         assert cap._is_speech
         
         # Simulate silence
         for _ in range(12):  # MIN_SILENCE_FRAMES
             cap._audio_callback(silence_chunk, 1024, None, 0)
-            
+
+        _wait_for_vad(cap)
         assert not cap._is_speech
         cap.stop()
         
@@ -678,7 +740,8 @@ class TestVADSlicing:
         speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
         for _ in range(5):
             cap._audio_callback(speech_chunk, 1024, None, 0)
-            
+
+        _wait_for_vad(cap)
         assert cap._is_speech
         
         cap.stop()
@@ -687,7 +750,7 @@ class TestVADSlicing:
     @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_strips_silence_from_final_wav(self, mock_sd):
-        """stop() should return only the concatenated speech chunks, stripping leading and trailing silence."""
+        """stop() must return every captured sample; VAD cannot rewrite final audio."""
         cap = AudioCapture()
         cap.start(segment_callback=MagicMock())
         cap._stream = mock_sd.InputStream.return_value
@@ -706,14 +769,13 @@ class TestVADSlicing:
             
         wav_bytes = cap.stop()
         
-        # Check the length of the WAV to ensure silence was stripped.
-        # 10 speech chunks * 1024 samples * 2 bytes + 44-byte WAV header.
-        assert len(wav_bytes) == 20524
+        # 80 captured chunks * 1024 samples * 2 bytes + 44-byte WAV header.
+        assert len(wav_bytes) == 163884
 
     @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_final_wav_has_no_silent_boundary_chunks(self, mock_sd):
-        """The returned final WAV should not preserve leading/trailing VAD silence."""
+        """The authoritative final WAV preserves boundary silence exactly."""
         cap = AudioCapture()
         cap.start(segment_callback=MagicMock())
         cap._stream = mock_sd.InputStream.return_value
@@ -730,14 +792,15 @@ class TestVADSlicing:
 
         samples = _decode_wav_samples(cap.stop())
 
-        assert samples.size > 0
-        assert np.any(samples[:1024] != 0)
-        assert np.any(samples[-1024:] != 0)
+        assert samples.size == 80 * 1024
+        assert np.all(samples[:50 * 1024] == 0)
+        assert np.any(samples[50 * 1024:60 * 1024] != 0)
+        assert np.all(samples[60 * 1024:] == 0)
 
     @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_final_wav_keeps_soft_onset_without_leading_silence(self, mock_sd):
-        """Final WAV trimming should keep non-silent onset padding before thresholded speech."""
+        """Final WAV authority includes silence, soft onset, and speech in order."""
         cap = AudioCapture()
         cap.start(segment_callback=MagicMock())
         cap._stream = mock_sd.InputStream.return_value
@@ -755,14 +818,15 @@ class TestVADSlicing:
 
         samples = _decode_wav_samples(cap.stop())
 
-        assert samples.size == 7 * 1024
-        assert np.all(samples[:1024] == int(0.005 * 32767))
+        assert samples.size == 57 * 1024
+        assert np.all(samples[:50 * 1024] == 0)
+        assert np.all(samples[50 * 1024:51 * 1024] == int(0.005 * 32767))
         assert np.any(samples[-1024:] != 0)
 
     @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_final_wav_keeps_short_intra_segment_pause(self, mock_sd):
-        """Final WAV trimming should preserve pauses shorter than the silence boundary."""
+        """Final WAV authority preserves all leading, internal, and trailing pauses."""
         cap = AudioCapture()
         cap.start(segment_callback=MagicMock())
         cap._stream = mock_sd.InputStream.return_value
@@ -782,18 +846,19 @@ class TestVADSlicing:
             cap._audio_callback(silence_chunk, 1024, None, 0)
 
         samples = _decode_wav_samples(cap.stop())
-        pause_start = 5 * 1024
-        pause_end = 9 * 1024
+        pause_start = 55 * 1024
+        pause_end = 59 * 1024
 
-        assert samples.size == 14 * 1024
-        assert np.any(samples[:pause_start] != 0)
+        assert samples.size == 84 * 1024
+        assert np.all(samples[:50 * 1024] == 0)
+        assert np.any(samples[50 * 1024:pause_start] != 0)
         assert np.all(samples[pause_start:pause_end] == 0)
-        assert np.any(samples[pause_end:] != 0)
-        assert np.any(samples[-1024:] != 0)
+        assert np.any(samples[pause_end:64 * 1024] != 0)
+        assert np.all(samples[64 * 1024:] == 0)
 
     @patch("spoke.capture.sd")
     def test_vad_grace_period_does_not_misclassify_silence_as_speech(self, mock_sd):
-        """Silence-only recording during grace period should produce empty WAV."""
+        """Silence remains captured even when VAD correctly finds no speech."""
         cap = AudioCapture()
         cap.start(segment_callback=MagicMock())
         cap._stream = mock_sd.InputStream.return_value
@@ -806,12 +871,11 @@ class TestVADSlicing:
 
         assert not cap._is_speech
         wav = cap.stop()
-        # Empty or header-only WAV — no speech was detected
-        assert len(wav) <= 44 or wav == b""
+        assert len(wav) == 10 * 1024 * 2 + 44
 
     @patch("spoke.capture.sd")
     def test_vad_final_wav_does_not_rescue_low_level_non_speech(self, mock_sd):
-        """Low-level raw room tone should not bypass VAD and trigger transcription."""
+        """Capture preserves low-level audio; routing decides whether to transcribe it."""
         cap = AudioCapture()
         cap.start(segment_callback=MagicMock())
         cap._stream = mock_sd.InputStream.return_value
@@ -826,7 +890,7 @@ class TestVADSlicing:
 
         wav = cap.stop()
 
-        assert wav == b""
+        assert len(wav) == 10 * 1024 * 2 + 44
 
     @patch("spoke.capture.sd")
     def test_vad_final_wav_falls_back_to_raw_frames_when_speech_state_empty(
@@ -876,6 +940,7 @@ class TestVADSlicing:
             cap._audio_callback(silence_chunk, 1024, None, 0)
         for _ in range(5):
             cap._audio_callback(speech_chunk, 1024, None, 0)
+        _wait_for_vad(cap)
         assert cap._is_speech
 
         # Brief silence (fewer than MIN_SILENCE_FRAMES)
@@ -886,6 +951,7 @@ class TestVADSlicing:
         for _ in range(5):
             cap._audio_callback(speech_chunk, 1024, None, 0)
 
+        _wait_for_vad(cap)
         # Should still be in speech, no slice emitted
         assert cap._is_speech
         mock_cb.assert_not_called()
@@ -908,6 +974,7 @@ class TestVADSlicing:
         speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
         for _ in range(5):
             cap._audio_callback(speech_chunk, 1024, None, 0)
+        _wait_for_vad(cap)
         # Loud audio should be classified as speech
         assert cap._is_speech
 
@@ -1017,6 +1084,7 @@ class TestTailBuffer:
             cap._audio_callback(speech, 1024, None, 0)
         for _ in range(12):
             cap._audio_callback(silence, 1024, None, 0)
+        _wait_for_vad(cap)
         assert cap.flushed_segment_count == 1
 
         # Segment 2
@@ -1024,6 +1092,7 @@ class TestTailBuffer:
             cap._audio_callback(speech, 1024, None, 0)
         for _ in range(12):
             cap._audio_callback(silence, 1024, None, 0)
+        _wait_for_vad(cap)
         assert cap.flushed_segment_count == 2
 
     @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
@@ -1043,6 +1112,7 @@ class TestTailBuffer:
         for _ in range(5):
             cap._audio_callback(speech, 1024, None, 0)
 
+        _wait_for_vad(cap)
         assert cap._is_speech
         cap.stop()
         assert cap.flushed_segment_count == 1

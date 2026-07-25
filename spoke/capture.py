@@ -139,6 +139,9 @@ class AudioCapture:
         self._callback_thread: threading.Thread | None = None
         self._callbacks_enabled = False
         self._callback_generation = 0
+        self._vad_queue: queue.Queue | None = None
+        self._vad_thread: threading.Thread | None = None
+        self._vad_generation: int | None = None
         self._stream_closing = False
         self._stream_generation = 0
 
@@ -223,6 +226,25 @@ class AudioCapture:
         self._callback_queue = None
         self._callback_thread = None
 
+    def _stop_vad_dispatch(self, *, drain: bool = False) -> bool:
+        """Stop optional VAD work without letting inference block capture teardown."""
+        queue_ref = self._vad_queue
+        thread_ref = self._vad_thread
+        if queue_ref is not None:
+            queue_ref.put(None)
+        if thread_ref is not None and drain:
+            thread_ref.join(timeout=1.0)
+        completed = thread_ref is None or not thread_ref.is_alive()
+        self._vad_generation = None
+        self._vad_queue = None
+        self._vad_thread = None
+        if drain and not completed:
+            logger.warning(
+                "VAD observer did not drain before capture finalization; "
+                "discarding lagged VAD state and preserving raw audio"
+            )
+        return completed
+
     def _queue_callback_event(self, kind: str, payload: object) -> None:
         queue_ref = self._callback_queue
         if queue_ref is None:
@@ -252,7 +274,6 @@ class AudioCapture:
             except Exception:
                 logger.error("Error in callback dispatch worker", exc_info=True)
                 continue
-
             if item is None:
                 break
 
@@ -266,6 +287,61 @@ class AudioCapture:
                     self._vad_cb(bool(payload))
             except Exception:
                 logger.error("Error in callback dispatch worker", exc_info=True)
+
+    def _vad_worker(self, generation: int, queue_ref: queue.Queue) -> None:
+        """Run optional Silero observation away from PortAudio's realtime thread."""
+        while True:
+            try:
+                item = queue_ref.get()
+            except Exception:
+                logger.error("Error in VAD observer worker", exc_info=True)
+                continue
+            if item is None:
+                return
+            if isinstance(item, threading.Event):
+                item.set()
+                continue
+
+            chunk, rms = item
+            if generation != self._vad_generation:
+                continue
+
+            try:
+                if self._silero_model is not None:
+                    torch = self._torch
+                    max_prob = 0.0
+                    for offset in range(0, len(chunk), SILERO_CHUNK):
+                        sub = chunk[offset:offset + SILERO_CHUNK]
+                        if len(sub) < SILERO_CHUNK:
+                            break
+                        tensor = torch.from_numpy(sub).unsqueeze(0)
+                        prob = self._silero_model(tensor, self._silero_sr).item()
+                        max_prob = max(max_prob, prob)
+                    is_speech_now = max_prob >= SPEECH_PROB_THRESHOLD
+                    probability = max_prob
+                else:
+                    is_speech_now = rms > 0.01
+                    probability = rms
+                    if not self._silero_warned:
+                        logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
+                        self._silero_warned = True
+            except Exception:
+                logger.exception("VAD observer failed; preserving raw capture")
+                continue
+
+            if generation != self._vad_generation:
+                continue
+            self._process_vad_decision(is_speech_now, chunk, probability)
+
+    def _wait_for_vad_dispatch(self, timeout: float = 1.0) -> bool:
+        """Wait until VAD has observed every chunk queued before this call."""
+        queue_ref = self._vad_queue
+        thread_ref = self._vad_thread
+        if queue_ref is None or thread_ref is None or not thread_ref.is_alive():
+            return True
+        barrier = threading.Event()
+        queue_ref.put(barrier)
+        return barrier.wait(timeout=timeout)
 
     def start(
         self, 
@@ -290,6 +366,7 @@ class AudioCapture:
             self._close_stream()
 
         self._stop_callback_dispatch()
+        self._stop_vad_dispatch()
         self._callback_generation += 1
         self._stream_generation += 1
         stream_generation = self._stream_generation
@@ -317,6 +394,16 @@ class AudioCapture:
             self._encode_queue = queue.Queue()
             self._encode_thread = threading.Thread(target=self._encode_worker, daemon=True)
             self._encode_thread.start()
+        if self._segment_cb is not None or self._vad_cb is not None:
+            self._vad_queue = queue.Queue()
+            self._vad_generation = stream_generation
+            self._vad_thread = threading.Thread(
+                target=self._vad_worker,
+                args=(stream_generation, self._vad_queue),
+                daemon=True,
+                name="audio-vad-observer",
+            )
+            self._vad_thread.start()
         if self._amplitude_cb is not None or self._vad_cb is not None:
             self._callbacks_enabled = True
             self._callback_queue = queue.Queue(maxsize=8)
@@ -371,6 +458,7 @@ class AudioCapture:
         self._amplitude_cb = None
         self._segment_cb = None
         self._vad_cb = None
+        self._stop_vad_dispatch()
         if self._encode_queue is not None:
             self._encode_queue.put(None)
             self._encode_queue = None
@@ -391,8 +479,15 @@ class AudioCapture:
                     "Audio capture produced zero chunks — skipping inline PortAudio reset"
                 )
             
-            # Emit final segment if we were in the middle of speech
-            if self._segment_cb is not None and self._is_speech and self._current_segment_chunks:
+            self._stop_vad_dispatch(drain=True)
+
+            # Emit a best-effort final segment only after VAD observation drains.
+            # This is acceleration metadata; the raw buffer remains authoritative.
+            if (
+                self._segment_cb is not None
+                and self._is_speech
+                and self._current_segment_chunks
+            ):
                 segment_samples = np.concatenate(self._current_segment_chunks)
                 if self._encode_queue is not None:
                     self._encode_queue.put(segment_samples)
@@ -405,7 +500,6 @@ class AudioCapture:
 
             self._encode_queue = None
             self._encode_thread = None
-            had_vad = self._vad_cb is not None or self._segment_cb is not None
             self._amplitude_cb = None
             self._vad_cb = None
             self._stop_callback_dispatch()
@@ -415,26 +509,9 @@ class AudioCapture:
 
             self._segment_cb = None
 
-            # Use trimmed speech chunks if available; if VAD never detected
-            # speech, fall back to raw frames only when the mic captured
-            # non-silent samples. Under load, VAD/segment state can lag behind
-            # raw capture; returning empty there clips real utterances.
-            speech_chunks = getattr(self, "_speech_chunks", None)
-            if speech_chunks is not None and len(speech_chunks) > 0:
-                final_chunks = list(speech_chunks)
-                wav_bytes = self._encode_wav(np.concatenate(final_chunks))
-            elif had_vad:
-                raw_frames = self._get_all_frames()
-                if _has_speech_like_energy(raw_frames):
-                    logger.warning(
-                        "VAD produced no speech chunks but raw capture has speech-like energy; "
-                        "falling back to full raw capture"
-                    )
-                    wav_bytes = self._encode_wav(raw_frames)
-                else:
-                    wav_bytes = b""
-            else:
-                wav_bytes = self._encode_wav(self._get_all_frames())
+            # Capture owns sample truth. VAD and segment state are observers and
+            # cannot substitute a partial speech view for the recorded sequence.
+            wav_bytes = self._encode_wav(self._get_all_frames())
 
             if hasattr(self, '_speech_chunks'):
                 self._speech_chunks = []
@@ -446,6 +523,7 @@ class AudioCapture:
         self._segment_cb = None
         self._vad_cb = None
         self._stop_callback_dispatch()
+        self._stop_vad_dispatch()
         self._current_segment_chunks = []
         self._ring_buffer.clear()
         self._speech_ring_buffer.clear()
@@ -553,6 +631,8 @@ class AudioCapture:
         tick_start = time.perf_counter()
         if status:
             logger.warning("sounddevice status: %s", status)
+            if self._metrics is not None:
+                self._metrics.record_capture_status()
         try:
             chunk = indata[:, 0].copy()  # mono, float32
 
@@ -574,26 +654,9 @@ class AudioCapture:
                 if self._grace_chunks_remaining > 0:
                     self._grace_chunks_remaining -= 1
 
-                # Run Silero VAD on each 512-sample sub-chunk, take max probability
-                if self._silero_model is not None:
-                    torch = self._torch
-                    max_prob = 0.0
-                    for offset in range(0, len(chunk), SILERO_CHUNK):
-                        if self._stream_closing:
-                            return
-                        sub = chunk[offset:offset + SILERO_CHUNK]
-                        if len(sub) < SILERO_CHUNK:
-                            break
-                        tensor = torch.from_numpy(sub).unsqueeze(0)
-                        prob = self._silero_model(tensor, self._silero_sr).item()
-                        max_prob = max(max_prob, prob)
-                    self._process_vad_decision(max_prob >= SPEECH_PROB_THRESHOLD, chunk, max_prob)
-                else:
-                    # Fallback: RMS-based detection when Silero is unavailable
-                    self._process_vad_decision(rms > 0.01, chunk, rms)
-                    if not self._silero_warned:
-                        logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
-                        self._silero_warned = True
+                queue_ref = self._vad_queue
+                if queue_ref is not None:
+                    queue_ref.put_nowait((chunk, rms))
         finally:
             if self._metrics is not None:
                 tick_end = time.perf_counter()

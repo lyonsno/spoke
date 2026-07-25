@@ -311,7 +311,7 @@ class TestSecretsEnvLoading:
         monkeypatch.setenv("HOME", str(home))
         smoke_env = tmp_path / ".spoke-smoke-env"
         smoke_env.write_text(
-            'export SPOKE_OPERATOR_PING_EVENTS_PATH="$HOME/.local/state/epistaxis/events.jsonl"\n',
+            'export SPOKE_OPERATOR_PING_EVENTS_PATH="$HOME/.local/state/spoke/events.jsonl"\n',
             encoding="utf-8",
         )
         apply_env_file, child_env = _launcher_apply_env_file()
@@ -319,7 +319,7 @@ class TestSecretsEnvLoading:
         apply_env_file(smoke_env)
 
         assert child_env["SPOKE_OPERATOR_PING_EVENTS_PATH"] == (
-            str(home / ".local/state/epistaxis/events.jsonl")
+            str(home / ".local/state/spoke/events.jsonl")
         )
 
 

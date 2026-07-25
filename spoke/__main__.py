@@ -150,6 +150,7 @@ def _run_modal_with_paste(alert) -> int:
     finally:
         NSEvent.removeMonitor_(monitor)
 
+from .audio_spool import AudioSpool
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .command_overlay_trace import record_command_overlay_trace
@@ -1086,6 +1087,7 @@ class SpokeAppDelegate(NSObject):
         self._optical_shell_metrics = OpticalShellMetrics()
         self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
+        self._audio_spool = AudioSpool.from_env()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
@@ -2318,15 +2320,13 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
-        # Set up opportunistic segment transcription for remote backends.
-        # Each silence-bounded segment is dispatched to the final client as it
-        # arrives, so that on release we only need to transcribe the tail.
+        # Final dictation is one authoritative full-buffer decode. The previous
+        # silence-segment path carried transcript strings without sample-range
+        # coverage and could not prove that cached segments plus tail were
+        # complete, ordered, or non-overlapping under callback contention.
         self._segment_accumulator = SegmentAccumulator()
-        use_segments = getattr(self, "_whisper_backend", "local") in ("sidecar", "cloud")
+        use_segments = False
         segment_cb = None
-        if use_segments:
-            def segment_cb(wav_bytes: bytes):
-                self._segment_accumulator.dispatch(wav_bytes, self._client)
 
         if self._glow is not None:
             self._glow.show()
@@ -2348,9 +2348,10 @@ class SpokeAppDelegate(NSObject):
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "updateVadState:", is_speech, False
                     )
+            vad_state_cb = on_vad_state if use_segments else None
             self._capture.start(
                 amplitude_callback=self._on_amplitude,
-                vad_state_callback=on_vad_state,
+                vad_state_callback=vad_state_cb,
                 segment_callback=segment_cb,
             )
         except Exception:
@@ -2379,7 +2380,7 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
-        self._is_speech = False
+        self._is_speech = not use_segments
         self._force_preview_update = False
         if getattr(self, "_preview_done", None) is not None:
             self._preview_done.clear()
@@ -2791,13 +2792,32 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
         wav_bytes = self._capture.stop()
+        elapsed = (
+            time.monotonic() - self._record_start_time
+            if self._record_start_time
+            else 0
+        )
+        discarded_for_short_shift_hold = bool(shift_held and elapsed < 0.8)
+        self._spool_stopped_audio_capture(
+            wav_bytes,
+            pathway=(
+                "command"
+                if enter_held and self._command_client is not None
+                else "tray"
+                if shift_held
+                else "text"
+            ),
+            shift_held=shift_held,
+            enter_held=enter_held,
+            elapsed_seconds=elapsed,
+            discarded_for_short_shift_hold=discarded_for_short_shift_hold,
+        )
 
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
             logger.info("New utterance captured while approval remains pending")
 
         # Short shift-hold (under 800ms of recording) = recall into tray
-        elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
-        if shift_held and elapsed < 0.8:
+        if discarded_for_short_shift_hold:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
 
@@ -2917,6 +2937,49 @@ class SpokeAppDelegate(NSObject):
             )
         thread.start()
 
+    def _spool_stopped_audio_capture(
+        self,
+        wav_bytes: bytes,
+        *,
+        pathway: str,
+        shift_held: bool,
+        enter_held: bool,
+        elapsed_seconds: float,
+        discarded_for_short_shift_hold: bool,
+    ) -> None:
+        if not wav_bytes:
+            return
+        spool = getattr(self, "_audio_spool", None)
+        if spool is None:
+            return
+        try:
+            record = spool.spool_capture(
+                wav_bytes,
+                metadata={
+                    "source": "manual_hold",
+                    "pathway": pathway,
+                    "shift_held": shift_held,
+                    "enter_held": enter_held,
+                    "elapsed_seconds": elapsed_seconds,
+                    "discarded_for_short_shift_hold": discarded_for_short_shift_hold,
+                    "preview_backend": getattr(self, "_preview_backend", None),
+                    "preview_model": getattr(self, "_preview_model_id", None),
+                    "transcription_backend": getattr(self, "_whisper_backend", None),
+                    "transcription_model": getattr(
+                        self, "_transcription_model_id", None
+                    ),
+                },
+            )
+        except Exception:
+            logger.exception("Failed to spool stopped audio capture")
+            return
+        if record is not None:
+            logger.info(
+                "Audio capture spooled: %s (%d bytes)",
+                record.wav_path,
+                record.byte_count,
+            )
+
     def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
         """Approve the pending command from the dedicated approval grammar."""
         if not getattr(self, "_pending_command_approval_active", False):
@@ -2938,51 +3001,14 @@ class SpokeAppDelegate(NSObject):
         if acc is None or acc.count == 0:
             return None
 
-        # Use the tail buffer captured before stop() cleared segment state.
-        # After stop(), capture.get_tail_buffer() falls through to get_buffer()
-        # (the entire recording) because _segment_cb is already None — which
-        # would produce cached-segments + full-audio ≈ doubled output.
-        pre_stop_tail = getattr(self, "_pre_stop_tail_wav", None)
-        self._pre_stop_tail_wav = None
-
-        # Check whether stop() flushed the final in-progress speech as an
-        # extra segment.  If the accumulator count grew beyond what was
-        # dispatched during recording, the tail audio is already covered.
-        pre_stop_count = getattr(self, "_pre_stop_segment_count", 0)
-        self._pre_stop_segment_count = 0
-
-        # Wait for any in-flight segment transcriptions to land.
-        # Cloud endpoints can take >10s on congested connections.
-        if not acc.wait(timeout=30.0):
-            logger.warning(
-                "Segment accumulator timed out with %d pending — falling back to full buffer",
-                acc._pending,
-            )
-            return None
-        cached = acc.text
-
-        # If stop() flushed the final segment (count grew after we captured
-        # the tail), that audio is already in the accumulator — skip tail.
-        final_flushed = acc.count > pre_stop_count
-
-        # Transcribe the tail — audio recorded after the last segment boundary.
-        tail_wav = pre_stop_tail if pre_stop_tail is not None else b""
-        tail_text = ""
-        if tail_wav and not final_flushed:
-            try:
-                tail_text = self._client.transcribe(tail_wav)
-            except Exception:
-                logger.exception("Tail transcription failed — falling back to full buffer")
-                return None
-
-        parts = [p for p in (cached, tail_text) if p]
-        text = " ".join(parts)
-        logger.info(
-            "Segment-accelerated transcription: %d segments cached, tail=%d bytes, "
-            "final_flushed=%s, result=%r",
-            acc.count, len(tail_wav) if tail_wav else 0, final_flushed, text[:80],
+        logger.warning(
+            "Ignoring %d speculative segment transcripts without exact "
+            "sample-range coverage; using authoritative full buffer",
+            acc.count,
         )
-        return text
+        self._pre_stop_tail_wav = None
+        self._pre_stop_segment_count = 0
+        return None
 
     def _transcribe_full_buffer(self, wav_bytes: bytes, client=None) -> str:
         """Run full-buffer transcription with bounded local-Whisper recovery."""
@@ -3003,11 +3029,6 @@ class SpokeAppDelegate(NSObject):
             client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
         )
         bounded_timeout = current_timeout
-        if (
-            bounded_timeout is None
-            or bounded_timeout > _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
-        ):
-            bounded_timeout = _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT
 
         attempts: list[tuple[str, float | None, bool]] = [
             ("bounded-config", bounded_timeout, current_eager_eval),
@@ -3265,24 +3286,12 @@ class SpokeAppDelegate(NSObject):
         if diaulos_switcher is not None and getattr(
             diaulos_switcher, "visible", False
         ):
-            if self._last_preview_text:
-                logger.warning(
-                    "Final transcription failed — filtering Diauloi from preview text"
-                )
-                diaulos_switcher.set_dictation_filter(self._last_preview_text)
-            else:
-                diaulos_switcher.show_error(
-                    payload.get("error") or "No speech recognized"
-                )
+            diaulos_switcher.show_error(
+                payload.get("error") or "No speech recognized"
+            )
             if self._overlay is not None:
                 self._overlay.hide()
             self._resume_handsfree_after_hold()
-            return
-        if self._last_preview_text:
-            logger.warning(
-                "Final transcription failed — falling back to latest preview text"
-            )
-            self._inject_result_text(self._last_preview_text, "Pasted preview")
             return
         error_text = payload.get("error") or "Error — try again"
         logger.error("Transcription failed — no text injected: %s", error_text)
@@ -3295,10 +3304,10 @@ class SpokeAppDelegate(NSObject):
         """Main thread: handle failure on the parallel insert lane."""
         if payload["token"] != self._parallel_insert_token:
             return
-        if self._last_preview_text:
-            logger.warning("Parallel transcription failed — falling back to latest preview text")
-            self._inject_result_text(self._last_preview_text, "Pasted preview")
-            return
+        logger.error(
+            "Parallel transcription failed — no text injected: %s",
+            payload.get("error") or "final transcription failed",
+        )
         self._resume_handsfree_after_hold()
 
     def hideOverlayAfterInject_(self, timer) -> None:
@@ -3592,21 +3601,16 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         text = payload["text"]
         if not text:
-            # Empty transcription — use last preview text if available
-            if self._last_preview_text:
-                logger.info("Tray transcription empty — using last preview text")
-                text = self._last_preview_text
-            else:
-                logger.info("Tray transcription returned empty — dismissing")
-                if self._overlay is not None:
-                    self._overlay.hide()
-                if self._glow is not None:
-                    self._glow.hide()
-                self._tray_active = False
-                self._detector.tray_active = False
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
-                return
+            logger.info("Tray transcription returned empty — dismissing")
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            self._tray_active = False
+            self._detector.tray_active = False
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
         self._enter_tray(text)
 
     def trayTranscriptionFailed_(self, payload: dict) -> None:
@@ -3614,10 +3618,6 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._last_preview_text:
-            logger.warning("Tray transcription failed — using preview text")
-            self._enter_tray(self._last_preview_text)
-            return
         error_text = payload.get("error") or "Error — try again"
         logger.error("Tray transcription failed — no text: %s", error_text)
         if self._overlay is not None:

@@ -71,6 +71,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._whisper_backend = "local"
     delegate._preview_backend = "local"
     delegate._segment_accumulator = main_module.SegmentAccumulator()
+    delegate._audio_spool = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -792,7 +793,7 @@ class TestTranscriptionToken:
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Error — try again")
 
-    def test_current_failure_filters_visible_diaulos_switcher_from_preview(
+    def test_current_failure_does_not_filter_diaulos_switcher_from_preview(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -805,9 +806,8 @@ class TestTranscriptionToken:
 
         d.transcriptionFailed_({"token": 3, "error": "final decode failed"})
 
-        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
-            "handy fucker man"
-        )
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        d._diaulos_switcher.show_error.assert_called_once_with("final decode failed")
         d._inject_result_text.assert_not_called()
         d._overlay.hide.assert_called_once_with()
 
@@ -996,22 +996,20 @@ class TestPreviewFinalizationContract:
 
         d._overlay.set_text.assert_not_called()
 
-    def test_transcription_failed_uses_latest_preview_text_as_fallback(
+    def test_transcription_failed_does_not_promote_preview_text(
         self, main_module, monkeypatch
     ):
-        """If final transcription fails, the latest preview text should be pasted."""
+        """A partial preview must never impersonate authoritative final text."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcription_token = 7
         d._transcribing = True
         d._last_preview_text = "usable preview text"
 
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionFailed_({"token": 7})
-            # Fire the deferred inject timer callback
-            d.resultInjectDelayed_(None)
+            d.transcriptionFailed_({"token": 7, "error": "final decode failed"})
 
-        mock_inject.assert_called_once()
-        assert mock_inject.call_args[0][0] == "usable preview text"
+        mock_inject.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("final decode failed")
         assert d._transcribing is False
 
     def test_transcribe_worker_streaming_preview_to_batch_final_uses_batch_final(
@@ -5795,6 +5793,28 @@ class TestShortShiftHold:
         MockThread.assert_not_called()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
+    def test_short_shift_hold_spools_raw_audio_before_instant_empty_path(
+        self, main_module, monkeypatch
+    ):
+        """Short-hold routing may discard transcription input, but not capture custody."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"real-audio-data"
+        d._record_start_time = time.monotonic() - 0.3
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._command_overlay = MagicMock(_visible=False)
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end(shift_held=True)
+
+        MockThread.assert_not_called()
+        d._audio_spool.spool_capture.assert_called_once()
+        args, kwargs = d._audio_spool.spool_capture.call_args
+        assert args == (b"real-audio-data",)
+        assert kwargs["metadata"]["pathway"] == "tray"
+        assert kwargs["metadata"]["shift_held"] is True
+        assert kwargs["metadata"]["discarded_for_short_shift_hold"] is True
+
     def test_long_shift_hold_keeps_audio(self, main_module, monkeypatch):
         """Shift-release over 800ms should proceed to transcription."""
         d = _make_delegate(main_module, monkeypatch)
@@ -6550,7 +6570,7 @@ class TestSegmentAcceleratedTranscription:
     """Test the segment-accelerated final transcription path."""
 
     def test_transcribe_worker_uses_segments_when_available(self, main_module, monkeypatch):
-        """When segments are cached, _transcribe_worker should use them + tail."""
+        """Coverage-free segment text cannot become final transcription authority."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "sidecar"
         d._transcribe_start = time.monotonic()
@@ -6559,7 +6579,7 @@ class TestSegmentAcceleratedTranscription:
         acc = main_module.SegmentAccumulator()
         d._segment_accumulator = acc
         # Simulate two already-completed segments.
-        d._client.transcribe.side_effect = ["seg one", "seg two", "tail text"]
+        d._client.transcribe.side_effect = ["seg one", "seg two"]
         acc.dispatch(b"s1", d._client)
         acc.dispatch(b"s2", d._client)
         acc.wait(timeout=5.0)
@@ -6567,20 +6587,17 @@ class TestSegmentAcceleratedTranscription:
         # Simulate pre-stop tail capture (done by _on_hold_end before stop()).
         d._pre_stop_tail_wav = b"tail_wav"
         d._pre_stop_segment_count = acc.count  # 2 segments, no final flush
-        d._client.transcribe.side_effect = ["tail text"]
+        d._client.transcribe.side_effect = ["full buffer text"]
 
-        d._transcribe_worker(b"full_wav_unused", token=1)
+        d._transcribe_worker(b"full_wav", token=1)
 
-        # The final client.transcribe call should be for the tail only.
+        # Final authority must be one decode of the complete capture.
         last_call = d._client.transcribe.call_args
-        assert last_call[0][0] == b"tail_wav"
+        assert last_call[0][0] == b"full_wav"
 
-        # Result should be segments + tail joined.
         result_call = d.performSelectorOnMainThread_withObject_waitUntilDone_
         payload = result_call.call_args[0][1]
-        assert "seg one" in payload["text"]
-        assert "seg two" in payload["text"]
-        assert "tail text" in payload["text"]
+        assert payload["text"] == "full buffer text"
 
     def test_transcribe_worker_falls_back_without_segments(self, main_module, monkeypatch):
         """Without segments, _transcribe_worker should use full buffer."""
@@ -6628,7 +6645,7 @@ class TestSegmentAcceleratedTranscription:
 
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "recovered text"
-        assert attempts == [(8.0, False), (8.0, True)]
+        assert attempts == [(30.0, False), (30.0, True)]
 
     def test_local_whisper_recovery_reuses_warmed_client_for_bounded_attempt(
         self, main_module, monkeypatch
@@ -6654,19 +6671,21 @@ class TestSegmentAcceleratedTranscription:
         assert d._client._decode_timeout == 30.0
         assert d._client._eager_eval is False
 
-    def test_hold_start_wires_segment_callback_for_sidecar(self, main_module, monkeypatch):
-        """_on_hold_start should wire segment_callback when backend is sidecar."""
+    def test_hold_start_keeps_sidecar_final_capture_raw_and_vad_free(
+        self, main_module, monkeypatch
+    ):
+        """Sidecar final decode has the same full-buffer authority as local."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "sidecar"
 
         d._on_hold_start()
 
-        # capture.start should have been called with a segment_callback.
         call_kwargs = d._capture.start.call_args[1]
-        assert call_kwargs.get("segment_callback") is not None
+        assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
 
     def test_hold_start_no_segment_callback_for_local(self, main_module, monkeypatch):
-        """_on_hold_start should not wire segment_callback for local backend."""
+        """Local final capture must stay raw and VAD-free."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
 
@@ -6674,6 +6693,7 @@ class TestSegmentAcceleratedTranscription:
 
         call_kwargs = d._capture.start.call_args[1]
         assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
 
     def test_preview_batch_uses_cached_segments_plus_tail(self, main_module, monkeypatch):
         """Preview loop should use cached segment text + tail when segments exist."""
