@@ -5970,6 +5970,31 @@ class TestShortShiftHold:
         d._command_overlay.finish.assert_not_called()
         d._overlay.show_tray.assert_called_once()
 
+    def test_short_shift_enter_spool_failure_transcribes_on_tray_route(
+        self, main_module, monkeypatch
+    ):
+        """Recovery preserves audio without changing short Shift+Enter into a command."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"unspooled-audio"
+        d._audio_spool.spool_capture.side_effect = OSError("disk full")
+        d._record_start_time = time.monotonic() - 0.1
+        d._command_client = MagicMock()
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+            d._on_hold_end(shift_held=True, enter_held=True)
+
+        assert d._audio_spool.spool_capture.call_args.kwargs["metadata"]["pathway"] == "tray"
+        MockThread.assert_called_once()
+        assert MockThread.call_args.kwargs["target"] == d._tray_transcribe_worker
+        assert MockThread.call_args.kwargs["args"] == (
+            b"unspooled-audio",
+            d._transcription_token,
+        )
+        mock_thread.start.assert_called_once_with()
+        assert "disk full" in d._transcription_spool_failures[d._transcription_token]
+
     def test_tray_enter_first_release_sends_current_entry_to_assistant(
         self, main_module, monkeypatch
     ):

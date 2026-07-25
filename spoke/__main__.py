@@ -2804,7 +2804,9 @@ class SpokeAppDelegate(NSObject):
         spool_failure = self._spool_stopped_audio_capture(
             wav_bytes,
             pathway=(
-                "command"
+                "tray"
+                if discarded_for_short_shift_hold
+                else "command"
                 if enter_held and self._command_client is not None
                 else "tray"
                 if shift_held
@@ -2830,6 +2832,9 @@ class SpokeAppDelegate(NSObject):
                 "Short shift-hold recovery spool failed; preserving audio "
                 "through tray transcription instead of discarding it"
             )
+        recover_short_shift_to_tray = bool(
+            discarded_for_short_shift_hold and spool_failure is not None
+        )
 
         if not wav_bytes:
             logger.info(
@@ -2929,7 +2934,11 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = True
         self._transcribe_start = time.monotonic()
 
-        if enter_held and self._command_client is not None:
+        if (
+            enter_held
+            and self._command_client is not None
+            and not recover_short_shift_to_tray
+        ):
             # Command pathway (enter held): transcribe then send to OMLX
             if self._menubar is not None:
                 self._menubar.set_status_text(
