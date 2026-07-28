@@ -206,6 +206,54 @@ def test_remote_escape_route_identity_includes_prompt_receipt() -> None:
     assert client.route_identity()["prompt"] == prompt_receipt
 
 
+def test_remote_escape_failure_report_includes_prompt_receipt(tmp_path) -> None:
+    from spoke.asr_recovery import (
+        ASRRecoveryError,
+        ASRRouteReporter,
+        RemoteASREscapeClient,
+        SerialASRRecovery,
+    )
+
+    prompt_receipt = {
+        "schema": "spoke.transcription-prompt.v1",
+        "requested": True,
+        "supported": True,
+        "effective": True,
+        "sha256": "abc",
+        "char_count": 123,
+        "sources": ["builtin:spoke-vocabulary-v1"],
+    }
+
+    class FailingTranscriptionClient:
+        _last_prompt_receipt = None
+
+        def transcribe(self, _wav):
+            self._last_prompt_receipt = prompt_receipt
+            raise ConnectionError("sidecar unavailable")
+
+    remote = RemoteASREscapeClient("http://whisper-sidecar:7001")
+    remote._client = FailingTranscriptionClient()
+    report_path = tmp_path / "remote-failure.asr.json"
+    reporter = ASRRouteReporter(
+        report_path,
+        wav_bytes=b"wav",
+        requested_route={"route": "local-mlx-whisper"},
+    )
+
+    with pytest.raises(ASRRecoveryError, match="sidecar unavailable"):
+        SerialASRRecovery([("remote", remote)]).recover(
+            b"wav",
+            primary_failure=TimeoutError("deadline"),
+            reporter=reporter,
+        )
+
+    report = json.loads(report_path.read_text())
+    assert report["status"] == "failed"
+    assert report["recovery_attempts"][0]["effective_route"]["prompt"] == (
+        prompt_receipt
+    )
+
+
 def test_whisperkit_escape_command_is_vad_free(monkeypatch) -> None:
     from spoke.asr_recovery import WhisperKitEscapeClient
 
