@@ -334,6 +334,7 @@ with log_file.open("a", encoding="utf-8") as log:
             child_env.update(target_env)
         child_env["REPO_ROOT"] = str(repo_root)
         child_env["SPOKE_LAUNCH_TARGET_ID"] = target_id
+        child_env["SPOKE_LAUNCH_LOG_PATH"] = str(log_file)
         if isinstance(target_env, dict):
             log.write(f"Target env override keys: {sorted(target_env)}\n")
 

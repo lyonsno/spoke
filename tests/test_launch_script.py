@@ -225,6 +225,10 @@ class TestOldArchitectureRetired:
         text = _main_script_text()
         assert "FALLBACK_REPO_ROOT" in text
 
+    def test_launch_main_sh_exposes_effective_log_path_to_child(self):
+        text = _main_script_text()
+        assert 'child_env["SPOKE_LAUNCH_LOG_PATH"] = str(log_file)' in text
+
 
 # ── Secrets env loading ─────────────────────────────────────────
 

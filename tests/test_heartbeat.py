@@ -28,6 +28,23 @@ from spoke.heartbeat import (
 
 
 class TestHeartbeatManager:
+    def test_tick_repairs_replaced_launcher_log(self, tmp_path):
+        path = str(tmp_path / "heartbeat.json")
+        log_path = str(tmp_path / "spoke.log")
+        hb = HeartbeatManager(
+            heartbeat_path=path,
+            launch_log_path=log_path,
+        )
+
+        repair = mock.MagicMock()
+        with mock.patch.dict(
+            HeartbeatManager.tick.__globals__,
+            {"reattach_replaced_log": repair},
+        ):
+            hb.tick()
+
+        repair.assert_called_once_with(Path(log_path))
+
     def test_write_heartbeat_creates_file(self, tmp_path):
         path = str(tmp_path / "heartbeat.json")
         hb = HeartbeatManager(heartbeat_path=path)

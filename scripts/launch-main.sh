@@ -415,6 +415,7 @@ if isinstance(target_env, dict):
     child_env.update(effective_target_env)
 if effective_target is not None:
     child_env["SPOKE_LAUNCH_TARGET_ID"] = effective_target.get("id", "")
+child_env["SPOKE_LAUNCH_LOG_PATH"] = str(log_file)
 
 uv_bin = _resolve_uv_bin(repo_root)
 

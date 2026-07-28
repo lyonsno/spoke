@@ -151,6 +151,11 @@ def _run_modal_with_paste(alert) -> int:
         NSEvent.removeMonitor_(monitor)
 
 from .audio_spool import AudioSpool
+from .asr_recovery import (
+    ASRRouteReporter,
+    build_serial_asr_recovery,
+    default_report_path,
+)
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .command_overlay_trace import record_command_overlay_trace
@@ -1090,7 +1095,14 @@ class SpokeAppDelegate(NSObject):
         self._audio_spool = AudioSpool.from_env()
         self._transcription_spool_failures: dict[int, str] = {}
         self._parallel_spool_failures: dict[int, str] = {}
+        self._transcription_spool_records: dict[int, object] = {}
+        self._parallel_spool_records: dict[int, object] = {}
+        self._last_audio_spool_record = None
         self._unspooled_audio_recovery: bytes | None = None
+        self._asr_escape_router = build_serial_asr_recovery(
+            remote_url=getattr(self, "_whisper_sidecar_url", "") or "",
+            remote_model=self._transcription_model_id,
+        )
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
@@ -2899,6 +2911,10 @@ class SpokeAppDelegate(NSObject):
         if self._transcribing and not shift_held and not enter_held:
             self._parallel_insert_token += 1
             parallel_token = self._parallel_insert_token
+            if self._last_audio_spool_record is not None:
+                self._parallel_spool_records[parallel_token] = (
+                    self._last_audio_spool_record
+                )
             if spool_failure is not None:
                 failures = getattr(self, "_parallel_spool_failures", None)
                 if failures is None:
@@ -2924,6 +2940,8 @@ class SpokeAppDelegate(NSObject):
         # Invalidate any in-flight transcription so its result is discarded
         self._transcription_token += 1
         token = self._transcription_token
+        if self._last_audio_spool_record is not None:
+            self._transcription_spool_records[token] = self._last_audio_spool_record
         if spool_failure is not None:
             failures = getattr(self, "_transcription_spool_failures", None)
             if failures is None:
@@ -2992,6 +3010,7 @@ class SpokeAppDelegate(NSObject):
     ) -> str | None:
         if not wav_bytes:
             return None
+        self._last_audio_spool_record = None
         spool = getattr(self, "_audio_spool", None)
         if spool is None:
             return None
@@ -3017,6 +3036,7 @@ class SpokeAppDelegate(NSObject):
             logger.exception("Failed to spool stopped audio capture")
             return str(exc) or type(exc).__name__
         if record is not None:
+            self._last_audio_spool_record = record
             logger.info(
                 "Audio capture spooled: %s (%d bytes)",
                 record.wav_path,
@@ -3064,6 +3084,14 @@ class SpokeAppDelegate(NSObject):
         failures = getattr(self, failures_name, None)
         if failures is not None:
             failures.pop(token, None)
+        records_name = (
+            "_parallel_spool_records"
+            if parallel
+            else "_transcription_spool_records"
+        )
+        records = getattr(self, records_name, None)
+        if records is not None:
+            records.pop(token, None)
 
     def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
         """Approve the pending command from the dedicated approval grammar."""
@@ -3095,74 +3123,90 @@ class SpokeAppDelegate(NSObject):
         self._pre_stop_segment_count = 0
         return None
 
-    def _transcribe_full_buffer(self, wav_bytes: bytes, client=None) -> str:
-        """Run full-buffer transcription with bounded local-Whisper recovery."""
+    def _transcribe_full_buffer(
+        self,
+        wav_bytes: bytes,
+        client=None,
+        *,
+        token: int | None = None,
+        parallel: bool = False,
+    ) -> str:
+        """Run one authoritative full-buffer transcription."""
         active_client = self._client if client is None else client
         if isinstance(active_client, LocalTranscriptionClient):
-            return self._transcribe_local_whisper_with_recovery(wav_bytes, active_client)
+            return self._transcribe_local_whisper_with_recovery(
+                wav_bytes,
+                active_client,
+                token=token,
+                parallel=parallel,
+            )
         with self._local_inference_context(active_client):
             return active_client.transcribe(wav_bytes)
 
     def _transcribe_local_whisper_with_recovery(
-        self, wav_bytes: bytes, client: LocalTranscriptionClient
+        self,
+        wav_bytes: bytes,
+        client: LocalTranscriptionClient,
+        *,
+        token: int | None = None,
+        parallel: bool = False,
     ) -> str:
-        """Retry local Whisper finalization from cached audio with bounded settings."""
-        current_timeout = getattr(
-            client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        """Run local Metal once, release it, then recover on a distinct route."""
+        records_name = (
+            "_parallel_spool_records"
+            if parallel
+            else "_transcription_spool_records"
         )
-        current_eager_eval = getattr(
-            client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
+        records = getattr(self, records_name, {})
+        spool_record = records.get(token) if token is not None else None
+        requested_route = {
+            "route": "local-mlx-whisper",
+            "model": getattr(client, "_model", None),
+            "decode_timeout_seconds": getattr(
+                client,
+                "_decode_timeout",
+                _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT,
+            ),
+            "eager_eval": getattr(
+                client,
+                "_eager_eval",
+                _DEFAULT_LOCAL_WHISPER_EAGER_EVAL,
+            ),
+        }
+        reporter = ASRRouteReporter(
+            default_report_path(wav_bytes, spool_record=spool_record),
+            wav_bytes=wav_bytes,
+            requested_route=requested_route,
         )
-        bounded_timeout = current_timeout
-
-        attempts: list[tuple[str, float | None, bool]] = [
-            ("bounded-config", bounded_timeout, current_eager_eval),
-        ]
-        if supports_eager_eval():
-            attempts.append(("bounded-eager-eval", bounded_timeout, not current_eager_eval))
-
-        errors: list[str] = []
-        attempted_settings: set[tuple[float | None, bool]] = set()
-        for label, decode_timeout, eager_eval in attempts:
-            settings_key = (decode_timeout, eager_eval)
-            if settings_key in attempted_settings:
-                continue
-            attempted_settings.add(settings_key)
-
-            attempt_failed = False
-            original_timeout = getattr(
-                client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
-            )
-            original_eager_eval = getattr(
-                client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
-            )
-            try:
-                client._decode_timeout = decode_timeout
-                client._eager_eval = eager_eval
-                with self._local_inference_context(client):
-                    return client.transcribe(wav_bytes)
-            except Exception as exc:
-                attempt_failed = True
-                errors.append(
-                    f"{label}[timeout={decode_timeout!r}, eager_eval={eager_eval}] {exc}"
+        logger.info("ASR route report: %s", reporter.path)
+        try:
+            with self._local_inference_context(client):
+                text = client.transcribe(
+                    wav_bytes,
+                    telemetry_callback=reporter.backend_event,
                 )
-                logger.warning(
-                    "Local Whisper finalization failed via %s (timeout=%r, eager_eval=%s)",
-                    label,
-                    decode_timeout,
-                    eager_eval,
-                    exc_info=True,
-                )
-            finally:
-                client._decode_timeout = original_timeout
-                client._eager_eval = original_eager_eval
-                if attempt_failed:
-                    unload = getattr(client, "unload", None)
-                    if callable(unload):
-                        unload()
+            if not text.strip():
+                raise RuntimeError("local Whisper returned a blank final transcript")
+        except Exception as primary_failure:
+            logger.warning(
+                "Local Whisper failed; releasing Metal before serial ASR escape",
+                exc_info=True,
+            )
+            unload = getattr(client, "unload", None)
+            if callable(unload):
+                unload()
+            return self._asr_escape_router.recover(
+                wav_bytes,
+                primary_failure=primary_failure,
+                reporter=reporter,
+            )
 
-        detail = "; ".join(errors) if errors else "no bounded local Whisper attempt ran"
-        raise RuntimeError(f"Local transcription timed out after bounded retries: {detail}")
+        effective_route = {
+            **requested_route,
+            "prompt": getattr(client, "_last_prompt_receipt", None),
+        }
+        reporter.succeed(route=effective_route, transcript=text)
+        return text
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
@@ -3193,7 +3237,7 @@ class SpokeAppDelegate(NSObject):
                     cancel_stream = getattr(self._client, "cancel_stream", None)
                     if callable(cancel_stream):
                         cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(wav_bytes, token=token)
                 elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
@@ -3202,7 +3246,7 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
                 else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(wav_bytes, token=token)
             self._reject_unrecoverable_empty_final(text, token)
         except Exception as exc:
             logger.exception("Transcription failed")
@@ -3247,7 +3291,11 @@ class SpokeAppDelegate(NSObject):
                     cancel_stream = getattr(self._client, "cancel_stream", None)
                     if callable(cancel_stream):
                         cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        token=token,
+                        parallel=True,
+                    )
                 elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
@@ -3256,7 +3304,11 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
                 else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(
+                        wav_bytes,
+                        token=token,
+                        parallel=True,
+                    )
             self._reject_unrecoverable_empty_final(
                 text, token, parallel=True
             )
@@ -3667,7 +3719,7 @@ class SpokeAppDelegate(NSObject):
                     cancel_stream = getattr(self._client, "cancel_stream", None)
                     if callable(cancel_stream):
                         cancel_stream()
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(wav_bytes, token=token)
                 elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
@@ -3676,7 +3728,7 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         text = self._client.finish_stream()
                 else:
-                    text = self._transcribe_full_buffer(wav_bytes)
+                    text = self._transcribe_full_buffer(wav_bytes, token=token)
             self._reject_unrecoverable_empty_final(text, token)
         except Exception as exc:
             logger.exception("Tray transcription failed")
@@ -4792,7 +4844,10 @@ class SpokeAppDelegate(NSObject):
                     with self._local_inference_context(self._client):
                         utterance = self._client.finish_stream()
                 else:
-                    utterance = self._transcribe_full_buffer(wav_bytes)
+                    utterance = self._transcribe_full_buffer(
+                        wav_bytes,
+                        token=token,
+                    )
             self._reject_unrecoverable_empty_final(utterance, token)
         except Exception as exc:
             logger.exception("Command transcription failed")

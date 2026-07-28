@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .log_reattach import reattach_replaced_log
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_PATH = os.environ.get(
@@ -198,6 +200,7 @@ class HeartbeatManager:
         self,
         heartbeat_path: str = HEARTBEAT_PATH,
         model_ttl_s: float = DEFAULT_MODEL_TTL_S,
+        launch_log_path: str | None = None,
     ) -> None:
         self._path = heartbeat_path
         self._ttl = model_ttl_s
@@ -206,6 +209,11 @@ class HeartbeatManager:
         self._launch_target: str | None = None
         self._worktree: str | None = None
         self._on_evict: Callable[[str], None] | None = None
+        self._launch_log_path = (
+            launch_log_path
+            if launch_log_path is not None
+            else os.environ.get("SPOKE_LAUNCH_LOG_PATH")
+        )
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -247,6 +255,14 @@ class HeartbeatManager:
         The caller should evict the returned models (unload weights, free GPU
         memory) and then call :meth:`unregister_model` for each.
         """
+        if self._launch_log_path:
+            try:
+                reattach_replaced_log(Path(self._launch_log_path))
+            except Exception:
+                logger.exception(
+                    "Failed to verify launcher log attachment for %s",
+                    self._launch_log_path,
+                )
         expired = self._check_ttls()
         self._write_heartbeat()
         return expired

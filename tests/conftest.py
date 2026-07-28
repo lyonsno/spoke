@@ -22,6 +22,11 @@ import pytest
 _test_runtime_dir = tempfile.mkdtemp(prefix="spoke-test-")
 os.environ["SPOKE_LOCK_PATH"] = os.path.join(_test_runtime_dir, ".spoke.lock")
 os.environ["SPOKE_HEARTBEAT_PATH"] = os.path.join(_test_runtime_dir, ".spoke-heartbeat.json")
+os.environ["SPOKE_ASR_REPORT_DIR"] = os.path.join(_test_runtime_dir, "asr-reports")
+os.environ["SPOKE_TRANSCRIPTION_PROMPT_PATH"] = os.path.join(
+    _test_runtime_dir,
+    "transcription-prompt.txt",
+)
 
 
 def _make_fake_quartz():

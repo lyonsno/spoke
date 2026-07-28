@@ -72,6 +72,9 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_backend = "local"
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     delegate._audio_spool = MagicMock()
+    delegate._transcription_spool_records = {}
+    delegate._parallel_spool_records = {}
+    delegate._asr_escape_router = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -6742,10 +6745,10 @@ class TestSegmentAcceleratedTranscription:
 
         d._client.transcribe.assert_called_once_with(b"full_wav")
 
-    def test_transcribe_worker_retries_local_whisper_after_initial_failure(
+    def test_transcribe_worker_escapes_metal_after_initial_failure(
         self, main_module, monkeypatch
     ):
-        """Local Whisper finalization should retry from cached audio with bounded settings."""
+        """A failed local decode must unload Metal before serial escape recovery."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
         d._transcribe_start = time.monotonic()
@@ -6755,14 +6758,11 @@ class TestSegmentAcceleratedTranscription:
             decode_timeout=30.0,
             eager_eval=False,
         )
-        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
-        attempts: list[tuple[float | None, bool]] = []
+        events: list[str] = []
 
-        def fake_transcribe(self, wav_bytes):
-            attempts.append((self._decode_timeout, self._eager_eval))
-            if len(attempts) == 1:
-                raise TimeoutError("decode timed out")
-            return "recovered text"
+        def fake_transcribe(self, wav_bytes, **_kwargs):
+            events.append("local")
+            raise TimeoutError("decode timed out")
 
         monkeypatch.setattr(
             main_module.LocalTranscriptionClient,
@@ -6770,17 +6770,23 @@ class TestSegmentAcceleratedTranscription:
             fake_transcribe,
             raising=False,
         )
+        d._client.unload = MagicMock(side_effect=lambda: events.append("unload"))
+        d._asr_escape_router = MagicMock()
+        d._asr_escape_router.recover.side_effect = lambda *_args, **_kwargs: (
+            events.append("escape") or "recovered text"
+        )
 
         d._transcribe_worker(b"full_wav", token=1)
 
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "recovered text"
-        assert attempts == [(30.0, False), (30.0, True)]
+        assert events == ["local", "unload", "escape"]
+        d._asr_escape_router.recover.assert_called_once()
 
-    def test_local_whisper_recovery_reuses_warmed_client_for_bounded_attempt(
+    def test_local_whisper_primary_attempt_reuses_warmed_client(
         self, main_module, monkeypatch
     ):
-        """Bounded finalization should not load a throwaway Whisper client on release."""
+        """Finalization should use the warmed client and expose telemetry."""
         d = _make_delegate(main_module, monkeypatch)
         d._client = main_module.LocalTranscriptionClient(
             model="mlx-community/whisper-large-v3-turbo",
@@ -6795,11 +6801,56 @@ class TestSegmentAcceleratedTranscription:
             text = d._transcribe_local_whisper_with_recovery(b"full_wav", d._client)
 
         assert text == "warm final text"
-        d._client.transcribe.assert_called_once_with(b"full_wav")
+        assert d._client.transcribe.call_args.args == (b"full_wav",)
+        assert callable(d._client.transcribe.call_args.kwargs["telemetry_callback"])
         MockClient.assert_not_called()
         d._client.close.assert_not_called()
         assert d._client._decode_timeout == 30.0
         assert d._client._eager_eval is False
+
+    def test_local_whisper_report_binds_to_token_spool_record(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Route evidence should sit beside the exact authoritative capture."""
+        from types import SimpleNamespace
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = main_module.LocalTranscriptionClient(
+            model="mlx-community/whisper-large-v3-turbo",
+            decode_timeout=30.0,
+            eager_eval=True,
+        )
+        d._transcription_spool_records[7] = SimpleNamespace(
+            metadata_path=tmp_path / "capture.json"
+        )
+
+        def transcribe(_wav_bytes, *, telemetry_callback):
+            telemetry_callback(
+                {
+                    "event": "decode_attempt_end",
+                    "window_index": 0,
+                    "temperature": 0.0,
+                    "token_count": 12,
+                }
+            )
+            return "authoritative text"
+
+        d._client.transcribe = transcribe
+
+        text = d._transcribe_local_whisper_with_recovery(
+            b"full_wav",
+            d._client,
+            token=7,
+        )
+
+        assert text == "authoritative text"
+        report = json.loads((tmp_path / "capture.asr.json").read_text())
+        assert report["status"] == "succeeded"
+        assert report["requested_route"]["route"] == "local-mlx-whisper"
+        assert report["effective_route"]["model"].endswith(
+            "whisper-large-v3-turbo"
+        )
+        assert report["backend_events"][0]["event"] == "decode_attempt_end"
 
     def test_hold_start_keeps_sidecar_final_capture_raw_and_vad_free(
         self, main_module, monkeypatch
