@@ -4841,13 +4841,13 @@ class SpokeAppDelegate(NSObject):
                     and self._client is self._preview_client
                     and getattr(self._client, "has_active_stream", False)
                 ):
-                    with self._local_inference_context(self._client):
-                        utterance = self._client.finish_stream()
-                else:
-                    utterance = self._transcribe_full_buffer(
-                        wav_bytes,
-                        token=token,
-                    )
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                utterance = self._transcribe_full_buffer(
+                    wav_bytes,
+                    token=token,
+                )
             self._reject_unrecoverable_empty_final(utterance, token)
         except Exception as exc:
             logger.exception("Command transcription failed")

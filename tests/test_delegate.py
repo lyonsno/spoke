@@ -4638,13 +4638,15 @@ class TestCommandTranscribeWorker:
             "first",
         )
 
-    def test_streaming_preview_finalize_path(self, main_module, monkeypatch):
-        """When client is preview client with active stream, use finish_stream."""
+    def test_command_streaming_preview_never_replaces_full_buffer(
+        self, main_module, monkeypatch
+    ):
+        """Command finalization must decode the authoritative captured WAV."""
         d = self._make_command_delegate(main_module, monkeypatch)
         d._client.supports_streaming = True
         d._client.has_active_stream = True
         d._preview_client = d._client  # same object
-        d._client.finish_stream.return_value = "streamed utterance"
+        d._client.transcribe.return_value = "full buffer utterance"
         d._command_client.stream_command_events.return_value = iter([
             MagicMock(kind="assistant_delta", text="ok"),
             MagicMock(kind="assistant_final", text="ok"),
@@ -4652,8 +4654,9 @@ class TestCommandTranscribeWorker:
 
         d._command_transcribe_worker(b"wav-data", 1)
 
-        d._client.finish_stream.assert_called_once()
-        d._client.transcribe.assert_not_called()
+        d._client.cancel_stream.assert_called_once()
+        d._client.finish_stream.assert_not_called()
+        d._client.transcribe.assert_called_once_with(b"wav-data")
 
     def test_non_streaming_uses_transcribe(self, main_module, monkeypatch):
         """When client doesn't support streaming, use transcribe."""

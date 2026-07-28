@@ -178,6 +178,34 @@ def test_report_survives_failure_before_any_recovery_route(tmp_path) -> None:
     assert report["last_trustworthy_evidence"] == "primary_failure"
 
 
+def test_remote_escape_route_identity_includes_prompt_receipt() -> None:
+    prompt_receipt = {
+        "schema": "spoke.transcription-prompt.v1",
+        "requested": True,
+        "supported": True,
+        "effective": True,
+        "sha256": "abc",
+        "char_count": 123,
+        "sources": ["builtin:spoke-vocabulary-v1"],
+    }
+
+    class FakeTranscriptionClient:
+        def __init__(self, *_args, **_kwargs):
+            self._last_prompt_receipt = None
+
+        def transcribe(self, _wav):
+            self._last_prompt_receipt = prompt_receipt
+            return "remote text"
+
+    from spoke.asr_recovery import RemoteASREscapeClient
+
+    client = RemoteASREscapeClient("http://whisper-sidecar:7001")
+    client._client = FakeTranscriptionClient()
+
+    assert client.transcribe(b"wav") == "remote text"
+    assert client.route_identity()["prompt"] == prompt_receipt
+
+
 def test_whisperkit_escape_command_is_vad_free(monkeypatch) -> None:
     from spoke.asr_recovery import WhisperKitEscapeClient
 

@@ -221,6 +221,7 @@ class RemoteASREscapeClient:
             "route": "remote-openai-whisper",
             "url": self._base_url,
             "model": self._model,
+            "prompt": getattr(self._client, "_last_prompt_receipt", None),
         }
 
     def transcribe(self, wav_bytes: bytes) -> str:
