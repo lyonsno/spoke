@@ -280,6 +280,67 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
     overlay._status_label.setStringValue_.assert_called_once_with("route moved")
 
 
+def test_visible_overlay_owns_navigation_through_local_key_monitor(
+    overlay_module,
+    monkeypatch,
+):
+    candidates = parse_live_inventory(_payload(2))
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.setup = MagicMock()
+    overlay._model = DiaulosSwitcherModel([])
+    overlay._search_field = MagicMock()
+    overlay._count_label = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._scroll_view = MagicMock()
+    overlay._document_view = MagicMock()
+    overlay._previous_app = None
+    overlay._load_generation = 0
+    overlay._activation_generation = 0
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay._key_monitor_token = None
+    overlay._key_monitor_handler = None
+    overlay.visible = False
+    thread = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.threading,
+        "Thread",
+        MagicMock(return_value=thread),
+    )
+
+    overlay.show()
+
+    appkit_event = sys.modules["AppKit"].NSEvent
+    add_monitor = appkit_event.addLocalMonitorForEventsMatchingMask_handler_
+    add_monitor.assert_called_once()
+    handler = add_monitor.call_args.args[1]
+    overlay._model = DiaulosSwitcherModel(candidates)
+    overlay._render_rows = MagicMock()
+
+    down = MagicMock()
+    down.keyCode.return_value = overlay_module._DOWN_ARROW_KEYCODE
+    assert handler(down) is None
+    assert overlay._model.selected.handle == "thing-1"
+
+    overlay.activate_selected = MagicMock()
+    enter = MagicMock()
+    enter.keyCode.return_value = next(iter(overlay_module._ENTER_KEYCODES))
+    assert handler(enter) is None
+    overlay.activate_selected.assert_called_once_with()
+
+    ordinary = MagicMock()
+    ordinary.keyCode.return_value = 0
+    assert handler(ordinary) is ordinary
+
+    monitor_token = overlay._key_monitor_token
+    overlay.hide()
+    appkit_event.removeMonitor_.assert_called_once_with(monitor_token)
+    assert overlay._key_monitor_token is None
+
+
 def test_show_discards_prior_inventory_before_refresh(overlay_module, monkeypatch):
     old_candidate = parse_live_inventory(_payload(1))[0]
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(

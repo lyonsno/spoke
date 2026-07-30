@@ -11,6 +11,7 @@ from AppKit import (
     NSApp,
     NSBackingStoreBuffered,
     NSColor,
+    NSEvent,
     NSFont,
     NSPanel,
     NSScreen,
@@ -43,6 +44,7 @@ _ROW_HEIGHT = 54.0
 _WINDOW_LEVEL = 1100
 _NSWindowStyleMaskBorderless = 0
 _NSApplicationActivateIgnoringOtherApps = 1 << 1
+_NS_KEY_DOWN_MASK = 1 << 10
 _UP_ARROW_KEYCODE = 126
 _DOWN_ARROW_KEYCODE = 125
 _ESCAPE_KEYCODE = 53
@@ -116,6 +118,8 @@ class DiaulosSwitcherOverlay(NSObject):
         self._activation_generation = 0
         self._activation_in_flight = False
         self._activation_handle = None
+        self._key_monitor_token = None
+        self._key_monitor_handler = None
         self.visible = False
         return self
 
@@ -234,6 +238,7 @@ class DiaulosSwitcherOverlay(NSObject):
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
         self.visible = True
+        self._install_key_monitor()
         self._set_status("Loading live Diauloi")
         self._count_label.setStringValue_("")
         self._render_rows()
@@ -258,6 +263,7 @@ class DiaulosSwitcherOverlay(NSObject):
             return False
         self._load_generation += 1
         self._activation_generation += 1
+        self._remove_key_monitor()
         if self._panel is not None:
             self._panel.orderOut_(None)
         self.visible = False
@@ -289,6 +295,51 @@ class DiaulosSwitcherOverlay(NSObject):
 
     def show_error(self, message: str) -> None:
         self._set_status(message, error=True)
+
+    def _install_key_monitor(self) -> None:
+        if getattr(self, "_key_monitor_token", None) is not None:
+            return
+
+        def _handle(event):
+            return self._handle_key_event(event)
+
+        self._key_monitor_handler = _handle
+        self._key_monitor_token = (
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                _NS_KEY_DOWN_MASK,
+                _handle,
+            )
+        )
+        if self._key_monitor_token is None:
+            logger.error("Diaulos switcher keyboard monitor installation failed")
+            self._set_status("Keyboard navigation unavailable", error=True)
+
+    def _remove_key_monitor(self) -> None:
+        if getattr(self, "_key_monitor_token", None) is not None:
+            NSEvent.removeMonitor_(self._key_monitor_token)
+        self._key_monitor_token = None
+        self._key_monitor_handler = None
+
+    def _handle_key_event(self, event):
+        if not self.visible:
+            return event
+        try:
+            keycode = int(event.keyCode())
+            if keycode == _UP_ARROW_KEYCODE:
+                self.move_selection(-1)
+                return None
+            if keycode == _DOWN_ARROW_KEYCODE:
+                self.move_selection(1)
+                return None
+            if keycode in _ENTER_KEYCODES:
+                self.activate_selected()
+                return None
+            if keycode == _ESCAPE_KEYCODE:
+                self.hide()
+                return None
+        except Exception:
+            logger.exception("Diaulos switcher key monitor handler failed")
+        return event
 
     def controlTextDidChange_(self, notification) -> None:
         if self._activation_in_flight:
