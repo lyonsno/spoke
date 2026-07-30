@@ -120,6 +120,7 @@ class DiaulosSwitcherOverlay(NSObject):
         self._activation_handle = None
         self._key_monitor_token = None
         self._key_monitor_handler = None
+        self._keyboard_monitor_available = False
         self.visible = False
         return self
 
@@ -298,6 +299,7 @@ class DiaulosSwitcherOverlay(NSObject):
 
     def _install_key_monitor(self) -> None:
         if getattr(self, "_key_monitor_token", None) is not None:
+            self._keyboard_monitor_available = True
             return
 
         def _handle(event):
@@ -310,6 +312,7 @@ class DiaulosSwitcherOverlay(NSObject):
                 _handle,
             )
         )
+        self._keyboard_monitor_available = self._key_monitor_token is not None
         if self._key_monitor_token is None:
             logger.error("Diaulos switcher keyboard monitor installation failed")
             self._set_status("Keyboard navigation unavailable", error=True)
@@ -319,6 +322,7 @@ class DiaulosSwitcherOverlay(NSObject):
             NSEvent.removeMonitor_(self._key_monitor_token)
         self._key_monitor_token = None
         self._key_monitor_handler = None
+        self._keyboard_monitor_available = False
 
     def _handle_key_event(self, event):
         if not self.visible:
@@ -486,6 +490,10 @@ class DiaulosSwitcherOverlay(NSObject):
     def _set_status(self, text: str, *, error: bool = False) -> None:
         if self._status_label is None:
             return
+        if self.visible and not getattr(self, "_keyboard_monitor_available", False):
+            if "Keyboard navigation unavailable" not in text:
+                text = f"Keyboard navigation unavailable — {text}"
+            error = True
         self._status_label.setStringValue_(text)
         self._status_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(

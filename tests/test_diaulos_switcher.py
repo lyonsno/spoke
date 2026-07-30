@@ -267,6 +267,7 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
     overlay._search_field = MagicMock()
     overlay._status_label = MagicMock()
     overlay._panel = MagicMock()
+    overlay._keyboard_monitor_available = True
 
     overlay.activationFinished_({"generation": 4, "error": "route moved"})
 
@@ -339,6 +340,54 @@ def test_visible_overlay_owns_navigation_through_local_key_monitor(
     overlay.hide()
     appkit_event.removeMonitor_.assert_called_once_with(monitor_token)
     assert overlay._key_monitor_token is None
+
+
+def test_monitor_installation_failure_survives_inventory_status(
+    overlay_module,
+    monkeypatch,
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.setup = MagicMock()
+    overlay._model = DiaulosSwitcherModel([])
+    overlay._search_field = MagicMock()
+    overlay._count_label = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._scroll_view = MagicMock()
+    overlay._document_view = MagicMock()
+    overlay._previous_app = None
+    overlay._load_generation = 0
+    overlay._activation_generation = 0
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay._key_monitor_token = None
+    overlay._key_monitor_handler = None
+    overlay.visible = False
+    thread = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.threading,
+        "Thread",
+        MagicMock(return_value=thread),
+    )
+    appkit_event = sys.modules["AppKit"].NSEvent
+    appkit_event.addLocalMonitorForEventsMatchingMask_handler_.return_value = None
+
+    overlay.show()
+
+    assert "Keyboard navigation unavailable" in (
+        overlay._status_label.setStringValue_.call_args.args[0]
+    )
+    overlay.inventoryLoaded_(
+        {
+            "generation": overlay._load_generation,
+            "candidates": parse_live_inventory(_payload(2)),
+        }
+    )
+    assert "Keyboard navigation unavailable" in (
+        overlay._status_label.setStringValue_.call_args.args[0]
+    )
 
 
 def test_show_discards_prior_inventory_before_refresh(overlay_module, monkeypatch):
