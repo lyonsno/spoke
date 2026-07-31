@@ -281,6 +281,33 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
     overlay._status_label.setStringValue_.assert_called_once_with("route moved")
 
 
+def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_module):
+    events: list[str] = []
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._activation_generation = 4
+    overlay._load_generation = 0
+    overlay._activation_in_flight = True
+    overlay._activation_handle = "thing-0"
+    overlay._search_field = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._panel.orderOut_.side_effect = lambda _: events.append("panel-hidden")
+    overlay._previous_app = MagicMock()
+    overlay._key_monitor_token = None
+    overlay._key_monitor_handler = None
+    overlay._keyboard_monitor_available = True
+    overlay._activate_wezterm = MagicMock(
+        side_effect=lambda: events.append("wezterm-foregrounded")
+    )
+
+    overlay.activationFinished_({"generation": 4, "receipt": {"pane_id": 10}})
+
+    assert overlay.visible is False
+    assert events == ["panel-hidden", "wezterm-foregrounded"]
+
+
 def test_visible_overlay_owns_navigation_through_local_key_monitor(
     overlay_module,
     monkeypatch,

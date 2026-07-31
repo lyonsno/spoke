@@ -49,6 +49,7 @@ _UP_ARROW_KEYCODE = 126
 _DOWN_ARROW_KEYCODE = 125
 _ESCAPE_KEYCODE = 53
 _ENTER_KEYCODES = {36, 76}
+_WEZTERM_BUNDLE_IDENTIFIER = "com.github.wez.wezterm"
 
 
 def _label(text: str, frame, *, size: float, color, bold: bool = False):
@@ -406,6 +407,21 @@ class DiaulosSwitcherOverlay(NSObject):
             self._panel.makeFirstResponder_(self._search_field)
             return
         self.hide(restore_previous=False)
+        self._activate_wezterm()
+
+    def _activate_wezterm(self) -> None:
+        workspace = NSWorkspace.sharedWorkspace()
+        for app in workspace.runningApplications() or []:
+            try:
+                if str(app.bundleIdentifier() or "") != _WEZTERM_BUNDLE_IDENTIFIER:
+                    continue
+                if app.activateWithOptions_(
+                    _NSApplicationActivateIgnoringOtherApps
+                ):
+                    return
+            except Exception:
+                logger.debug("Could not foreground WezTerm application", exc_info=True)
+        logger.error("Focused Diaulos pane but could not foreground WezTerm")
 
     def _load_worker(self, generation: int) -> None:
         try:
