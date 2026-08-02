@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -153,7 +155,10 @@ def test_client_uses_compact_live_api_and_observation_bound_activation():
             "",
         )
 
-    client = EpistaxisDiaulosClient(runner=runner)
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        epistaxis_executable="epistaxis",
+    )
     candidate = client.load()[0]
     receipt = client.activate(candidate)
 
@@ -168,6 +173,29 @@ def test_client_uses_compact_live_api_and_observation_bound_activation():
     assert receipt["pane_id"] == 10
 
 
+def test_client_resolves_epistaxis_from_user_local_bin_under_gui_path(
+    tmp_path,
+    monkeypatch,
+):
+    helper = tmp_path / ".local" / "bin" / "epistaxis"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\nexit 0\n")
+    helper.chmod(0o755)
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(_payload()), "")
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", os.pathsep.join(("/usr/bin", "/bin", "/usr/sbin", "/sbin")))
+
+    candidates = EpistaxisDiaulosClient(runner=runner).load()
+
+    assert candidates[0].handle == "thing-0"
+    assert calls == [[str(helper), "diaulos", "live", "--json"]]
+
+
 def test_client_rejects_malformed_output_and_activation_mismatch():
     responses = iter([
         subprocess.CompletedProcess([], 0, "not json", ""),
@@ -178,7 +206,10 @@ def test_client_rejects_malformed_output_and_activation_mismatch():
             "expected_pane_id": 10,
         }), ""),
     ])
-    client = EpistaxisDiaulosClient(runner=lambda *args, **kwargs: next(responses))
+    client = EpistaxisDiaulosClient(
+        runner=lambda *args, **kwargs: next(responses),
+        epistaxis_executable="epistaxis",
+    )
 
     with pytest.raises(DiaulosInventoryError):
         client.load()
@@ -197,7 +228,10 @@ def test_client_reports_malformed_activation_receipt_as_activation_error():
             "expected_pane_id": 10,
         }), ""),
     ])
-    client = EpistaxisDiaulosClient(runner=lambda *args, **kwargs: next(responses))
+    client = EpistaxisDiaulosClient(
+        runner=lambda *args, **kwargs: next(responses),
+        epistaxis_executable="epistaxis",
+    )
     candidate = client.load()[0]
 
     with pytest.raises(DiaulosActivationError, match="pane_id is not an integer"):

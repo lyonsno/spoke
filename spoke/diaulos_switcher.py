@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 
@@ -165,9 +168,11 @@ class EpistaxisDiaulosClient:
         *,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         timeout_seconds: float = 4.0,
+        epistaxis_executable: str | None = None,
     ) -> None:
         self._runner = runner
         self._timeout_seconds = timeout_seconds
+        self._epistaxis_executable = epistaxis_executable
 
     def load(self) -> list[DiaulosCandidate]:
         command = ["epistaxis", "diaulos", "live", "--json"]
@@ -220,20 +225,44 @@ class EpistaxisDiaulosClient:
         return payload
 
     def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        error = (
+            DiaulosInventoryError
+            if command[1:3] == ["diaulos", "live"]
+            else DiaulosActivationError
+        )
+        effective_command = list(command)
+        executable = self._epistaxis_executable or shutil.which(
+            "epistaxis",
+            path=_epistaxis_search_path(),
+        )
+        if not executable:
+            raise error(
+                "Epistaxis command is unavailable; searched the GUI-safe operator path"
+            )
+        effective_command[0] = executable
         try:
             return self._runner(
-                command,
+                effective_command,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            error = (
-                DiaulosInventoryError
-                if command[1:3] == ["diaulos", "live"]
-                else DiaulosActivationError
-            )
             raise error(f"Epistaxis command failed before a receipt: {exc}") from exc
+
+
+def _epistaxis_search_path() -> str:
+    return os.pathsep.join(
+        (
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            str(Path.home() / ".local" / "bin"),
+        )
+    )
 
 
 def _candidate_matches(candidate: DiaulosCandidate, terms: tuple[str, ...]) -> bool:
