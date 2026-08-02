@@ -196,6 +196,29 @@ def test_client_resolves_epistaxis_from_user_local_bin_under_gui_path(
     assert calls == [[str(helper), "diaulos", "live", "--json"]]
 
 
+def test_client_reports_missing_epistaxis_as_typed_inventory_and_activation_errors(
+    monkeypatch,
+):
+    def forbidden_runner(*args, **kwargs):
+        raise AssertionError("runner must not execute when Epistaxis cannot be resolved")
+
+    monkeypatch.setattr("spoke.diaulos_switcher.shutil.which", lambda *args, **kwargs: None)
+    client = EpistaxisDiaulosClient(runner=forbidden_runner)
+    candidate = parse_live_inventory(_payload())[0]
+
+    with pytest.raises(
+        DiaulosInventoryError,
+        match="Epistaxis command is unavailable; searched the GUI-safe operator path",
+    ):
+        client.load()
+
+    with pytest.raises(
+        DiaulosActivationError,
+        match="Epistaxis command is unavailable; searched the GUI-safe operator path",
+    ):
+        client.activate(candidate)
+
+
 def test_client_rejects_malformed_output_and_activation_mismatch():
     responses = iter([
         subprocess.CompletedProcess([], 0, "not json", ""),
