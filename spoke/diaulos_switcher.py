@@ -167,7 +167,7 @@ class EpistaxisDiaulosClient:
         self,
         *,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-        timeout_seconds: float = 4.0,
+        timeout_seconds: float | None = None,
         epistaxis_executable: str | None = None,
     ) -> None:
         self._runner = runner

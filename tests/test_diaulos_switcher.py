@@ -196,6 +196,22 @@ def test_client_resolves_epistaxis_from_user_local_bin_under_gui_path(
     assert calls == [[str(helper), "diaulos", "live", "--json"]]
 
 
+def test_client_leaves_epistaxis_runtime_unbounded_by_default():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, json.dumps(_payload()), "")
+
+    candidates = EpistaxisDiaulosClient(
+        runner=runner,
+        epistaxis_executable="epistaxis",
+    ).load()
+
+    assert candidates[0].handle == "thing-0"
+    assert calls[0][1]["timeout"] is None
+
+
 def test_client_reports_missing_epistaxis_as_typed_inventory_and_activation_errors(
     monkeypatch,
 ):
