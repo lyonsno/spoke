@@ -116,6 +116,7 @@ class DiaulosSwitcherOverlay(NSObject):
         self._document_view = None
         self._previous_app = None
         self._load_generation = 0
+        self._load_in_flight = False
         self._activation_generation = 0
         self._activation_in_flight = False
         self._activation_handle = None
@@ -236,26 +237,31 @@ class DiaulosSwitcherOverlay(NSObject):
         self.setup()
         workspace = NSWorkspace.sharedWorkspace()
         self._previous_app = workspace.frontmostApplication()
-        self._model = DiaulosSwitcherModel([])
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
+        self._model.set_query("")
         self.visible = True
         self._install_key_monitor()
-        self._set_status("Loading live Diauloi")
-        self._count_label.setStringValue_("")
+        self._set_status(
+            "Refreshing live Diauloi"
+            if self._model.all_candidates
+            else "Loading live Diauloi"
+        )
         self._render_rows()
         self._panel.makeKeyAndOrderFront_(None)
         app = NSApp()
         if app is not None:
             app.activateIgnoringOtherApps_(True)
         self._panel.makeFirstResponder_(self._search_field)
-        self._load_generation += 1
-        generation = self._load_generation
-        threading.Thread(
-            target=self._load_worker,
-            args=(generation,),
-            daemon=True,
-        ).start()
+        if not getattr(self, "_load_in_flight", False):
+            self._load_generation += 1
+            generation = self._load_generation
+            self._load_in_flight = True
+            threading.Thread(
+                target=self._load_worker,
+                args=(generation,),
+                daemon=True,
+            ).start()
 
     def hide(self, *, restore_previous: bool = True, force: bool = False) -> bool:
         if self._activation_in_flight and not force:
@@ -263,7 +269,6 @@ class DiaulosSwitcherOverlay(NSObject):
                 f"Focus committed to {self._activation_handle or 'selected Diaulos'}"
             )
             return False
-        self._load_generation += 1
         self._activation_generation += 1
         self._remove_key_monitor()
         if self._panel is not None:
@@ -380,15 +385,22 @@ class DiaulosSwitcherOverlay(NSObject):
         ).start()
 
     def inventoryLoaded_(self, payload: dict) -> None:
-        if payload["generation"] != self._load_generation or not self.visible:
+        if payload["generation"] != self._load_generation:
             return
+        self._load_in_flight = False
         error = payload.get("error")
         if error:
-            self._model = DiaulosSwitcherModel([])
-            self._render_rows()
-            self._set_status(str(error), error=True)
+            if self.visible:
+                suffix = (
+                    "; showing last live observation"
+                    if self._model.all_candidates
+                    else ""
+                )
+                self._set_status(f"{error}{suffix}", error=True)
             return
         self._model = DiaulosSwitcherModel(payload["candidates"])
+        if not self.visible:
+            return
         self._apply_query(str(self._search_field.stringValue() or ""))
         self._set_status(
             f"Live observation {payload['candidates'][0].observed_at}"

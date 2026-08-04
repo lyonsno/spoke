@@ -490,7 +490,7 @@ def test_monitor_installation_failure_survives_inventory_status(
     )
 
 
-def test_show_discards_prior_inventory_before_refresh(overlay_module, monkeypatch):
+def test_show_retains_prior_inventory_while_refreshing(overlay_module, monkeypatch):
     old_candidate = parse_live_inventory(_payload(1))[0]
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
         overlay_module.DiaulosSwitcherOverlay
@@ -505,6 +505,7 @@ def test_show_discards_prior_inventory_before_refresh(overlay_module, monkeypatc
     overlay._document_view = MagicMock()
     overlay._previous_app = None
     overlay._load_generation = 0
+    overlay._load_in_flight = False
     overlay._activation_generation = 0
     overlay._activation_in_flight = False
     overlay._activation_handle = None
@@ -519,8 +520,93 @@ def test_show_discards_prior_inventory_before_refresh(overlay_module, monkeypatc
     overlay.show()
 
     assert overlay.visible is True
-    assert overlay._model.selected is None
-    assert overlay._model.all_candidates == []
+    assert overlay._model.selected == old_candidate
+    assert overlay._model.all_candidates == [old_candidate]
     overlay._search_field.setStringValue_.assert_called_once_with("")
     overlay._search_field.setEnabled_.assert_called_once_with(True)
     thread.start.assert_called_once_with()
+
+
+def test_hide_and_reopen_does_not_fan_out_inventory_refreshes(
+    overlay_module,
+    monkeypatch,
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.setup = MagicMock()
+    overlay._model = DiaulosSwitcherModel(parse_live_inventory(_payload(1)))
+    overlay._search_field = MagicMock()
+    overlay._count_label = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._scroll_view = MagicMock()
+    overlay._document_view = MagicMock()
+    overlay._previous_app = None
+    overlay._load_generation = 0
+    overlay._load_in_flight = False
+    overlay._activation_generation = 0
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay._key_monitor_token = None
+    overlay._key_monitor_handler = None
+    overlay._keyboard_monitor_available = True
+    overlay.visible = False
+    thread = MagicMock()
+    thread_factory = MagicMock(return_value=thread)
+    monkeypatch.setattr(overlay_module.threading, "Thread", thread_factory)
+
+    overlay.show()
+    overlay.hide()
+    overlay.show()
+
+    assert thread_factory.call_count == 1
+    thread.start.assert_called_once_with()
+
+
+def test_inventory_refresh_failure_retains_prior_inventory(overlay_module):
+    old_candidate = parse_live_inventory(_payload(1))[0]
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([old_candidate])
+    overlay._load_generation = 7
+    overlay._load_in_flight = True
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._render_rows = MagicMock()
+
+    overlay.inventoryLoaded_({"generation": 7, "error": "inventory unavailable"})
+
+    assert overlay._load_in_flight is False
+    assert overlay._model.all_candidates == [old_candidate]
+    overlay._render_rows.assert_not_called()
+    assert "inventory unavailable" in (
+        overlay._status_label.setStringValue_.call_args.args[0]
+    )
+
+
+def test_inventory_refresh_completed_while_hidden_updates_cached_inventory(
+    overlay_module,
+):
+    old_candidate = parse_live_inventory(_payload(1))[0]
+    new_candidates = parse_live_inventory(_payload(2))
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = False
+    overlay._model = DiaulosSwitcherModel([old_candidate])
+    overlay._load_generation = 8
+    overlay._load_in_flight = True
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._render_rows = MagicMock()
+
+    overlay.inventoryLoaded_(
+        {"generation": 8, "candidates": new_candidates}
+    )
+
+    assert overlay._load_in_flight is False
+    assert overlay._model.all_candidates == new_candidates
+    overlay._render_rows.assert_not_called()
