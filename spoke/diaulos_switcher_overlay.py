@@ -387,7 +387,9 @@ class DiaulosSwitcherOverlay(NSObject):
     def inventoryLoaded_(self, payload: dict) -> None:
         if payload["generation"] != self._load_generation:
             return
-        self._load_in_flight = False
+        refreshing = bool(payload.get("refreshing"))
+        if not refreshing:
+            self._load_in_flight = False
         error = payload.get("error")
         if error:
             if self.visible:
@@ -402,11 +404,19 @@ class DiaulosSwitcherOverlay(NSObject):
         if not self.visible:
             return
         self._apply_query(str(self._search_field.stringValue() or ""))
-        self._set_status(
-            f"Live observation {payload['candidates'][0].observed_at}"
-            if payload["candidates"]
-            else "No verified-live Diauloi"
-        )
+        if refreshing:
+            status = (
+                f"Snapshot observation {payload['candidates'][0].observed_at}; refreshing"
+                if payload["candidates"]
+                else "Snapshot has no verified-live Diauloi; refreshing"
+            )
+        else:
+            status = (
+                f"Live observation {payload['candidates'][0].observed_at}"
+                if payload["candidates"]
+                else "No verified-live Diauloi"
+            )
+        self._set_status(status)
 
     def activationFinished_(self, payload: dict) -> None:
         if payload["generation"] != self._activation_generation or not self.visible:
@@ -436,11 +446,38 @@ class DiaulosSwitcherOverlay(NSObject):
         logger.error("Focused Diaulos pane but could not foreground WezTerm")
 
     def _load_worker(self, generation: int) -> None:
+        snapshot_error = None
         try:
             candidates = self._client.load()
-            payload = {"generation": generation, "candidates": candidates}
+            self._publish_inventory(
+                {
+                    "generation": generation,
+                    "candidates": candidates,
+                    "refreshing": True,
+                }
+            )
         except DiaulosInventoryError as exc:
-            payload = {"generation": generation, "error": str(exc)}
+            snapshot_error = str(exc)
+
+        try:
+            candidates = self._client.refresh()
+            payload = {
+                "generation": generation,
+                "candidates": candidates,
+                "refreshing": False,
+            }
+        except DiaulosInventoryError as exc:
+            error = str(exc)
+            if snapshot_error is not None:
+                error = f"{snapshot_error}; refresh failed: {error}"
+            payload = {
+                "generation": generation,
+                "error": error,
+                "refreshing": False,
+            }
+        self._publish_inventory(payload)
+
+    def _publish_inventory(self, payload: dict) -> None:
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "inventoryLoaded:",
             payload,

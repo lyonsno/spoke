@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -137,144 +136,172 @@ def test_model_navigation_clamps_and_preserves_selected_identity():
     assert model.selected.handle == "thing-1"
 
 
-def test_client_uses_compact_live_api_and_observation_bound_activation():
+def _live_panes(count: int = 3) -> list[dict]:
+    return [
+        {
+            "pane_id": index + 10,
+            "tab_id": index + 20,
+            "window_id": 1,
+            "title": f"Thing {index}",
+            "cwd": f"file:///tmp/thing-{index}",
+        }
+        for index in range(count)
+    ]
+
+
+def test_client_loads_snapshot_without_epistaxis_and_activates_directly(
+    tmp_path,
+):
     calls: list[list[str]] = []
+    snapshot = tmp_path / "live-diauloi.json"
+    snapshot.write_text(json.dumps(_payload()))
 
     def runner(command, **kwargs):
         calls.append(command)
-        if command[1:3] == ["diaulos", "live"]:
-            return subprocess.CompletedProcess(command, 0, json.dumps(_payload()), "")
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            json.dumps({
-                "diaulos": "thing-0",
-                "pane_id": 10,
-                "expected_pane_id": 10,
-            }),
-            "",
-        )
+        if command[-3:] == ["list", "--format", "json"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(_live_panes()), "")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     client = EpistaxisDiaulosClient(
         runner=runner,
-        epistaxis_executable="epistaxis",
+        snapshot_path=snapshot,
+        wezterm_executable="wezterm",
     )
     candidate = client.load()[0]
     receipt = client.activate(candidate)
 
-    assert calls[0] == ["epistaxis", "diaulos", "live", "--json"]
-    assert calls[1] == [
-        "epistaxis",
-        "focus-pane",
-        "--diaulos", "thing-0",
-        "--expected-pane-id", "10",
-        "--json",
+    assert calls == [
+        ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
+        ["wezterm", "cli", "--no-auto-start", "activate-pane", "--pane-id", "10"],
     ]
     assert receipt["pane_id"] == 10
+    assert receipt["diaulos"] == "thing-0"
+    assert receipt["verification"] == "direct-wezterm-pane-enumeration"
 
 
-def test_client_resolves_epistaxis_from_user_local_bin_under_gui_path(
-    tmp_path,
-    monkeypatch,
-):
-    helper = tmp_path / ".local" / "bin" / "epistaxis"
-    helper.parent.mkdir(parents=True)
-    helper.write_text("#!/bin/sh\nexit 0\n")
-    helper.chmod(0o755)
-    calls: list[list[str]] = []
+def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
+    snapshot = tmp_path / "live-diauloi.json"
+    payload = _payload(4)
 
     def runner(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, json.dumps(_payload()), "")
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("PATH", os.pathsep.join(("/usr/bin", "/bin", "/usr/sbin", "/sbin")))
-
-    candidates = EpistaxisDiaulosClient(runner=runner).load()
-
-    assert candidates[0].handle == "thing-0"
-    assert calls == [[str(helper), "diaulos", "live", "--json"]]
-
-
-def test_client_leaves_epistaxis_runtime_unbounded_by_default():
-    calls = []
-
-    def runner(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, json.dumps(_payload()), "")
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     candidates = EpistaxisDiaulosClient(
         runner=runner,
+        snapshot_path=snapshot,
         epistaxis_executable="epistaxis",
-    ).load()
+    ).refresh()
 
-    assert candidates[0].handle == "thing-0"
-    assert calls[0][1]["timeout"] is None
+    assert len(candidates) == 4
+    assert json.loads(snapshot.read_text()) == payload
+    assert not list(tmp_path.glob(".live-diauloi.json.*"))
 
 
-def test_client_reports_missing_epistaxis_as_typed_inventory_and_activation_errors(
-    monkeypatch,
-):
+def test_refresh_failure_preserves_exact_previous_snapshot(tmp_path):
+    snapshot = tmp_path / "live-diauloi.json"
+    previous = json.dumps(_payload(2), indent=2) + "\n"
+    snapshot.write_text(previous)
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "Epistaxis live tools are not available at current",
+        )
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=snapshot,
+        epistaxis_executable="epistaxis",
+    )
+
+    with pytest.raises(DiaulosInventoryError, match="live tools are not available"):
+        client.refresh()
+
+    assert snapshot.read_text() == previous
+    assert [row.handle for row in client.load()] == ["thing-0", "thing-1"]
+
+
+def test_snapshot_load_does_not_resolve_or_execute_epistaxis(tmp_path, monkeypatch):
+    snapshot = tmp_path / "live-diauloi.json"
+    snapshot.write_text(json.dumps(_payload(1)))
+
     def forbidden_runner(*args, **kwargs):
-        raise AssertionError("runner must not execute when Epistaxis cannot be resolved")
+        raise AssertionError("snapshot load must not execute a subprocess")
 
     monkeypatch.setattr("spoke.diaulos_switcher.shutil.which", lambda *args, **kwargs: None)
-    client = EpistaxisDiaulosClient(runner=forbidden_runner)
-    candidate = parse_live_inventory(_payload())[0]
+    client = EpistaxisDiaulosClient(runner=forbidden_runner, snapshot_path=snapshot)
 
+    assert client.load()[0].handle == "thing-0"
+
+
+def test_missing_epistaxis_affects_refresh_only(tmp_path, monkeypatch):
+    snapshot = tmp_path / "live-diauloi.json"
+    snapshot.write_text(json.dumps(_payload(1)))
+    monkeypatch.setattr("spoke.diaulos_switcher.shutil.which", lambda *args, **kwargs: None)
+    client = EpistaxisDiaulosClient(snapshot_path=snapshot)
+
+    assert client.load()[0].handle == "thing-0"
     with pytest.raises(
         DiaulosInventoryError,
         match="Epistaxis command is unavailable; searched the GUI-safe operator path",
     ):
-        client.load()
+        client.refresh()
 
-    with pytest.raises(
-        DiaulosActivationError,
-        match="Epistaxis command is unavailable; searched the GUI-safe operator path",
-    ):
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("pane_id", 11, "pane is not present exactly once"),
+        ("tab_id", 999, "tab_id"),
+        ("window_id", 999, "window_id"),
+        ("cwd", "file:///tmp/recycled", "cwd"),
+    ],
+)
+def test_direct_activation_refuses_recycled_route_identity(
+    tmp_path,
+    field,
+    value,
+    message,
+):
+    calls: list[list[str]] = []
+    panes = _live_panes(1)
+    panes[0][field] = value
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(panes), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        wezterm_executable="wezterm",
+    )
+    candidate = parse_live_inventory(_payload(1))[0]
+
+    with pytest.raises(DiaulosActivationError, match=message):
         client.activate(candidate)
 
+    assert len(calls) == 1
+    assert calls[0][-3:] == ["list", "--format", "json"]
 
-def test_client_rejects_malformed_output_and_activation_mismatch():
-    responses = iter([
-        subprocess.CompletedProcess([], 0, "not json", ""),
-        subprocess.CompletedProcess([], 0, json.dumps(_payload()), ""),
-        subprocess.CompletedProcess([], 0, json.dumps({
-            "diaulos": "thing-0",
-            "pane_id": 11,
-            "expected_pane_id": 10,
-        }), ""),
-    ])
+
+def test_client_rejects_malformed_snapshot_and_refresh_output(tmp_path):
+    snapshot = tmp_path / "live-diauloi.json"
+    snapshot.write_text("not json")
     client = EpistaxisDiaulosClient(
-        runner=lambda *args, **kwargs: next(responses),
+        runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+            [], 0, "not json", ""
+        ),
+        snapshot_path=snapshot,
         epistaxis_executable="epistaxis",
     )
 
-    with pytest.raises(DiaulosInventoryError):
+    with pytest.raises(DiaulosInventoryError, match="snapshot returned invalid JSON"):
         client.load()
-
-    candidate = client.load()[0]
-    with pytest.raises(DiaulosActivationError):
-        client.activate(candidate)
-
-
-def test_client_reports_malformed_activation_receipt_as_activation_error():
-    responses = iter([
-        subprocess.CompletedProcess([], 0, json.dumps(_payload()), ""),
-        subprocess.CompletedProcess([], 0, json.dumps({
-            "diaulos": "thing-0",
-            "pane_id": "not-a-pane",
-            "expected_pane_id": 10,
-        }), ""),
-    ])
-    client = EpistaxisDiaulosClient(
-        runner=lambda *args, **kwargs: next(responses),
-        epistaxis_executable="epistaxis",
-    )
-    candidate = client.load()[0]
-
-    with pytest.raises(DiaulosActivationError, match="pane_id is not an integer"):
-        client.activate(candidate)
+    with pytest.raises(DiaulosInventoryError, match="inventory returned invalid JSON"):
+        client.refresh()
 
 
 def test_activation_commit_cannot_be_dismissed_or_superseded(overlay_module):
@@ -583,6 +610,75 @@ def test_inventory_refresh_failure_retains_prior_inventory(overlay_module):
     assert overlay._model.all_candidates == [old_candidate]
     overlay._render_rows.assert_not_called()
     assert "inventory unavailable" in (
+        overlay._status_label.setStringValue_.call_args.args[0]
+    )
+
+
+def test_load_worker_publishes_snapshot_before_failed_refresh(overlay_module):
+    snapshot_candidates = parse_live_inventory(_payload(2))
+    events: list[dict] = []
+
+    class SnapshotThenFailureClient:
+        def load(self):
+            return snapshot_candidates
+
+        def refresh(self):
+            raise overlay_module.DiaulosInventoryError(
+                "Epistaxis release is changing"
+            )
+
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay._client = SnapshotThenFailureClient()
+    overlay.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock(
+        side_effect=lambda selector, payload, wait: events.append(payload)
+    )
+
+    overlay._load_worker(12)
+
+    assert events == [
+        {
+            "generation": 12,
+            "candidates": snapshot_candidates,
+            "refreshing": True,
+        },
+        {
+            "generation": 12,
+            "error": "Epistaxis release is changing",
+            "refreshing": False,
+        },
+    ]
+
+
+def test_cached_inventory_keeps_refresh_in_flight_and_is_immediately_filterable(
+    overlay_module,
+):
+    candidates = parse_live_inventory(_payload(2))
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([])
+    overlay._load_generation = 9
+    overlay._load_in_flight = True
+    overlay._search_field = MagicMock()
+    overlay._search_field.stringValue.return_value = "number 1"
+    overlay._status_label = MagicMock()
+    overlay._render_rows = MagicMock()
+    overlay._keyboard_monitor_available = True
+
+    overlay.inventoryLoaded_(
+        {
+            "generation": 9,
+            "candidates": candidates,
+            "refreshing": True,
+        }
+    )
+
+    assert overlay._load_in_flight is True
+    assert [row.handle for row in overlay._model.filtered] == ["thing-1"]
+    assert "Snapshot observation" in (
         overlay._status_label.setStringValue_.call_args.args[0]
     )
 

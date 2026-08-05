@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import tempfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.parse import unquote, urlparse
 
 
 class DiaulosInventoryError(RuntimeError):
@@ -169,14 +172,46 @@ class EpistaxisDiaulosClient:
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         timeout_seconds: float | None = None,
         epistaxis_executable: str | None = None,
+        wezterm_executable: str | None = None,
+        snapshot_path: str | Path | None = None,
     ) -> None:
         self._runner = runner
         self._timeout_seconds = timeout_seconds
         self._epistaxis_executable = epistaxis_executable
+        self._wezterm_executable = (
+            wezterm_executable
+            or os.environ.get("WEZTERM_CLI", "").strip()
+            or "/Applications/WezTerm.app/Contents/MacOS/wezterm"
+        )
+        self._snapshot_path = Path(
+            snapshot_path
+            or Path.home()
+            / ".local"
+            / "state"
+            / "epistaxis"
+            / "live-diauloi.json"
+        ).expanduser()
 
     def load(self) -> list[DiaulosCandidate]:
+        try:
+            payload = json.loads(self._snapshot_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise DiaulosInventoryError(
+                f"live Diaulos snapshot is missing at {self._snapshot_path}"
+            ) from exc
+        except OSError as exc:
+            raise DiaulosInventoryError(
+                f"live Diaulos snapshot could not be read: {exc}"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise DiaulosInventoryError(
+                f"live Diaulos snapshot returned invalid JSON: {exc}"
+            ) from exc
+        return parse_live_inventory(payload)
+
+    def refresh(self) -> list[DiaulosCandidate]:
         command = ["epistaxis", "diaulos", "live", "--json"]
-        result = self._run(command)
+        result = self._run_epistaxis(command)
         if result.returncode:
             raise DiaulosInventoryError(
                 result.stderr.strip() or f"live Diaulos inventory exited {result.returncode}"
@@ -185,70 +220,150 @@ class EpistaxisDiaulosClient:
             payload = json.loads(result.stdout)
         except (json.JSONDecodeError, TypeError) as exc:
             raise DiaulosInventoryError(f"live Diaulos inventory returned invalid JSON: {exc}") from exc
-        return parse_live_inventory(payload)
+        candidates = parse_live_inventory(payload)
+        self._replace_snapshot(payload)
+        return candidates
 
     def activate(self, candidate: DiaulosCandidate) -> dict[str, Any]:
-        command = [
-            "epistaxis",
-            "focus-pane",
-            "--diaulos",
-            candidate.handle,
-            "--expected-pane-id",
-            str(candidate.pane_id),
-            "--json",
-        ]
-        result = self._run(command)
+        list_command = self._wezterm_command("list", "--format", "json")
+        result = self._run_process(list_command, DiaulosActivationError)
         if result.returncode:
             raise DiaulosActivationError(
-                result.stderr.strip() or f"Diaulos activation exited {result.returncode}"
+                result.stderr.strip()
+                or f"WezTerm pane enumeration exited {result.returncode}"
             )
         try:
             payload = json.loads(result.stdout)
         except (json.JSONDecodeError, TypeError) as exc:
-            raise DiaulosActivationError(f"Diaulos activation returned invalid JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise DiaulosActivationError("Diaulos activation receipt is not an object")
-        if str(payload.get("diaulos") or "") != candidate.handle:
-            raise DiaulosActivationError("Diaulos activation receipt names a different handle")
-        try:
-            pane_id = _optional_int(payload.get("pane_id"), "activation pane_id")
-            expected_pane_id = _optional_int(
-                payload.get("expected_pane_id"),
-                "activation expected_pane_id",
+            raise DiaulosActivationError(
+                f"WezTerm pane enumeration returned invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, list) or any(
+            not isinstance(row, dict) for row in payload
+        ):
+            raise DiaulosActivationError(
+                "WezTerm pane enumeration returned a non-list payload"
             )
-        except DiaulosInventoryError as exc:
-            raise DiaulosActivationError(str(exc)) from exc
-        if pane_id != candidate.pane_id:
-            raise DiaulosActivationError("Diaulos activation receipt names a different pane")
-        if expected_pane_id != candidate.pane_id:
-            raise DiaulosActivationError("Diaulos activation receipt did not preserve expected pane")
-        return payload
 
-    def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
-        error = (
-            DiaulosInventoryError
-            if command[1:3] == ["diaulos", "live"]
-            else DiaulosActivationError
+        matches: list[dict[str, Any]] = []
+        for row in payload:
+            try:
+                pane_id = _optional_int(row.get("pane_id"), "live pane_id")
+            except DiaulosInventoryError as exc:
+                raise DiaulosActivationError(str(exc)) from exc
+            if pane_id == candidate.pane_id:
+                matches.append(row)
+        if len(matches) != 1:
+            raise DiaulosActivationError(
+                "selected pane is not present exactly once in the current WezTerm observation"
+            )
+        live = matches[0]
+        self._verify_live_route(candidate, live)
+
+        activate_command = self._wezterm_command(
+            "activate-pane",
+            "--pane-id",
+            str(candidate.pane_id),
         )
+        result = self._run_process(activate_command, DiaulosActivationError)
+        if result.returncode:
+            raise DiaulosActivationError(
+                result.stderr.strip() or f"WezTerm activation exited {result.returncode}"
+            )
+        return {
+            "diaulos": candidate.handle,
+            "pane_id": candidate.pane_id,
+            "expected_pane_id": candidate.pane_id,
+            "tab_id": candidate.tab_id,
+            "window_id": candidate.window_id,
+            "verification": "direct-wezterm-pane-enumeration",
+        }
+
+    def _run_epistaxis(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         effective_command = list(command)
         executable = self._epistaxis_executable or shutil.which(
             "epistaxis",
             path=_epistaxis_search_path(),
         )
         if not executable:
-            raise error(
+            raise DiaulosInventoryError(
                 "Epistaxis command is unavailable; searched the GUI-safe operator path"
             )
         effective_command[0] = executable
+        return self._run_process(effective_command, DiaulosInventoryError)
+
+    def _run_process(
+        self,
+        command: list[str],
+        error: type[DiaulosInventoryError] | type[DiaulosActivationError],
+    ) -> subprocess.CompletedProcess[str]:
         try:
             return self._runner(
-                effective_command,
+                command,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise error(f"Epistaxis command failed before a receipt: {exc}") from exc
+            raise error(f"command failed before a receipt: {exc}") from exc
+
+    def _replace_snapshot(self, payload: dict[str, Any]) -> None:
+        self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{self._snapshot_path.name}.",
+            dir=self._snapshot_path.parent,
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self._snapshot_path)
+        except OSError as exc:
+            raise DiaulosInventoryError(
+                f"live Diaulos snapshot could not be replaced: {exc}"
+            ) from exc
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    def _wezterm_command(self, *args: str) -> list[str]:
+        command = [self._wezterm_executable, "cli"]
+        extra = os.environ.get(
+            "EPISTAXIS_WEZTERM_CLI_ARGS",
+            "--no-auto-start",
+        ).strip()
+        command.extend(shlex.split(extra))
+        command.extend(args)
+        return command
+
+    @staticmethod
+    def _verify_live_route(
+        candidate: DiaulosCandidate,
+        live: dict[str, Any],
+    ) -> None:
+        comparisons = (
+            ("tab_id", candidate.tab_id),
+            ("window_id", candidate.window_id),
+        )
+        for field, expected in comparisons:
+            if expected is None:
+                continue
+            try:
+                observed = _optional_int(live.get(field), f"live {field}")
+            except DiaulosInventoryError as exc:
+                raise DiaulosActivationError(str(exc)) from exc
+            if observed != expected:
+                raise DiaulosActivationError(
+                    f"selected pane {field} changed from {expected} to {observed}"
+                )
+        expected_cwd = _normalize_pane_cwd(candidate.cwd)
+        observed_cwd = _normalize_pane_cwd(str(live.get("cwd") or ""))
+        if expected_cwd and observed_cwd != expected_cwd:
+            raise DiaulosActivationError(
+                f"selected pane cwd changed from {expected_cwd} to {observed_cwd or 'missing'}"
+            )
 
 
 def _epistaxis_search_path() -> str:
@@ -263,6 +378,16 @@ def _epistaxis_search_path() -> str:
             str(Path.home() / ".local" / "bin"),
         )
     )
+
+
+def _normalize_pane_cwd(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        return str(Path(value).expanduser())
+    parsed = urlparse(value)
+    return unquote(parsed.path)
 
 
 def _candidate_matches(candidate: DiaulosCandidate, terms: tuple[str, ...]) -> bool:
