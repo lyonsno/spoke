@@ -30,8 +30,8 @@ class DiaulosCandidate:
     diaulos_id: str
     aliases: tuple[str, ...]
     pane_id: int
-    tab_id: int | None
-    window_id: int | None
+    tab_id: int
+    window_id: int
     title: str
     cwd: str
     thread_id: str
@@ -95,6 +95,11 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
         aliases_raw = row.get("aliases") or []
         if not isinstance(aliases_raw, list):
             raise DiaulosInventoryError(f"live Diaulos row {index} aliases are not a list")
+        tab_id = _required_int(row.get("tab_id"), f"row {index} tab_id")
+        window_id = _required_int(row.get("window_id"), f"row {index} window_id")
+        cwd = str(row.get("cwd") or "").strip()
+        if not cwd:
+            raise DiaulosInventoryError(f"live Diaulos row {index} cwd is missing")
         candidates.append(
             DiaulosCandidate(
                 handle=handle,
@@ -105,10 +110,10 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
                     if str(value).strip()
                 ),
                 pane_id=pane_id,
-                tab_id=_optional_int(row.get("tab_id"), f"row {index} tab_id"),
-                window_id=_optional_int(row.get("window_id"), f"row {index} window_id"),
+                tab_id=tab_id,
+                window_id=window_id,
                 title=str(row.get("title") or "").strip(),
-                cwd=str(row.get("cwd") or "").strip(),
+                cwd=cwd,
                 thread_id=str(row.get("thread_id") or "").strip(),
                 match_basis=tuple(
                     str(value).strip()
