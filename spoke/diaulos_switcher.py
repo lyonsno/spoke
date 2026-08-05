@@ -97,9 +97,12 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
             raise DiaulosInventoryError(f"live Diaulos row {index} aliases are not a list")
         tab_id = _required_int(row.get("tab_id"), f"row {index} tab_id")
         window_id = _required_int(row.get("window_id"), f"row {index} window_id")
-        cwd = str(row.get("cwd") or "").strip()
-        if not cwd:
-            raise DiaulosInventoryError(f"live Diaulos row {index} cwd is missing")
+        raw_cwd = str(row.get("cwd") or "").strip()
+        cwd = _normalize_pane_cwd(raw_cwd)
+        if not cwd or not Path(cwd).is_absolute():
+            raise DiaulosInventoryError(
+                f"live Diaulos row {index} cwd is missing or malformed"
+            )
         candidates.append(
             DiaulosCandidate(
                 handle=handle,
@@ -363,11 +366,10 @@ class EpistaxisDiaulosClient:
                 raise DiaulosActivationError(
                     f"selected pane {field} changed from {expected} to {observed}"
                 )
-        expected_cwd = _normalize_pane_cwd(candidate.cwd)
         observed_cwd = _normalize_pane_cwd(str(live.get("cwd") or ""))
-        if expected_cwd and observed_cwd != expected_cwd:
+        if observed_cwd != candidate.cwd:
             raise DiaulosActivationError(
-                f"selected pane cwd changed from {expected_cwd} to {observed_cwd or 'missing'}"
+                f"selected pane cwd changed from {candidate.cwd} to {observed_cwd or 'missing'}"
             )
 
 

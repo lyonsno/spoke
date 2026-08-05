@@ -118,6 +118,15 @@ def test_parse_live_inventory_rejects_partial_activation_route(field):
         parse_live_inventory(payload)
 
 
+@pytest.mark.parametrize("cwd", ["file://", "relative/path"])
+def test_parse_live_inventory_rejects_malformed_activation_cwd(cwd):
+    payload = _payload(1)
+    payload["entries"][0]["cwd"] = cwd
+
+    with pytest.raises(DiaulosInventoryError, match="cwd"):
+        parse_live_inventory(payload)
+
+
 def test_model_filters_handles_aliases_and_titles_without_mutating_inventory():
     candidates = parse_live_inventory(_payload())
     model = DiaulosSwitcherModel(candidates)
