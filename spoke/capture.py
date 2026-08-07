@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import queue
 import struct
 import threading
@@ -46,8 +47,32 @@ _SILERO_VAD_JIT_PATHS = [
 ]
 
 
+def _vad_enabled() -> bool:
+    """Whether Silero VAD may run at all.
+
+    Silero inference currently runs inline on the PortAudio callback, which
+    must return within its realtime deadline. When the box is under contention
+    the callback overruns, buffers are dropped or coalesced, and the
+    chunk-counting VAD state machine desynchronizes from wall-clock audio —
+    producing mis-sliced segments and incoherent transcripts. This switch
+    makes VAD falsifiable without a rebuild; capture falls back to the RMS
+    path and raw full-buffer audio remains authoritative either way.
+    """
+    raw = os.environ.get("SPOKE_VAD_ENABLED")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _load_silero_vad():
     """Load Silero VAD JIT model. Returns (model, sample_rate_tensor) or (None, None)."""
+    if not _vad_enabled():
+        logger.warning(
+            "Silero VAD disabled via SPOKE_VAD_ENABLED — using RMS fallback; "
+            "raw full-buffer audio remains authoritative"
+        )
+        return None, None
+
     try:
         import torch
     except ImportError:
@@ -128,6 +153,7 @@ class AudioCapture:
         self._silero_model, self._silero_sr = _load_silero_vad()
         self._torch = None
         self._silero_warned = False
+        self._vad_enabled = self._silero_model is not None
         if self._silero_model is not None:
             import torch
             self._torch = torch

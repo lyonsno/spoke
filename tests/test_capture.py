@@ -1064,3 +1064,51 @@ class TestTailBuffer:
         assert cap._is_speech
         cap.stop()
         assert cap.flushed_segment_count == 1
+
+
+class TestVADDisableSwitch:
+    """SPOKE_VAD_ENABLED=0 must take Silero off the realtime audio callback.
+
+    VAD segmentation desynchronizes under box contention: the state machine
+    counts chunks, but inline torch inference on the PortAudio callback can
+    overrun its deadline and cause dropped/coalesced buffers. The off switch
+    must be available without a rebuild.
+    """
+
+    def _real_capture(self, monkeypatch):
+        """AudioCapture with the fixture's forced-Silero __init__ removed."""
+        import importlib
+        mod = importlib.import_module("spoke.capture")
+        real = importlib.reload(mod)
+        return real
+
+    def test_vad_disabled_by_env_leaves_no_silero_model(self, monkeypatch):
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
+        real = self._real_capture(monkeypatch)
+        cap = real.AudioCapture()
+        assert cap._silero_model is None
+        assert cap._torch is None
+
+    def test_vad_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("SPOKE_VAD_ENABLED", raising=False)
+        real = self._real_capture(monkeypatch)
+        loaded = {"called": False}
+        def _spy():
+            loaded["called"] = True
+            return (None, None)
+        monkeypatch.setattr(real, "_load_silero_vad", _spy)
+        real.AudioCapture()
+        assert loaded["called"] is True
+
+    def test_disabled_vad_never_runs_torch_in_callback(self, monkeypatch):
+        """The realtime callback must not perform inference when disabled."""
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
+        real = self._real_capture(monkeypatch)
+        cap = real.AudioCapture()
+        cap._segment_cb = lambda *a, **k: None
+        cap._stream = object()
+        cap._stream_closing = False
+        cap._frames = []
+        chunk = np.zeros((real.SILERO_CHUNK * 2, 1), dtype=np.float32)
+        cap._audio_callback(chunk, len(chunk), None, None)
+        assert cap._torch is None
