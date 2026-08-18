@@ -3153,7 +3153,10 @@ class SpokeAppDelegate(NSObject):
         """Try MLX once, then cross to the independent WhisperKit route."""
         try:
             with self._local_inference_context(client):
-                return client.transcribe(wav_bytes)
+                text = client.transcribe(wav_bytes)
+            if not text.strip():
+                raise RuntimeError("Local Whisper returned a blank final transcript")
+            return text
         except Exception as local_error:
             logger.warning(
                 "Local Whisper finalization failed; crossing to independent ASR recovery",

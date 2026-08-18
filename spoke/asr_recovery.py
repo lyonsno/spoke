@@ -29,11 +29,11 @@ _KNOWN_BINARY_PATHS = (
 
 def _resolve_whisperkit_binary(explicit: str | None) -> str | None:
     if explicit:
-        return str(Path(explicit).expanduser())
+        return str(Path(explicit).expanduser().resolve())
 
     env_binary = os.environ.get("SPOKE_WHISPERKIT_RECOVERY_BINARY", "").strip()
     if env_binary:
-        return str(Path(env_binary).expanduser())
+        return str(Path(env_binary).expanduser().resolve())
 
     discovered = shutil.which("whisperkit-cli")
     if discovered:
@@ -53,21 +53,12 @@ class WhisperKitRecoveryClient:
         self,
         *,
         binary: str | None = None,
-        model: str | None = None,
-        encoder_compute: str | None = None,
-        decoder_compute: str | None = None,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ) -> None:
         self._binary = _resolve_whisperkit_binary(binary)
-        self._model = model or os.environ.get(
-            "SPOKE_WHISPERKIT_RECOVERY_MODEL", _DEFAULT_MODEL
-        )
-        self._encoder_compute = encoder_compute or os.environ.get(
-            "SPOKE_WHISPERKIT_RECOVERY_ENCODER_COMPUTE", _DEFAULT_ENCODER_COMPUTE
-        )
-        self._decoder_compute = decoder_compute or os.environ.get(
-            "SPOKE_WHISPERKIT_RECOVERY_DECODER_COMPUTE", _DEFAULT_DECODER_COMPUTE
-        )
+        self._model = _DEFAULT_MODEL
+        self._encoder_compute = _DEFAULT_ENCODER_COMPUTE
+        self._decoder_compute = _DEFAULT_DECODER_COMPUTE
         self._runner = runner
         self.last_route: str | None = None
 

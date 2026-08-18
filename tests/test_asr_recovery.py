@@ -7,6 +7,8 @@ import subprocess
 import threading
 import time
 
+import pytest
+
 
 def test_whisperkit_recovery_records_effective_route_and_returns_stdout():
     from spoke.asr_recovery import WhisperKitRecoveryClient
@@ -50,6 +52,32 @@ def test_whisperkit_recovery_honors_explicit_binary_env(monkeypatch):
     assert client._binary == "/opt/custom/bin/whisperkit-cli"
 
 
+def test_whisperkit_recovery_canonicalizes_relative_explicit_binary(
+    monkeypatch, tmp_path
+):
+    from spoke.asr_recovery import WhisperKitRecoveryClient
+
+    monkeypatch.chdir(tmp_path)
+
+    client = WhisperKitRecoveryClient(binary="bin/whisperkit-cli")
+
+    assert client._binary == str((tmp_path / "bin/whisperkit-cli").resolve())
+
+
+def test_whisperkit_recovery_ignores_model_and_compute_env(monkeypatch):
+    from spoke.asr_recovery import WhisperKitRecoveryClient
+
+    monkeypatch.setenv("SPOKE_WHISPERKIT_RECOVERY_MODEL", "large-v3-turbo")
+    monkeypatch.setenv("SPOKE_WHISPERKIT_RECOVERY_ENCODER_COMPUTE", "cpuOnly")
+    monkeypatch.setenv("SPOKE_WHISPERKIT_RECOVERY_DECODER_COMPUTE", "all")
+
+    client = WhisperKitRecoveryClient(binary="/opt/test/whisperkit-cli")
+
+    assert client._model == "medium.en"
+    assert client._encoder_compute == "cpuAndNeuralEngine"
+    assert client._decoder_compute == "cpuOnly"
+
+
 def test_whisperkit_recovery_finds_known_install_with_minimal_path(monkeypatch):
     import spoke.asr_recovery as asr_recovery
     from spoke.asr_recovery import WhisperKitRecoveryClient
@@ -86,6 +114,40 @@ def test_whisperkit_recovery_fails_loud_on_blank_output():
         assert "blank transcript" in str(exc)
     else:
         raise AssertionError("blank WhisperKit output was accepted")
+
+
+def test_whisperkit_recovery_fails_loud_when_binary_is_missing(monkeypatch):
+    from spoke.asr_recovery import WhisperKitRecoveryClient
+
+    monkeypatch.setattr("spoke.asr_recovery._resolve_whisperkit_binary", lambda _: None)
+    client = WhisperKitRecoveryClient()
+
+    with pytest.raises(RuntimeError, match="not installed or not on PATH"):
+        client.transcribe(b"RIFF-wav")
+
+
+def test_whisperkit_recovery_fails_loud_on_nonzero_exit():
+    from spoke.asr_recovery import WhisperKitRecoveryClient
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 7, "", "decoder failed")
+
+    client = WhisperKitRecoveryClient(binary="/opt/test/whisperkit-cli", runner=run)
+
+    with pytest.raises(RuntimeError, match="exit 7: decoder failed"):
+        client.transcribe(b"RIFF-wav")
+
+
+def test_whisperkit_recovery_fails_loud_on_filtered_hallucination():
+    from spoke.asr_recovery import WhisperKitRecoveryClient
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "Thank you.\n", "")
+
+    client = WhisperKitRecoveryClient(binary="/opt/test/whisperkit-cli", runner=run)
+
+    with pytest.raises(RuntimeError, match="filtered hallucination"):
+        client.transcribe(b"RIFF-wav")
 
 
 def test_whisperkit_recovery_serializes_processes():
