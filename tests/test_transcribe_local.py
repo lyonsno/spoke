@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import os
 import tempfile
 
+import numpy as np
 import pytest
 
 
@@ -132,7 +133,7 @@ class TestLocalTranscriptionClient:
     def test_transcribe_rejects_partial_segment_coverage_for_long_capture(
         self, mock_mlx_whisper
     ):
-        """A front-slice result must not count as a successful final decode."""
+        """A front-slice result must not count when speech remains in the tail."""
         from spoke.transcribe_local import (
             IncompleteLocalTranscriptionError,
             LocalTranscriptionClient,
@@ -143,12 +144,38 @@ class TestLocalTranscriptionClient:
             "segments": [{"start": 0.0, "end": 18.0, "text": "Only the beginning survived."}],
         }
         client = LocalTranscriptionClient(model="test/model")
+        samples = np.full(16000 * 48, 0.1, dtype=np.float32)
 
         with pytest.raises(IncompleteLocalTranscriptionError) as excinfo:
-            client.transcribe(_make_wav_bytes(n_samples=16000 * 48))
+            client.transcribe(_make_wav_bytes(samples=samples))
 
         assert excinfo.value.duration_seconds == pytest.approx(48.0)
         assert excinfo.value.coverage_end_seconds == pytest.approx(18.0)
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_accepts_complete_result_before_silent_capture_tail(
+        self, mock_mlx_whisper
+    ):
+        """Whisper timestamps may end at the last word, before trailing silence."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "The complete dictation survived.",
+            "segments": [
+                {"start": 0.0, "end": 33.0, "text": "The complete dictation survived."}
+            ],
+        }
+        samples = np.concatenate(
+            (
+                np.full(16000 * 33, 0.1, dtype=np.float32),
+                np.zeros(int(16000 * 5.27), dtype=np.float32),
+            )
+        )
+        client = LocalTranscriptionClient(model="test/model")
+
+        assert client.transcribe(_make_wav_bytes(samples=samples)) == (
+            "The complete dictation survived."
+        )
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_accepts_segment_coverage_near_capture_end(self, mock_mlx_whisper):
@@ -460,16 +487,18 @@ class TestLocalTranscriptionClient:
         )
 
 
-def _make_wav_bytes(n_samples=1000):
+def _make_wav_bytes(n_samples=1000, *, samples=None):
     """Helper: create valid mono 16-bit WAV bytes."""
     import io, wave, numpy as np
 
+    if samples is None:
+        samples = np.zeros(n_samples, dtype=np.float32)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(16000)
-        wf.writeframes(np.zeros(n_samples, dtype=np.int16).tobytes())
+        wf.writeframes((np.asarray(samples) * 32767).astype(np.int16).tobytes())
     return buf.getvalue()
 
 

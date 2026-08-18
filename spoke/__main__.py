@@ -173,6 +173,7 @@ def _run_modal_with_paste(alert) -> int:
 
 from .capture import AudioCapture
 from .audio_spool import AudioSpool
+from .asr_recovery import WhisperKitRecoveryClient
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .command_overlay_trace import record_command_overlay_trace
 from .converge import TurnCarver, compact_history as compact_converge_history
@@ -1113,6 +1114,7 @@ class SpokeAppDelegate(NSObject):
         self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
         self._audio_spool = AudioSpool.from_env()
+        self._asr_recovery_client = WhisperKitRecoveryClient()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
@@ -3148,64 +3150,31 @@ class SpokeAppDelegate(NSObject):
     def _transcribe_local_whisper_with_recovery(
         self, wav_bytes: bytes, client: LocalTranscriptionClient
     ) -> str:
-        """Retry local Whisper finalization from cached audio without shortening it."""
-        current_timeout = getattr(
-            client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
-        )
-        current_eager_eval = getattr(
-            client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
-        )
-
-        attempts: list[tuple[str, float | None, bool]] = [
-            ("current-config", current_timeout, current_eager_eval),
-        ]
-        if current_timeout is not None:
-            attempts.append(("full-decode-current-eager", None, current_eager_eval))
-        if supports_eager_eval():
-            attempts.append(("full-decode-eager-toggle", None, not current_eager_eval))
-
-        errors: list[str] = []
-        attempted_settings: set[tuple[float | None, bool]] = set()
-        for label, decode_timeout, eager_eval in attempts:
-            settings_key = (decode_timeout, eager_eval)
-            if settings_key in attempted_settings:
-                continue
-            attempted_settings.add(settings_key)
-
-            attempt_failed = False
-            original_timeout = getattr(
-                client, "_decode_timeout", _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT
+        """Try MLX once, then cross to the independent WhisperKit route."""
+        try:
+            with self._local_inference_context(client):
+                return client.transcribe(wav_bytes)
+        except Exception as local_error:
+            logger.warning(
+                "Local Whisper finalization failed; crossing to independent ASR recovery",
+                exc_info=True,
             )
-            original_eager_eval = getattr(
-                client, "_eager_eval", _DEFAULT_LOCAL_WHISPER_EAGER_EVAL
-            )
+            unload = getattr(client, "unload", None)
+            if callable(unload):
+                unload()
+
+            recovery_client = getattr(self, "_asr_recovery_client", None)
+            if recovery_client is None:
+                recovery_client = WhisperKitRecoveryClient()
+                self._asr_recovery_client = recovery_client
             try:
-                client._decode_timeout = decode_timeout
-                client._eager_eval = eager_eval
-                with self._local_inference_context(client):
-                    return client.transcribe(wav_bytes)
-            except Exception as exc:
-                attempt_failed = True
-                errors.append(
-                    f"{label}[timeout={decode_timeout!r}, eager_eval={eager_eval}] {exc}"
-                )
-                logger.warning(
-                    "Local Whisper finalization failed via %s (timeout=%r, eager_eval=%s)",
-                    label,
-                    decode_timeout,
-                    eager_eval,
-                    exc_info=True,
-                )
-            finally:
-                client._decode_timeout = original_timeout
-                client._eager_eval = original_eager_eval
-                if attempt_failed:
-                    unload = getattr(client, "unload", None)
-                    if callable(unload):
-                        unload()
-
-        detail = "; ".join(errors) if errors else "no local Whisper attempt ran"
-        raise RuntimeError(f"Local transcription failed after local retries: {detail}")
+                return recovery_client.transcribe(wav_bytes)
+            except Exception as recovery_error:
+                logger.exception("Independent ASR recovery failed")
+                raise RuntimeError(
+                    "Local transcription and independent WhisperKit recovery failed: "
+                    f"local={local_error}; recovery={recovery_error}"
+                ) from recovery_error
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""

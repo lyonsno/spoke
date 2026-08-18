@@ -27,6 +27,8 @@ _WHISPER_SAMPLE_RATE = 16000.0
 _MIN_DURATION_FOR_COVERAGE_GUARD_SECONDS = 12.0
 _MIN_MISSING_TAIL_FOR_COVERAGE_GUARD_SECONDS = 4.0
 _MIN_COVERAGE_RATIO = 0.88
+_SPEECH_LIKE_RMS_THRESHOLD = 0.01
+_TAIL_ENERGY_FRAME_SECONDS = 0.5
 
 mx = None
 mlx_whisper = None
@@ -48,9 +50,9 @@ class IncompleteLocalTranscriptionError(RuntimeError):
         self.text_preview = text_preview
         missing_seconds = max(0.0, duration_seconds - coverage_end_seconds)
         super().__init__(
-            "Local Whisper result covered only "
+            "Local Whisper left speech-like audio after "
             f"{coverage_end_seconds:.2f}s of {duration_seconds:.2f}s "
-            f"({missing_seconds:.2f}s missing): {text_preview!r}"
+            f"({missing_seconds:.2f}s unchecked): {text_preview!r}"
         )
 
 
@@ -155,6 +157,7 @@ def _segment_coverage_end_seconds(result: dict) -> float | None:
 
 def _local_transcription_looks_incomplete(
     *,
+    audio: np.ndarray,
     duration_seconds: float,
     coverage_end_seconds: float | None,
     text: str,
@@ -169,10 +172,23 @@ def _local_transcription_looks_incomplete(
         return False
     missing_tail = duration_seconds - coverage_end_seconds
     coverage_ratio = coverage_end_seconds / duration_seconds if duration_seconds else 1.0
-    return (
+    if not (
         missing_tail >= _MIN_MISSING_TAIL_FOR_COVERAGE_GUARD_SECONDS
         and coverage_ratio < _MIN_COVERAGE_RATIO
-    )
+    ):
+        return False
+
+    tail_start = max(0, int(coverage_end_seconds * _WHISPER_SAMPLE_RATE))
+    uncovered_tail = audio[tail_start:]
+    frame_size = max(1, int(_TAIL_ENERGY_FRAME_SECONDS * _WHISPER_SAMPLE_RATE))
+    for start in range(0, len(uncovered_tail), frame_size):
+        frame = uncovered_tail[start : start + frame_size]
+        if not len(frame):
+            continue
+        rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
+        if rms > _SPEECH_LIKE_RMS_THRESHOLD:
+            return True
+    return False
 
 
 class LocalTranscriptionClient:
@@ -273,6 +289,7 @@ class LocalTranscriptionClient:
         duration_seconds = float(len(audio)) / _WHISPER_SAMPLE_RATE
         coverage_end_seconds = _segment_coverage_end_seconds(result)
         if _local_transcription_looks_incomplete(
+            audio=audio,
             duration_seconds=duration_seconds,
             coverage_end_seconds=coverage_end_seconds,
             text=text,

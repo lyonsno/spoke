@@ -86,6 +86,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_backend = "local"
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     delegate._audio_spool = MagicMock()
+    delegate._asr_recovery_client = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -6844,10 +6845,10 @@ class TestSegmentAcceleratedTranscription:
         assert d._client.transcribe.call_count == 1
         assert d._client.transcribe.call_args.args[0] == wav_bytes
 
-    def test_transcribe_worker_retries_local_whisper_after_initial_failure(
+    def test_transcribe_worker_uses_distinct_recovery_after_local_failure(
         self, main_module, monkeypatch
     ):
-        """Local Whisper finalization should retry from cached audio without shortening it."""
+        """A failed Metal decode should recover through WhisperKit, not repeat itself."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
         d._transcribe_start = time.monotonic()
@@ -6857,14 +6858,11 @@ class TestSegmentAcceleratedTranscription:
             decode_timeout=30.0,
             eager_eval=False,
         )
-        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
         attempts: list[tuple[float | None, bool]] = []
 
         def fake_transcribe(self, wav_bytes):
             attempts.append((self._decode_timeout, self._eager_eval))
-            if len(attempts) == 1:
-                raise TimeoutError("decode timed out")
-            return "recovered text"
+            raise TimeoutError("decode timed out")
 
         monkeypatch.setattr(
             main_module.LocalTranscriptionClient,
@@ -6872,17 +6870,19 @@ class TestSegmentAcceleratedTranscription:
             fake_transcribe,
             raising=False,
         )
+        d._asr_recovery_client.transcribe.return_value = "recovered text"
 
         d._transcribe_worker(b"full_wav", token=1)
 
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "recovered text"
-        assert attempts == [(30.0, False), (None, False)]
+        assert attempts == [(30.0, False)]
+        d._asr_recovery_client.transcribe.assert_called_once_with(b"full_wav")
 
-    def test_transcribe_worker_retries_local_whisper_after_partial_success(
+    def test_transcribe_worker_uses_distinct_recovery_after_incomplete_result(
         self, main_module, monkeypatch
     ):
-        """A local Whisper front-slice should be retried instead of inserted."""
+        """Real untranslated speech should cross to WhisperKit after one MLX attempt."""
         from spoke.transcribe_local import IncompleteLocalTranscriptionError
 
         d = _make_delegate(main_module, monkeypatch)
@@ -6894,18 +6894,15 @@ class TestSegmentAcceleratedTranscription:
             decode_timeout=30.0,
             eager_eval=True,
         )
-        monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
         attempts: list[tuple[float | None, bool]] = []
 
         def fake_transcribe(self, wav_bytes):
             attempts.append((self._decode_timeout, self._eager_eval))
-            if len(attempts) == 1:
-                raise IncompleteLocalTranscriptionError(
-                    duration_seconds=48.0,
-                    coverage_end_seconds=18.0,
-                    text_preview="front slice",
-                )
-            return "full recovered text"
+            raise IncompleteLocalTranscriptionError(
+                duration_seconds=48.0,
+                coverage_end_seconds=18.0,
+                text_preview="front slice",
+            )
 
         monkeypatch.setattr(
             main_module.LocalTranscriptionClient,
@@ -6913,12 +6910,14 @@ class TestSegmentAcceleratedTranscription:
             fake_transcribe,
             raising=False,
         )
+        d._asr_recovery_client.transcribe.return_value = "full recovered text"
 
         d._transcribe_worker(b"full_wav", token=1)
 
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "full recovered text"
-        assert attempts == [(30.0, True), (None, True)]
+        assert attempts == [(30.0, True)]
+        d._asr_recovery_client.transcribe.assert_called_once_with(b"full_wav")
 
     def test_local_whisper_recovery_uses_current_settings_for_first_attempt(
         self, main_module, monkeypatch
