@@ -856,6 +856,21 @@ class TrayEntry:
         return "user"
 
 
+@dataclass
+class PendingDictationDelivery:
+    """One accepted dictation carried independently to a terminal disposition."""
+
+    delivery_id: str
+    text: str
+    switcher_generation: int
+    lane: str
+    token: int
+    status_text: str = "Pasted!"
+    state: str = "grace"
+    grace_timer: object | None = None
+    inject_timer: object | None = None
+
+
 def _string_or_none(value) -> str | None:
     if value is None:
         return None
@@ -1364,7 +1379,8 @@ class SpokeAppDelegate(NSObject):
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
         # "captured but clipboard was empty (None)".
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
-        self._result_pending_inject = None
+        self._pending_dictation_deliveries: dict[str, PendingDictationDelivery] = {}
+        self._dictation_paste_in_flight = False
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
         self._recovery_text: str | None = None
         self._recovery_clipboard_state: str = "idle"
@@ -3275,7 +3291,12 @@ class SpokeAppDelegate(NSObject):
         generation = getattr(switcher, "presentation_generation", 0)
         return generation if isinstance(generation, int) else 0
 
-    def _route_text_to_visible_diaulos_switcher(self, text: str) -> bool:
+    def _route_text_to_visible_diaulos_switcher(
+        self,
+        text: str,
+        *,
+        resume_handsfree: bool = True,
+    ) -> bool:
         switcher = getattr(self, "_diaulos_switcher", None)
         if switcher is None or not getattr(switcher, "visible", False):
             return False
@@ -3301,8 +3322,129 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text(status)
         if self._overlay is not None:
             self._overlay.hide()
-        self._resume_handsfree_after_hold()
+        if resume_handsfree:
+            self._resume_handsfree_after_hold()
         return True
+
+    def _dictation_delivery_records(self) -> dict[str, PendingDictationDelivery]:
+        records = getattr(self, "_pending_dictation_deliveries", None)
+        if not isinstance(records, dict):
+            records = {}
+            self._pending_dictation_deliveries = records
+        return records
+
+    def _refresh_grace_cancel_callback(self) -> None:
+        cancellable_states = {"grace", "ready", "inject_wait"}
+        has_cancellable = any(
+            delivery.state in cancellable_states
+            for delivery in self._dictation_delivery_records().values()
+        )
+        self._detector._on_enter_cancel_grace = (
+            self._cancel_grace_insert if has_cancellable else None
+        )
+
+    def _delivery_for_timer(
+        self,
+        timer,
+        *,
+        expected_state: str,
+    ) -> PendingDictationDelivery | None:
+        delivery_id = None
+        if timer is not None:
+            try:
+                candidate = timer.userInfo()
+            except Exception:
+                candidate = None
+            if isinstance(candidate, str):
+                delivery_id = candidate
+
+        records = self._dictation_delivery_records()
+        if delivery_id is not None:
+            delivery = records.get(delivery_id)
+            if delivery is not None and delivery.state == expected_state:
+                return delivery
+            return None
+
+        return next(
+            (
+                delivery
+                for delivery in records.values()
+                if delivery.state == expected_state
+            ),
+            None,
+        )
+
+    def _schedule_grace_delivery(
+        self,
+        *,
+        text: str,
+        switcher_generation: int | None,
+        lane: str,
+        token: int,
+    ) -> None:
+        delivery_id = f"{lane}:{token}"
+        records = self._dictation_delivery_records()
+        if delivery_id in records:
+            logger.warning("Ignoring duplicate dictation delivery %s", delivery_id)
+            return
+        if switcher_generation is None:
+            switcher_generation = self._diaulos_switcher_presentation_generation()
+
+        delivery = PendingDictationDelivery(
+            delivery_id=delivery_id,
+            text=text,
+            switcher_generation=switcher_generation,
+            lane=lane,
+            token=token,
+        )
+        records[delivery_id] = delivery
+        self._refresh_grace_cancel_callback()
+        if self._overlay is not None:
+            self._overlay.start_insert_windup()
+        from Foundation import NSTimer
+        delivery.grace_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                self._INSERT_GRACE_S,
+                self,
+                "graceTimerFired:",
+                delivery_id,
+                False,
+            )
+        )
+
+    def _remove_dictation_delivery(self, delivery_id: str) -> None:
+        self._dictation_delivery_records().pop(delivery_id, None)
+        self._refresh_grace_cancel_callback()
+
+    def _drain_dictation_deliveries(self) -> None:
+        if getattr(self, "_dictation_paste_in_flight", False):
+            return
+
+        records = self._dictation_delivery_records()
+        while records:
+            delivery = next(iter(records.values()))
+            if delivery.state != "ready":
+                self._refresh_grace_cancel_callback()
+                return
+
+            if self._route_text_to_visible_diaulos_switcher(
+                delivery.text,
+                resume_handsfree=False,
+            ):
+                self._remove_dictation_delivery(delivery.delivery_id)
+                records = self._dictation_delivery_records()
+                continue
+
+            self._inject_result_text(
+                delivery.text,
+                delivery.status_text,
+                switcher_generation=delivery.switcher_generation,
+                delivery_id=delivery.delivery_id,
+            )
+            return
+
+        self._refresh_grace_cancel_callback()
+        self._resume_handsfree_after_hold()
 
     def transcriptionComplete_(self, payload: dict) -> None:
         """Main thread: inject transcribed text at cursor (with grace window)."""
@@ -3324,23 +3466,11 @@ class SpokeAppDelegate(NSObject):
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info("Transcribed: %r (%.0fms) — starting insert grace window", text, elapsed_ms)
-            self._grace_pending_text = text
-            self._grace_pending_switcher_generation = payload.get(
-                "switcher_generation"
-            )
-            if self._grace_pending_switcher_generation is None:
-                self._grace_pending_switcher_generation = (
-                    self._diaulos_switcher_presentation_generation()
-                )
-            # Arm the Enter-cancels-insert callback on the detector
-            self._detector._on_enter_cancel_grace = self._cancel_grace_insert
-            # Start shrink wind-up animation
-            if self._overlay is not None:
-                self._overlay.start_insert_windup()
-            # Start grace timer — Enter during this window cancels the insert
-            from Foundation import NSTimer
-            self._grace_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                self._INSERT_GRACE_S, self, "graceTimerFired:", None, False
+            self._schedule_grace_delivery(
+                text=text,
+                switcher_generation=payload.get("switcher_generation"),
+                lane="primary",
+                token=payload["token"],
             )
             return
         if self._overlay is not None:
@@ -3363,61 +3493,54 @@ class SpokeAppDelegate(NSObject):
                 text,
                 elapsed_ms,
             )
-            self._grace_pending_text = text
-            self._grace_pending_switcher_generation = payload.get(
-                "switcher_generation"
-            )
-            if self._grace_pending_switcher_generation is None:
-                self._grace_pending_switcher_generation = (
-                    self._diaulos_switcher_presentation_generation()
-                )
-            self._detector._on_enter_cancel_grace = self._cancel_grace_insert
-            if self._overlay is not None:
-                self._overlay.start_insert_windup()
-            from Foundation import NSTimer
-            self._grace_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                self._INSERT_GRACE_S, self, "graceTimerFired:", None, False
+            self._schedule_grace_delivery(
+                text=text,
+                switcher_generation=payload.get("switcher_generation"),
+                lane="parallel",
+                token=payload["token"],
             )
 
     def graceTimerFired_(self, timer) -> None:
         """Grace window expired — proceed with insert."""
-        self._grace_timer = None
-        self._detector._on_enter_cancel_grace = None
-        text = getattr(self, "_grace_pending_text", None)
-        self._grace_pending_text = None
-        switcher_generation = getattr(
-            self,
-            "_grace_pending_switcher_generation",
-            self._diaulos_switcher_presentation_generation(),
+        delivery = self._delivery_for_timer(timer, expected_state="grace")
+        if delivery is None:
+            return
+        delivery.grace_timer = None
+        delivery.state = "ready"
+        logger.info(
+            "Grace window expired for %s — delivery eligible: %r",
+            delivery.delivery_id,
+            delivery.text,
         )
-        self._grace_pending_switcher_generation = None
-        if text:
-            logger.info("Grace window expired — injecting: %r", text)
-            if self._route_text_to_visible_diaulos_switcher(text):
-                return
-            self._inject_result_text(
-                text,
-                "Pasted!",
-                switcher_generation=switcher_generation,
-            )
+        self._refresh_grace_cancel_callback()
+        self._drain_dictation_deliveries()
 
     def _cancel_grace_insert(self) -> None:
-        """Cancel a pending grace-window insert (Enter arrived during window)."""
-        if getattr(self, "_grace_timer", None) is not None:
-            self._grace_timer.invalidate()
-            self._grace_timer = None
-        self._detector._on_enter_cancel_grace = None
-        text = getattr(self, "_grace_pending_text", None)
-        self._grace_pending_text = None
-        self._grace_pending_switcher_generation = None
-        if text:
-            logger.info("Grace insert cancelled — redirecting to overlay toggle")
-            # Add to tray so the transcription isn't lost
-            self._add_tray_entry(text, owner="user", activate=False)
+        """Preserve every not-yet-pasted delivery, then toggle the overlay once."""
+        records = self._dictation_delivery_records()
+        cancelled = [
+            delivery
+            for delivery in records.values()
+            if delivery.state in {"grace", "ready", "inject_wait"}
+        ]
+        for delivery in cancelled:
+            for timer in (delivery.grace_timer, delivery.inject_timer):
+                if timer is not None:
+                    timer.invalidate()
+            self._add_tray_entry(delivery.text, owner="user", activate=False)
+            records.pop(delivery.delivery_id, None)
+        self._refresh_grace_cancel_callback()
+        if cancelled:
+            logger.info(
+                "Grace insert cancelled — preserved %d deliveries before overlay toggle",
+                len(cancelled),
+            )
         if self._overlay is not None:
             self._overlay.cancel_insert_windup()
-        self._toggle_command_overlay()
-        self._resume_handsfree_after_hold()
+        if cancelled:
+            self._toggle_command_overlay()
+            if not getattr(self, "_dictation_paste_in_flight", False):
+                self._resume_handsfree_after_hold()
 
     def transcriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle transcription error."""
@@ -7487,6 +7610,7 @@ class SpokeAppDelegate(NSObject):
         status_text: str,
         *,
         switcher_generation: int | None = None,
+        delivery_id: str | None = None,
     ) -> None:
         # Fade the preview overlay first, then order it out just before the
         # paste setup so screenshots/focus checks never capture it.
@@ -7495,32 +7619,57 @@ class SpokeAppDelegate(NSObject):
 
         if switcher_generation is None:
             switcher_generation = self._diaulos_switcher_presentation_generation()
-        self._result_pending_inject = (text, status_text, switcher_generation)
+        records = self._dictation_delivery_records()
+        if delivery_id is None:
+            delivery_id = f"direct:{uuid.uuid4().hex}"
+            records[delivery_id] = PendingDictationDelivery(
+                delivery_id=delivery_id,
+                text=text,
+                switcher_generation=switcher_generation,
+                lane="direct",
+                token=0,
+                status_text=status_text,
+                state="ready",
+            )
+        delivery = records.get(delivery_id)
+        if delivery is None:
+            logger.warning("Cannot schedule missing dictation delivery %s", delivery_id)
+            return
+        delivery.state = "inject_wait"
+        delivery.status_text = status_text
+        self._refresh_grace_cancel_callback()
         from Foundation import NSTimer
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            self._INSERT_OVERLAY_FADE_OUT_S + self._POST_OVERLAY_REFOCUS_DELAY_S,
-            self,
-            "resultInjectDelayed:",
-            None,
-            False,
+        delivery.inject_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                self._INSERT_OVERLAY_FADE_OUT_S
+                + self._POST_OVERLAY_REFOCUS_DELAY_S,
+                self,
+                "resultInjectDelayed:",
+                delivery_id,
+                False,
+            )
         )
 
     def resultInjectDelayed_(self, timer) -> None:
         """Paste normal-path text after a short post-overlay refocus delay."""
-        pending = getattr(self, "_result_pending_inject", None)
-        self._result_pending_inject = None
-        if pending is None:
+        delivery = self._delivery_for_timer(timer, expected_state="inject_wait")
+        if delivery is None:
             return
-        if len(pending) == 2:
-            text, status_text = pending
-            switcher_generation = self._diaulos_switcher_presentation_generation()
-        else:
-            text, status_text, switcher_generation = pending
+        delivery.inject_timer = None
+        text = delivery.text
 
-        if self._route_text_to_visible_diaulos_switcher(text):
+        if self._route_text_to_visible_diaulos_switcher(
+            text,
+            resume_handsfree=False,
+        ):
+            self._remove_dictation_delivery(delivery.delivery_id)
+            self._drain_dictation_deliveries()
             return
 
-        if switcher_generation != self._diaulos_switcher_presentation_generation():
+        if (
+            delivery.switcher_generation
+            != self._diaulos_switcher_presentation_generation()
+        ):
             if self._overlay is not None:
                 self._overlay.order_out()
             self._add_tray_entry(text, owner="user", activate=False)
@@ -7531,7 +7680,8 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text(
                     "Focus changed — dictation saved to tray"
                 )
-            self._resume_handsfree_after_hold()
+            self._remove_dictation_delivery(delivery.delivery_id)
+            self._drain_dictation_deliveries()
             return
 
         # Ensure the overlay is fully gone before synthetic paste. The visible
@@ -7540,15 +7690,32 @@ class SpokeAppDelegate(NSObject):
             self._overlay.order_out()
 
         self._add_tray_entry(text, owner="user", activate=False)
+        delivery.state = "injecting"
+        self._dictation_paste_in_flight = True
+        self._refresh_grace_cancel_callback()
 
         def _on_clipboard_restored():
-            if self._menubar is not None:
-                if not self._resume_handsfree_after_hold():
-                    self._menubar.set_status_text("Ready — hold spacebar")
+            current = self._dictation_delivery_records().get(delivery.delivery_id)
+            if current is delivery:
+                self._remove_dictation_delivery(delivery.delivery_id)
+            self._dictation_paste_in_flight = False
+            self._drain_dictation_deliveries()
 
-        inject_text(text, on_restored=_on_clipboard_restored)
+        try:
+            inject_text(text, on_restored=_on_clipboard_restored)
+        except Exception:
+            logger.exception(
+                "Synthetic paste failed for %s; text remains in tray",
+                delivery.delivery_id,
+            )
+            self._remove_dictation_delivery(delivery.delivery_id)
+            self._dictation_paste_in_flight = False
+            self._drain_dictation_deliveries()
+            if self._menubar is not None:
+                self._menubar.set_status_text("Paste failed — dictation saved to tray")
+            return
         if self._menubar is not None:
-            self._menubar.set_status_text(status_text)
+            self._menubar.set_status_text(delivery.status_text)
 
     def _enter_recovery_mode(self, text: str) -> None:
         """Paste verification failed — enter the tray automatically.

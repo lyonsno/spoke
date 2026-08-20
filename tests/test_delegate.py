@@ -707,7 +707,7 @@ class TestHoldCallbacks:
         d = _make_delegate(main_module, monkeypatch)
         d._handsfree = MagicMock()
         d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
-        d._result_pending_inject = ("hello", "Pasted!")
+        d._inject_result_text("hello", "Pasted!")
 
         def fake_inject_text(text, on_restored=None):
             assert text == "hello"
@@ -932,6 +932,185 @@ class TestTranscriptionToken:
         assert mock_inject.call_args[0][0] == "hello world"
         assert d._transcribing is True
         assert d._transcription_token == 5
+
+    def test_overlapping_primary_and_parallel_completions_keep_both_deliveries(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._parallel_insert_token = 2
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 0
+        timer_a = MagicMock()
+        timer_a.userInfo.return_value = "primary:5"
+        timer_b = MagicMock()
+        timer_b.userInfo.return_value = "parallel:2"
+        inject_timer_a = MagicMock()
+        inject_timer_a.userInfo.return_value = "primary:5"
+        inject_timer_b = MagicMock()
+        inject_timer_b.userInfo.return_value = "parallel:2"
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.side_effect = [timer_a, timer_b, inject_timer_a, inject_timer_b]
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            mock_inject.side_effect = (
+                lambda text, *, on_restored: on_restored()
+            )
+            d.transcriptionComplete_(
+                {
+                    "token": 5,
+                    "text": "primary delivery",
+                    "switcher_generation": 0,
+                }
+            )
+            d.parallelTranscriptionComplete_(
+                {
+                    "token": 2,
+                    "text": "parallel delivery",
+                    "switcher_generation": 0,
+                }
+            )
+            d.graceTimerFired_(timer_a)
+            d.graceTimerFired_(timer_b)
+
+            records = d._dictation_delivery_records()
+            assert list(records) == ["primary:5", "parallel:2"]
+            assert records["primary:5"].state == "inject_wait"
+            assert records["parallel:2"].state == "ready"
+
+            d.resultInjectDelayed_(inject_timer_a)
+            d.resultInjectDelayed_(inject_timer_b)
+
+        assert [item.args[0] for item in mock_inject.call_args_list] == [
+            "primary delivery",
+            "parallel delivery",
+        ]
+        assert d._dictation_delivery_records() == {}
+
+    def test_enter_cancellation_preserves_every_overlapping_delivery(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._parallel_insert_token = 2
+        d._transcribing = True
+        d._add_tray_entry = MagicMock()
+
+        d.transcriptionComplete_({"token": 5, "text": "primary delivery"})
+        d.parallelTranscriptionComplete_(
+            {"token": 2, "text": "parallel delivery"}
+        )
+        d._cancel_grace_insert()
+
+        assert d._add_tray_entry.call_args_list == [
+            call("primary delivery", owner="user", activate=False),
+            call("parallel delivery", owner="user", activate=False),
+        ]
+
+    def test_switcher_opened_during_overlapping_grace_receives_both_without_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._parallel_insert_token = 2
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 0
+        d._diaulos_switcher.set_dictation_filter.side_effect = [1, 1]
+        d._add_tray_entry = MagicMock()
+        timer_a = MagicMock()
+        timer_a.userInfo.return_value = "primary:5"
+        timer_b = MagicMock()
+        timer_b.userInfo.return_value = "parallel:2"
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.side_effect = [timer_a, timer_b]
+        d._inject_result_text = MagicMock()
+
+        d.transcriptionComplete_({"token": 5, "text": "primary delivery"})
+        d.parallelTranscriptionComplete_(
+            {"token": 2, "text": "parallel delivery"}
+        )
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.presentation_generation = 1
+        d.graceTimerFired_(timer_a)
+        d.graceTimerFired_(timer_b)
+
+        assert d._diaulos_switcher.set_dictation_filter.call_args_list == [
+            call("primary delivery"),
+            call("parallel delivery"),
+        ]
+        assert d._add_tray_entry.call_args_list == [
+            call("primary delivery", owner="user", activate=False),
+            call("parallel delivery", owner="user", activate=False),
+        ]
+        d._inject_result_text.assert_not_called()
+
+    def test_focus_change_preserves_each_queued_delivery_without_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._parallel_insert_token = 2
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 10
+        d._add_tray_entry = MagicMock()
+        d._handsfree = MagicMock()
+        d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
+        timers = [MagicMock() for _ in range(4)]
+        for timer, delivery_id in zip(
+            timers,
+            ["primary:5", "parallel:2", "primary:5", "parallel:2"],
+            strict=True,
+        ):
+            timer.userInfo.return_value = delivery_id
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.side_effect = timers
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_(
+                {
+                    "token": 5,
+                    "text": "primary delivery",
+                    "switcher_generation": 10,
+                }
+            )
+            d.parallelTranscriptionComplete_(
+                {
+                    "token": 2,
+                    "text": "parallel delivery",
+                    "switcher_generation": 20,
+                }
+            )
+            d.graceTimerFired_(timers[0])
+            d.graceTimerFired_(timers[1])
+            d._diaulos_switcher.presentation_generation = 30
+            d.resultInjectDelayed_(timers[2])
+            d.resultInjectDelayed_(timers[3])
+
+        assert d._add_tray_entry.call_args_list == [
+            call("primary delivery", owner="user", activate=False),
+            call("parallel delivery", owner="user", activate=False),
+        ]
+        mock_inject.assert_not_called()
+        assert d._dictation_delivery_records() == {}
+        d._handsfree.enable.assert_called_once_with()
 
     def test_parallel_result_routes_to_visible_switcher_without_paste(
         self, main_module, monkeypatch

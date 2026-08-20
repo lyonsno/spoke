@@ -67,7 +67,12 @@ class TestRecoveryFlowBranching:
             d._inject_result_text("hello world", "Pasted!")
 
         mock_inject.assert_not_called()
-        assert d._result_pending_inject == ("hello world", "Pasted!", 0)
+        pending = list(d._dictation_delivery_records().values())
+        assert len(pending) == 1
+        assert pending[0].text == "hello world"
+        assert pending[0].status_text == "Pasted!"
+        assert pending[0].switcher_generation == 0
+        assert pending[0].state == "inject_wait"
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
         assert call_args[0][0] == (
             d._INSERT_OVERLAY_FADE_OUT_S + d._POST_OVERLAY_REFOCUS_DELAY_S
@@ -89,7 +94,12 @@ class TestRecoveryFlowBranching:
             d._inject_result_text("hello world", "Pasted!")
 
         mock_inject.assert_not_called()
-        assert d._result_pending_inject == ("hello world", "Pasted!", 0)
+        pending = list(d._dictation_delivery_records().values())
+        assert len(pending) == 1
+        assert pending[0].text == "hello world"
+        assert pending[0].status_text == "Pasted!"
+        assert pending[0].switcher_generation == 0
+        assert pending[0].state == "inject_wait"
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
         assert call_args[0][0] == (
@@ -104,7 +114,8 @@ class TestRecoveryFlowBranching:
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
-        d._result_pending_inject = ("hello world", "Pasted!")
+        d._inject_result_text("hello world", "Pasted!")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
 
         with patch("spoke.__main__.inject_text") as mock_inject:
             d.resultInjectDelayed_(None)
