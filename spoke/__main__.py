@@ -3453,12 +3453,20 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         text = payload["text"]
-        if text and self._route_text_to_visible_diaulos_switcher(text):
+        has_pending_delivery = bool(self._dictation_delivery_records())
+        if (
+            text
+            and not has_pending_delivery
+            and self._route_text_to_visible_diaulos_switcher(text)
+        ):
             return
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
-        if diaulos_switcher is not None and getattr(diaulos_switcher, "visible", False):
-            if not text:
-                diaulos_switcher.show_error("No speech recognized")
+        if (
+            not text
+            and diaulos_switcher is not None
+            and getattr(diaulos_switcher, "visible", False)
+        ):
+            diaulos_switcher.show_error("No speech recognized")
             if self._overlay is not None:
                 self._overlay.hide()
             self._resume_handsfree_after_hold()
@@ -3484,7 +3492,11 @@ class SpokeAppDelegate(NSObject):
             logger.info("Discarding stale parallel transcription (token %d)", payload["token"])
             return
         text = payload["text"]
-        if text and self._route_text_to_visible_diaulos_switcher(text):
+        if (
+            text
+            and not self._dictation_delivery_records()
+            and self._route_text_to_visible_diaulos_switcher(text)
+        ):
             return
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)

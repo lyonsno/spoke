@@ -1056,6 +1056,72 @@ class TestTranscriptionToken:
         ]
         d._inject_result_text.assert_not_called()
 
+    def test_visible_switcher_completion_queues_behind_older_delivery(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._parallel_insert_token = 2
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 0
+        d._diaulos_switcher.query = ""
+        applied_filters = []
+
+        def apply_filter(text):
+            applied_filters.append(text)
+            d._diaulos_switcher.query = text
+            return 1
+
+        d._diaulos_switcher.set_dictation_filter.side_effect = apply_filter
+        d._add_tray_entry = MagicMock()
+        d._handsfree = MagicMock()
+        d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
+        timer_a = MagicMock()
+        timer_a.userInfo.return_value = "primary:5"
+        timer_b = MagicMock()
+        timer_b.userInfo.return_value = "parallel:2"
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.side_effect = [timer_a, timer_b]
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_(
+                {
+                    "token": 5,
+                    "text": "primary delivery",
+                    "switcher_generation": 0,
+                }
+            )
+            d._diaulos_switcher.visible = True
+            d._diaulos_switcher.presentation_generation = 1
+            d.parallelTranscriptionComplete_(
+                {
+                    "token": 2,
+                    "text": "parallel delivery",
+                    "switcher_generation": 0,
+                }
+            )
+
+            assert applied_filters == []
+            d._handsfree.enable.assert_not_called()
+            d.graceTimerFired_(timer_a)
+            d._handsfree.enable.assert_not_called()
+            d.graceTimerFired_(timer_b)
+
+        assert applied_filters == ["primary delivery", "parallel delivery"]
+        assert d._diaulos_switcher.query == "parallel delivery"
+        assert d._add_tray_entry.call_args_list == [
+            call("primary delivery", owner="user", activate=False),
+            call("parallel delivery", owner="user", activate=False),
+        ]
+        mock_inject.assert_not_called()
+        d._handsfree.enable.assert_called_once_with()
+
     def test_focus_change_preserves_each_queued_delivery_without_paste(
         self, main_module, monkeypatch
     ):
