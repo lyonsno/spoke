@@ -124,6 +124,7 @@ class DiaulosSwitcherOverlay(NSObject):
         self._key_monitor_handler = None
         self._keyboard_monitor_available = False
         self.visible = False
+        self.presentation_generation = 0
         return self
 
     def setup(self) -> None:
@@ -235,12 +236,17 @@ class DiaulosSwitcherOverlay(NSObject):
 
     def show(self) -> None:
         self.setup()
+        was_visible = self.visible
         workspace = NSWorkspace.sharedWorkspace()
         self._previous_app = workspace.frontmostApplication()
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
         self._model.set_query("")
         self.visible = True
+        if not was_visible:
+            self.presentation_generation = (
+                getattr(self, "presentation_generation", 0) + 1
+            )
         self._install_key_monitor()
         self._set_status(
             "Refreshing live Diauloi"
@@ -269,11 +275,16 @@ class DiaulosSwitcherOverlay(NSObject):
                 f"Focus committed to {self._activation_handle or 'selected Diaulos'}"
             )
             return False
+        was_visible = self.visible
         self._activation_generation += 1
         self._remove_key_monitor()
         if self._panel is not None:
             self._panel.orderOut_(None)
         self.visible = False
+        if was_visible:
+            self.presentation_generation = (
+                getattr(self, "presentation_generation", 0) + 1
+            )
         if restore_previous and self._previous_app is not None:
             try:
                 self._previous_app.activateWithOptions_(

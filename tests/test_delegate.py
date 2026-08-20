@@ -795,6 +795,31 @@ class TestTranscriptionToken:
         )
         mock_inject.assert_not_called()
 
+    def test_activation_in_flight_preserves_without_claiming_filter_update(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.set_dictation_filter.return_value = None
+        d._add_tray_entry = MagicMock()
+
+        text = "do not retarget the committed focus"
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+
+        d._add_tray_entry.assert_called_once_with(
+            text,
+            owner="user",
+            activate=False,
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "Diaulos focus committed — dictation saved to tray"
+        )
+        mock_inject.assert_not_called()
+
     def test_zero_match_diaulos_filter_preserves_final_text_in_tray(
         self, main_module, monkeypatch
     ):
@@ -907,6 +932,150 @@ class TestTranscriptionToken:
         assert mock_inject.call_args[0][0] == "hello world"
         assert d._transcribing is True
         assert d._transcription_token == 5
+
+    def test_parallel_result_routes_to_visible_switcher_without_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 2
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.set_dictation_filter.return_value = 1
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.parallelTranscriptionComplete_({"token": 2, "text": "warpstorm"})
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_called_once_with("warpstorm")
+        d._add_tray_entry.assert_called_once_with(
+            "warpstorm",
+            owner="user",
+            activate=False,
+        )
+        mock_inject.assert_not_called()
+        assert d._transcribing is True
+        assert d._transcription_token == 5
+
+    def test_switcher_opened_during_grace_receives_filter_without_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 0
+        d._diaulos_switcher.set_dictation_filter.return_value = 0
+        d._add_tray_entry = MagicMock()
+
+        text = "ordinary dictation after a failed focus"
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+            d._diaulos_switcher.visible = True
+            d._diaulos_switcher.presentation_generation = 1
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._add_tray_entry.assert_called_once_with(
+            text,
+            owner="user",
+            activate=False,
+        )
+        mock_inject.assert_not_called()
+
+    def test_switcher_opened_during_delayed_inject_receives_filter_without_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 0
+        d._diaulos_switcher.set_dictation_filter.return_value = 1
+        d._add_tray_entry = MagicMock()
+
+        text = "do not paste into the switcher"
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+            d.graceTimerFired_(None)
+            d._diaulos_switcher.visible = True
+            d._diaulos_switcher.presentation_generation = 1
+            d.resultInjectDelayed_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._add_tray_entry.assert_called_once_with(
+            text,
+            owner="user",
+            activate=False,
+        )
+        mock_inject.assert_not_called()
+
+    def test_switcher_focus_completed_before_delayed_inject_suppresses_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 0
+        d._add_tray_entry = MagicMock()
+
+        text = "do not paste into the newly focused pane"
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+            d.graceTimerFired_(None)
+            d._diaulos_switcher.presentation_generation = 2
+            d.resultInjectDelayed_(None)
+
+        d._add_tray_entry.assert_called_once_with(
+            text,
+            owner="user",
+            activate=False,
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "Focus changed — dictation saved to tray"
+        )
+        mock_inject.assert_not_called()
+
+    def test_switcher_focus_completed_before_primary_callback_suppresses_paste(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 2
+        d._add_tray_entry = MagicMock()
+
+        text = "focus changed while final ASR was running"
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_(
+                {
+                    "token": 5,
+                    "text": text,
+                    "switcher_generation": 0,
+                }
+            )
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        d._add_tray_entry.assert_called_once_with(
+            text,
+            owner="user",
+            activate=False,
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "Focus changed — dictation saved to tray"
+        )
+        mock_inject.assert_not_called()
 
     def test_stale_parallel_insert_result_is_discarded(self, main_module, monkeypatch):
         """Parallel insertion results should respect their own token lane."""
@@ -1088,7 +1257,7 @@ class TestPreviewFinalizationContract:
         d._client = MagicMock(supports_streaming=False)
         d._client.transcribe.return_value = "batch final text"
 
-        d._transcribe_worker(b"wav", token=11)
+        d._transcribe_worker(b"wav", token=11, switcher_generation=7)
 
         preview_thread.join.assert_called_once_with(timeout=2.0)
         d._preview_client.finish_stream.assert_not_called()
@@ -1096,6 +1265,7 @@ class TestPreviewFinalizationContract:
         call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
         assert call_args[0][0] == "transcriptionComplete:"
         assert call_args[0][1]["text"] == "batch final text"
+        assert call_args[0][1]["switcher_generation"] == 7
 
     def test_transcribe_worker_release_cutover_skips_preview_wait_and_join(
         self, main_module, monkeypatch
@@ -1172,7 +1342,7 @@ class TestPreviewFinalizationContract:
         d._client = streaming_client
         d._preview_client = streaming_client
 
-        d._parallel_insert_worker(b"wav", token=3)
+        d._parallel_insert_worker(b"wav", token=3, switcher_generation=9)
 
         d._preview_done.wait.assert_not_called()
         d._preview_thread.join.assert_not_called()
@@ -1184,6 +1354,7 @@ class TestPreviewFinalizationContract:
         assert call_args[0][0] == "parallelTranscriptionComplete:"
         assert call_args[0][1]["token"] == 3
         assert call_args[0][1]["text"] == "parallel insert text"
+        assert call_args[0][1]["switcher_generation"] == 9
         assert d._transcribing is True
         assert d._transcription_token == 17
 
@@ -5605,7 +5776,7 @@ class TestHoldStartDuringTranscription:
         assert d._parallel_insert_token == 1
         mock_thread.assert_called_once()
         assert mock_thread.call_args.kwargs["target"] == d._parallel_insert_worker
-        assert mock_thread.call_args.kwargs["args"] == (b"ambient-noise", 1)
+        assert mock_thread.call_args.kwargs["args"] == (b"ambient-noise", 1, 0)
 
     def test_plain_space_release_with_preview_text_does_not_use_assistant_or_tray_path(
         self, main_module, monkeypatch

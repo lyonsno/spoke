@@ -67,7 +67,7 @@ class TestRecoveryFlowBranching:
             d._inject_result_text("hello world", "Pasted!")
 
         mock_inject.assert_not_called()
-        assert d._result_pending_inject == ("hello world", "Pasted!")
+        assert d._result_pending_inject == ("hello world", "Pasted!", 0)
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
         assert call_args[0][0] == (
             d._INSERT_OVERLAY_FADE_OUT_S + d._POST_OVERLAY_REFOCUS_DELAY_S
@@ -89,7 +89,7 @@ class TestRecoveryFlowBranching:
             d._inject_result_text("hello world", "Pasted!")
 
         mock_inject.assert_not_called()
-        assert d._result_pending_inject == ("hello world", "Pasted!")
+        assert d._result_pending_inject == ("hello world", "Pasted!", 0)
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
         assert call_args[0][0] == (

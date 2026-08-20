@@ -2347,6 +2347,9 @@ class SpokeAppDelegate(NSObject):
         )
         # Manual holds take precedence over any live hands-free audio path.
         self._manual_hold_active = True
+        self._manual_hold_switcher_generation = (
+            self._diaulos_switcher_presentation_generation()
+        )
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -2912,6 +2915,11 @@ class SpokeAppDelegate(NSObject):
         if self._transcribing and not shift_held and not enter_held:
             self._parallel_insert_token += 1
             parallel_token = self._parallel_insert_token
+            switcher_generation = getattr(
+                self,
+                "_manual_hold_switcher_generation",
+                self._diaulos_switcher_presentation_generation(),
+            )
             logger.info(
                 "Plain hold during active turn — transcribing on parallel insert lane (token %d)",
                 parallel_token,
@@ -2922,7 +2930,7 @@ class SpokeAppDelegate(NSObject):
                 self._glow.hide()
             thread = threading.Thread(
                 target=self._parallel_insert_worker,
-                args=(wav_bytes, parallel_token),
+                args=(wav_bytes, parallel_token, switcher_generation),
                 daemon=True,
             )
             thread.start()
@@ -2960,8 +2968,15 @@ class SpokeAppDelegate(NSObject):
             # Text pathway: transcribe and paste
             if self._menubar is not None:
                 self._menubar.set_status_text("Transcribing…")
+            switcher_generation = getattr(
+                self,
+                "_manual_hold_switcher_generation",
+                self._diaulos_switcher_presentation_generation(),
+            )
             thread = threading.Thread(
-                target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
+                target=self._transcribe_worker,
+                args=(wav_bytes, token, switcher_generation),
+                daemon=True,
             )
         thread.start()
 
@@ -3179,7 +3194,12 @@ class SpokeAppDelegate(NSObject):
                     f"local={local_error}; recovery={recovery_error}"
                 ) from recovery_error
 
-    def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _transcribe_worker(
+        self,
+        wav_bytes: bytes,
+        token: int,
+        switcher_generation: int | None = None,
+    ) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
@@ -3202,11 +3222,21 @@ class SpokeAppDelegate(NSObject):
         elapsed_ms = (time.monotonic() - self._transcribe_start) * 1000
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "transcriptionComplete:",
-            {"token": token, "text": text, "elapsed_ms": elapsed_ms},
+            {
+                "token": token,
+                "text": text,
+                "elapsed_ms": elapsed_ms,
+                "switcher_generation": switcher_generation,
+            },
             False,
         )
 
-    def _parallel_insert_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _parallel_insert_worker(
+        self,
+        wav_bytes: bytes,
+        token: int,
+        switcher_generation: int | None = None,
+    ) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -3227,13 +3257,52 @@ class SpokeAppDelegate(NSObject):
         elapsed_ms = (time.monotonic() - self._transcribe_start) * 1000
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "parallelTranscriptionComplete:",
-            {"token": token, "text": text, "elapsed_ms": elapsed_ms},
+            {
+                "token": token,
+                "text": text,
+                "elapsed_ms": elapsed_ms,
+                "switcher_generation": switcher_generation,
+            },
             False,
         )
 
     _INSERT_GRACE_S = 0.35  # grace window before auto-insert after transcription
     _INSERT_OVERLAY_FADE_OUT_S = 0.12
     _POST_OVERLAY_REFOCUS_DELAY_S = 0.05
+
+    def _diaulos_switcher_presentation_generation(self) -> int:
+        switcher = getattr(self, "_diaulos_switcher", None)
+        generation = getattr(switcher, "presentation_generation", 0)
+        return generation if isinstance(generation, int) else 0
+
+    def _route_text_to_visible_diaulos_switcher(self, text: str) -> bool:
+        switcher = getattr(self, "_diaulos_switcher", None)
+        if switcher is None or not getattr(switcher, "visible", False):
+            return False
+
+        self._add_tray_entry(text, owner="user", activate=False)
+        match_count = switcher.set_dictation_filter(text)
+        if match_count is None:
+            logger.info(
+                "Diaulos focus already committed; preserved dictation without retargeting"
+            )
+            status = "Diaulos focus committed — dictation saved to tray"
+        elif match_count == 0:
+            logger.warning(
+                "Diaulos filter matched no live candidates; "
+                "preserved final dictation in tray"
+            )
+            status = "No live Diaulos matches — dictation saved to tray"
+        else:
+            logger.info("Preserved Diaulos filter dictation in tray")
+            status = "Diaulos filter updated"
+
+        if self._menubar is not None:
+            self._menubar.set_status_text(status)
+        if self._overlay is not None:
+            self._overlay.hide()
+        self._resume_handsfree_after_hold()
+        return True
 
     def transcriptionComplete_(self, payload: dict) -> None:
         """Main thread: inject transcribed text at cursor (with grace window)."""
@@ -3242,29 +3311,11 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         text = payload["text"]
+        if text and self._route_text_to_visible_diaulos_switcher(text):
+            return
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
-        if diaulos_switcher is not None and getattr(
-            diaulos_switcher, "visible", False
-        ):
-            if text:
-                # A switcher filter is still authoritative user dictation. Keep
-                # it recoverable if stale modal state captured an ordinary hold.
-                self._add_tray_entry(text, owner="user", activate=False)
-                match_count = diaulos_switcher.set_dictation_filter(text)
-                if match_count == 0:
-                    logger.warning(
-                        "Diaulos filter matched no live candidates; "
-                        "preserved final dictation in tray"
-                    )
-                    if self._menubar is not None:
-                        self._menubar.set_status_text(
-                            "No live Diaulos matches — dictation saved to tray"
-                        )
-                else:
-                    logger.info("Preserved Diaulos filter dictation in tray")
-                    if self._menubar is not None:
-                        self._menubar.set_status_text("Diaulos filter updated")
-            else:
+        if diaulos_switcher is not None and getattr(diaulos_switcher, "visible", False):
+            if not text:
                 diaulos_switcher.show_error("No speech recognized")
             if self._overlay is not None:
                 self._overlay.hide()
@@ -3274,6 +3325,13 @@ class SpokeAppDelegate(NSObject):
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info("Transcribed: %r (%.0fms) — starting insert grace window", text, elapsed_ms)
             self._grace_pending_text = text
+            self._grace_pending_switcher_generation = payload.get(
+                "switcher_generation"
+            )
+            if self._grace_pending_switcher_generation is None:
+                self._grace_pending_switcher_generation = (
+                    self._diaulos_switcher_presentation_generation()
+                )
             # Arm the Enter-cancels-insert callback on the detector
             self._detector._on_enter_cancel_grace = self._cancel_grace_insert
             # Start shrink wind-up animation
@@ -3296,6 +3354,8 @@ class SpokeAppDelegate(NSObject):
             logger.info("Discarding stale parallel transcription (token %d)", payload["token"])
             return
         text = payload["text"]
+        if text and self._route_text_to_visible_diaulos_switcher(text):
+            return
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info(
@@ -3304,6 +3364,13 @@ class SpokeAppDelegate(NSObject):
                 elapsed_ms,
             )
             self._grace_pending_text = text
+            self._grace_pending_switcher_generation = payload.get(
+                "switcher_generation"
+            )
+            if self._grace_pending_switcher_generation is None:
+                self._grace_pending_switcher_generation = (
+                    self._diaulos_switcher_presentation_generation()
+                )
             self._detector._on_enter_cancel_grace = self._cancel_grace_insert
             if self._overlay is not None:
                 self._overlay.start_insert_windup()
@@ -3318,9 +3385,21 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_cancel_grace = None
         text = getattr(self, "_grace_pending_text", None)
         self._grace_pending_text = None
+        switcher_generation = getattr(
+            self,
+            "_grace_pending_switcher_generation",
+            self._diaulos_switcher_presentation_generation(),
+        )
+        self._grace_pending_switcher_generation = None
         if text:
             logger.info("Grace window expired — injecting: %r", text)
-            self._inject_result_text(text, "Pasted!")
+            if self._route_text_to_visible_diaulos_switcher(text):
+                return
+            self._inject_result_text(
+                text,
+                "Pasted!",
+                switcher_generation=switcher_generation,
+            )
 
     def _cancel_grace_insert(self) -> None:
         """Cancel a pending grace-window insert (Enter arrived during window)."""
@@ -3330,6 +3409,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_cancel_grace = None
         text = getattr(self, "_grace_pending_text", None)
         self._grace_pending_text = None
+        self._grace_pending_switcher_generation = None
         if text:
             logger.info("Grace insert cancelled — redirecting to overlay toggle")
             # Add to tray so the transcription isn't lost
@@ -7401,13 +7481,21 @@ class SpokeAppDelegate(NSObject):
         self._touch_model(client)
         return lock
 
-    def _inject_result_text(self, text: str, status_text: str) -> None:
+    def _inject_result_text(
+        self,
+        text: str,
+        status_text: str,
+        *,
+        switcher_generation: int | None = None,
+    ) -> None:
         # Fade the preview overlay first, then order it out just before the
         # paste setup so screenshots/focus checks never capture it.
         if self._overlay is not None:
             self._overlay.hide(fade_duration=self._INSERT_OVERLAY_FADE_OUT_S)
 
-        self._result_pending_inject = (text, status_text)
+        if switcher_generation is None:
+            switcher_generation = self._diaulos_switcher_presentation_generation()
+        self._result_pending_inject = (text, status_text, switcher_generation)
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             self._INSERT_OVERLAY_FADE_OUT_S + self._POST_OVERLAY_REFOCUS_DELAY_S,
@@ -7423,7 +7511,28 @@ class SpokeAppDelegate(NSObject):
         self._result_pending_inject = None
         if pending is None:
             return
-        text, status_text = pending
+        if len(pending) == 2:
+            text, status_text = pending
+            switcher_generation = self._diaulos_switcher_presentation_generation()
+        else:
+            text, status_text, switcher_generation = pending
+
+        if self._route_text_to_visible_diaulos_switcher(text):
+            return
+
+        if switcher_generation != self._diaulos_switcher_presentation_generation():
+            if self._overlay is not None:
+                self._overlay.order_out()
+            self._add_tray_entry(text, owner="user", activate=False)
+            logger.warning(
+                "Focus surface changed during insert grace; preserved dictation in tray"
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text(
+                    "Focus changed — dictation saved to tray"
+                )
+            self._resume_handsfree_after_hold()
+            return
 
         # Ensure the overlay is fully gone before synthetic paste. The visible
         # path has already faded it.

@@ -420,6 +420,21 @@ def test_dictation_filter_reports_applied_match_count(
     overlay._search_field.setStringValue_.assert_called_once_with(query)
 
 
+def test_dictation_filter_reports_not_applied_during_committed_activation(
+    overlay_module,
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._activation_in_flight = True
+    overlay._model = DiaulosSwitcherModel(parse_live_inventory(_payload(3)))
+    overlay._search_field = MagicMock()
+
+    assert overlay.set_dictation_filter("do not retarget") is None
+    overlay._search_field.setStringValue_.assert_not_called()
+
+
 def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_module):
     events: list[str] = []
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
@@ -444,6 +459,7 @@ def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_mod
     overlay.activationFinished_({"generation": 4, "receipt": {"pane_id": 10}})
 
     assert overlay.visible is False
+    assert overlay.presentation_generation == 1
     assert events == ["panel-hidden", "wezterm-foregrounded"]
 
 
