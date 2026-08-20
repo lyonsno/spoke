@@ -776,6 +776,8 @@ class TestTranscriptionToken:
         d._transcribing = True
         d._diaulos_switcher = MagicMock()
         d._diaulos_switcher.visible = True
+        d._diaulos_switcher.set_dictation_filter.return_value = 1
+        d._add_tray_entry = MagicMock()
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "kynormous bastard"})
@@ -786,6 +788,37 @@ class TestTranscriptionToken:
         assert d._transcribing is False
         assert getattr(d, "_grace_pending_text", None) is None
         d._overlay.start_insert_windup.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(
+            "kynormous bastard",
+            owner="user",
+            activate=False,
+        )
+        mock_inject.assert_not_called()
+
+    def test_zero_match_diaulos_filter_preserves_final_text_in_tray(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.set_dictation_filter.return_value = 0
+        d._add_tray_entry = MagicMock()
+
+        text = "the teleporter failed and this is an ordinary dictation"
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+
+        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._add_tray_entry.assert_called_once_with(
+            text,
+            owner="user",
+            activate=False,
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "No live Diaulos matches — dictation saved to tray"
+        )
         mock_inject.assert_not_called()
 
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):

@@ -3247,9 +3247,23 @@ class SpokeAppDelegate(NSObject):
             diaulos_switcher, "visible", False
         ):
             if text:
-                diaulos_switcher.set_dictation_filter(text)
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Diaulos filter updated")
+                # A switcher filter is still authoritative user dictation. Keep
+                # it recoverable if stale modal state captured an ordinary hold.
+                self._add_tray_entry(text, owner="user", activate=False)
+                match_count = diaulos_switcher.set_dictation_filter(text)
+                if match_count == 0:
+                    logger.warning(
+                        "Diaulos filter matched no live candidates; "
+                        "preserved final dictation in tray"
+                    )
+                    if self._menubar is not None:
+                        self._menubar.set_status_text(
+                            "No live Diaulos matches — dictation saved to tray"
+                        )
+                else:
+                    logger.info("Preserved Diaulos filter dictation in tray")
+                    if self._menubar is not None:
+                        self._menubar.set_status_text("Diaulos filter updated")
             else:
                 diaulos_switcher.show_error("No speech recognized")
             if self._overlay is not None:

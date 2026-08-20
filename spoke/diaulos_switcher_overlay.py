@@ -292,13 +292,14 @@ class DiaulosSwitcherOverlay(NSObject):
         self.hide(restore_previous=False, force=True)
         self._panel = None
 
-    def set_dictation_filter(self, text: str) -> None:
+    def set_dictation_filter(self, text: str) -> int | None:
         if not self.visible or self._activation_in_flight:
-            return
+            return None
         self._search_field.setStringValue_(text)
         self._apply_query(text)
         self._panel.makeKeyAndOrderFront_(None)
         self._panel.makeFirstResponder_(self._search_field)
+        return len(self._model.filtered)
 
     def show_error(self, message: str) -> None:
         self._set_status(message, error=True)

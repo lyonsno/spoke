@@ -399,6 +399,27 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
     overlay._status_label.setStringValue_.assert_called_once_with("route moved")
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_matches"),
+    [("thing-1", 1), ("ordinary dictation with no Diaulos handle", 0)],
+)
+def test_dictation_filter_reports_applied_match_count(
+    overlay_module, query, expected_matches
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._activation_in_flight = False
+    overlay._model = DiaulosSwitcherModel(parse_live_inventory(_payload(3)))
+    overlay._search_field = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._render_rows = MagicMock()
+
+    assert overlay.set_dictation_filter(query) == expected_matches
+    overlay._search_field.setStringValue_.assert_called_once_with(query)
+
+
 def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_module):
     events: list[str] = []
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
