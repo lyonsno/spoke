@@ -30,6 +30,7 @@ from .diaulos_switcher import (
     DiaulosInventoryError,
     DiaulosSwitcherModel,
     EpistaxisDiaulosClient,
+    historical_candidates,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,9 @@ class DiaulosSwitcherOverlay(NSObject):
         self._previous_app = workspace.frontmostApplication()
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
+        self._model = DiaulosSwitcherModel(
+            historical_candidates(self._model.all_candidates)
+        )
         self._model.set_query("")
         self.visible = True
         self._install_key_monitor()
@@ -372,6 +376,9 @@ class DiaulosSwitcherOverlay(NSObject):
         if candidate is None:
             self._set_status("No live Diaulos matches this filter", error=True)
             return
+        if not candidate.actionable:
+            self._set_status("Historical observation; current refresh required", error=True)
+            return
         self._activation_in_flight = True
         self._activation_handle = candidate.handle
         self._search_field.setEnabled_(False)
@@ -392,22 +399,28 @@ class DiaulosSwitcherOverlay(NSObject):
             self._load_in_flight = False
         error = payload.get("error")
         if error:
+            self._model = DiaulosSwitcherModel(
+                historical_candidates(self._model.all_candidates)
+            )
             if self.visible:
                 suffix = (
-                    "; showing last live observation"
+                    "; showing historical observation"
                     if self._model.all_candidates
                     else ""
                 )
                 self._set_status(f"{error}{suffix}", error=True)
             return
-        self._model = DiaulosSwitcherModel(payload["candidates"])
+        candidates = payload["candidates"]
+        if refreshing:
+            candidates = historical_candidates(candidates)
+        self._model = DiaulosSwitcherModel(candidates)
         if not self.visible:
             return
         self._apply_query(str(self._search_field.stringValue() or ""))
         if refreshing:
             status = (
-                f"Snapshot observation {payload['candidates'][0].observed_at}; refreshing"
-                if payload["candidates"]
+                f"Historical observation {candidates[0].observed_at}; refreshing"
+                if candidates
                 else "Snapshot has no verified-live Diauloi; refreshing"
             )
         else:
@@ -530,6 +543,8 @@ class DiaulosSwitcherOverlay(NSObject):
             )
             detail = candidate.title or Path(candidate.cwd).name or candidate.cwd
             route = f"pane {candidate.pane_id}"
+            if not candidate.actionable:
+                route += "  historical"
             if detail:
                 route += f"  {detail}"
             self._document_view.addSubview_(
@@ -546,11 +561,13 @@ class DiaulosSwitcherOverlay(NSObject):
                 self._document_view.scrollRectToVisible_(
                     NSMakeRect(0, y, width, _ROW_HEIGHT)
                 )
-        self._count_label.setStringValue_(
-            f"{len(self._model.filtered)} live"
-            if self._model.query
-            else f"{len(self._model.all_candidates)} live"
+        count = len(self._model.filtered) if self._model.query else len(self._model.all_candidates)
+        authority = (
+            "live"
+            if all(candidate.actionable for candidate in self._model.all_candidates)
+            else "historical"
         )
+        self._count_label.setStringValue_(f"{count} {authority}")
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         if self._status_label is None:
