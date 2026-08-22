@@ -111,6 +111,14 @@ def test_require_selected_launch_target_uses_one_registry_snapshot(tmp_path, mon
         ("bad-env", [{"id": "bad-env", "path": "/tmp", "env": {"GOOD": "yes", "BAD": 7}}]),
         ("bad-env-shape", [{"id": "bad-env-shape", "path": "/tmp", "env": ["NOPE"]}]),
         ("bad-env-key", [{"id": "bad-env-key", "path": "/tmp", "env": {" ROUTE": "wrong"}}]),
+        ("bad-env-equals", [{"id": "bad-env-equals", "path": "/tmp", "env": {"A=B": "wrong"}}]),
+        ("bad-env-nul-key", [{"id": "bad-env-nul-key", "path": "/tmp", "env": {"A\x00B": "wrong"}}]),
+        ("bad-env-nul-value", [{"id": "bad-env-nul-value", "path": "/tmp", "env": {"A": "x\x00y"}}]),
+        ("bad-label-empty", [{"id": "bad-label-empty", "label": "", "path": "/tmp"}]),
+        ("bad-label-blank", [{"id": "bad-label-blank", "label": "   ", "path": "/tmp"}]),
+        ("bad-label-padded", [{"id": "bad-label-padded", "label": " reviewed ", "path": "/tmp"}]),
+        ("bad-label-control", [{"id": "bad-label-control", "label": "reviewed\n", "path": "/tmp"}]),
+        ("bad-id\x00", [{"id": "bad-id\x00", "path": "/tmp"}]),
     ],
 )
 def test_require_selected_launch_target_rejects_malformed_authority(

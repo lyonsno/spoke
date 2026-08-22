@@ -95,8 +95,16 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
     selected = payload.get("selected")
     if selected is None or selected == "":
         raise LaunchTargetUnavailable("No Spoke launch target is selected")
-    if not isinstance(selected, str) or not selected.strip():
-        raise LaunchTargetUnavailable("Selected Spoke launch target id must be a nonblank string")
+    if (
+        not isinstance(selected, str)
+        or not selected.strip()
+        or selected != selected.strip()
+        or not selected.isprintable()
+    ):
+        raise LaunchTargetUnavailable(
+            "Selected Spoke launch target id must be a nonblank printable string "
+            "without surrounding whitespace"
+        )
 
     raw_targets = payload.get("targets")
     if not isinstance(raw_targets, list):
@@ -129,9 +137,15 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
         )
 
     raw_label = raw_target.get("label", selected)
-    if not isinstance(raw_label, str):
+    if (
+        not isinstance(raw_label, str)
+        or not raw_label.strip()
+        or raw_label != raw_label.strip()
+        or not raw_label.isprintable()
+    ):
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} label must be a string"
+            f"Selected Spoke launch target {selected!r} label must be a nonblank "
+            "printable string without surrounding whitespace"
         )
 
     target = {
@@ -150,7 +164,10 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
             not isinstance(key, str)
             or not key.strip()
             or key != key.strip()
+            or "=" in key
+            or "\x00" in key
             or not isinstance(value, str)
+            or "\x00" in value
             for key, value in raw_env.items()
         ):
             raise LaunchTargetUnavailable(

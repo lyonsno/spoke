@@ -221,6 +221,42 @@ class TestRegistryReading:
         ),
         json.dumps(
             {
+                "selected": "bad-env-equals",
+                "targets": [{"id": "bad-env-equals", "path": "/tmp", "env": {"A=B": "wrong"}}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "bad-env-nul-key",
+                "targets": [{"id": "bad-env-nul-key", "path": "/tmp", "env": {"A\x00B": "wrong"}}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "bad-env-nul-value",
+                "targets": [{"id": "bad-env-nul-value", "path": "/tmp", "env": {"A": "x\x00y"}}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "bad-label-empty",
+                "targets": [{"id": "bad-label-empty", "label": "", "path": "/tmp"}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "bad-label-blank",
+                "targets": [{"id": "bad-label-blank", "label": "   ", "path": "/tmp"}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "bad-id\x00",
+                "targets": [{"id": "bad-id\x00", "path": "/tmp"}],
+            }
+        ),
+        json.dumps(
+            {
                 "selected": "duplicate",
                 "targets": [
                     {"id": "duplicate", "path": "/tmp"},
