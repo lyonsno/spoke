@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_LAUNCH_TARGETS_PATH = Path.home() / ".config" / "spoke" / "launch_targets.json"
 
 
+class LaunchTargetUnavailable(RuntimeError):
+    """The launcher's selected target cannot be started as configured."""
+
+
 def launch_targets_path() -> Path:
     override = os.environ.get("SPOKE_LAUNCH_TARGETS_PATH")
     if override:
@@ -69,6 +73,27 @@ def resolve_launch_target(target_id: str, path: Path | None = None) -> dict | No
         if target["id"] == target_id:
             return target
     return None
+
+
+def require_selected_launch_target(path: Path | None = None) -> dict:
+    """Return the selected runnable target or fail without changing routes."""
+    registry_path = path or launch_targets_path()
+    payload = load_launch_target_registry(registry_path)
+    selected = payload.get("selected")
+    if not selected:
+        raise LaunchTargetUnavailable("No Spoke launch target is selected")
+
+    target_id = str(selected)
+    target = resolve_launch_target(target_id, registry_path)
+    if target is None:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {target_id!r} is absent from the registry"
+        )
+    if not target["enabled"]:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {target_id!r} is unavailable: {target['path']}"
+        )
+    return target
 
 
 def current_launch_target(

@@ -1,5 +1,9 @@
 import json
 
+import pytest
+
+import spoke.launch_targets as launch_targets
+
 from spoke.launch_targets import (
     current_launch_target,
     current_launch_target_id,
@@ -7,6 +11,46 @@ from spoke.launch_targets import (
     resolve_launch_target,
     save_selected_launch_target,
 )
+
+
+def test_require_selected_launch_target_rejects_missing_selected_path(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    missing_checkout = tmp_path / "reboot-erased-checkout"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "label": "Reviewed build",
+                        "path": str(missing_checkout),
+                    }
+                ],
+            }
+        )
+    )
+
+    require_selected = getattr(launch_targets, "require_selected_launch_target", None)
+    unavailable_error = getattr(launch_targets, "LaunchTargetUnavailable", None)
+    assert callable(require_selected), "launcher needs a required-target resolver"
+    assert unavailable_error is not None, "launcher needs an explicit unavailable-target error"
+
+    with pytest.raises(unavailable_error, match="reviewed.*unavailable"):
+        require_selected(registry_path)
+
+
+def test_require_selected_launch_target_rejects_unselected_registry(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    registry_path.write_text(json.dumps({"selected": None, "targets": []}))
+
+    require_selected = getattr(launch_targets, "require_selected_launch_target", None)
+    unavailable_error = getattr(launch_targets, "LaunchTargetUnavailable", None)
+    assert callable(require_selected), "launcher needs a required-target resolver"
+    assert unavailable_error is not None, "launcher needs an explicit unavailable-target error"
+
+    with pytest.raises(unavailable_error, match="No Spoke launch target is selected"):
+        require_selected(registry_path)
 
 
 def test_save_selected_launch_target_updates_registry_only(tmp_path, monkeypatch):

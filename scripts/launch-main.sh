@@ -5,29 +5,33 @@
 # Architecture:
 # 1. Read ~/.config/spoke/launch_targets.json → selected target → path
 # 2. If path is valid and has a .venv: launch from there
-# 3. If path is bad: fall back to the checkout containing this script
-#    and flash red to indicate fallback
-# 4. Kill any existing spoke instance before launching
+# 3. If the selected target is absent or unavailable: fail visibly
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FALLBACK_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HELPER_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGETS_FILE="${HOME}/.config/spoke/launch_targets.json"
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-main-launch.log"
 
 mkdir -p "$LOG_DIR"
 
-export FALLBACK_REPO_ROOT TARGETS_FILE LOG_FILE
+export HELPER_REPO_ROOT TARGETS_FILE LOG_FILE
 
 /usr/bin/python3 - <<'PY'
-import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import traceback
 from pathlib import Path
 from typing import Optional
+
+helper_repo_root = Path(os.environ["HELPER_REPO_ROOT"])
+if str(helper_repo_root) not in sys.path:
+    sys.path.insert(0, str(helper_repo_root))
+
+from spoke.launch_targets import LaunchTargetUnavailable, require_selected_launch_target
 
 
 def _resolve_uv_bin(repo_root: Path) -> Optional[Path]:
@@ -67,21 +71,6 @@ def _resolve_uv_bin(repo_root: Path) -> Optional[Path]:
             if probe.returncode != 0:
                 continue
         return candidate
-    return None
-
-
-def _read_selected_target(targets_file: Path) -> Optional[dict]:
-    """Read the selected target from the launcher registry."""
-    try:
-        data = json.loads(targets_file.read_text(encoding="utf-8"))
-        selected_id = data.get("selected")
-        if not selected_id:
-            return None
-        for target in data.get("targets", []):
-            if target.get("id") == selected_id:
-                return target
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        pass
     return None
 
 
@@ -329,37 +318,20 @@ def _start_retina_lasso_witness(
 
 
 targets_file = Path(os.environ["TARGETS_FILE"])
-fallback_repo_root = Path(os.environ["FALLBACK_REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
 
-# Step 1: Try the registry
-target = _read_selected_target(targets_file)
-repo_root = None
-target_source = "fallback"
-is_fallback = False
+try:
+    target = require_selected_launch_target(targets_file)
+except LaunchTargetUnavailable as exc:
+    with log_file.open("a", encoding="utf-8") as log:
+        log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        log.write(f"Launch refused: {exc}\n")
+    _flash_notification("Spoke Launch Failed", str(exc), "Sosumi")
+    raise SystemExit(1)
 
-if target is not None:
-    candidate = Path(target["path"])
-    if candidate.is_dir():
-        repo_root = candidate
-        target_source = f"registry:{target.get('id', '?')} ({target.get('label', '')})"
-    else:
-        _flash_notification(
-            "Spoke Fallback",
-            f"Target gone: {candidate.name}. Falling back to script checkout.",
-        )
-        is_fallback = True
-else:
-    _flash_notification(
-        "Spoke Fallback",
-        "No registry target selected. Falling back to script checkout.",
-    )
-    is_fallback = True
-
-if repo_root is None:
-    repo_root = fallback_repo_root
-    target_source = f"fallback:{fallback_repo_root}"
-effective_target = None if is_fallback else target
+repo_root = target["path"]
+target_source = f"registry:{target.get('id', '?')} ({target.get('label', '')})"
+effective_target = target
 
 # Build child env: clear inherited overrides, then apply machine-wide
 # ~/.config/spoke/secrets.env (sourced first so per-worktree values can
@@ -434,8 +406,6 @@ with log_file.open("a", encoding="utf-8") as log:
         log.write(f"Repo root: {repo_root}\n")
         if effective_target_env:
             log.write(f"Target env override keys: {sorted(effective_target_env)}\n")
-        if is_fallback:
-            log.write("WARNING: using fallback — registry target was missing or invalid\n")
         log.flush()
 
         python_exe = Path(
@@ -465,7 +435,7 @@ with log_file.open("a", encoding="utf-8") as log:
         )
         _start_retina_lasso_witness(
             repo_root=repo_root,
-            target_id=effective_target.get("id", "selected") if effective_target is not None else "fallback",
+            target_id=effective_target.get("id", "selected"),
             python_exe=python_exe,
             uv_bin=uv_bin,
             child_env=child_env,

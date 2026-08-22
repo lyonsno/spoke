@@ -221,9 +221,11 @@ class TestOldArchitectureRetired:
         assert "dev-target" not in text
         assert "smoke-target" not in text
 
-    def test_launch_main_sh_has_fallback(self):
+    def test_launch_main_sh_requires_selected_target(self):
         text = _main_script_text()
-        assert "FALLBACK_REPO_ROOT" in text
+        assert "require_selected_launch_target" in text
+        assert "Falling back to script checkout" not in text
+        assert "FALLBACK_REPO_ROOT" not in text
 
 
 # ── Secrets env loading ─────────────────────────────────────────
@@ -385,12 +387,19 @@ class TestRegistryTargetEnvLoading:
             "the launcher cannot silently erase a requested target model route"
         )
 
-    def test_main_fallback_discards_invalid_selected_target_authority(self):
+    def test_main_rejects_invalid_selected_target_before_applying_authority(self):
         text = _main_script_text()
 
-        assert "effective_target = None if is_fallback else target" in text
+        require_idx = text.find("target = require_selected_launch_target(targets_file)")
+        reject_idx = text.find("except LaunchTargetUnavailable as exc:")
+        effective_idx = text.find("effective_target = target")
+
+        assert require_idx != -1
+        assert reject_idx != -1
+        assert effective_idx != -1
+        assert require_idx < reject_idx < effective_idx
+        assert "raise SystemExit(1)" in text[reject_idx:effective_idx]
         assert 'target_env = effective_target.get("env")' in text
-        assert "if effective_target is not None:" in text
         assert 'target_id=effective_target.get("id", "selected")' in text
 
     @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
