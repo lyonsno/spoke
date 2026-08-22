@@ -8,6 +8,7 @@ import ast
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,67 @@ def _launcher_apply_env_file():
             exec(function_source, namespace)
             return namespace["_apply_env_file"], child_env
     raise AssertionError("launch-main.sh must define _apply_env_file")
+
+
+def _execute_launcher_python(
+    tmp_path,
+    monkeypatch,
+    *,
+    registry_text: str | None,
+    log_failure: bool = False,
+):
+    registry = tmp_path / "launch_targets.json"
+    if registry_text is not None:
+        registry.write_text(registry_text)
+
+    log_file = tmp_path / "spoke-launch.log"
+    if log_failure:
+        blocked_parent = tmp_path / "not-a-directory"
+        blocked_parent.write_text("occupied")
+        log_file = blocked_parent / "spoke-launch.log"
+
+    run_calls = []
+    popen_calls = []
+
+    class Completed:
+        returncode = 0
+
+    class Process:
+        pid = 4242
+
+    def fake_run(args, *pargs, **kwargs):
+        run_calls.append((list(args), kwargs))
+        return Completed()
+
+    def fake_popen(args, *pargs, **kwargs):
+        popen_calls.append((list(args), kwargs))
+        return Process()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("HELPER_REPO_ROOT", str(Path(__file__).resolve().parent.parent))
+    monkeypatch.setenv("TARGETS_FILE", str(registry))
+    monkeypatch.setenv("LOG_FILE", str(log_file))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    outcome = 0
+    try:
+        exec(compile(_launcher_python_text(), "launch-main.sh", "exec"), {"__name__": "__main__"})
+    except SystemExit as exc:
+        outcome = exc.code
+    except Exception as exc:  # The witness reports accidental diagnostic-path crashes.
+        outcome = exc
+
+    return outcome, run_calls, popen_calls
+
+
+def _is_spoke_child(command: list[str]) -> bool:
+    return len(command) >= 3 and command[-2:] == ["-m", "spoke"]
+
+
+def _is_retina_child(command: list[str]) -> bool:
+    rendered = " ".join(command)
+    return "retina-lasso" in rendered or "retina_lasso" in rendered or "throughglass_witness" in rendered
 
 
 # ── Registry reading ────────────────────────────────────────────
@@ -133,6 +195,104 @@ class TestRegistryReading:
         targets = iter_launch_targets(registry)
         assert len(targets) == 1
         assert targets[0]["id"] == "good"
+
+
+@pytest.mark.parametrize(
+    "registry_text",
+    [
+        None,
+        "{not-json",
+        json.dumps({"selected": None, "targets": []}),
+        json.dumps({"selected": "missing", "targets": []}),
+        json.dumps({"selected": "gone", "targets": [{"id": "gone", "path": "/not/here"}]}),
+        json.dumps({"selected": 7, "targets": [{"id": 7, "path": "/tmp"}]}),
+        json.dumps({"selected": "relative", "targets": [{"id": "relative", "path": "."}]}),
+        json.dumps(
+            {
+                "selected": "bad-env",
+                "targets": [{"id": "bad-env", "path": "/tmp", "env": {"GOOD": "yes", "BAD": 7}}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "bad-env-shape",
+                "targets": [{"id": "bad-env-shape", "path": "/tmp", "env": ["NOPE"]}],
+            }
+        ),
+        json.dumps(
+            {
+                "selected": "duplicate",
+                "targets": [
+                    {"id": "duplicate", "path": "/tmp"},
+                    {"id": "duplicate", "path": "/tmp"},
+                ],
+            }
+        ),
+    ],
+)
+def test_launcher_negative_routes_start_no_spoke_or_witness(
+    tmp_path,
+    monkeypatch,
+    registry_text,
+):
+    outcome, run_calls, popen_calls = _execute_launcher_python(
+        tmp_path,
+        monkeypatch,
+        registry_text=registry_text,
+    )
+
+    assert outcome == 1
+    assert any(call[0][0] == "osascript" for call in run_calls)
+    assert not any(_is_spoke_child(command) for command, _kwargs in popen_calls)
+    assert not any(_is_retina_child(command) for command, _kwargs in popen_calls)
+
+
+def test_launcher_log_failure_still_attempts_visible_refusal(tmp_path, monkeypatch):
+    outcome, run_calls, popen_calls = _execute_launcher_python(
+        tmp_path,
+        monkeypatch,
+        registry_text=json.dumps({"selected": None, "targets": []}),
+        log_failure=True,
+    )
+
+    assert outcome == 1
+    assert any(call[0][0] == "osascript" for call in run_calls)
+    assert not any(_is_spoke_child(command) for command, _kwargs in popen_calls)
+
+
+def test_launcher_valid_route_starts_one_spoke_with_target_authority(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    python_exe = checkout / ".venv/bin/python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("stub")
+    registry_text = json.dumps(
+        {
+            "selected": "reviewed",
+            "targets": [
+                {
+                    "id": "reviewed",
+                    "path": str(checkout),
+                    "env": {"ROUTE": "reviewed"},
+                }
+            ],
+        }
+    )
+
+    outcome, run_calls, popen_calls = _execute_launcher_python(
+        tmp_path,
+        monkeypatch,
+        registry_text=registry_text,
+    )
+
+    app_calls = [call for call in popen_calls if _is_spoke_child(call[0])]
+    assert outcome == 0
+    assert run_calls == []
+    assert len(app_calls) == 1
+    assert app_calls[0][0] == [str(python_exe), "-m", "spoke"]
+    assert app_calls[0][1]["cwd"] == checkout
+    assert app_calls[0][1]["env"]["ROUTE"] == "reviewed"
+    assert app_calls[0][1]["env"]["SPOKE_LAUNCH_TARGET_ID"] == "reviewed"
+    assert not any(_is_retina_child(command) for command, _kwargs in popen_calls)
 
 
 # ── Save selected target ────────────────────────────────────────

@@ -78,20 +78,94 @@ def resolve_launch_target(target_id: str, path: Path | None = None) -> dict | No
 def require_selected_launch_target(path: Path | None = None) -> dict:
     """Return the selected runnable target or fail without changing routes."""
     registry_path = path or launch_targets_path()
-    payload = load_launch_target_registry(registry_path)
-    selected = payload.get("selected")
-    if not selected:
-        raise LaunchTargetUnavailable("No Spoke launch target is selected")
-
-    target_id = str(selected)
-    target = resolve_launch_target(target_id, registry_path)
-    if target is None:
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {target_id!r} is absent from the registry"
+            f"Spoke launch target registry is unavailable: {registry_path}"
+        ) from exc
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LaunchTargetUnavailable(
+            f"Spoke launch target registry is invalid: {registry_path}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise LaunchTargetUnavailable("Spoke launch target registry must be an object")
+
+    selected = payload.get("selected")
+    if selected is None or selected == "":
+        raise LaunchTargetUnavailable("No Spoke launch target is selected")
+    if not isinstance(selected, str) or not selected.strip():
+        raise LaunchTargetUnavailable("Selected Spoke launch target id must be a nonblank string")
+
+    raw_targets = payload.get("targets")
+    if not isinstance(raw_targets, list):
+        raise LaunchTargetUnavailable("Spoke launch target registry targets must be a list")
+
+    matches = [
+        target
+        for target in raw_targets
+        if isinstance(target, dict) and target.get("id") == selected
+    ]
+    if not matches:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} is absent from the registry"
         )
+    if len(matches) != 1:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} is duplicated in the registry"
+        )
+
+    raw_target = matches[0]
+    raw_path = raw_target.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} path must be a nonblank string"
+        )
+    target_path = Path(raw_path).expanduser()
+    if not target_path.is_absolute():
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} path must be absolute: {raw_path}"
+        )
+
+    raw_label = raw_target.get("label", selected)
+    if not isinstance(raw_label, str):
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} label must be a string"
+        )
+
+    target = {
+        "id": selected,
+        "label": raw_label or selected,
+        "path": target_path,
+        "enabled": target_path.is_dir(),
+    }
+    if "env" in raw_target:
+        raw_env = raw_target["env"]
+        if not isinstance(raw_env, dict):
+            raise LaunchTargetUnavailable(
+                f"Selected Spoke launch target {selected!r} env must be an object"
+            )
+        if any(
+            not isinstance(key, str)
+            or not key.strip()
+            or key != key.strip()
+            or not isinstance(value, str)
+            for key, value in raw_env.items()
+        ):
+            raise LaunchTargetUnavailable(
+                f"Selected Spoke launch target {selected!r} env must contain only "
+                "nonblank string keys and string values"
+            )
+        if raw_env:
+            target["env"] = {
+                key: os.path.expanduser(os.path.expandvars(value))
+                for key, value in raw_env.items()
+            }
+
     if not target["enabled"]:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {target_id!r} is unavailable: {target['path']}"
+            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}"
         )
     return target
 

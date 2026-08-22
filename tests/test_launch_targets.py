@@ -53,6 +53,117 @@ def test_require_selected_launch_target_rejects_unselected_registry(tmp_path):
         require_selected(registry_path)
 
 
+def test_require_selected_launch_target_uses_one_registry_snapshot(tmp_path, monkeypatch):
+    registry_path = tmp_path / "launch_targets.json"
+    available_checkout = tmp_path / "available"
+    available_checkout.mkdir()
+    snapshots = iter(
+        [
+            json.dumps(
+                {
+                    "selected": "reviewed",
+                    "targets": [
+                        {
+                            "id": "reviewed",
+                            "path": str(tmp_path / "missing-in-first-snapshot"),
+                        }
+                    ],
+                }
+            ),
+            json.dumps(
+                {
+                    "selected": "other",
+                    "targets": [
+                        {"id": "reviewed", "path": str(available_checkout)},
+                        {"id": "other", "path": str(tmp_path / "missing-other")},
+                    ],
+                }
+            ),
+        ]
+    )
+    reads = []
+
+    def read_snapshot(path, *args, **kwargs):
+        assert path == registry_path
+        reads.append(path)
+        return next(snapshots)
+
+    monkeypatch.setattr(type(registry_path), "read_text", read_snapshot)
+
+    with pytest.raises(launch_targets.LaunchTargetUnavailable, match="reviewed.*unavailable"):
+        launch_targets.require_selected_launch_target(registry_path)
+
+    assert reads == [registry_path]
+
+
+@pytest.mark.parametrize(
+    "selected, targets",
+    [
+        (7, [{"id": 7, "path": "/tmp"}]),
+        ("relative", [{"id": "relative", "path": "."}]),
+        (
+            "duplicate",
+            [
+                {"id": "duplicate", "path": "/tmp"},
+                {"id": "duplicate", "path": "/tmp"},
+            ],
+        ),
+        ("bad-env", [{"id": "bad-env", "path": "/tmp", "env": {"GOOD": "yes", "BAD": 7}}]),
+        ("bad-env-shape", [{"id": "bad-env-shape", "path": "/tmp", "env": ["NOPE"]}]),
+        ("bad-env-key", [{"id": "bad-env-key", "path": "/tmp", "env": {" ROUTE": "wrong"}}]),
+    ],
+)
+def test_require_selected_launch_target_rejects_malformed_authority(
+    tmp_path,
+    selected,
+    targets,
+):
+    registry_path = tmp_path / "launch_targets.json"
+    registry_path.write_text(json.dumps({"selected": selected, "targets": targets}))
+
+    with pytest.raises(launch_targets.LaunchTargetUnavailable):
+        launch_targets.require_selected_launch_target(registry_path)
+
+
+def test_require_selected_launch_target_rejects_invalid_registry_encoding(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    registry_path.write_bytes(b"\xff")
+
+    with pytest.raises(launch_targets.LaunchTargetUnavailable, match="registry is invalid"):
+        launch_targets.require_selected_launch_target(registry_path)
+
+
+def test_require_selected_launch_target_preserves_valid_absolute_route(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "label": "Reviewed build",
+                        "path": str(checkout),
+                        "env": {"ROUTE": "reviewed"},
+                    }
+                ],
+            }
+        )
+    )
+
+    target = launch_targets.require_selected_launch_target(registry_path)
+
+    assert target == {
+        "id": "reviewed",
+        "label": "Reviewed build",
+        "path": checkout,
+        "enabled": True,
+        "env": {"ROUTE": "reviewed"},
+    }
+
+
 def test_save_selected_launch_target_updates_registry_only(tmp_path, monkeypatch):
     registry_path = tmp_path / "launch_targets.json"
     main_target_file = tmp_path / "main-target"

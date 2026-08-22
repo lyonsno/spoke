@@ -87,6 +87,19 @@ def _flash_notification(title: str, message: str, sound: str = "Basso") -> None:
         )
 
 
+def _report_launch_refusal(error: LaunchTargetUnavailable, log_file: Path) -> None:
+    try:
+        _flash_notification("Spoke Launch Failed", str(error), "Sosumi")
+    except Exception:
+        pass
+    try:
+        with log_file.open("a", encoding="utf-8") as log:
+            log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+            log.write(f"Launch refused: {error}\n")
+    except Exception:
+        pass
+
+
 def _env_flag(child_env: dict[str, str], name: str) -> bool:
     return child_env.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -323,10 +336,7 @@ log_file = Path(os.environ["LOG_FILE"])
 try:
     target = require_selected_launch_target(targets_file)
 except LaunchTargetUnavailable as exc:
-    with log_file.open("a", encoding="utf-8") as log:
-        log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-        log.write(f"Launch refused: {exc}\n")
-    _flash_notification("Spoke Launch Failed", str(exc), "Sosumi")
+    _report_launch_refusal(exc, log_file)
     raise SystemExit(1)
 
 repo_root = target["path"]
