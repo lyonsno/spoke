@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import unquote, urlparse
@@ -38,13 +38,19 @@ class DiaulosCandidate:
     match_basis: tuple[str, ...]
     observed_at: str
     discovery_authority: str
+    actionable: bool
+    action_authority: str
 
     @property
     def searchable_text(self) -> str:
         return " ".join((self.handle, *self.aliases, self.title, self.cwd))
 
 
-def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
+def parse_live_inventory(
+    payload: Any,
+    *,
+    actionable: bool = True,
+) -> list[DiaulosCandidate]:
     if not isinstance(payload, dict):
         raise DiaulosInventoryError("live Diaulos inventory is not an object")
     if payload.get("status") != "complete":
@@ -58,6 +64,11 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
     if authority != "complete-live-pane-enumeration":
         raise DiaulosInventoryError(
             f"live Diaulos inventory has non-authoritative discovery route: {authority or 'missing'}"
+        )
+    strict_lineage = payload.get("runtime_lineage_required") is True
+    if actionable and not strict_lineage:
+        raise DiaulosInventoryError(
+            "live Diaulos inventory does not require strict runtime lineage"
         )
     rows = payload.get("entries")
     if not isinstance(rows, list):
@@ -125,9 +136,28 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
                 ),
                 observed_at=observed_at,
                 discovery_authority=authority,
+                actionable=actionable,
+                action_authority=(
+                    "strict-current-process-lineage"
+                    if actionable
+                    else "historical-snapshot-only"
+                ),
             )
         )
     return candidates
+
+
+def historical_candidates(
+    candidates: Sequence[DiaulosCandidate],
+) -> list[DiaulosCandidate]:
+    return [
+        replace(
+            candidate,
+            actionable=False,
+            action_authority="historical-snapshot-only",
+        )
+        for candidate in candidates
+    ]
 
 
 class DiaulosSwitcherModel:
@@ -215,7 +245,7 @@ class EpistaxisDiaulosClient:
             raise DiaulosInventoryError(
                 f"live Diaulos snapshot returned invalid JSON: {exc}"
             ) from exc
-        return parse_live_inventory(payload)
+        return parse_live_inventory(payload, actionable=False)
 
     def refresh(self) -> list[DiaulosCandidate]:
         command = ["epistaxis", "diaulos", "live", "--json"]
@@ -233,6 +263,44 @@ class EpistaxisDiaulosClient:
         return candidates
 
     def activate(self, candidate: DiaulosCandidate) -> dict[str, Any]:
+        if not candidate.actionable:
+            raise DiaulosActivationError(
+                "selected Diaulos is a historical observation; current strict lineage is required"
+            )
+
+        try:
+            current_candidates = self.refresh()
+        except DiaulosInventoryError as exc:
+            raise DiaulosActivationError(
+                f"current strict lineage verification failed: {exc}"
+            ) from exc
+        current_matches = [
+            current
+            for current in current_candidates
+            if current.handle == candidate.handle
+            and current.pane_id == candidate.pane_id
+        ]
+        if len(current_matches) != 1:
+            raise DiaulosActivationError(
+                "selected Diaulos is not present exactly once in the current strict observation"
+            )
+        current = current_matches[0]
+        if current.thread_id != candidate.thread_id:
+            raise DiaulosActivationError(
+                "selected Diaulos process lineage changed since observation"
+            )
+        route_fields = ("diaulos_id", "tab_id", "window_id", "cwd")
+        changed = [
+            field
+            for field in route_fields
+            if getattr(current, field) != getattr(candidate, field)
+        ]
+        if changed:
+            raise DiaulosActivationError(
+                "selected Diaulos route changed since observation: "
+                + ", ".join(changed)
+            )
+
         list_command = self._wezterm_command("list", "--format", "json")
         result = self._run_process(list_command, DiaulosActivationError)
         if result.returncode:
@@ -266,7 +334,7 @@ class EpistaxisDiaulosClient:
                 "selected pane is not present exactly once in the current WezTerm observation"
             )
         live = matches[0]
-        self._verify_live_route(candidate, live)
+        self._verify_live_route(current, live)
 
         activate_command = self._wezterm_command(
             "activate-pane",
@@ -284,7 +352,7 @@ class EpistaxisDiaulosClient:
             "expected_pane_id": candidate.pane_id,
             "tab_id": candidate.tab_id,
             "window_id": candidate.window_id,
-            "verification": "direct-wezterm-pane-enumeration",
+            "verification": "strict-current-lineage-and-direct-wezterm-pane-enumeration",
         }
 
     def _run_epistaxis(self, command: list[str]) -> subprocess.CompletedProcess[str]:

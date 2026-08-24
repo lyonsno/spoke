@@ -30,6 +30,7 @@ from .diaulos_switcher import (
     DiaulosInventoryError,
     DiaulosSwitcherModel,
     EpistaxisDiaulosClient,
+    historical_candidates,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,9 @@ class DiaulosSwitcherOverlay(NSObject):
         self._previous_app = workspace.frontmostApplication()
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
+        self._model = DiaulosSwitcherModel(
+            historical_candidates(self._model.all_candidates)
+        )
         self._model.set_query("")
         self.visible = True
         if not was_visible:
@@ -384,6 +388,9 @@ class DiaulosSwitcherOverlay(NSObject):
         if candidate is None:
             self._set_status("No live Diaulos matches this filter", error=True)
             return
+        if not candidate.actionable:
+            self._set_status("Historical observation; current refresh required", error=True)
+            return
         self._activation_in_flight = True
         self._activation_handle = candidate.handle
         self._search_field.setEnabled_(False)
@@ -404,22 +411,29 @@ class DiaulosSwitcherOverlay(NSObject):
             self._load_in_flight = False
         error = payload.get("error")
         if error:
+            self._model = DiaulosSwitcherModel(
+                historical_candidates(self._model.all_candidates)
+            )
             if self.visible:
                 suffix = (
-                    "; showing last live observation"
+                    "; showing historical observation"
                     if self._model.all_candidates
                     else ""
                 )
+                self._render_rows()
                 self._set_status(f"{error}{suffix}", error=True)
             return
-        self._model = DiaulosSwitcherModel(payload["candidates"])
+        candidates = payload["candidates"]
+        if refreshing:
+            candidates = historical_candidates(candidates)
+        self._model = DiaulosSwitcherModel(candidates)
         if not self.visible:
             return
         self._apply_query(str(self._search_field.stringValue() or ""))
         if refreshing:
             status = (
-                f"Snapshot observation {payload['candidates'][0].observed_at}; refreshing"
-                if payload["candidates"]
+                f"Historical observation {candidates[0].observed_at}; refreshing"
+                if candidates
                 else "Snapshot has no verified-live Diauloi; refreshing"
             )
         else:
@@ -437,6 +451,10 @@ class DiaulosSwitcherOverlay(NSObject):
         self._activation_handle = None
         self._search_field.setEnabled_(True)
         if payload.get("error"):
+            self._model = DiaulosSwitcherModel(
+                historical_candidates(self._model.all_candidates)
+            )
+            self._render_rows()
             self._set_status(str(payload["error"]), error=True)
             self._panel.makeFirstResponder_(self._search_field)
             return
@@ -470,6 +488,11 @@ class DiaulosSwitcherOverlay(NSObject):
             )
         except DiaulosInventoryError as exc:
             snapshot_error = str(exc)
+            logger.warning(
+                "Diaulos snapshot load failed: generation=%s error=%s",
+                generation,
+                snapshot_error,
+            )
 
         try:
             candidates = self._client.refresh()
@@ -482,6 +505,11 @@ class DiaulosSwitcherOverlay(NSObject):
             error = str(exc)
             if snapshot_error is not None:
                 error = f"{snapshot_error}; refresh failed: {error}"
+            logger.error(
+                "Diaulos inventory refresh failed: generation=%s error=%s",
+                generation,
+                error,
+            )
             payload = {
                 "generation": generation,
                 "error": error,
@@ -499,8 +527,21 @@ class DiaulosSwitcherOverlay(NSObject):
     def _activation_worker(self, generation: int, candidate) -> None:
         try:
             receipt = self._client.activate(candidate)
+            logger.info(
+                "Diaulos activation succeeded: handle=%s pane=%s verification=%s",
+                candidate.handle,
+                candidate.pane_id,
+                receipt.get("verification", "missing"),
+            )
             payload = {"generation": generation, "receipt": receipt}
         except DiaulosActivationError as exc:
+            logger.error(
+                "Diaulos activation failed: handle=%s pane=%s thread=%s error=%s",
+                candidate.handle,
+                candidate.pane_id,
+                candidate.thread_id or "missing",
+                exc,
+            )
             payload = {"generation": generation, "error": str(exc)}
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "activationFinished:",
@@ -542,6 +583,8 @@ class DiaulosSwitcherOverlay(NSObject):
             )
             detail = candidate.title or Path(candidate.cwd).name or candidate.cwd
             route = f"pane {candidate.pane_id}"
+            if not candidate.actionable:
+                route += "  historical"
             if detail:
                 route += f"  {detail}"
             self._document_view.addSubview_(
@@ -558,11 +601,17 @@ class DiaulosSwitcherOverlay(NSObject):
                 self._document_view.scrollRectToVisible_(
                     NSMakeRect(0, y, width, _ROW_HEIGHT)
                 )
-        self._count_label.setStringValue_(
-            f"{len(self._model.filtered)} live"
+        count = (
+            len(self._model.filtered)
             if self._model.query
-            else f"{len(self._model.all_candidates)} live"
+            else len(self._model.all_candidates)
         )
+        authority = (
+            "live"
+            if all(candidate.actionable for candidate in self._model.all_candidates)
+            else "historical"
+        )
+        self._count_label.setStringValue_(f"{count} {authority}")
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         if self._status_label is None:

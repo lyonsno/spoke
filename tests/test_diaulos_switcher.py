@@ -27,6 +27,7 @@ def _payload(count: int = 3) -> dict:
         "status": "complete",
         "observed_at": "2026-07-17T20:00:00Z",
         "discovery_authority": "complete-live-pane-enumeration",
+        "runtime_lineage_required": True,
         "entries": [
             {
                 "handle": f"thing-{index}",
@@ -167,7 +168,7 @@ def _live_panes(count: int = 3) -> list[dict]:
     ]
 
 
-def test_client_loads_snapshot_without_epistaxis_and_activates_directly(
+def test_client_loads_snapshot_without_epistaxis_but_refuses_cached_activation(
     tmp_path,
 ):
     calls: list[list[str]] = []
@@ -186,15 +187,24 @@ def test_client_loads_snapshot_without_epistaxis_and_activates_directly(
         wezterm_executable="wezterm",
     )
     candidate = client.load()[0]
-    receipt = client.activate(candidate)
+    assert candidate.actionable is False
+    assert candidate.action_authority == "historical-snapshot-only"
+    with pytest.raises(DiaulosActivationError, match="historical"):
+        client.activate(candidate)
 
-    assert calls == [
-        ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
-        ["wezterm", "cli", "--no-auto-start", "activate-pane", "--pane-id", "10"],
-    ]
-    assert receipt["pane_id"] == 10
-    assert receipt["diaulos"] == "thing-0"
-    assert receipt["verification"] == "direct-wezterm-pane-enumeration"
+    assert calls == []
+
+
+@pytest.mark.parametrize("marker", [None, False])
+def test_current_inventory_requires_strict_runtime_lineage_marker(marker):
+    payload = _payload(1)
+    if marker is None:
+        payload.pop("runtime_lineage_required")
+    else:
+        payload["runtime_lineage_required"] = marker
+
+    with pytest.raises(DiaulosInventoryError, match="runtime lineage"):
+        parse_live_inventory(payload)
 
 
 def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
@@ -238,7 +248,9 @@ def test_refresh_failure_preserves_exact_previous_snapshot(tmp_path):
         client.refresh()
 
     assert snapshot.read_text() == previous
-    assert [row.handle for row in client.load()] == ["thing-0", "thing-1"]
+    loaded = client.load()
+    assert [row.handle for row in loaded] == ["thing-0", "thing-1"]
+    assert all(row.actionable is False for row in loaded)
 
 
 def test_snapshot_load_does_not_resolve_or_execute_epistaxis(tmp_path, monkeypatch):
@@ -289,11 +301,14 @@ def test_direct_activation_refuses_recycled_route_identity(
 
     def runner(command, **kwargs):
         calls.append(command)
+        if command == ["epistaxis", "diaulos", "live", "--json"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(_payload(1)), "")
         return subprocess.CompletedProcess(command, 0, json.dumps(panes), "")
 
     client = EpistaxisDiaulosClient(
         runner=runner,
         snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
         wezterm_executable="wezterm",
     )
     candidate = parse_live_inventory(_payload(1))[0]
@@ -301,8 +316,66 @@ def test_direct_activation_refuses_recycled_route_identity(
     with pytest.raises(DiaulosActivationError, match=message):
         client.activate(candidate)
 
-    assert len(calls) == 1
-    assert calls[0][-3:] == ["list", "--format", "json"]
+    assert calls == [
+        ["epistaxis", "diaulos", "live", "--json"],
+        ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
+    ]
+
+
+def test_activation_refuses_same_pane_after_process_lineage_changes(tmp_path):
+    candidate = parse_live_inventory(_payload(1))[0]
+    replacement = _payload(1)
+    replacement["entries"][0]["thread_id"] = "replacement-thread"
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if command == ["epistaxis", "diaulos", "live", "--json"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(replacement), "")
+        raise AssertionError("WezTerm must not run after current lineage changes")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "live-diauloi.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+
+    with pytest.raises(DiaulosActivationError, match="process lineage changed"):
+        client.activate(candidate)
+
+    assert calls == [["epistaxis", "diaulos", "live", "--json"]]
+
+
+def test_fresh_strict_candidate_revalidates_before_wezterm_activation(tmp_path):
+    candidate = parse_live_inventory(_payload(1))[0]
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if command == ["epistaxis", "diaulos", "live", "--json"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(_payload(1)), "")
+        if command[-3:] == ["list", "--format", "json"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(_live_panes(1)), "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "live-diauloi.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+
+    receipt = client.activate(candidate)
+
+    assert calls == [
+        ["epistaxis", "diaulos", "live", "--json"],
+        ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
+        ["wezterm", "cli", "--no-auto-start", "activate-pane", "--pane-id", "10"],
+    ]
+    assert receipt["verification"] == (
+        "strict-current-lineage-and-direct-wezterm-pane-enumeration"
+    )
 
 
 def test_client_rejects_malformed_snapshot_and_refresh_output(tmp_path):
@@ -375,10 +448,12 @@ def test_activation_commit_cannot_be_dismissed_or_superseded(overlay_module):
 
 
 def test_activation_failure_restores_visible_interaction(overlay_module):
+    candidate = parse_live_inventory(_payload(1))[0]
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
         overlay_module.DiaulosSwitcherOverlay
     )
     overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([candidate])
     overlay._activation_generation = 4
     overlay._activation_in_flight = True
     overlay._activation_handle = "thing-0"
@@ -386,6 +461,7 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
     overlay._status_label = MagicMock()
     overlay._panel = MagicMock()
     overlay._keyboard_monitor_available = True
+    overlay._render_rows = MagicMock()
 
     overlay.activationFinished_({"generation": 4, "error": "route moved"})
 
@@ -397,6 +473,37 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
         overlay._search_field
     )
     overlay._status_label.setStringValue_.assert_called_once_with("route moved")
+    assert overlay._model.selected.actionable is False
+    assert overlay._model.selected.action_authority == "historical-snapshot-only"
+    overlay._render_rows.assert_called_once_with()
+
+
+def test_activation_failure_blocks_second_worker(overlay_module, monkeypatch):
+    candidate = parse_live_inventory(_payload(1))[0]
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([candidate])
+    overlay._activation_generation = 4
+    overlay._activation_in_flight = True
+    overlay._activation_handle = "thing-0"
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._keyboard_monitor_available = True
+    overlay._render_rows = MagicMock()
+    thread_factory = MagicMock()
+    monkeypatch.setattr(overlay_module.threading, "Thread", thread_factory)
+
+    overlay.activationFinished_({"generation": 4, "error": "route moved"})
+    overlay.activate_selected()
+
+    thread_factory.assert_not_called()
+    assert overlay._activation_in_flight is False
+    assert "Historical observation" in (
+        overlay._status_label.setStringValue_.call_args.args[0]
+    )
 
 
 @pytest.mark.parametrize(
@@ -602,8 +709,10 @@ def test_show_retains_prior_inventory_while_refreshing(overlay_module, monkeypat
     overlay.show()
 
     assert overlay.visible is True
-    assert overlay._model.selected == old_candidate
-    assert overlay._model.all_candidates == [old_candidate]
+    assert overlay._model.selected.handle == old_candidate.handle
+    assert overlay._model.selected.pane_id == old_candidate.pane_id
+    assert overlay._model.selected.actionable is False
+    assert overlay._model.selected.action_authority == "historical-snapshot-only"
     overlay._search_field.setStringValue_.assert_called_once_with("")
     overlay._search_field.setEnabled_.assert_called_once_with(True)
     thread.start.assert_called_once_with()
@@ -662,8 +771,10 @@ def test_inventory_refresh_failure_retains_prior_inventory(overlay_module):
     overlay.inventoryLoaded_({"generation": 7, "error": "inventory unavailable"})
 
     assert overlay._load_in_flight is False
-    assert overlay._model.all_candidates == [old_candidate]
-    overlay._render_rows.assert_not_called()
+    assert [row.handle for row in overlay._model.all_candidates] == [
+        old_candidate.handle
+    ]
+    assert all(row.actionable is False for row in overlay._model.all_candidates)
     assert "inventory unavailable" in (
         overlay._status_label.setStringValue_.call_args.args[0]
     )
@@ -733,9 +844,80 @@ def test_cached_inventory_keeps_refresh_in_flight_and_is_immediately_filterable(
 
     assert overlay._load_in_flight is True
     assert [row.handle for row in overlay._model.filtered] == ["thing-1"]
-    assert "Snapshot observation" in (
+    assert all(row.actionable is False for row in overlay._model.all_candidates)
+    assert "Historical observation" in (
         overlay._status_label.setStringValue_.call_args.args[0]
     )
+
+
+def test_historical_candidate_cannot_start_activation_worker(
+    overlay_module,
+    monkeypatch,
+):
+    candidate = parse_live_inventory(_payload(1), actionable=False)[0]
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([candidate])
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._keyboard_monitor_available = True
+    thread_factory = MagicMock()
+    monkeypatch.setattr(overlay_module.threading, "Thread", thread_factory)
+
+    overlay.activate_selected()
+
+    thread_factory.assert_not_called()
+    assert overlay._activation_in_flight is False
+    assert "Historical observation" in (
+        overlay._status_label.setStringValue_.call_args.args[0]
+    )
+
+
+def test_load_worker_logs_refresh_failure(overlay_module, caplog):
+    class FailingClient:
+        def load(self):
+            return []
+
+        def refresh(self):
+            raise overlay_module.DiaulosInventoryError("live route unavailable")
+
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay._client = FailingClient()
+    overlay.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
+
+    with caplog.at_level("ERROR", logger="spoke.diaulos_switcher_overlay"):
+        overlay._load_worker(12)
+
+    assert "Diaulos inventory refresh failed" in caplog.text
+    assert "live route unavailable" in caplog.text
+
+
+def test_activation_worker_logs_selected_route_failure(overlay_module, caplog):
+    candidate = parse_live_inventory(_payload(1))[0]
+
+    class FailingClient:
+        def activate(self, selected):
+            raise overlay_module.DiaulosActivationError("process lineage changed")
+
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay._client = FailingClient()
+    overlay.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
+
+    with caplog.at_level("ERROR", logger="spoke.diaulos_switcher_overlay"):
+        overlay._activation_worker(6, candidate)
+
+    assert "Diaulos activation failed" in caplog.text
+    assert "handle=thing-0" in caplog.text
+    assert "pane=10" in caplog.text
+    assert "process lineage changed" in caplog.text
 
 
 def test_inventory_refresh_completed_while_hidden_updates_cached_inventory(
