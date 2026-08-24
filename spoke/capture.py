@@ -47,16 +47,16 @@ _SILERO_VAD_JIT_PATHS = [
 ]
 
 
-def _vad_enabled() -> bool:
-    """Whether Silero VAD may run at all.
+def vad_enabled() -> bool:
+    """Whether voice-activity decisions and segmentation may run at all.
 
     Silero inference currently runs inline on the PortAudio callback, which
     must return within its realtime deadline. When the box is under contention
     the callback overruns, buffers are dropped or coalesced, and the
     chunk-counting VAD state machine desynchronizes from wall-clock audio —
     producing mis-sliced segments and incoherent transcripts. This switch
-    makes VAD falsifiable without a rebuild; capture falls back to the RMS
-    path and raw full-buffer audio remains authoritative either way.
+    makes VAD falsifiable without a rebuild. Explicitly disabling VAD also
+    disables the RMS fallback and silence-bounded segmentation.
     """
     raw = os.environ.get("SPOKE_VAD_ENABLED")
     if raw is None:
@@ -66,10 +66,10 @@ def _vad_enabled() -> bool:
 
 def _load_silero_vad():
     """Load Silero VAD JIT model. Returns (model, sample_rate_tensor) or (None, None)."""
-    if not _vad_enabled():
+    if not vad_enabled():
         logger.warning(
-            "Silero VAD disabled via SPOKE_VAD_ENABLED — using RMS fallback; "
-            "raw full-buffer audio remains authoritative"
+            "VAD disabled via SPOKE_VAD_ENABLED — Silero and RMS decisions "
+            "are both disabled"
         )
         return None, None
 
@@ -150,10 +150,10 @@ class AudioCapture:
         self._grace_chunks_remaining: int = 0
 
         # Silero VAD model (loaded once, reused across recordings)
+        self._vad_enabled = vad_enabled()
         self._silero_model, self._silero_sr = _load_silero_vad()
         self._torch = None
         self._silero_warned = False
-        self._vad_enabled = self._silero_model is not None
         if self._silero_model is not None:
             import torch
             self._torch = torch
@@ -323,8 +323,8 @@ class AudioCapture:
         self._read_cursor = 0
         self._stream_closing = False
         self._amplitude_cb = amplitude_callback
-        self._segment_cb = segment_callback
-        self._vad_cb = vad_state_callback
+        self._segment_cb = segment_callback if self._vad_enabled else None
+        self._vad_cb = vad_state_callback if self._vad_enabled else None
         
         # Reset VAD state
         self._is_speech = False
@@ -596,7 +596,9 @@ class AudioCapture:
             if self._stream_closing:
                 return
 
-            if self._segment_cb is not None or self._vad_cb is not None:
+            if self._vad_enabled and (
+                self._segment_cb is not None or self._vad_cb is not None
+            ):
                 # Grace period: suppress silence transitions but do NOT force speech.
                 # Silero still decides — grace only prevents premature silence-idle
                 # transitions during the first few seconds of recording.

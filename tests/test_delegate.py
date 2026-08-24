@@ -7203,6 +7203,31 @@ class TestSegmentAcceleratedTranscription:
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "full buffer text"
 
+    def test_vad_disabled_uses_full_buffer_even_with_cached_segments(
+        self, main_module, monkeypatch
+    ):
+        """VAD-off finalization must decode the stopped raw buffer exactly once."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
+
+        acc = main_module.SegmentAccumulator()
+        segment_client = MagicMock()
+        segment_client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", segment_client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+        d._pre_stop_tail_wav = b"tail_wav"
+        d._pre_stop_segment_count = acc.count
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "full buffer text"
+
     def test_contention_mode_does_not_wait_for_preview_wind_down(
         self, main_module, monkeypatch
     ):
@@ -7516,6 +7541,20 @@ class TestSegmentAcceleratedTranscription:
         """_on_hold_start should keep local capture raw-first and VAD-free."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
+
+    def test_hold_start_no_segment_callback_when_vad_disabled(
+        self, main_module, monkeypatch
+    ):
+        """Remote transcription must stay raw-first when VAD is explicitly off."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
 
         d._on_hold_start()
 
