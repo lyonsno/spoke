@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -213,6 +214,63 @@ def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
     assert len(candidates) == 4
     assert json.loads(snapshot.read_text()) == payload
     assert not list(tmp_path.glob(".live-diauloi.json.*"))
+
+
+def test_refresh_drops_inherited_wezterm_socket_without_castrating_environment(
+    tmp_path,
+    monkeypatch,
+):
+    snapshot = tmp_path / "live-diauloi.json"
+    payload = _payload(1)
+    observed_environments: list[dict[str, str]] = []
+    monkeypatch.setenv("WEZTERM_UNIX_SOCKET", "/tmp/dead-gui-sock")
+    monkeypatch.setenv("SPOKE_SUBPROCESS_SENTINEL", "preserved")
+
+    def runner(command, **kwargs):
+        observed_environments.append(dict(kwargs.get("env", os.environ)))
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=snapshot,
+        epistaxis_executable="epistaxis",
+    ).refresh()
+
+    assert len(observed_environments) == 1
+    assert "WEZTERM_UNIX_SOCKET" not in observed_environments[0]
+    assert observed_environments[0]["SPOKE_SUBPROCESS_SENTINEL"] == "preserved"
+
+
+def test_activation_drops_inherited_wezterm_socket_from_both_cli_calls(
+    tmp_path,
+    monkeypatch,
+):
+    observed_environments: list[dict[str, str]] = []
+    monkeypatch.setenv("WEZTERM_UNIX_SOCKET", "/tmp/dead-gui-sock")
+
+    def runner(command, **kwargs):
+        observed_environments.append(dict(kwargs.get("env", os.environ)))
+        if command[-3:] == ["list", "--format", "json"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(_live_panes()),
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        wezterm_executable="wezterm",
+    )
+    client.activate(parse_live_inventory(_payload(1))[0])
+
+    assert len(observed_environments) == 2
+    assert all(
+        "WEZTERM_UNIX_SOCKET" not in environment
+        for environment in observed_environments
+    )
 
 
 def test_refresh_failure_preserves_exact_previous_snapshot(tmp_path):

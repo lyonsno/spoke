@@ -305,12 +305,15 @@ class EpistaxisDiaulosClient:
         command: list[str],
         error: type[DiaulosInventoryError] | type[DiaulosActivationError],
     ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment.pop("WEZTERM_UNIX_SOCKET", None)
         try:
             return self._runner(
                 command,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
+                env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise error(f"command failed before a receipt: {exc}") from exc
