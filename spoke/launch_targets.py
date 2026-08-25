@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import MutableMapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,52 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
             f"Selected Spoke launch target {selected!r} is unavailable: {target_path}"
         )
     return target
+
+
+def apply_selected_launch_target_env(
+    current_checkout: Path,
+    path: Path | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> dict:
+    """Make a managed process conform to its selected target environment."""
+    process_env = os.environ if environ is None else environ
+    process_target_id = process_env.get("SPOKE_LAUNCH_TARGET_ID", "").strip()
+    receipt = {
+        "status": "unmanaged",
+        "launch_target_id": process_target_id or None,
+        "target_env_keys": [],
+        "repaired_env_keys": [],
+    }
+    if not process_target_id:
+        return receipt
+
+    target = require_selected_launch_target(path)
+    if process_target_id != target["id"]:
+        raise LaunchTargetUnavailable(
+            f"Spoke process target {process_target_id!r} does not match selected "
+            f"target {target['id']!r}"
+        )
+
+    process_checkout = current_checkout.expanduser().resolve()
+    target_checkout = target["path"].resolve()
+    if process_checkout != target_checkout:
+        raise LaunchTargetUnavailable(
+            f"Spoke process checkout {process_checkout} does not match selected "
+            f"target {target['id']!r} at {target_checkout}"
+        )
+
+    target_env = target.get("env", {})
+    target_env_keys = sorted(target_env)
+    repaired_env_keys = sorted(
+        key for key, value in target_env.items() if process_env.get(key) != value
+    )
+    process_env.update(target_env)
+    return {
+        "status": "repaired" if repaired_env_keys else "conformant",
+        "launch_target_id": target["id"],
+        "target_env_keys": target_env_keys,
+        "repaired_env_keys": repaired_env_keys,
+    }
 
 
 def current_launch_target(

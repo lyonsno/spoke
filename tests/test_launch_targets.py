@@ -172,6 +172,172 @@ def test_require_selected_launch_target_preserves_valid_absolute_route(tmp_path)
     }
 
 
+def test_apply_selected_launch_target_env_repairs_missing_launcher_overrides(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "label": "Literal VAD-Off Recovery",
+                        "path": str(checkout),
+                        "env": {
+                            "SPOKE_RETINA_LASSO_AUTO_WITNESS": "0",
+                            "SPOKE_VAD_ENABLED": "0",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    process_env = {
+        "SPOKE_LAUNCH_TARGET_ID": "reviewed",
+        "SPOKE_VAD_ENABLED": "1",
+    }
+
+    apply_runtime_env = getattr(
+        launch_targets,
+        "apply_selected_launch_target_env",
+        None,
+    )
+    assert callable(apply_runtime_env), "runtime needs selected-target env conformance"
+
+    receipt = apply_runtime_env(checkout, registry_path, process_env)
+
+    assert process_env["SPOKE_VAD_ENABLED"] == "0"
+    assert process_env["SPOKE_RETINA_LASSO_AUTO_WITNESS"] == "0"
+    assert receipt == {
+        "status": "repaired",
+        "launch_target_id": "reviewed",
+        "target_env_keys": [
+            "SPOKE_RETINA_LASSO_AUTO_WITNESS",
+            "SPOKE_VAD_ENABLED",
+        ],
+        "repaired_env_keys": [
+            "SPOKE_RETINA_LASSO_AUTO_WITNESS",
+            "SPOKE_VAD_ENABLED",
+        ],
+    }
+
+
+def test_apply_selected_launch_target_env_reports_already_conformant(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "path": str(checkout),
+                        "env": {"SPOKE_VAD_ENABLED": "0"},
+                    }
+                ],
+            }
+        )
+    )
+    process_env = {
+        "SPOKE_LAUNCH_TARGET_ID": "reviewed",
+        "SPOKE_VAD_ENABLED": "0",
+    }
+
+    receipt = launch_targets.apply_selected_launch_target_env(
+        checkout,
+        registry_path,
+        process_env,
+    )
+
+    assert receipt["status"] == "conformant"
+    assert receipt["target_env_keys"] == ["SPOKE_VAD_ENABLED"]
+    assert receipt["repaired_env_keys"] == []
+
+
+def test_apply_selected_launch_target_env_rejects_wrong_process_identity(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "path": str(checkout),
+                        "env": {"SPOKE_VAD_ENABLED": "0"},
+                    }
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(
+        launch_targets.LaunchTargetUnavailable,
+        match="process target.*other.*selected target.*reviewed",
+    ):
+        launch_targets.apply_selected_launch_target_env(
+            checkout,
+            registry_path,
+            {"SPOKE_LAUNCH_TARGET_ID": "other"},
+        )
+
+
+def test_apply_selected_launch_target_env_rejects_wrong_checkout(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    other_checkout = tmp_path / "other"
+    other_checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "path": str(checkout),
+                        "env": {"SPOKE_VAD_ENABLED": "0"},
+                    }
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(
+        launch_targets.LaunchTargetUnavailable,
+        match="process checkout.*does not match.*reviewed",
+    ):
+        launch_targets.apply_selected_launch_target_env(
+            other_checkout,
+            registry_path,
+            {"SPOKE_LAUNCH_TARGET_ID": "reviewed"},
+        )
+
+
+def test_apply_selected_launch_target_env_leaves_manual_process_unmanaged(tmp_path):
+    process_env = {"UNCHANGED": "yes"}
+
+    receipt = launch_targets.apply_selected_launch_target_env(
+        tmp_path,
+        tmp_path / "missing.json",
+        process_env,
+    )
+
+    assert process_env == {"UNCHANGED": "yes"}
+    assert receipt == {
+        "status": "unmanaged",
+        "launch_target_id": None,
+        "target_env_keys": [],
+        "repaired_env_keys": [],
+    }
+
+
 def test_save_selected_launch_target_updates_registry_only(tmp_path, monkeypatch):
     registry_path = tmp_path / "launch_targets.json"
     main_target_file = tmp_path / "main-target"

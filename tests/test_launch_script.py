@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,10 @@ def _main_script_text() -> str:
 def _target_script_text() -> str:
     script = Path(__file__).resolve().parent.parent / "scripts" / "launch-target.sh"
     return script.read_text()
+
+
+def _selected_script_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "scripts" / "launch-selected.sh"
 
 
 def _launcher_python_text() -> str:
@@ -60,6 +65,7 @@ def _execute_launcher_python(
     *,
     registry_text: str | None,
     log_failure: bool = False,
+    launcher_env: dict[str, str] | None = None,
 ):
     registry = tmp_path / "launch_targets.json"
     if registry_text is not None:
@@ -94,6 +100,10 @@ def _execute_launcher_python(
     monkeypatch.setenv("TARGETS_FILE", str(registry))
     monkeypatch.setenv("LOG_FILE", str(log_file))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SPOKE_EXPECTED_LAUNCH_TARGET_ID", raising=False)
+    monkeypatch.delenv("SPOKE_EXPECTED_LAUNCH_TARGET_PATH", raising=False)
+    for key, value in (launcher_env or {}).items():
+        monkeypatch.setenv(key, value)
 
     outcome = 0
     try:
@@ -329,6 +339,223 @@ def test_launcher_valid_route_starts_one_spoke_with_target_authority(tmp_path, m
     assert app_calls[0][1]["env"]["ROUTE"] == "reviewed"
     assert app_calls[0][1]["env"]["SPOKE_LAUNCH_TARGET_ID"] == "reviewed"
     assert not any(_is_retina_child(command) for command, _kwargs in popen_calls)
+
+
+def test_launcher_refuses_target_changed_after_stable_dispatch(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    python_exe = checkout / ".venv/bin/python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("stub")
+    registry_text = json.dumps(
+        {
+            "selected": "reviewed",
+            "targets": [
+                {
+                    "id": "reviewed",
+                    "path": str(checkout),
+                    "env": {"SPOKE_VAD_ENABLED": "0"},
+                }
+            ],
+        }
+    )
+
+    outcome, run_calls, popen_calls = _execute_launcher_python(
+        tmp_path,
+        monkeypatch,
+        registry_text=registry_text,
+        launcher_env={
+            "SPOKE_EXPECTED_LAUNCH_TARGET_ID": "superseded",
+            "SPOKE_EXPECTED_LAUNCH_TARGET_PATH": str(tmp_path / "superseded"),
+        },
+    )
+
+    assert outcome == 1
+    assert any(call[0][0] == "osascript" for call in run_calls)
+    assert not any(_is_spoke_child(command) for command, _kwargs in popen_calls)
+
+
+def test_runtime_applies_selected_target_env_before_capture_import():
+    source = (Path(__file__).resolve().parent.parent / "spoke" / "__main__.py").read_text()
+    apply_idx = source.find("apply_selected_launch_target_env(")
+    capture_idx = source.find("from .capture import AudioCapture, vad_enabled")
+
+    assert apply_idx != -1, "runtime must reconcile selected-target env"
+    assert capture_idx != -1, "capture import not found"
+    assert apply_idx < capture_idx, (
+        "selected-target env must be effective before capture imports and initializes VAD"
+    )
+
+
+def test_launch_main_uses_caller_selected_registry_path():
+    source = _main_script_text()
+
+    assert (
+        'TARGETS_FILE="${SPOKE_LAUNCH_TARGETS_PATH:-${HOME}/.config/spoke/launch_targets.json}"'
+        in source
+    )
+
+
+def test_selected_launcher_dispatches_to_selected_target_script(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    target = tmp_path / "selected-target"
+    scripts = target / "scripts"
+    scripts.mkdir(parents=True)
+    receipt = tmp_path / "selected-launch-receipt.json"
+    selected_launcher = scripts / "launch-main.sh"
+    selected_launcher.write_text(
+        "#!/bin/bash\n"
+        "python3 - <<'PY'\n"
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['SPOKE_SELECTED_LAUNCH_TEST_RECEIPT']).write_text(json.dumps({\n"
+        "    'expected_id': os.environ.get('SPOKE_EXPECTED_LAUNCH_TARGET_ID'),\n"
+        "    'expected_path': os.environ.get('SPOKE_EXPECTED_LAUNCH_TARGET_PATH'),\n"
+        "}))\n"
+        "PY\n"
+    )
+    selected_launcher.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "label": "Reviewed",
+                        "path": str(target),
+                    }
+                ],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "SPOKE_LAUNCH_TARGETS_PATH": str(registry),
+            "SPOKE_SELECTED_LAUNCH_TEST_RECEIPT": str(receipt),
+        }
+    )
+
+    result = subprocess.run(
+        [str(_selected_script_path())],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(receipt.read_text()) == {
+        "expected_id": "reviewed",
+        "expected_path": str(target),
+    }
+
+
+def test_selected_launcher_rejects_duplicate_target_without_dispatch(tmp_path):
+    target = tmp_path / "selected-target"
+    scripts = target / "scripts"
+    scripts.mkdir(parents=True)
+    selected_launcher = scripts / "launch-main.sh"
+    selected_launcher.write_text("#!/bin/bash\nexit 99\n")
+    selected_launcher.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "duplicate",
+                "targets": [
+                    {"id": "duplicate", "path": str(target)},
+                    {"id": "duplicate", "path": str(target)},
+                ],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env["SPOKE_LAUNCH_TARGETS_PATH"] = str(registry)
+
+    result = subprocess.run(
+        [str(_selected_script_path())],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "exactly once" in result.stderr
+
+
+def test_selected_launcher_chain_delivers_effective_env_to_actual_child(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    home.mkdir()
+    receipt = tmp_path / "actual-child-env.json"
+    fake_python = tmp_path / "record-child-env"
+    fake_python.write_text(
+        "#!/bin/bash\n"
+        "/usr/bin/python3 - \"$@\" <<'PY'\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['SPOKE_ACTUAL_CHILD_RECEIPT']).write_text(json.dumps({\n"
+        "    'argv': sys.argv[1:],\n"
+        "    'cwd': os.getcwd(),\n"
+        "    'launch_target_id': os.environ.get('SPOKE_LAUNCH_TARGET_ID'),\n"
+        "    'vad_enabled': os.environ.get('SPOKE_VAD_ENABLED'),\n"
+        "}))\n"
+        "PY\n"
+    )
+    fake_python.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "label": "Literal VAD-Off Recovery",
+                        "path": str(repo_root),
+                        "env": {
+                            "SPOKE_RETINA_LASSO_AUTO_WITNESS": "0",
+                            "SPOKE_VAD_ENABLED": "0",
+                            "SPOKE_VENV_PYTHON": str(fake_python),
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "SPOKE_ACTUAL_CHILD_RECEIPT": str(receipt),
+            "SPOKE_LAUNCH_TARGETS_PATH": str(registry),
+        }
+    )
+
+    result = subprocess.run(
+        [str(_selected_script_path())],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    deadline = time.monotonic() + 3.0
+    while not receipt.is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert result.returncode == 0, result.stderr
+    assert receipt.is_file(), "launcher child did not publish its effective environment"
+    assert json.loads(receipt.read_text()) == {
+        "argv": ["-m", "spoke"],
+        "cwd": str(repo_root),
+        "launch_target_id": "reviewed",
+        "vad_enabled": "0",
+    }
 
 
 # ── Save selected target ────────────────────────────────────────

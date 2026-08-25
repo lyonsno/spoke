@@ -9,7 +9,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HELPER_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGETS_FILE="${HOME}/.config/spoke/launch_targets.json"
+TARGETS_FILE="${SPOKE_LAUNCH_TARGETS_PATH:-${HOME}/.config/spoke/launch_targets.json}"
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-main-launch.log"
 
@@ -335,6 +335,21 @@ log_file = Path(os.environ["LOG_FILE"])
 
 try:
     target = require_selected_launch_target(targets_file)
+    expected_target_id = os.environ.get("SPOKE_EXPECTED_LAUNCH_TARGET_ID", "").strip()
+    expected_target_path = os.environ.get("SPOKE_EXPECTED_LAUNCH_TARGET_PATH", "").strip()
+    if bool(expected_target_id) != bool(expected_target_path):
+        raise LaunchTargetUnavailable(
+            "Stable launcher handoff must provide both expected target id and path"
+        )
+    if expected_target_id and (
+        target["id"] != expected_target_id
+        or target["path"].resolve() != Path(expected_target_path).expanduser().resolve()
+    ):
+        raise LaunchTargetUnavailable(
+            "Selected Spoke launch target changed during stable launcher handoff: "
+            f"expected {expected_target_id!r} at {expected_target_path}, got "
+            f"{target['id']!r} at {target['path']}"
+        )
 except LaunchTargetUnavailable as exc:
     _report_launch_refusal(exc, log_file)
     raise SystemExit(1)

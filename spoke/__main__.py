@@ -171,6 +171,10 @@ def _run_modal_with_paste(alert) -> int:
     finally:
         NSEvent.removeMonitor_(monitor)
 
+from .launch_targets import apply_selected_launch_target_env
+
+_RUNTIME_LAUNCH_ENV_RECEIPT = apply_selected_launch_target_env(Path.cwd())
+
 from .capture import AudioCapture, vad_enabled
 from .audio_spool import AudioSpool
 from .asr_recovery import WhisperKitRecoveryClient
@@ -8076,7 +8080,20 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
     _install_crash_diagnostics()
-    _record_runtime_phase("process.start")
+    repaired_env_keys = _RUNTIME_LAUNCH_ENV_RECEIPT["repaired_env_keys"]
+    if repaired_env_keys:
+        logger.warning(
+            "Repaired missing or stale selected-target env before runtime imports: %s",
+            repaired_env_keys,
+        )
+    _record_runtime_phase(
+        "process.start",
+        launch_env_status=_RUNTIME_LAUNCH_ENV_RECEIPT["status"],
+        launch_target_env_keys=_RUNTIME_LAUNCH_ENV_RECEIPT["target_env_keys"],
+        launch_target_env_repaired_keys=repaired_env_keys,
+        vad_enabled=vad_enabled(),
+        vad_env=os.environ.get("SPOKE_VAD_ENABLED"),
+    )
 
     zombie_sweep()
     _acquire_instance_lock()
