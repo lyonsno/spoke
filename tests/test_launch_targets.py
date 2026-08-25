@@ -198,6 +198,28 @@ def test_require_selected_launch_target_rejects_protected_authority_env(tmp_path
         launch_targets.require_selected_launch_target(registry_path)
 
 
+def test_require_selected_launch_target_normalizes_path_resolution_failure(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    loop = tmp_path / "selected-loop"
+    loop.symlink_to(loop)
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "selected",
+                "targets": [{"id": "selected", "path": str(loop)}],
+            }
+        )
+    )
+
+    with pytest.raises(
+        launch_targets.LaunchTargetUnavailable,
+        match="selected.*path could not be resolved",
+    ) as raised:
+        launch_targets.require_selected_launch_target(registry_path)
+
+    assert raised.value.selected_target_id == "selected"
+
+
 def test_apply_selected_launch_target_env_repairs_missing_launcher_overrides(tmp_path):
     registry_path = tmp_path / "launch_targets.json"
     checkout = tmp_path / "checkout"

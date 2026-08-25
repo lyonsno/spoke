@@ -923,12 +923,136 @@ def test_named_target_duplicate_registry_preserves_live_predecessor(tmp_path):
         assert row["status"] == "refused"
         assert row["phase"] == "named_target_predelegation"
         assert row["requested_target_id"] == "selected"
+        assert row["selected_target_id"] == "selected"
         assert row["registry_path"] == str(registry.resolve())
         assert "duplicated" in row["reason"]
+        assert (refusal_log.stat().st_mode & 0o777) == 0o600
     finally:
         if predecessor.poll() is None:
             predecessor.terminate()
         predecessor.wait(timeout=3)
+
+
+def test_named_target_path_resolution_failure_is_durable(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    logs = home / "Library/Logs"
+    logs.mkdir(parents=True)
+    loop = tmp_path / "selected-loop"
+    loop.symlink_to(loop)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "selected",
+                "targets": [{"id": "selected", "path": str(loop)}],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+
+    result = subprocess.run(
+        [str(repo_root / "scripts/launch-target.sh"), "selected"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    row = json.loads((logs / "spoke-launch-target-refusals.jsonl").read_text())
+    assert row["selected_target_id"] == "selected"
+    assert row["expected_target_path"] is None
+    assert "path could not be resolved" in row["reason"]
+
+
+def test_named_target_missing_launcher_records_complete_route_without_env_values(
+    tmp_path,
+):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    logs = home / "Library/Logs"
+    logs.mkdir(parents=True)
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    secret_marker = "DO_NOT_LEAK_TARGET_ENV_VALUE"
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "selected",
+                "targets": [
+                    {
+                        "id": "selected",
+                        "path": str(selected),
+                        "env": {"UNRELATED_SECRET": secret_marker},
+                    }
+                ],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+
+    result = subprocess.run(
+        [str(repo_root / "scripts/launch-target.sh"), "selected"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    refusal_log = logs / "spoke-launch-target-refusals.jsonl"
+    rendered = refusal_log.read_text()
+    row = json.loads(rendered)
+    assert row["requested_target_id"] == "selected"
+    assert row["selected_target_id"] == "selected"
+    assert row["registry_path"] == str(registry.resolve())
+    assert row["expected_target_path"] == str(selected.resolve())
+    assert "launcher is unavailable" in row["reason"]
+    assert secret_marker not in rendered
+    assert (refusal_log.stat().st_mode & 0o777) == 0o600
+
+
+def test_named_target_refusal_log_write_failure_still_returns_nonzero(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "Library").write_text("blocks log directory")
+    selected = tmp_path / "selected"
+    launcher = selected / "scripts/launch-main.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/bash\nexit 99\n")
+    launcher.chmod(0o755)
+    other = tmp_path / "other"
+    other.mkdir()
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "selected",
+                "targets": [
+                    {"id": "selected", "path": str(selected)},
+                    {"id": "other", "path": str(other)},
+                ],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+
+    result = subprocess.run(
+        [str(repo_root / "scripts/launch-target.sh"), "other"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "not the selected target" in result.stderr
 
 
 def test_named_target_selection_change_before_child_admission_preserves_predecessor(

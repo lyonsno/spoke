@@ -79,9 +79,10 @@ try:
     registry_path = raw_registry_path.expanduser().resolve()
     target = require_selected_launch_target(registry_path)
 except (LaunchTargetUnavailable, OSError, RuntimeError) as exc:
+    selected_target_id = getattr(exc, "selected_target_id", None)
     refuse(str(exc))
 selected_target_id = target["id"]
-expected_target_path = str(target["path"].resolve())
+expected_target_path = str(target["path"])
 if target["id"] != target_id:
     refuse(
         f"requested target {target_id!r} is not the selected target {target['id']!r}"

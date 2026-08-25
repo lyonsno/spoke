@@ -26,6 +26,10 @@ _PROTECTED_LAUNCH_ENV_KEYS = frozenset(
 class LaunchTargetUnavailable(RuntimeError):
     """The launcher's selected target cannot be started as configured."""
 
+    def __init__(self, message: str, *, selected_target_id: str | None = None):
+        super().__init__(message)
+        self.selected_target_id = selected_target_id
+
 
 def launch_targets_path() -> Path:
     override = os.environ.get("SPOKE_LAUNCH_TARGETS_PATH")
@@ -119,7 +123,10 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
 
     raw_targets = payload.get("targets")
     if not isinstance(raw_targets, list):
-        raise LaunchTargetUnavailable("Spoke launch target registry targets must be a list")
+        raise LaunchTargetUnavailable(
+            "Spoke launch target registry targets must be a list",
+            selected_target_id=selected,
+        )
 
     matches = [
         target
@@ -128,24 +135,48 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
     ]
     if not matches:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} is absent from the registry"
+            f"Selected Spoke launch target {selected!r} is absent from the registry",
+            selected_target_id=selected,
         )
     if len(matches) != 1:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} is duplicated in the registry"
+            f"Selected Spoke launch target {selected!r} is duplicated in the registry",
+            selected_target_id=selected,
         )
 
     raw_target = matches[0]
     raw_path = raw_target.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} path must be a nonblank string"
+            f"Selected Spoke launch target {selected!r} path must be a nonblank string",
+            selected_target_id=selected,
         )
-    target_path = Path(raw_path).expanduser()
+    try:
+        target_path = Path(raw_path).expanduser()
+    except (OSError, RuntimeError) as exc:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} path could not be resolved: "
+            f"{raw_path} ({exc})",
+            selected_target_id=selected,
+        ) from exc
     if not target_path.is_absolute():
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} path must be absolute: {raw_path}"
+            f"Selected Spoke launch target {selected!r} path must be absolute: {raw_path}",
+            selected_target_id=selected,
         )
+    try:
+        target_path = target_path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}",
+            selected_target_id=selected,
+        ) from exc
+    except (OSError, RuntimeError) as exc:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} path could not be resolved: "
+            f"{raw_path} ({exc})",
+            selected_target_id=selected,
+        ) from exc
 
     raw_label = raw_target.get("label", selected)
     if (
@@ -156,7 +187,8 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
     ):
         raise LaunchTargetUnavailable(
             f"Selected Spoke launch target {selected!r} label must be a nonblank "
-            "printable string without surrounding whitespace"
+            "printable string without surrounding whitespace",
+            selected_target_id=selected,
         )
 
     target = {
@@ -169,7 +201,8 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
         raw_env = raw_target["env"]
         if not isinstance(raw_env, dict):
             raise LaunchTargetUnavailable(
-                f"Selected Spoke launch target {selected!r} env must be an object"
+                f"Selected Spoke launch target {selected!r} env must be an object",
+                selected_target_id=selected,
             )
         if any(
             not isinstance(key, str)
@@ -183,13 +216,15 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
         ):
             raise LaunchTargetUnavailable(
                 f"Selected Spoke launch target {selected!r} env must contain only "
-                "nonblank string keys and string values"
+                "nonblank string keys and string values",
+                selected_target_id=selected,
             )
         protected_keys = sorted(_PROTECTED_LAUNCH_ENV_KEYS.intersection(raw_env))
         if protected_keys:
             raise LaunchTargetUnavailable(
                 f"Selected Spoke launch target {selected!r} env cannot override "
-                f"protected launch authority keys: {protected_keys}"
+                f"protected launch authority keys: {protected_keys}",
+                selected_target_id=selected,
             )
         if raw_env:
             target["env"] = {
@@ -199,7 +234,8 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
 
     if not target["enabled"]:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}"
+            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}",
+            selected_target_id=selected,
         )
     return target
 
