@@ -19,6 +19,7 @@ export HELPER_REPO_ROOT TARGETS_FILE LOG_FILE
 
 /usr/bin/python3 - <<'PY'
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -158,6 +159,19 @@ def _wait_for_launch_admission(
     }
     _write_launch_admission(path, payload)
     raise LaunchTargetUnavailable(payload["reason"])
+
+
+def _launch_admission_timeout(child_env: dict[str, str]) -> float:
+    default_timeout = 60.0
+    try:
+        timeout = float(
+            child_env.get("SPOKE_LAUNCH_ADMISSION_TIMEOUT_SECONDS", str(default_timeout))
+        )
+    except ValueError:
+        return default_timeout
+    if not math.isfinite(timeout) or timeout <= 0:
+        return default_timeout
+    return timeout
 
 
 def _env_flag(child_env: dict[str, str], name: str) -> bool:
@@ -524,14 +538,7 @@ with log_file.open("a", encoding="utf-8") as log:
             start_new_session=True,
             close_fds=True,
         )
-        try:
-            admission_timeout = float(
-                child_env.get("SPOKE_LAUNCH_ADMISSION_TIMEOUT_SECONDS", "60")
-            )
-        except ValueError:
-            admission_timeout = 60.0
-        if admission_timeout <= 0:
-            admission_timeout = 60.0
+        admission_timeout = _launch_admission_timeout(child_env)
         admission = _wait_for_launch_admission(
             process,
             path=admission_path,

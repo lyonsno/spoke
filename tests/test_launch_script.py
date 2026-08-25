@@ -7,6 +7,7 @@ verifies the old file-based launcher architecture is retired.
 import ast
 import importlib.util
 import json
+import math
 import os
 import subprocess
 import time
@@ -57,6 +58,19 @@ def _launcher_apply_env_file():
             exec(function_source, namespace)
             return namespace["_apply_env_file"], child_env
     raise AssertionError("launch-main.sh must define _apply_env_file")
+
+
+def _launcher_admission_timeout_parser():
+    source = _launcher_python_text()
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_launch_admission_timeout":
+            function_source = ast.get_source_segment(source, node)
+            assert function_source is not None
+            namespace = {"math": math}
+            exec(function_source, namespace)
+            return namespace["_launch_admission_timeout"]
+    raise AssertionError("launch-main.sh must define _launch_admission_timeout")
 
 
 def _execute_launcher_python(
@@ -734,6 +748,83 @@ def test_launcher_reports_child_pre_capture_refusal(tmp_path):
     assert json.loads(admission_receipts[0].read_text())["status"] == "refused"
 
 
+@pytest.mark.parametrize("raw", ["inf", "+inf", "-inf", "nan"])
+def test_launcher_admission_timeout_rejects_non_finite_values(raw):
+    parse_timeout = _launcher_admission_timeout_parser()
+
+    assert parse_timeout({"SPOKE_LAUNCH_ADMISSION_TIMEOUT_SECONDS": raw}) == 60.0
+
+
+def test_launcher_admission_timeout_preserves_arbitrary_finite_positive_value():
+    parse_timeout = _launcher_admission_timeout_parser()
+
+    assert parse_timeout({"SPOKE_LAUNCH_ADMISSION_TIMEOUT_SECONDS": "3600"}) == 3600.0
+
+
+def test_launcher_times_out_living_never_admitting_child_without_predecessor_loss(
+    tmp_path,
+):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    logs = home / "Library/Logs"
+    logs.mkdir(parents=True)
+    child_pid_path = tmp_path / "child.pid"
+    fake_python = tmp_path / "never-admit"
+    fake_python.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['SPOKE_NEVER_ADMIT_PID']).write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    fake_python.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "path": str(repo_root),
+                        "env": {
+                            "SPOKE_LAUNCH_ADMISSION_TIMEOUT_SECONDS": "1.0",
+                            "SPOKE_NEVER_ADMIT_PID": str(child_pid_path),
+                            "SPOKE_VENV_PYTHON": str(fake_python),
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    predecessor = subprocess.Popen(["/bin/sleep", "30"])
+    (logs / ".spoke.lock").write_text(str(predecessor.pid))
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+    try:
+        result = subprocess.run(
+            [str(_selected_script_path())],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert predecessor.poll() is None, "timeout killed the live predecessor"
+        child_pid = int(child_pid_path.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        receipts = list(logs.glob("spoke-launch-admission-*.json"))
+        assert len(receipts) == 1
+        payload = json.loads(receipts[0].read_text())
+        assert payload["status"] == "refused"
+        assert payload["phase"] == "admission_timeout"
+    finally:
+        if predecessor.poll() is None:
+            predecessor.terminate()
+        predecessor.wait(timeout=3)
+
+
 def test_named_target_refusal_preserves_live_predecessor(tmp_path):
     repo_root = Path(__file__).resolve().parent.parent
     home = tmp_path / "home"
@@ -776,6 +867,21 @@ def test_named_target_refusal_preserves_live_predecessor(tmp_path):
         )
         assert result.returncode != 0
         assert predecessor.poll() is None, "refusal killed the live predecessor"
+        refusal_log = logs / "spoke-launch-target-refusals.jsonl"
+        rows = [json.loads(line) for line in refusal_log.read_text().splitlines()]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["expected_target_path"] == str(selected.resolve())
+        assert row["phase"] == "named_target_predelegation"
+        assert row["reason"] == (
+            "requested target 'other' is not the selected target 'selected'"
+        )
+        assert row["registry_path"] == str(registry.resolve())
+        assert row["requested_target_id"] == "other"
+        assert row["selected_target_id"] == "selected"
+        assert row["status"] == "refused"
+        assert isinstance(row["launcher_pid"], int)
+        assert row["timestamp"]
     finally:
         if predecessor.poll() is None:
             predecessor.terminate()
@@ -812,6 +918,13 @@ def test_named_target_duplicate_registry_preserves_live_predecessor(tmp_path):
         assert result.returncode != 0
         assert "duplicated" in result.stderr
         assert predecessor.poll() is None, "malformed registry killed the predecessor"
+        refusal_log = logs / "spoke-launch-target-refusals.jsonl"
+        row = json.loads(refusal_log.read_text().splitlines()[-1])
+        assert row["status"] == "refused"
+        assert row["phase"] == "named_target_predelegation"
+        assert row["requested_target_id"] == "selected"
+        assert row["registry_path"] == str(registry.resolve())
+        assert "duplicated" in row["reason"]
     finally:
         if predecessor.poll() is None:
             predecessor.terminate()
