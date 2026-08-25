@@ -68,11 +68,13 @@ target_path = Path(raw_path).expanduser()
 if not target_path.is_absolute():
     refuse(f"selected target {selected!r} path must be absolute")
 target_path = target_path.resolve()
+registry_path = registry_path.resolve()
 launcher = target_path / "scripts" / "launch-main.sh"
 if not target_path.is_dir() or not launcher.is_file() or not os.access(launcher, os.X_OK):
     refuse(f"selected target {selected!r} launcher is unavailable: {launcher}")
 
 child_env = os.environ.copy()
+child_env["SPOKE_LAUNCH_TARGETS_PATH"] = str(registry_path)
 child_env["SPOKE_EXPECTED_LAUNCH_TARGET_ID"] = selected
 child_env["SPOKE_EXPECTED_LAUNCH_TARGET_PATH"] = str(target_path)
 os.execve(launcher, [str(launcher)], child_env)

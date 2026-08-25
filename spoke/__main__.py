@@ -171,9 +171,18 @@ def _run_modal_with_paste(alert) -> int:
     finally:
         NSEvent.removeMonitor_(monitor)
 
-from .launch_targets import apply_selected_launch_target_env
+from .launch_targets import apply_selected_launch_target_env, publish_launch_admission
 
-_RUNTIME_LAUNCH_ENV_RECEIPT = apply_selected_launch_target_env(Path.cwd())
+try:
+    _RUNTIME_LAUNCH_ENV_RECEIPT = apply_selected_launch_target_env(Path.cwd())
+except Exception as _launch_admission_error:
+    try:
+        publish_launch_admission("refused", error=_launch_admission_error)
+    except Exception:
+        pass
+    raise
+else:
+    publish_launch_admission("admitted", receipt=_RUNTIME_LAUNCH_ENV_RECEIPT)
 
 from .capture import AudioCapture, vad_enabled
 from .audio_spool import AudioSpool
@@ -5927,16 +5936,15 @@ class SpokeAppDelegate(NSObject):
             return False
         import subprocess
 
-        subprocess.Popen(
+        result = subprocess.run(
             ["/bin/bash", str(helper_path), target_id],
             cwd=helper_path.parent.parent,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+            check=False,
         )
-        return True
+        return result.returncode == 0
 
     def _apply_launch_target_selection(self, target_id: str) -> None:
         current_target = current_launch_target_id(self._current_checkout_root())
@@ -8089,6 +8097,7 @@ def main() -> None:
     _record_runtime_phase(
         "process.start",
         launch_env_status=_RUNTIME_LAUNCH_ENV_RECEIPT["status"],
+        launch_registry_path=_RUNTIME_LAUNCH_ENV_RECEIPT["registry_path"],
         launch_target_env_keys=_RUNTIME_LAUNCH_ENV_RECEIPT["target_env_keys"],
         launch_target_env_repaired_keys=repaired_env_keys,
         vad_enabled=vad_enabled(),

@@ -86,13 +86,31 @@ def _execute_launcher_python(
     class Process:
         pid = 4242
 
+        def poll(self):
+            return None
+
     def fake_run(args, *pargs, **kwargs):
         run_calls.append((list(args), kwargs))
         return Completed()
 
     def fake_popen(args, *pargs, **kwargs):
         popen_calls.append((list(args), kwargs))
-        return Process()
+        process = Process()
+        child_env = kwargs.get("env", {})
+        admission_path = child_env.get("SPOKE_LAUNCH_ADMISSION_PATH")
+        admission_token = child_env.get("SPOKE_LAUNCH_ADMISSION_TOKEN")
+        if _is_spoke_child(list(args)) and admission_path and admission_token:
+            Path(admission_path).write_text(
+                json.dumps(
+                    {
+                        "status": "admitted",
+                        "token": admission_token,
+                        "pid": process.pid,
+                        "registry_path": child_env.get("SPOKE_LAUNCH_TARGETS_PATH"),
+                    }
+                )
+            )
+        return process
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -386,6 +404,16 @@ def test_runtime_applies_selected_target_env_before_capture_import():
     )
 
 
+def test_runtime_publishes_launch_admission_before_capture_import():
+    source = (Path(__file__).resolve().parent.parent / "spoke" / "__main__.py").read_text()
+    publish_idx = source.find('publish_launch_admission("admitted"')
+    capture_idx = source.find("from .capture import AudioCapture, vad_enabled")
+
+    assert publish_idx != -1
+    assert capture_idx != -1
+    assert publish_idx < capture_idx
+
+
 def test_launch_main_uses_caller_selected_registry_path():
     source = _main_script_text()
 
@@ -505,6 +533,14 @@ def test_selected_launcher_chain_delivers_effective_env_to_actual_child(tmp_path
         "    'launch_target_id': os.environ.get('SPOKE_LAUNCH_TARGET_ID'),\n"
         "    'vad_enabled': os.environ.get('SPOKE_VAD_ENABLED'),\n"
         "}))\n"
+        "admission_path = os.environ.get('SPOKE_LAUNCH_ADMISSION_PATH')\n"
+        "if admission_path:\n"
+        "    Path(admission_path).write_text(json.dumps({\n"
+        "        'status': 'admitted',\n"
+        "        'token': os.environ['SPOKE_LAUNCH_ADMISSION_TOKEN'],\n"
+        "        'pid': os.getpid(),\n"
+        "        'registry_path': os.environ.get('SPOKE_LAUNCH_TARGETS_PATH'),\n"
+        "    }))\n"
         "PY\n"
     )
     fake_python.chmod(0o755)
@@ -556,6 +592,304 @@ def test_selected_launcher_chain_delivers_effective_env_to_actual_child(tmp_path
         "launch_target_id": "reviewed",
         "vad_enabled": "0",
     }
+
+
+def test_launcher_chain_protects_registry_authority_from_secrets_redirect(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    secrets = home / ".config/spoke/secrets.env"
+    secrets.parent.mkdir(parents=True)
+    receipt = tmp_path / "registry-authority.json"
+    fake_python = tmp_path / "record-runtime-authority"
+    fake_python.write_text(
+        "#!/bin/bash\n"
+        "/usr/bin/python3 - \"$@\" <<'PY'\n"
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "from spoke.launch_targets import apply_selected_launch_target_env\n"
+        "runtime = apply_selected_launch_target_env(Path.cwd())\n"
+        "Path(os.environ['SPOKE_ACTUAL_CHILD_RECEIPT']).write_text(json.dumps({\n"
+        "    'registry_path': runtime.get('registry_path'),\n"
+        "    'vad_enabled': os.environ.get('SPOKE_VAD_ENABLED'),\n"
+        "}))\n"
+        "admission_path = os.environ.get('SPOKE_LAUNCH_ADMISSION_PATH')\n"
+        "if admission_path:\n"
+        "    Path(admission_path).write_text(json.dumps({\n"
+        "        'status': 'admitted',\n"
+        "        'token': os.environ['SPOKE_LAUNCH_ADMISSION_TOKEN'],\n"
+        "        'pid': os.getpid(),\n"
+        "    }))\n"
+        "PY\n"
+    )
+    fake_python.chmod(0o755)
+    registry_a = tmp_path / "registry-a.json"
+    registry_b = tmp_path / "registry-b.json"
+    base_target = {
+        "id": "reviewed",
+        "label": "Reviewed",
+        "path": str(repo_root),
+    }
+    registry_a.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        **base_target,
+                        "env": {
+                            "SPOKE_VAD_ENABLED": "0",
+                            "SPOKE_VENV_PYTHON": str(fake_python),
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    registry_b.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [{**base_target, "env": {"SPOKE_VAD_ENABLED": "1"}}],
+            }
+        )
+    )
+    secrets.write_text(f'SPOKE_LAUNCH_TARGETS_PATH="{registry_b}"\n')
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "SPOKE_ACTUAL_CHILD_RECEIPT": str(receipt),
+            "SPOKE_LAUNCH_TARGETS_PATH": str(registry_a),
+        }
+    )
+
+    result = subprocess.run(
+        [str(_selected_script_path())],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    deadline = time.monotonic() + 3.0
+    while not receipt.is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(receipt.read_text()) == {
+        "registry_path": str(registry_a.resolve()),
+        "vad_enabled": "0",
+    }
+
+
+def test_launcher_reports_child_pre_capture_refusal(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    home.mkdir()
+    fake_python = tmp_path / "refuse-before-capture"
+    fake_python.write_text(
+        "#!/bin/bash\n"
+        "/usr/bin/python3 - <<'PY'\n"
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "path = os.environ.get('SPOKE_LAUNCH_ADMISSION_PATH')\n"
+        "if path:\n"
+        "    Path(path).write_text(json.dumps({\n"
+        "        'status': 'refused',\n"
+        "        'token': os.environ['SPOKE_LAUNCH_ADMISSION_TOKEN'],\n"
+        "        'reason': 'synthetic conformance refusal',\n"
+        "    }))\n"
+        "PY\n"
+        "exit 17\n"
+    )
+    fake_python.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "path": str(repo_root),
+                        "env": {"SPOKE_VENV_PYTHON": str(fake_python)},
+                    }
+                ],
+            }
+        )
+    )
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+
+    result = subprocess.run(
+        [str(_selected_script_path())],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    admission_receipts = list((home / "Library/Logs").glob("spoke-launch-admission-*.json"))
+    assert result.returncode != 0
+    assert len(admission_receipts) == 1
+    assert json.loads(admission_receipts[0].read_text())["status"] == "refused"
+
+
+def test_named_target_refusal_preserves_live_predecessor(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    logs = home / "Library/Logs"
+    logs.mkdir(parents=True)
+    selected = tmp_path / "selected"
+    selected_launcher = selected / "scripts/launch-main.sh"
+    selected_launcher.parent.mkdir(parents=True)
+    selected_launcher.write_text("#!/bin/bash\nexit 99\n")
+    selected_launcher.chmod(0o755)
+    other = tmp_path / "other"
+    other_python = other / ".venv/bin/python"
+    other_python.parent.mkdir(parents=True)
+    other_python.write_text("#!/bin/bash\nexit 0\n")
+    other_python.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "selected",
+                "targets": [
+                    {"id": "selected", "path": str(selected)},
+                    {"id": "other", "path": str(other)},
+                ],
+            }
+        )
+    )
+    predecessor = subprocess.Popen(["/bin/sleep", "30"])
+    (logs / ".spoke.lock").write_text(str(predecessor.pid))
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+    script = repo_root / "scripts/launch-target.sh"
+    try:
+        result = subprocess.run(
+            [str(script), "other"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert predecessor.poll() is None, "refusal killed the live predecessor"
+    finally:
+        if predecessor.poll() is None:
+            predecessor.terminate()
+        predecessor.wait(timeout=3)
+
+
+def test_named_target_duplicate_registry_preserves_live_predecessor(tmp_path):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    logs = home / "Library/Logs"
+    logs.mkdir(parents=True)
+    selected = tmp_path / "selected"
+    launcher = selected / "scripts/launch-main.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/bash\nexit 99\n")
+    launcher.chmod(0o755)
+    registry = tmp_path / "launch_targets.json"
+    duplicate = {"id": "selected", "path": str(selected)}
+    registry.write_text(
+        json.dumps({"selected": "selected", "targets": [duplicate, duplicate]})
+    )
+    predecessor = subprocess.Popen(["/bin/sleep", "30"])
+    (logs / ".spoke.lock").write_text(str(predecessor.pid))
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+    try:
+        result = subprocess.run(
+            [str(repo_root / "scripts/launch-target.sh"), "selected"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "duplicated" in result.stderr
+        assert predecessor.poll() is None, "malformed registry killed the predecessor"
+    finally:
+        if predecessor.poll() is None:
+            predecessor.terminate()
+        predecessor.wait(timeout=3)
+
+
+def test_named_target_selection_change_before_child_admission_preserves_predecessor(
+    tmp_path,
+):
+    repo_root = Path(__file__).resolve().parent.parent
+    home = tmp_path / "home"
+    logs = home / "Library/Logs"
+    logs.mkdir(parents=True)
+    selected = tmp_path / "selected"
+    launcher = selected / "scripts/launch-main.sh"
+    launcher.parent.mkdir(parents=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    registry = tmp_path / "launch_targets.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "selected": "selected",
+                "targets": [
+                    {"id": "selected", "path": str(selected)},
+                    {"id": "other", "path": str(other)},
+                ],
+            }
+        )
+    )
+    launcher.write_text(
+        "#!/bin/bash\n"
+        f"/usr/bin/python3 - <<'PY'\n"
+        "import json\n"
+        "from pathlib import Path\n"
+        f"path = Path({str(registry)!r})\n"
+        "payload = json.loads(path.read_text())\n"
+        "payload['selected'] = 'other'\n"
+        "path.write_text(json.dumps(payload))\n"
+        "PY\n"
+        f"exec {str(repo_root / 'scripts/launch-main.sh')!r}\n"
+    )
+    launcher.chmod(0o755)
+    predecessor = subprocess.Popen(["/bin/sleep", "30"])
+    (logs / ".spoke.lock").write_text(str(predecessor.pid))
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "SPOKE_LAUNCH_TARGETS_PATH": str(registry)})
+    try:
+        result = subprocess.run(
+            [str(repo_root / "scripts/launch-target.sh"), "selected"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert predecessor.poll() is None, "supersession killed the live predecessor"
+        log_path = logs / "spoke-main-launch.log"
+        assert log_path.is_file(), (
+            f"missing refusal log; returncode={result.returncode} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        log_text = log_path.read_text()
+        assert "changed during stable launcher handoff" in log_text
+    finally:
+        if predecessor.poll() is None:
+            predecessor.terminate()
+        predecessor.wait(timeout=3)
+
+
+def test_named_target_helper_uses_selected_authority_without_process_teardown():
+    source = _target_script_text()
+
+    assert "require_selected_launch_target" in source
+    assert "resolve_launch_target" not in source
+    assert "os.kill(old_pid" not in source
+    assert "SPOKE_EXPECTED_LAUNCH_TARGET_ID" in source
+    assert "SPOKE_EXPECTED_LAUNCH_TARGET_PATH" in source
 
 
 # ── Save selected target ────────────────────────────────────────
@@ -749,21 +1083,17 @@ class TestSecretsEnvLoading:
 
 
 class TestLaunchTargetSecretsEnvLoading:
-    """The menubar launch-target helper must carry the same machine-wide
-    secrets contract as the primary launcher. Menu-driven switches are
-    Automator-adjacent child launches too; they cannot depend on an
-    interactive shell profile for API keys.
-    """
+    """Named-target compatibility delegates environment loading to launch-main."""
 
     def test_launch_target_sh_reads_secrets_env(self):
-        text = _target_script_text()
+        text = _main_script_text()
         assert ".config/spoke/secrets.env" in text, (
             "launch-target.sh must load ~/.config/spoke/secrets.env before "
             "starting the selected target"
         )
 
     def test_launch_target_sh_loads_secrets_before_smoke_env(self):
-        text = _target_script_text()
+        text = _main_script_text()
         secrets_idx = text.find(".config/spoke/secrets.env")
         smoke_idx = text.find(".spoke-smoke-env")
         assert secrets_idx != -1, "secrets.env reference not found"
@@ -774,17 +1104,17 @@ class TestLaunchTargetSecretsEnvLoading:
         )
 
     def test_launch_target_sh_applies_secrets_with_shared_parser(self):
-        text = _target_script_text()
-        assert "parse_env_overrides(secrets_env)" in text, (
-            "launch-target.sh must route secrets.env through parse_env_overrides "
-            "rather than open-coding a second parser"
+        text = _main_script_text()
+        assert "_apply_env_file(secrets_env)" in text, (
+            "the delegated launch-main route must apply secrets through its one "
+            "environment-file parser"
         )
 
 
 class TestRegistryTargetEnvLoading:
     """Invocation-scoped target env must win over shared worktree smoke state."""
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_launchers_apply_target_env_after_worktree_smoke_env(self, script_text):
         text = script_text()
         smoke_idx = text.find(".spoke-smoke-env")
@@ -797,7 +1127,7 @@ class TestRegistryTargetEnvLoading:
             "launch target can disable inherited fixtures without mutating the worktree"
         )
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_launchers_clear_inherited_models_before_target_env(self, script_text):
         text = script_text()
         clear_idx = text.rfind('child_env.pop("SPOKE_PREVIEW_MODEL"')
@@ -825,7 +1155,7 @@ class TestRegistryTargetEnvLoading:
         assert 'target_env = effective_target.get("env")' in text
         assert 'target_id=effective_target.get("id", "selected")' in text
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_witness_route_log_does_not_echo_target_env_values(self, script_text):
         text = script_text()
 
@@ -851,10 +1181,8 @@ class TestLauncherPythonOverride:
 
     def test_launch_target_honors_spoke_venv_python_override(self):
         text = _target_script_text()
-        assert 'child_env.get("SPOKE_VENV_PYTHON"' in text, (
-            "launch-target.sh must honor SPOKE_VENV_PYTHON from .spoke-smoke-env "
-            "before falling back to the target worktree .venv"
-        )
+        assert 'launcher = target_path / "scripts" / "launch-main.sh"' in text
+        assert "os.execve(launcher" in text
 
 
 class TestLauncherRetinaLassoWitness:
@@ -865,7 +1193,7 @@ class TestLauncherRetinaLassoWitness:
     for it.
     """
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_launchers_can_arm_retina_lasso_witness(self, script_text):
         text = script_text()
         assert "SPOKE_RETINA_LASSO_AUTO_WITNESS" in text
@@ -883,13 +1211,13 @@ class TestLauncherRetinaLassoWitness:
         assert "SPOKE_RETINA_LASSO_OPEN_READY_TIMEOUT_SECONDS" in text
         assert "--open-ready-timeout" in text
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_capture_first_witness_suppresses_post_trigger_watch_mode(self, script_text):
         text = script_text()
         assert "capture-first stimulus armed" in text
         assert 'and not capture_first_stimulus' in text
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_retina_lasso_witness_preserves_capture_boundary(self, script_text):
         text = script_text()
         assert "SPOKE_RETINA_LASSO_CAPTURE_MODE" in text
@@ -897,7 +1225,7 @@ class TestLauncherRetinaLassoWitness:
         assert "--capture-mode" in text
         assert "--capture-rect" in text
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_retina_lasso_witness_is_sidecar_only(self, script_text):
         text = script_text()
         app_launch = text.find('"-m", "spoke"')
@@ -906,14 +1234,14 @@ class TestLauncherRetinaLassoWitness:
         assert witness_launch != -1
         assert app_launch < witness_launch
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_throughglass_smoke_uses_throughglass_pixel_witness(self, script_text):
         text = script_text()
         assert "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE" in text
         assert "spoke.perceptasia_throughglass_witness" in text
         assert "SPOKE_PERCEPTASIA_THROUGHGLASS_WITNESS_OUTPUT_ROOT" in text
 
-    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    @pytest.mark.parametrize("script_text", [_main_script_text])
     def test_throughglass_smoke_can_run_trace_watch_for_later_operator_actions(self, script_text):
         text = script_text()
         assert 'if throughglass_witness and _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE")' in text

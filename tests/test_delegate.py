@@ -2644,6 +2644,22 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
+
+    def test_launch_target_helper_returns_child_admission_result(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        completed = MagicMock(returncode=1)
+
+        with patch("subprocess.run", return_value=completed) as run, patch(
+            "subprocess.Popen"
+        ) as popen:
+            outcome = d._invoke_launch_target_helper("superseded")
+
+        assert outcome is False
+        run.assert_called_once()
+        popen.assert_not_called()
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):

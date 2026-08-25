@@ -11,6 +11,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LAUNCH_TARGETS_PATH = Path.home() / ".config" / "spoke" / "launch_targets.json"
+_PROTECTED_LAUNCH_ENV_KEYS = frozenset(
+    {
+        "SPOKE_EXPECTED_LAUNCH_TARGET_ID",
+        "SPOKE_EXPECTED_LAUNCH_TARGET_PATH",
+        "SPOKE_LAUNCH_ADMISSION_PATH",
+        "SPOKE_LAUNCH_ADMISSION_TOKEN",
+        "SPOKE_LAUNCH_TARGET_ID",
+        "SPOKE_LAUNCH_TARGETS_PATH",
+    }
+)
 
 
 class LaunchTargetUnavailable(RuntimeError):
@@ -175,6 +185,12 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
                 f"Selected Spoke launch target {selected!r} env must contain only "
                 "nonblank string keys and string values"
             )
+        protected_keys = sorted(_PROTECTED_LAUNCH_ENV_KEYS.intersection(raw_env))
+        if protected_keys:
+            raise LaunchTargetUnavailable(
+                f"Selected Spoke launch target {selected!r} env cannot override "
+                f"protected launch authority keys: {protected_keys}"
+            )
         if raw_env:
             target["env"] = {
                 key: os.path.expanduser(os.path.expandvars(value))
@@ -199,13 +215,15 @@ def apply_selected_launch_target_env(
     receipt = {
         "status": "unmanaged",
         "launch_target_id": process_target_id or None,
+        "registry_path": None,
         "target_env_keys": [],
         "repaired_env_keys": [],
     }
     if not process_target_id:
         return receipt
 
-    target = require_selected_launch_target(path)
+    registry_path = (path or launch_targets_path()).expanduser().resolve()
+    target = require_selected_launch_target(registry_path)
     if process_target_id != target["id"]:
         raise LaunchTargetUnavailable(
             f"Spoke process target {process_target_id!r} does not match selected "
@@ -225,13 +243,64 @@ def apply_selected_launch_target_env(
     repaired_env_keys = sorted(
         key for key, value in target_env.items() if process_env.get(key) != value
     )
+    registry_env_key = "SPOKE_LAUNCH_TARGETS_PATH"
+    if process_env.get(registry_env_key) != str(registry_path):
+        repaired_env_keys.append(registry_env_key)
+        repaired_env_keys.sort()
     process_env.update(target_env)
+    process_env[registry_env_key] = str(registry_path)
     return {
         "status": "repaired" if repaired_env_keys else "conformant",
         "launch_target_id": target["id"],
+        "registry_path": str(registry_path),
         "target_env_keys": target_env_keys,
         "repaired_env_keys": repaired_env_keys,
     }
+
+
+def publish_launch_admission(
+    status: str,
+    *,
+    receipt: dict | None = None,
+    error: BaseException | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> Path | None:
+    """Atomically publish pre-capture launch admission when a launcher requests it."""
+    process_env = os.environ if environ is None else environ
+    raw_path = process_env.get("SPOKE_LAUNCH_ADMISSION_PATH", "").strip()
+    token = process_env.get("SPOKE_LAUNCH_ADMISSION_TOKEN", "").strip()
+    if not raw_path and not token:
+        return None
+    if not raw_path or not token:
+        raise LaunchTargetUnavailable(
+            "Launch admission requires both SPOKE_LAUNCH_ADMISSION_PATH and token"
+        )
+    if status not in {"admitted", "refused"}:
+        raise ValueError(f"Unsupported launch admission status: {status!r}")
+
+    admission_path = Path(raw_path).expanduser()
+    admission_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "status": status,
+        "token": token,
+        "pid": os.getpid(),
+        "launch_target_id": process_env.get("SPOKE_LAUNCH_TARGET_ID"),
+        "registry_path": (receipt or {}).get("registry_path"),
+    }
+    if receipt is not None:
+        payload["launch_env_status"] = receipt.get("status")
+        payload["repaired_env_keys"] = receipt.get("repaired_env_keys", [])
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["reason"] = str(error)
+
+    tmp_path = admission_path.with_name(
+        f".{admission_path.name}.{os.getpid()}.tmp"
+    )
+    tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, admission_path)
+    return admission_path
 
 
 def current_launch_target(

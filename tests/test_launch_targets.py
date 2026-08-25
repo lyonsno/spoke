@@ -172,6 +172,32 @@ def test_require_selected_launch_target_preserves_valid_absolute_route(tmp_path)
     }
 
 
+def test_require_selected_launch_target_rejects_protected_authority_env(tmp_path):
+    registry_path = tmp_path / "launch_targets.json"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "selected": "reviewed",
+                "targets": [
+                    {
+                        "id": "reviewed",
+                        "path": str(checkout),
+                        "env": {"SPOKE_LAUNCH_TARGETS_PATH": "/tmp/other.json"},
+                    }
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(
+        launch_targets.LaunchTargetUnavailable,
+        match="protected launch authority keys.*SPOKE_LAUNCH_TARGETS_PATH",
+    ):
+        launch_targets.require_selected_launch_target(registry_path)
+
+
 def test_apply_selected_launch_target_env_repairs_missing_launcher_overrides(tmp_path):
     registry_path = tmp_path / "launch_targets.json"
     checkout = tmp_path / "checkout"
@@ -213,11 +239,13 @@ def test_apply_selected_launch_target_env_repairs_missing_launcher_overrides(tmp
     assert receipt == {
         "status": "repaired",
         "launch_target_id": "reviewed",
+        "registry_path": str(registry_path.resolve()),
         "target_env_keys": [
             "SPOKE_RETINA_LASSO_AUTO_WITNESS",
             "SPOKE_VAD_ENABLED",
         ],
         "repaired_env_keys": [
+            "SPOKE_LAUNCH_TARGETS_PATH",
             "SPOKE_RETINA_LASSO_AUTO_WITNESS",
             "SPOKE_VAD_ENABLED",
         ],
@@ -244,6 +272,7 @@ def test_apply_selected_launch_target_env_reports_already_conformant(tmp_path):
     )
     process_env = {
         "SPOKE_LAUNCH_TARGET_ID": "reviewed",
+        "SPOKE_LAUNCH_TARGETS_PATH": str(registry_path.resolve()),
         "SPOKE_VAD_ENABLED": "0",
     }
 
@@ -254,6 +283,7 @@ def test_apply_selected_launch_target_env_reports_already_conformant(tmp_path):
     )
 
     assert receipt["status"] == "conformant"
+    assert receipt["registry_path"] == str(registry_path.resolve())
     assert receipt["target_env_keys"] == ["SPOKE_VAD_ENABLED"]
     assert receipt["repaired_env_keys"] == []
 
@@ -333,6 +363,7 @@ def test_apply_selected_launch_target_env_leaves_manual_process_unmanaged(tmp_pa
     assert receipt == {
         "status": "unmanaged",
         "launch_target_id": None,
+        "registry_path": None,
         "target_env_keys": [],
         "repaired_env_keys": [],
     }
