@@ -1448,8 +1448,6 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
-        self._prepare_diaulos_switcher()
-
         from .preview_warp_hud import PreviewWarpHUD
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
         self._preview_warp_hud.restore_visibility()
@@ -1480,6 +1478,7 @@ class SpokeAppDelegate(NSObject):
         # tracked independently.
         self._menubar.set_status_text("Starting up…")
         self._setup_event_tap()
+        self._prepare_diaulos_switcher()
         self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:

@@ -4342,6 +4342,11 @@ class TestRuntimePhaseLogging:
         d._refresh_command_model_options_async = MagicMock()
         d._request_mic_permission = MagicMock()
         d._setup_event_tap = MagicMock()
+        startup_events: list[str] = []
+        d._setup_event_tap.side_effect = lambda: startup_events.append("event-tap")
+        d._prepare_diaulos_switcher.side_effect = lambda: startup_events.append(
+            "teleporter-prewarm"
+        )
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
@@ -4369,6 +4374,7 @@ class TestRuntimePhaseLogging:
         d._refresh_command_model_options_async.assert_called_once_with()
         d._setup_event_tap.assert_called_once_with()
         d._prepare_diaulos_switcher.assert_called_once_with()
+        assert startup_events == ["event-tap", "teleporter-prewarm"]
         overlay.set_compositor_registry.assert_called_once()
         command_overlay.set_compositor_registry.assert_called_once()
         assert (
