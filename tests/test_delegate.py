@@ -89,6 +89,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     delegate._audio_spool = MagicMock()
     delegate._asr_recovery_client = MagicMock()
+    delegate._prepare_diaulos_switcher = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -4383,6 +4384,7 @@ class TestRuntimePhaseLogging:
 
         d._refresh_command_model_options_async.assert_called_once_with()
         d._setup_event_tap.assert_called_once_with()
+        d._prepare_diaulos_switcher.assert_called_once_with()
         overlay.set_compositor_registry.assert_called_once()
         command_overlay.set_compositor_registry.assert_called_once()
         assert (

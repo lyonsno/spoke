@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 
 import objc
@@ -117,12 +118,15 @@ class DiaulosSwitcherOverlay(NSObject):
         self._previous_app = None
         self._load_generation = 0
         self._load_in_flight = False
+        self._prewarm_in_flight = False
+        self._pending_inventory_payload = None
         self._activation_generation = 0
         self._activation_in_flight = False
         self._activation_handle = None
         self._key_monitor_token = None
         self._key_monitor_handler = None
         self._keyboard_monitor_available = False
+        self._last_render_signature = None
         self.visible = False
         self.presentation_generation = 0
         return self
@@ -228,6 +232,55 @@ class DiaulosSwitcherOverlay(NSObject):
         content.addSubview_(self._status_label)
         self._panel = panel
 
+    def prewarm(self) -> None:
+        """Build the hidden panel and prime cached rows before the user gesture."""
+        self.setup()
+        if self._prewarm_in_flight or self._model.all_candidates:
+            return
+        self._prewarm_in_flight = True
+        threading.Thread(
+            target=self._prewarm_worker,
+            daemon=True,
+            name="diaulos-snapshot-prewarm",
+        ).start()
+
+    def _prewarm_worker(self) -> None:
+        started_at = time.monotonic()
+        try:
+            payload = {
+                "candidates": self._client.load(),
+                "elapsed_ms": (time.monotonic() - started_at) * 1000.0,
+            }
+        except DiaulosInventoryError as exc:
+            payload = {
+                "error": str(exc),
+                "elapsed_ms": (time.monotonic() - started_at) * 1000.0,
+            }
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "prewarmFinished:",
+            payload,
+            False,
+        )
+
+    def prewarmFinished_(self, payload: dict) -> None:
+        self._prewarm_in_flight = False
+        if payload.get("error"):
+            logger.info(
+                "Diaulos prewarm snapshot unavailable: elapsed_ms=%.1f error=%s",
+                float(payload.get("elapsed_ms") or 0.0),
+                payload["error"],
+            )
+            return
+        if self.visible or self._load_in_flight or self._model.all_candidates:
+            return
+        self._model = DiaulosSwitcherModel(payload["candidates"])
+        self._render_rows()
+        logger.info(
+            "Diaulos prewarm complete: elapsed_ms=%.1f rows=%d",
+            float(payload.get("elapsed_ms") or 0.0),
+            len(self._model.all_candidates),
+        )
+
     def toggle(self) -> None:
         if self.visible:
             self.hide()
@@ -235,6 +288,7 @@ class DiaulosSwitcherOverlay(NSObject):
             self.show()
 
     def show(self) -> None:
+        started_at = time.monotonic()
         self.setup()
         was_visible = self.visible
         workspace = NSWorkspace.sharedWorkspace()
@@ -253,12 +307,17 @@ class DiaulosSwitcherOverlay(NSObject):
             if self._model.all_candidates
             else "Loading live Diauloi"
         )
-        self._render_rows()
         self._panel.makeKeyAndOrderFront_(None)
         app = NSApp()
         if app is not None:
             app.activateIgnoringOtherApps_(True)
         self._panel.makeFirstResponder_(self._search_field)
+        self._render_rows()
+        logger.info(
+            "Diaulos panel ordered front: elapsed_ms=%.1f cached_rows=%d",
+            (time.monotonic() - started_at) * 1000.0,
+            len(self._model.all_candidates),
+        )
         if not getattr(self, "_load_in_flight", False):
             self._load_generation += 1
             generation = self._load_generation
@@ -296,7 +355,7 @@ class DiaulosSwitcherOverlay(NSObject):
         return True
 
     def cleanup(self) -> None:
-        if self._activation_in_flight:
+        if getattr(self, "_activation_in_flight", False):
             logger.info(
                 "Hiding during shutdown without cancelling committed Diaulos focus"
             )
@@ -402,6 +461,19 @@ class DiaulosSwitcherOverlay(NSObject):
         refreshing = bool(payload.get("refreshing"))
         if not refreshing:
             self._load_in_flight = False
+        if getattr(self, "_activation_in_flight", False):
+            self._pending_inventory_payload = payload
+            logger.info(
+                "Diaulos inventory application deferred behind committed activation: "
+                "generation=%s refreshing=%s",
+                payload["generation"],
+                refreshing,
+            )
+            return
+        self._apply_inventory_payload(payload)
+
+    def _apply_inventory_payload(self, payload: dict) -> None:
+        refreshing = bool(payload.get("refreshing"))
         error = payload.get("error")
         if error:
             if self.visible:
@@ -436,12 +508,19 @@ class DiaulosSwitcherOverlay(NSObject):
         self._activation_in_flight = False
         self._activation_handle = None
         self._search_field.setEnabled_(True)
+        pending_inventory = getattr(self, "_pending_inventory_payload", None)
+        self._pending_inventory_payload = None
         if payload.get("error"):
             self._set_status(str(payload["error"]), error=True)
             self._panel.makeFirstResponder_(self._search_field)
+            if pending_inventory is not None:
+                self._apply_inventory_payload(pending_inventory)
+                self._set_status(str(payload["error"]), error=True)
             return
         self.hide(restore_previous=False)
         self._activate_wezterm()
+        if pending_inventory is not None:
+            self._apply_inventory_payload(pending_inventory)
 
     def _activate_wezterm(self) -> None:
         workspace = NSWorkspace.sharedWorkspace()
@@ -458,6 +537,7 @@ class DiaulosSwitcherOverlay(NSObject):
         logger.error("Focused Diaulos pane but could not foreground WezTerm")
 
     def _load_worker(self, generation: int) -> None:
+        started_at = time.monotonic()
         snapshot_error = None
         try:
             candidates = self._client.load()
@@ -488,6 +568,13 @@ class DiaulosSwitcherOverlay(NSObject):
                 "refreshing": False,
             }
         self._publish_inventory(payload)
+        logger.info(
+            "Diaulos inventory worker complete: generation=%s elapsed_ms=%.1f "
+            "outcome=%s",
+            generation,
+            (time.monotonic() - started_at) * 1000.0,
+            "error" if payload.get("error") else "complete",
+        )
 
     def _publish_inventory(self, payload: dict) -> None:
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -497,11 +584,20 @@ class DiaulosSwitcherOverlay(NSObject):
         )
 
     def _activation_worker(self, generation: int, candidate) -> None:
+        started_at = time.monotonic()
         try:
             receipt = self._client.activate(candidate)
             payload = {"generation": generation, "receipt": receipt}
         except DiaulosActivationError as exc:
             payload = {"generation": generation, "error": str(exc)}
+        logger.info(
+            "Diaulos activation worker complete: generation=%s handle=%s "
+            "elapsed_ms=%.1f outcome=%s",
+            generation,
+            candidate.handle,
+            (time.monotonic() - started_at) * 1000.0,
+            "error" if payload.get("error") else "complete",
+        )
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "activationFinished:",
             payload,
@@ -514,6 +610,21 @@ class DiaulosSwitcherOverlay(NSObject):
 
     def _render_rows(self) -> None:
         if self._document_view is None:
+            return
+        render_signature = (
+            self._model.query,
+            self._model.selected_index,
+            tuple(
+                (
+                    candidate.handle,
+                    candidate.pane_id,
+                    candidate.title,
+                    candidate.cwd,
+                )
+                for candidate in self._model.filtered
+            ),
+        )
+        if getattr(self, "_last_render_signature", None) == render_signature:
             return
         for view in list(self._document_view.subviews()):
             view.removeFromSuperview()
@@ -563,6 +674,7 @@ class DiaulosSwitcherOverlay(NSObject):
             if self._model.query
             else f"{len(self._model.all_candidates)} live"
         )
+        self._last_render_signature = render_signature
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         if self._status_label is None:
