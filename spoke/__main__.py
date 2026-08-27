@@ -1448,6 +1448,8 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
+        self._prepare_diaulos_switcher()
+
         from .preview_warp_hud import PreviewWarpHUD
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
         self._preview_warp_hud.restore_visibility()
@@ -4359,13 +4361,18 @@ class SpokeAppDelegate(NSObject):
 
     def _toggle_diaulos_switcher(self) -> None:
         """Open or close the voice-native live Diaulos switcher."""
+        self._prepare_diaulos_switcher()
+        self._diaulos_switcher.toggle()
+
+    def _prepare_diaulos_switcher(self) -> None:
+        """Construct and prime the Teleporter outside the user gesture path."""
         if self._diaulos_switcher is None:
             from .diaulos_switcher_overlay import DiaulosSwitcherOverlay
 
             self._diaulos_switcher = (
                 DiaulosSwitcherOverlay.alloc().initWithDelegate_(self)
             )
-        self._diaulos_switcher.toggle()
+        self._diaulos_switcher.prewarm()
 
     def _tray_entry_allows_text_action(self, entry: TrayEntry | str) -> bool:
         """Return whether a tray entry can be pasted or sent as plain text."""

@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import unquote, urlparse
+
+
+logger = logging.getLogger(__name__)
 
 
 class DiaulosInventoryError(RuntimeError):
@@ -182,6 +187,7 @@ class EpistaxisDiaulosClient:
         epistaxis_executable: str | None = None,
         wezterm_executable: str | None = None,
         snapshot_path: str | Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._runner = runner
         self._timeout_seconds = timeout_seconds
@@ -199,6 +205,7 @@ class EpistaxisDiaulosClient:
             / "epistaxis"
             / "live-diauloi.json"
         ).expanduser()
+        self._clock = clock
 
     def load(self) -> list[DiaulosCandidate]:
         try:
@@ -307,8 +314,10 @@ class EpistaxisDiaulosClient:
     ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment.pop("WEZTERM_UNIX_SOCKET", None)
+        phase = _subprocess_phase(command)
+        started_at = self._clock()
         try:
-            return self._runner(
+            result = self._runner(
                 command,
                 capture_output=True,
                 text=True,
@@ -316,7 +325,21 @@ class EpistaxisDiaulosClient:
                 env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
+            elapsed_ms = (self._clock() - started_at) * 1000.0
+            logger.warning(
+                "Diaulos subprocess phase=%s elapsed_ms=%.1f outcome=no_receipt",
+                phase,
+                elapsed_ms,
+            )
             raise error(f"command failed before a receipt: {exc}") from exc
+        elapsed_ms = (self._clock() - started_at) * 1000.0
+        logger.info(
+            "Diaulos subprocess phase=%s elapsed_ms=%.1f returncode=%s",
+            phase,
+            elapsed_ms,
+            result.returncode,
+        )
+        return result
 
     def _replace_snapshot(self, payload: dict[str, Any]) -> None:
         self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,6 +411,16 @@ def _epistaxis_search_path() -> str:
             str(Path.home() / ".local" / "bin"),
         )
     )
+
+
+def _subprocess_phase(command: Sequence[str]) -> str:
+    if "activate-pane" in command:
+        return "wezterm_activate"
+    if "list" in command and "--format" in command:
+        return "wezterm_list"
+    if "diaulos" in command and "live" in command:
+        return "epistaxis_live_inventory"
+    return "unknown"
 
 
 def _normalize_pane_cwd(value: str) -> str:

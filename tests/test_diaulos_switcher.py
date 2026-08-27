@@ -667,6 +667,88 @@ def test_show_retains_prior_inventory_while_refreshing(overlay_module, monkeypat
     thread.start.assert_called_once_with()
 
 
+def test_show_orders_panel_front_before_cached_row_rebuild(
+    overlay_module,
+    monkeypatch,
+):
+    events: list[str] = []
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.setup = MagicMock()
+    overlay._model = DiaulosSwitcherModel(parse_live_inventory(_payload(20)))
+    overlay._search_field = MagicMock()
+    overlay._count_label = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._panel.makeKeyAndOrderFront_.side_effect = lambda _: events.append(
+        "panel-front"
+    )
+    overlay._render_rows = MagicMock(side_effect=lambda: events.append("rows-rendered"))
+    overlay._previous_app = None
+    overlay._load_generation = 0
+    overlay._load_in_flight = False
+    overlay._activation_generation = 0
+    overlay._activation_in_flight = False
+    overlay._activation_handle = None
+    overlay._key_monitor_token = None
+    overlay._key_monitor_handler = None
+    overlay._keyboard_monitor_available = True
+    overlay.visible = False
+    thread = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.threading,
+        "Thread",
+        MagicMock(return_value=thread),
+    )
+
+    overlay.show()
+
+    assert events == ["panel-front", "rows-rendered"]
+
+
+def test_prewarm_builds_panel_and_primes_snapshot_off_the_gesture_path(
+    overlay_module,
+    monkeypatch,
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.setup = MagicMock()
+    overlay.visible = False
+    overlay._model = DiaulosSwitcherModel([])
+    overlay._prewarm_in_flight = False
+    thread = MagicMock()
+    thread_factory = MagicMock(return_value=thread)
+    monkeypatch.setattr(overlay_module.threading, "Thread", thread_factory)
+
+    overlay.prewarm()
+
+    overlay.setup.assert_called_once_with()
+    assert overlay._prewarm_in_flight is True
+    thread_factory.assert_called_once()
+    assert thread_factory.call_args.kwargs["target"] == overlay._prewarm_worker
+    thread.start.assert_called_once_with()
+
+
+def test_prewarm_completion_populates_and_renders_hidden_snapshot(overlay_module):
+    candidates = parse_live_inventory(_payload(2))
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = False
+    overlay._model = DiaulosSwitcherModel([])
+    overlay._load_in_flight = False
+    overlay._prewarm_in_flight = True
+    overlay._render_rows = MagicMock()
+
+    overlay.prewarmFinished_({"candidates": candidates, "elapsed_ms": 12.5})
+
+    assert overlay._prewarm_in_flight is False
+    assert overlay._model.all_candidates == candidates
+    overlay._render_rows.assert_called_once_with()
+
+
 def test_hide_and_reopen_does_not_fan_out_inventory_refreshes(
     overlay_module,
     monkeypatch,
@@ -725,6 +807,55 @@ def test_inventory_refresh_failure_retains_prior_inventory(overlay_module):
     assert "inventory unavailable" in (
         overlay._status_label.setStringValue_.call_args.args[0]
     )
+
+
+def test_inventory_completion_defers_row_rebuild_behind_committed_activation(
+    overlay_module,
+):
+    old_candidate = parse_live_inventory(_payload(1))[0]
+    new_candidates = parse_live_inventory(_payload(2))
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([old_candidate])
+    overlay._load_generation = 7
+    overlay._load_in_flight = True
+    overlay._activation_in_flight = True
+    overlay._pending_inventory_payload = None
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._render_rows = MagicMock()
+
+    payload = {"generation": 7, "candidates": new_candidates}
+    overlay.inventoryLoaded_(payload)
+
+    assert overlay._model.all_candidates == [old_candidate]
+    assert overlay._pending_inventory_payload == payload
+    overlay._render_rows.assert_not_called()
+
+
+def test_client_logs_subprocess_phase_duration(caplog):
+    ticks = iter((10.0, 10.25))
+    client = EpistaxisDiaulosClient(
+        runner=lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            "[]",
+            "",
+        ),
+        clock=lambda: next(ticks),
+    )
+
+    with caplog.at_level("INFO", logger="spoke.diaulos_switcher"):
+        client._run_process(
+            ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
+            DiaulosActivationError,
+        )
+
+    assert "phase=wezterm_list" in caplog.text
+    assert "elapsed_ms=250.0" in caplog.text
+    assert "returncode=0" in caplog.text
 
 
 def test_load_worker_publishes_snapshot_before_failed_refresh(overlay_module):
