@@ -835,6 +835,117 @@ def test_inventory_completion_defers_row_rebuild_behind_committed_activation(
     overlay._render_rows.assert_not_called()
 
 
+def test_activation_failure_retains_deferred_snapshot_before_refresh_error(
+    overlay_module,
+):
+    old_candidate = parse_live_inventory(_payload(1))[0]
+    new_candidates = parse_live_inventory(_payload(2))
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([old_candidate])
+    overlay._load_generation = 7
+    overlay._load_in_flight = True
+    overlay._activation_generation = 4
+    overlay._activation_in_flight = True
+    overlay._activation_handle = "thing-0"
+    overlay._pending_inventory_payload = None
+    overlay._pending_inventory_error_payload = None
+    overlay._search_field = MagicMock()
+    overlay._search_field.stringValue.return_value = ""
+    overlay._status_label = MagicMock()
+    overlay._panel = MagicMock()
+    overlay._render_rows = MagicMock()
+
+    snapshot = {
+        "generation": 7,
+        "candidates": new_candidates,
+        "refreshing": True,
+    }
+    refresh_error = {
+        "generation": 7,
+        "error": "Epistaxis release is changing",
+        "refreshing": False,
+    }
+    overlay.inventoryLoaded_(snapshot)
+    overlay.inventoryLoaded_(refresh_error)
+
+    assert overlay._model.all_candidates == [old_candidate]
+    assert overlay._load_in_flight is False
+    overlay._render_rows.assert_not_called()
+
+    overlay.activationFinished_({"generation": 4, "error": "route moved"})
+
+    assert overlay._model.all_candidates == new_candidates
+    assert overlay._activation_in_flight is False
+    overlay._search_field.setEnabled_.assert_called_once_with(True)
+    overlay._panel.makeFirstResponder_.assert_called_once_with(
+        overlay._search_field
+    )
+    final_status = overlay._status_label.setStringValue_.call_args.args[0]
+    assert "route moved" in final_status
+    assert "Epistaxis release is changing" in final_status
+    overlay._render_rows.assert_called_once_with()
+
+
+def test_activation_success_caches_deferred_snapshot_before_refresh_error(
+    overlay_module,
+):
+    old_candidate = parse_live_inventory(_payload(1))[0]
+    new_candidates = parse_live_inventory(_payload(2))
+    events: list[str] = []
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._model = DiaulosSwitcherModel([old_candidate])
+    overlay._load_generation = 7
+    overlay._load_in_flight = True
+    overlay._activation_generation = 4
+    overlay._activation_in_flight = True
+    overlay._activation_handle = "thing-0"
+    overlay._pending_inventory_payload = None
+    overlay._pending_inventory_error_payload = None
+    overlay._search_field = MagicMock()
+    overlay._status_label = MagicMock()
+    overlay._render_rows = MagicMock()
+
+    def hide(*, restore_previous):
+        events.append("panel-hidden")
+        overlay.visible = False
+
+    overlay.hide = MagicMock(side_effect=hide)
+    overlay._activate_wezterm = MagicMock(
+        side_effect=lambda: events.append("wezterm-foregrounded")
+    )
+
+    overlay.inventoryLoaded_(
+        {
+            "generation": 7,
+            "candidates": new_candidates,
+            "refreshing": True,
+        }
+    )
+    overlay.inventoryLoaded_(
+        {
+            "generation": 7,
+            "error": "Epistaxis release is changing",
+            "refreshing": False,
+        }
+    )
+
+    assert overlay._model.all_candidates == [old_candidate]
+    overlay._render_rows.assert_not_called()
+
+    overlay.activationFinished_({"generation": 4, "receipt": {"pane_id": 10}})
+
+    assert events == ["panel-hidden", "wezterm-foregrounded"]
+    assert overlay._model.all_candidates == new_candidates
+    assert overlay._load_in_flight is False
+    overlay._render_rows.assert_not_called()
+
+
 def test_client_logs_subprocess_phase_duration(caplog):
     ticks = iter((10.0, 10.25))
     client = EpistaxisDiaulosClient(

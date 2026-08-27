@@ -120,6 +120,7 @@ class DiaulosSwitcherOverlay(NSObject):
         self._load_in_flight = False
         self._prewarm_in_flight = False
         self._pending_inventory_payload = None
+        self._pending_inventory_error_payload = None
         self._activation_generation = 0
         self._activation_in_flight = False
         self._activation_handle = None
@@ -462,7 +463,12 @@ class DiaulosSwitcherOverlay(NSObject):
         if not refreshing:
             self._load_in_flight = False
         if getattr(self, "_activation_in_flight", False):
-            self._pending_inventory_payload = payload
+            if payload.get("error"):
+                self._pending_inventory_error_payload = payload
+            else:
+                self._pending_inventory_payload = payload
+                if not refreshing:
+                    self._pending_inventory_error_payload = None
             logger.info(
                 "Diaulos inventory application deferred behind committed activation: "
                 "generation=%s refreshing=%s",
@@ -509,13 +515,24 @@ class DiaulosSwitcherOverlay(NSObject):
         self._activation_handle = None
         self._search_field.setEnabled_(True)
         pending_inventory = getattr(self, "_pending_inventory_payload", None)
+        pending_inventory_error = getattr(
+            self, "_pending_inventory_error_payload", None
+        )
         self._pending_inventory_payload = None
+        self._pending_inventory_error_payload = None
         if payload.get("error"):
-            self._set_status(str(payload["error"]), error=True)
+            activation_error = str(payload["error"])
             self._panel.makeFirstResponder_(self._search_field)
             if pending_inventory is not None:
                 self._apply_inventory_payload(pending_inventory)
-                self._set_status(str(payload["error"]), error=True)
+            if pending_inventory_error is not None:
+                refresh_error = str(pending_inventory_error["error"])
+                self._set_status(
+                    f"{activation_error}; inventory refresh failed: {refresh_error}",
+                    error=True,
+                )
+            else:
+                self._set_status(activation_error, error=True)
             return
         self.hide(restore_previous=False)
         self._activate_wezterm()
