@@ -592,3 +592,58 @@ def test_replay_harness_requires_complete_effective_identity(tmp_path, missing_f
     assert report["failure_phase"] == "route_identity"
     assert report["receipt"]["status"] == "success"
     assert missing_field not in report["receipt"]
+
+
+@pytest.mark.parametrize(
+    ("field_path", "false_value"),
+    [
+        ("audio_sha256", "f" * 64),
+        ("model_sha256_actual", "b" * 64),
+        ("recognizer_configuration.authority", "inherited_environment"),
+        ("recognizer_configuration.streaming", True),
+        ("recognizer_configuration.endpointing", True),
+        ("recognizer_configuration.vad", True),
+    ],
+)
+def test_replay_harness_rejects_each_false_effective_identity_independently(
+    tmp_path,
+    field_path,
+    false_value,
+):
+    wav_path = tmp_path / "input.wav"
+    wav_path.write_bytes(_wav_bytes())
+    output_path = tmp_path / "replay.json"
+    expected_audio_sha256 = hashlib.sha256(wav_path.read_bytes()).hexdigest()
+
+    class OneFalseIdentityClient:
+        _last_receipt = None
+
+        def transcribe(self, wav_bytes):
+            self._last_receipt = _complete_route_receipt(expected_audio_sha256)
+            target = self._last_receipt
+            parts = field_path.split(".")
+            for part in parts[:-1]:
+                target = target[part]
+            target[parts[-1]] = false_value
+            return "false success"
+
+    with pytest.raises(NemotronCPUError, match="route identity"):
+        nemotron_module.run_replay(
+            wav_path,
+            output_path,
+            client=OneFalseIdentityClient(),
+        )
+
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["schema"] == "spoke.nemotron-cpu-replay.v2"
+    assert report["status"] == "failure"
+    assert report["failure_phase"] == "route_identity"
+    assert report["input_path"] == str(wav_path)
+    assert report["expected_audio_sha256"] == expected_audio_sha256
+    assert report["wall_seconds"] >= 0
+    assert report["receipt"]["schema"] == "spoke.nemotron-cpu-transcription.v2"
+    assert report["receipt"]["status"] == "success"
+    observed = report["receipt"]
+    for part in field_path.split("."):
+        observed = observed[part]
+    assert observed == false_value
