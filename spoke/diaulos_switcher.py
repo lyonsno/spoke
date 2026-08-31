@@ -20,6 +20,8 @@ from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_INVENTORY_SCHEMA_VERSION = 1
+
 
 class DiaulosInventoryError(RuntimeError):
     pass
@@ -77,9 +79,23 @@ def _parse_selected_pane_inventory(
         raise DiaulosInventoryError(
             f"selected-pane observation targeted pane {observed_pane_id}, not {pane_id}"
         )
+    for field, label in (
+        ("identity_conflicts", "identity conflict"),
+        ("identity_warnings", "identity ambiguity"),
+    ):
+        evidence = payload.get(field)
+        if not isinstance(evidence, list):
+            raise DiaulosInventoryError(
+                f"selected-pane observation {field} evidence is missing"
+            )
+        if evidence:
+            raise DiaulosInventoryError(
+                f"selected-pane observation carries unresolved {label} evidence"
+            )
     candidates = _parse_inventory_payload(
         payload,
         expected_authority="exact-selected-pane-enumeration",
+        require_diaulos_id=True,
     )
     if len(candidates) > 1:
         raise DiaulosInventoryError(
@@ -92,9 +108,19 @@ def _parse_inventory_payload(
     payload: Any,
     *,
     expected_authority: str,
+    require_diaulos_id: bool = False,
 ) -> list[DiaulosCandidate]:
     if not isinstance(payload, dict):
         raise DiaulosInventoryError("live Diaulos inventory is not an object")
+    schema_version = payload.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != SUPPORTED_INVENTORY_SCHEMA_VERSION
+    ):
+        raise DiaulosInventoryError(
+            "live Diaulos inventory has unsupported schema version: "
+            f"{schema_version!r}"
+        )
     if payload.get("status") != "complete":
         raise DiaulosInventoryError(
             f"live Diaulos inventory is not complete: {payload.get('status') or 'missing'}"
@@ -126,6 +152,11 @@ def _parse_inventory_payload(
         pane_id = _required_int(row.get("pane_id"), f"row {index} pane_id")
         if not handle:
             raise DiaulosInventoryError(f"live Diaulos row {index} has no handle")
+        diaulos_id = str(row.get("diaulos_id") or "").strip()
+        if require_diaulos_id and not diaulos_id:
+            raise DiaulosInventoryError(
+                f"live Diaulos row {index} has no Diaulos ID"
+            )
         identity = (handle, pane_id)
         handle_panes = panes_by_handle.setdefault(handle, set())
         if handle_panes and pane_id not in handle_panes:
@@ -158,7 +189,7 @@ def _parse_inventory_payload(
         candidates.append(
             DiaulosCandidate(
                 handle=handle,
-                diaulos_id=str(row.get("diaulos_id") or "").strip(),
+                diaulos_id=diaulos_id,
                 aliases=tuple(
                     str(value).strip()
                     for value in aliases_raw

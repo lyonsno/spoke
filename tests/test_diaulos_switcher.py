@@ -25,6 +25,7 @@ from spoke.diaulos_switcher import (
 
 def _payload(count: int = 3) -> dict:
     return {
+        "schema_version": 1,
         "status": "complete",
         "observed_at": "2026-07-17T20:00:00Z",
         "discovery_authority": "complete-live-pane-enumeration",
@@ -67,6 +68,7 @@ def _selected_pane_payload(candidate, **overrides) -> dict:
     }
     entry.update(overrides.pop("entry", {}))
     payload = {
+        "schema_version": 1,
         "status": "complete",
         "observed_at": "2026-08-31T12:10:51Z",
         "discovery_authority": "exact-selected-pane-enumeration",
@@ -75,6 +77,8 @@ def _selected_pane_payload(candidate, **overrides) -> dict:
         "runtime_lineage_required": True,
         "entries": [entry],
         "excluded": [],
+        "identity_conflicts": [],
+        "identity_warnings": [],
     }
     payload.update(overrides)
     return payload
@@ -286,6 +290,157 @@ def test_activation_refuses_recycled_pane_with_different_live_lineage(tmp_path):
             "--json",
         ]
     ]
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    [None, "1", 999],
+    ids=["missing", "non-integer", "unsupported"],
+)
+def test_activation_rejects_unversioned_selected_pane_receipt(
+    tmp_path, schema_version
+):
+    calls: list[list[str]] = []
+    candidate = parse_live_inventory(_payload(1))[0]
+    selected = _selected_pane_payload(candidate)
+    if schema_version is None:
+        selected.pop("schema_version")
+    else:
+        selected["schema_version"] = schema_version
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(selected), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+
+    with pytest.raises(DiaulosActivationError, match="schema version"):
+        client.activate(candidate)
+
+    assert len(calls) == 1
+    assert calls[0][-3:] == ["--pane-id", "10", "--json"]
+
+
+@pytest.mark.parametrize(
+    ("evidence_field", "message"),
+    [
+        ("identity_conflicts", "identity conflict"),
+        ("identity_warnings", "identity ambiguity"),
+    ],
+)
+def test_activation_rejects_selected_pane_unresolved_identity(
+    tmp_path, evidence_field, message
+):
+    calls: list[list[str]] = []
+    candidate = parse_live_inventory(_payload(1))[0]
+    selected = _selected_pane_payload(
+        candidate,
+        **{
+            evidence_field: [{
+                "pane_id": candidate.pane_id,
+                "workspace_handle": candidate.handle,
+                "endpoint_handle": "conflicting-owner",
+                "reason": "endpoint_workspace_identity_conflict",
+            }],
+        },
+    )
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(selected), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+
+    with pytest.raises(DiaulosActivationError, match=message):
+        client.activate(candidate)
+
+    assert len(calls) == 1
+    assert calls[0][-3:] == ["--pane-id", "10", "--json"]
+
+
+def test_activation_rejects_selected_pane_without_diaulos_id(tmp_path):
+    calls: list[list[str]] = []
+    candidate = parse_live_inventory(_payload(1))[0]
+    selected = _selected_pane_payload(candidate, entry={"diaulos_id": ""})
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(selected), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+
+    with pytest.raises(DiaulosActivationError, match="Diaulos ID"):
+        client.activate(candidate)
+
+    assert len(calls) == 1
+    assert calls[0][-3:] == ["--pane-id", "10", "--json"]
+
+
+def test_activation_reports_selected_and_current_routes_from_exclusion(tmp_path):
+    calls: list[list[str]] = []
+    candidate = parse_live_inventory(_payload(1))[0]
+    selected = _selected_pane_payload(
+        candidate,
+        entries=[],
+        excluded=[{
+            "handle": candidate.handle,
+            "pane_id": candidate.pane_id,
+            "reason": "route_identity_mismatch",
+            "mismatched_fields": ["tty"],
+            "selected_route": {
+                "handle": candidate.handle,
+                "diaulos_id": candidate.diaulos_id,
+                "tty": candidate.tty,
+                "resume_backend": candidate.resume_backend,
+                "thread_id": candidate.thread_id,
+            },
+            "current_route": {
+                "handle": "beaming-baby-cloud-milk",
+                "diaulos_id": "dia-beaming",
+                "tty": "/dev/ttys037",
+                "resume_backend": "codex",
+                "thread_id": "different-thread",
+            },
+        }],
+    )
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(selected), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+
+    with pytest.raises(DiaulosActivationError) as error:
+        client.activate(candidate)
+
+    message = str(error.value)
+    assert candidate.handle in message
+    assert candidate.tty in message
+    assert candidate.thread_id in message
+    assert "beaming-baby-cloud-milk" in message
+    assert "/dev/ttys037" in message
+    assert "different-thread" in message
+    assert len(calls) == 1
 
 
 def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
