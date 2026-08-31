@@ -2082,6 +2082,49 @@ class TestModelPicker:
         assert preview == "mlx-community/whisper-base.en-mlx-8bit"
         assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
 
+    def test_unavailable_explicit_nemotron_route_fails_loud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": "mlx-community/whisper-medium.en-mlx",
+        }
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", main_module._NEMOTRON_CPU_MODEL_ID
+        )
+
+        with patch.object(
+            main_module.NemotronCPUClient,
+            "availability_error",
+            return_value="missing CPU executable and pinned GGUF",
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="explicit transcription model.*missing CPU executable and pinned GGUF",
+            ):
+                d._resolve_model_ids()
+
+    def test_unavailable_saved_nemotron_preference_is_repaired(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": main_module._NEMOTRON_CPU_MODEL_ID,
+        }
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+
+        with patch.object(
+            main_module.NemotronCPUClient,
+            "availability_error",
+            return_value="missing pinned GGUF",
+        ):
+            _preview, transcription = d._resolve_model_ids()
+
+        assert transcription != main_module._NEMOTRON_CPU_MODEL_ID
+
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 15.0)

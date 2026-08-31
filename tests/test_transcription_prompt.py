@@ -27,7 +27,7 @@ def test_prompt_provider_reloads_caller_owned_file_and_preserves_all_text(tmp_pa
     assert second.sha256 != first.sha256
 
 
-def test_prompt_provider_receipt_distinguishes_requested_from_effective(tmp_path):
+def test_prompt_provider_receipt_distinguishes_observed_delivery_stages(tmp_path):
     provider = TranscriptionPromptProvider(
         path=Path(tmp_path / "missing.txt"),
         inline="Spoke, WhisperKit.",
@@ -36,11 +36,20 @@ def test_prompt_provider_receipt_distinguishes_requested_from_effective(tmp_path
 
     prompt = provider.resolve()
 
-    assert prompt.receipt(supported=False, effective=False) == {
-        "schema": "spoke.transcription-prompt.v1",
+    assert prompt.receipt(
+        supported=False,
+        payload_constructed=False,
+        submission_attempted=False,
+        runtime_accepted=None,
+    ) == {
+        "schema": "spoke.transcription-prompt.v2",
         "requested": True,
+        "source_resolved": True,
         "supported": False,
-        "effective": False,
+        "payload_constructed": False,
+        "submission_attempted": False,
+        "runtime_accepted": None,
+        "semantic_effect_observed": None,
         "sha256": prompt.sha256,
         "char_count": len("Spoke, WhisperKit."),
         "sources": ["env:SPOKE_TRANSCRIPTION_PROMPT"],

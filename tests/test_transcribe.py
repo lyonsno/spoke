@@ -101,7 +101,10 @@ class TestTranscriptionClient:
         assert call_kwargs["data"]["prompt"] == "Kaminos, Trellis2MLX."
         assert client._last_prompt_receipt["requested"] is True
         assert client._last_prompt_receipt["supported"] is True
-        assert client._last_prompt_receipt["effective"] is True
+        assert client._last_prompt_receipt["payload_constructed"] is True
+        assert client._last_prompt_receipt["submission_attempted"] is True
+        assert client._last_prompt_receipt["runtime_accepted"] is None
+        assert client._last_prompt_receipt["semantic_effect_observed"] is None
         assert client._last_prompt_receipt["sources"] == [f"file:{prompt_path}"]
 
     @patch("spoke.transcribe.httpx.Client")
@@ -124,7 +127,9 @@ class TestTranscriptionClient:
         assert "prompt" not in mock_client.post.call_args.kwargs["data"]
         assert client._last_prompt_receipt["requested"] is False
         assert client._last_prompt_receipt["supported"] is True
-        assert client._last_prompt_receipt["effective"] is False
+        assert client._last_prompt_receipt["payload_constructed"] is False
+        assert client._last_prompt_receipt["submission_attempted"] is False
+        assert client._last_prompt_receipt["runtime_accepted"] is None
 
     @patch("spoke.transcribe.httpx.Client")
     def test_transcribe_strips_whitespace(self, MockClient):

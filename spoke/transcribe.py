@@ -64,17 +64,21 @@ class TranscriptionClient:
             data["prompt"] = prompt.text
         self._last_prompt_receipt = prompt.receipt(
             supported=True,
-            effective=bool(prompt.text),
+            payload_constructed=bool(prompt.text),
+            submission_attempted=False,
+            runtime_accepted=None,
         )
         logger.info(
-            "Remote transcription prompt: requested=%s supported=true effective=%s "
+            "Remote transcription prompt: requested=%s supported=true payload=%s "
             "sha256=%s chars=%d sources=%s",
             self._last_prompt_receipt["requested"],
-            self._last_prompt_receipt["effective"],
+            self._last_prompt_receipt["payload_constructed"],
             prompt.sha256,
             prompt.char_count,
             ",".join(prompt.sources) or "none",
         )
+        if prompt.text:
+            self._last_prompt_receipt["submission_attempted"] = True
         resp = self._client.post(
             self._url,
             files={"file": ("audio.wav", wav_bytes, "audio/wav")},

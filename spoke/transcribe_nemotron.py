@@ -14,7 +14,7 @@ import tempfile
 import time
 import wave
 
-from .dedup import is_hallucination, repair_ontology_terms, truncate_repetition
+from .dedup import repair_ontology_terms
 from .transcription_prompt import TranscriptionPromptProvider
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,15 @@ _NEMOTRON_FILENAME = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 _NEMOTRON_EXPECTED_SHA256 = (
     "a5c435f294eea8f88ce68dd27b8c3bfea7f777cb2fbba04fcd30eaa555f429ae"
 )
-_DEFAULT_BINARY = Path.home() / ".local" / "share" / "spoke" / "nemo-speech-cpu" / "bin" / "nemo-speech"
+_DEFAULT_BINARY = (
+    Path.home()
+    / ".local"
+    / "share"
+    / "spoke"
+    / "nemo-speech-cpu"
+    / "bin"
+    / "nemo-speech"
+)
 _DEFAULT_MODEL = (
     Path.home()
     / "Library"
@@ -65,9 +73,7 @@ def _resolve_timeout(timeout: float | None = None) -> float | None:
         raise NemotronCPUError(
             f"SPOKE_NEMOTRON_TIMEOUT must be numeric or 'off', got {value!r}"
         ) from exc
-    if parsed <= 0:
-        return None
-    return parsed
+    return parsed if parsed > 0 else None
 
 
 def _resolve_boost(boost: float | None = None) -> float:
@@ -116,6 +122,45 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _subprocess_output_bytes(value: bytes | str | None) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    raise TypeError(f"subprocess output has unsupported type {type(value).__name__}")
+
+
+def _decode_subprocess_output(value: bytes | str | None) -> str:
+    if isinstance(value, str):
+        return value
+    return _subprocess_output_bytes(value).decode("utf-8", errors="strict")
+
+
+def _opaque_output_evidence(
+    *, stdout: bytes | str | None, stderr: bytes | str | None
+) -> dict[str, int | str]:
+    evidence: dict[str, int | str] = {}
+    for name, value in (("stdout", stdout), ("stderr", stderr)):
+        raw = _subprocess_output_bytes(value)
+        evidence[f"{name}_bytes"] = len(raw)
+        evidence[f"{name}_sha256"] = hashlib.sha256(raw).hexdigest()
+    return evidence
+
+
+def _controlled_child_environment() -> tuple[dict[str, str], list[str]]:
+    environment = os.environ.copy()
+    removed = sorted(
+        key
+        for key in environment
+        if key == "NEMO_SPEECH" or key.startswith("NEMO_SPEECH_")
+    )
+    for key in removed:
+        environment.pop(key, None)
+    return environment, removed
+
+
 class NemotronCPUClient:
     """Transcribe one complete WAV through a pinned, CPU-only runtime."""
 
@@ -156,11 +201,11 @@ class NemotronCPUClient:
         self._last_receipt: dict | None = None
 
     @staticmethod
-    def available(
+    def availability_error(
         *,
         binary: str | os.PathLike[str] | None = None,
         model_path: str | os.PathLike[str] | None = None,
-    ) -> bool:
+    ) -> str | None:
         resolved_binary = (
             Path(binary).expanduser()
             if binary is not None
@@ -171,20 +216,33 @@ class NemotronCPUClient:
             if model_path is not None
             else _configured_path("SPOKE_NEMOTRON_MODEL", _DEFAULT_MODEL)
         )
-        return (
-            resolved_binary.is_file()
-            and os.access(resolved_binary, os.X_OK)
-            and resolved_model.is_file()
-        )
+        missing: list[str] = []
+        if not resolved_binary.is_file() or not os.access(resolved_binary, os.X_OK):
+            missing.append(f"CPU nemo-speech executable {resolved_binary}")
+        if not resolved_model.is_file():
+            missing.append(f"pinned Nemotron GGUF {resolved_model}")
+        return "; ".join(missing) if missing else None
+
+    @staticmethod
+    def available(
+        *,
+        binary: str | os.PathLike[str] | None = None,
+        model_path: str | os.PathLike[str] | None = None,
+    ) -> bool:
+        return NemotronCPUClient.availability_error(
+            binary=binary,
+            model_path=model_path,
+        ) is None
 
     def prepare(self) -> None:
-        missing: list[str] = []
-        if not self._binary.is_file() or not os.access(self._binary, os.X_OK):
-            missing.append(f"CPU nemo-speech executable {self._binary}")
-        if not self._model_path.is_file():
-            missing.append(f"pinned Nemotron GGUF {self._model_path}")
-        if missing:
-            raise NemotronCPUError("Nemotron CPU route is not seated: " + "; ".join(missing))
+        availability_error = self.availability_error(
+            binary=self._binary,
+            model_path=self._model_path,
+        )
+        if availability_error is not None:
+            raise NemotronCPUError(
+                "Nemotron CPU route is not seated: " + availability_error
+            )
         model_stat = self._model_path.stat()
         stat_identity = (
             model_stat.st_dev,
@@ -194,128 +252,187 @@ class NemotronCPUClient:
         )
         if stat_identity != self._verified_model_stat:
             actual_sha256 = _sha256_file(self._model_path)
+            self._model_sha256_actual = actual_sha256
             if actual_sha256 != self._expected_model_sha256:
                 raise NemotronCPUError(
                     "Nemotron GGUF SHA-256 mismatch: "
                     f"expected {self._expected_model_sha256}, got {actual_sha256} "
                     f"for {self._model_path}"
                 )
-            self._model_sha256_actual = actual_sha256
             self._verified_model_stat = stat_identity
 
     def transcribe(self, wav_bytes: bytes) -> str:
         if not wav_bytes:
             return ""
-        self.prepare()
+        self._last_receipt = None
+        started = time.monotonic()
+        route = self._initial_route(wav_bytes)
 
-        prompt = self._prompt_provider.resolve()
-        phrases = _prompt_phrases(prompt.text)
+        try:
+            self.prepare()
+        except Exception as exc:
+            route["model_sha256_actual"] = self._model_sha256_actual
+            self._raise_failure(
+                route,
+                phase="prepare_runtime",
+                detail=f"{type(exc).__name__}: {exc}",
+                operator_message=f"Nemotron CPU preparation failed: {exc}",
+                started=started,
+            )
+        route["model_sha256_actual"] = self._model_sha256_actual
+
+        try:
+            prompt = self._prompt_provider.resolve()
+            phrases = _prompt_phrases(prompt.text)
+        except Exception as exc:
+            self._raise_failure(
+                route,
+                phase="resolve_prompt",
+                detail=type(exc).__name__,
+                operator_message="Nemotron CPU prompt resolution failed",
+                started=started,
+            )
+
         prompt_receipt = prompt.receipt(
             supported=True,
-            effective=bool(phrases),
+            payload_constructed=bool(phrases),
+            submission_attempted=False,
+            runtime_accepted=None,
         )
-        audio_sha256 = hashlib.sha256(wav_bytes).hexdigest()
-        started = time.monotonic()
-
-        with tempfile.TemporaryDirectory(prefix="spoke-nemotron-cpu-") as td:
-            wav_path = Path(td) / "input.wav"
-            wav_path.write_bytes(wav_bytes)
-            cmd = [
-                str(self._binary),
-                "--json",
-                "transcribe",
-                str(wav_path),
-                "--model",
-                str(self._model_path),
-                "--device",
-                "cpu",
-                "--language",
-                "en",
-                "--format",
-                "json",
-                "--no-batching",
-            ]
-            for phrase in phrases:
-                cmd.extend(("--speech-context", phrase))
-            if phrases:
-                cmd.extend(
-                    ("--speech-context-boost", str(self._speech_context_boost))
-                )
-
-            route = {
-                "schema": "spoke.nemotron-cpu-transcription.v1",
-                "requested_model": _NEMOTRON_CPU_MODEL_ID,
-                "effective_model_path": str(self._model_path),
-                "model_repo": _NEMOTRON_REPO,
-                "model_revision": _NEMOTRON_REVISION,
-                "model_sha256_expected": self._expected_model_sha256,
-                "model_sha256_actual": self._model_sha256_actual,
-                "effective_binary": str(self._binary),
-                "effective_device": "cpu",
-                "streaming": False,
-                "endpointing": False,
-                "vad": False,
-                "audio_sha256": audio_sha256,
-                "audio_bytes": len(wav_bytes),
-                "audio_duration_seconds": _wav_duration_seconds(wav_bytes),
-                "prompt": prompt_receipt,
-                "speech_context_count": len(phrases),
-                "speech_context_boost": self._speech_context_boost if phrases else None,
+        route["prompt"] = prompt_receipt
+        route["speech_context_count"] = len(phrases)
+        route["speech_context_boost"] = (
+            self._speech_context_boost if phrases else None
+        )
+        child_environment, removed_environment_keys = _controlled_child_environment()
+        recognizer_configuration = {
+            "authority": "explicit_cli_with_nemo_environment_cleared",
+            "streaming": False,
+            "endpointing": False,
+            "vad": False,
+        }
+        route["recognizer_configuration"] = recognizer_configuration
+        route["cleared_nemo_environment_keys"] = removed_environment_keys
+        route.update(
+            {
+                "streaming": recognizer_configuration["streaming"],
+                "endpointing": recognizer_configuration["endpointing"],
+                "vad": recognizer_configuration["vad"],
             }
-            try:
-                result = subprocess.run(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=self._timeout,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                report = self._write_failure(
-                    route,
-                    phase="transcribe_timeout",
-                    detail=str(exc),
-                    wall_seconds=time.monotonic() - started,
-                )
-                raise NemotronCPUError(
-                    f"Nemotron CPU transcription timed out; report={report}"
-                ) from exc
+        )
 
-            wall_seconds = time.monotonic() - started
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout or "").strip()
-                report = self._write_failure(
-                    route,
-                    phase="transcribe_process",
-                    detail=detail,
-                    wall_seconds=wall_seconds,
-                    exit_code=result.returncode,
-                )
-                raise NemotronCPUError(
-                    f"Nemotron CPU transcription exited {result.returncode}; report={report}"
-                )
+        try:
+            with tempfile.TemporaryDirectory(prefix="spoke-nemotron-cpu-") as td:
+                wav_path = Path(td) / "input.wav"
+                try:
+                    wav_path.write_bytes(wav_bytes)
+                except Exception as exc:
+                    self._raise_failure(
+                        route,
+                        phase="write_temporary_input",
+                        detail=f"{type(exc).__name__}: {exc}",
+                        operator_message="Nemotron CPU temporary input write failed",
+                        started=started,
+                    )
+                cmd = self._command(wav_path, phrases)
+                if phrases:
+                    prompt_receipt["submission_attempted"] = True
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=child_environment,
+                        timeout=self._timeout,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    self._raise_failure(
+                        route,
+                        phase="transcribe_timeout",
+                        detail="nemo-speech exceeded the explicit timeout",
+                        operator_message="Nemotron CPU transcription timed out",
+                        started=started,
+                    )
+                except Exception as exc:
+                    self._raise_failure(
+                        route,
+                        phase="process_launch",
+                        detail=f"{type(exc).__name__}: {exc}",
+                        operator_message="Nemotron CPU process launch failed",
+                        started=started,
+                    )
 
-            try:
-                payload = json.loads(result.stdout)
-                text = payload["text"]
-                if not isinstance(text, str):
-                    raise TypeError("text is not a string")
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
-                report = self._write_failure(
-                    route,
-                    phase="parse_output",
-                    detail=f"{type(exc).__name__}: {exc}",
-                    wall_seconds=wall_seconds,
-                )
-                raise NemotronCPUError(
-                    f"Nemotron CPU returned invalid JSON output; report={report}"
-                ) from exc
+                wall_seconds = time.monotonic() - started
+                if result.returncode != 0:
+                    self._raise_failure(
+                        route,
+                        phase="transcribe_process",
+                        detail=f"nemo-speech exited with status {result.returncode}",
+                        operator_message=(
+                            f"Nemotron CPU transcription exited {result.returncode}"
+                        ),
+                        started=started,
+                        exit_code=result.returncode,
+                        evidence=_opaque_output_evidence(
+                            stdout=result.stdout,
+                            stderr=result.stderr,
+                        ),
+                    )
+                try:
+                    stdout_text = _decode_subprocess_output(result.stdout)
+                except Exception as exc:
+                    self._raise_failure(
+                        route,
+                        phase="decode_output",
+                        detail=type(exc).__name__,
+                        operator_message="Nemotron CPU output decoding failed",
+                        started=started,
+                        evidence=_opaque_output_evidence(
+                            stdout=result.stdout,
+                            stderr=result.stderr,
+                        ),
+                    )
+                try:
+                    payload = json.loads(stdout_text)
+                    text = payload["text"]
+                    if not isinstance(text, str):
+                        raise TypeError("text is not a string")
+                except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                    self._raise_failure(
+                        route,
+                        phase="parse_output",
+                        detail=f"{type(exc).__name__}: {exc}",
+                        operator_message="Nemotron CPU returned invalid JSON output",
+                        started=started,
+                        evidence=_opaque_output_evidence(
+                            stdout=result.stdout,
+                            stderr=result.stderr,
+                        ),
+                    )
+        except NemotronCPUError:
+            raise
+        except Exception as exc:
+            self._raise_failure(
+                route,
+                phase="temporary_input",
+                detail=f"{type(exc).__name__}: {exc}",
+                operator_message="Nemotron CPU temporary input handling failed",
+                started=started,
+            )
 
-        text = truncate_repetition(text.strip())
+        text = text.strip()
+        if not text:
+            self._raise_failure(
+                route,
+                phase="validate_output",
+                detail="nemo-speech returned a blank transcript",
+                operator_message="Nemotron CPU returned a blank transcript",
+                started=started,
+            )
         text = repair_ontology_terms(text)
-        if is_hallucination(text):
-            text = ""
+        if phrases:
+            prompt_receipt["runtime_accepted"] = True
         self._last_receipt = {
             **route,
             "status": "success",
@@ -331,6 +448,89 @@ class NemotronCPUClient:
         )
         return text
 
+    def _initial_route(self, wav_bytes: bytes) -> dict:
+        return {
+            "schema": "spoke.nemotron-cpu-transcription.v2",
+            "requested_model": _NEMOTRON_CPU_MODEL_ID,
+            "effective_model_path": str(self._model_path),
+            "model_repo": _NEMOTRON_REPO,
+            "model_revision": _NEMOTRON_REVISION,
+            "model_sha256_expected": self._expected_model_sha256,
+            "model_sha256_actual": None,
+            "effective_binary": str(self._binary),
+            "effective_device": "cpu",
+            "audio_sha256": hashlib.sha256(wav_bytes).hexdigest(),
+            "audio_bytes": len(wav_bytes),
+            "audio_duration_seconds": _wav_duration_seconds(wav_bytes),
+            "prompt": None,
+            "speech_context_count": 0,
+            "speech_context_boost": None,
+        }
+
+    def _command(self, wav_path: Path, phrases: list[str]) -> list[str]:
+        cmd = [
+            str(self._binary),
+            "--json",
+            "transcribe",
+            str(wav_path),
+            "--model",
+            str(self._model_path),
+            "--device",
+            "cpu",
+            "--language",
+            "en",
+            "--format",
+            "json",
+            "--no-batching",
+        ]
+        for phrase in phrases:
+            cmd.extend(("--speech-context", phrase))
+        if phrases:
+            cmd.extend(("--speech-context-boost", str(self._speech_context_boost)))
+        return cmd
+
+    def _raise_failure(
+        self,
+        route: dict,
+        *,
+        phase: str,
+        detail: str,
+        operator_message: str,
+        started: float,
+        exit_code: int | None = None,
+        evidence: dict | None = None,
+    ) -> None:
+        wall_seconds = time.monotonic() - started
+        try:
+            report = self._write_failure(
+                route,
+                phase=phase,
+                detail=detail,
+                wall_seconds=wall_seconds,
+                exit_code=exit_code,
+                evidence=evidence,
+            )
+        except Exception as report_exc:
+            self._last_receipt = {
+                **route,
+                "status": "failure",
+                "failure_phase": phase,
+                "detail": detail,
+                "exit_code": exit_code,
+                "wall_seconds": wall_seconds,
+                "evidence": evidence or {},
+                "report_publication": {
+                    "status": "failure",
+                    "error_type": type(report_exc).__name__,
+                    "detail": str(report_exc),
+                },
+            }
+            raise NemotronCPUError(
+                f"{operator_message}; failure report publication failed "
+                f"({type(report_exc).__name__}: {report_exc})"
+            ) from None
+        raise NemotronCPUError(f"{operator_message}; report={report}") from None
+
     def _write_failure(
         self,
         route: dict,
@@ -339,6 +539,7 @@ class NemotronCPUClient:
         detail: str,
         wall_seconds: float,
         exit_code: int | None = None,
+        evidence: dict | None = None,
     ) -> Path:
         self._failure_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
@@ -350,9 +551,13 @@ class NemotronCPUClient:
             "detail": detail,
             "exit_code": exit_code,
             "wall_seconds": wall_seconds,
+            "evidence": evidence or {},
         }
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
         temporary.replace(path)
         self._last_receipt = payload
         return path
@@ -368,6 +573,29 @@ def _write_replay_report(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
+def _receipt_proves_cpu_full_buffer(receipt: dict, audio_sha256: str) -> bool:
+    configuration = receipt.get("recognizer_configuration")
+    return bool(
+        receipt.get("status") == "success"
+        and receipt.get("requested_model") == _NEMOTRON_CPU_MODEL_ID
+        and receipt.get("effective_binary")
+        and receipt.get("effective_model_path")
+        and receipt.get("effective_device") == "cpu"
+        and receipt.get("model_sha256_actual")
+        and receipt.get("model_sha256_actual") == receipt.get("model_sha256_expected")
+        and receipt.get("audio_sha256") == audio_sha256
+        and receipt.get("streaming") is False
+        and receipt.get("endpointing") is False
+        and receipt.get("vad") is False
+        and isinstance(configuration, dict)
+        and configuration.get("authority")
+        == "explicit_cli_with_nemo_environment_cleared"
+        and configuration.get("streaming") is False
+        and configuration.get("endpointing") is False
+        and configuration.get("vad") is False
+    )
+
+
 def run_replay(
     input_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
@@ -377,7 +605,22 @@ def run_replay(
     """Replay one retained WAV and preserve success or failure evidence."""
     source = Path(input_path).expanduser()
     destination = Path(output_path).expanduser()
-    wav_bytes = source.read_bytes()
+    try:
+        wav_bytes = source.read_bytes()
+    except Exception as exc:
+        _write_replay_report(
+            destination,
+            {
+                "schema": "spoke.nemotron-cpu-replay.v2",
+                "status": "failure",
+                "failure_phase": "read_input",
+                "input_path": str(source),
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise NemotronCPUError(
+            f"Nemotron replay input is unavailable; report={destination}"
+        ) from None
     expected_audio_sha256 = hashlib.sha256(wav_bytes).hexdigest()
     active_client = client or NemotronCPUClient()
     started = time.monotonic()
@@ -386,17 +629,9 @@ def run_replay(
         receipt = active_client._last_receipt
         if not isinstance(receipt, dict):
             raise NemotronCPUError("Replay route identity is missing")
-        identity_ok = (
-            receipt.get("requested_model") == _NEMOTRON_CPU_MODEL_ID
-            and receipt.get("effective_device") == "cpu"
-            and receipt.get("audio_sha256") == expected_audio_sha256
-            and receipt.get("streaming") is False
-            and receipt.get("endpointing") is False
-            and receipt.get("vad") is False
-        )
-        if not identity_ok:
+        if not _receipt_proves_cpu_full_buffer(receipt, expected_audio_sha256):
             report = {
-                "schema": "spoke.nemotron-cpu-replay.v1",
+                "schema": "spoke.nemotron-cpu-replay.v2",
                 "status": "failure",
                 "failure_phase": "route_identity",
                 "input_path": str(source),
@@ -407,10 +642,11 @@ def run_replay(
             report.pop("transcript", None)
             _write_replay_report(destination, report)
             raise NemotronCPUError(
-                f"Nemotron replay route identity did not prove CPU/full-buffer use; report={destination}"
+                "Nemotron replay route identity did not prove CPU/full-buffer use; "
+                f"report={destination}"
             )
         report = {
-            "schema": "spoke.nemotron-cpu-replay.v1",
+            "schema": "spoke.nemotron-cpu-replay.v2",
             "status": "success",
             "input_path": str(source),
             "transcript": transcript,
@@ -422,7 +658,7 @@ def run_replay(
         if not destination.exists():
             receipt = getattr(active_client, "_last_receipt", None)
             report = {
-                "schema": "spoke.nemotron-cpu-replay.v1",
+                "schema": "spoke.nemotron-cpu-replay.v2",
                 "status": "failure",
                 "failure_phase": (
                     receipt.get("failure_phase", "transcription")

@@ -111,7 +111,10 @@ class TestLocalTranscriptionClient:
         assert call_kwargs["initial_prompt"] == "Kaminos, CoreML, ANE."
         assert client._last_prompt_receipt["requested"] is True
         assert client._last_prompt_receipt["supported"] is True
-        assert client._last_prompt_receipt["effective"] is True
+        assert client._last_prompt_receipt["payload_constructed"] is True
+        assert client._last_prompt_receipt["submission_attempted"] is True
+        assert client._last_prompt_receipt["runtime_accepted"] is True
+        assert client._last_prompt_receipt["semantic_effect_observed"] is None
         assert client._last_prompt_receipt["sources"] == [f"file:{prompt_path}"]
 
     @patch("spoke.transcribe_local.supports_initial_prompt", return_value=False)
@@ -139,7 +142,9 @@ class TestLocalTranscriptionClient:
         assert "initial_prompt" not in mock_mlx_whisper.transcribe.call_args.kwargs
         assert client._last_prompt_receipt["requested"] is True
         assert client._last_prompt_receipt["supported"] is False
-        assert client._last_prompt_receipt["effective"] is False
+        assert client._last_prompt_receipt["payload_constructed"] is False
+        assert client._last_prompt_receipt["submission_attempted"] is False
+        assert client._last_prompt_receipt["runtime_accepted"] is None
 
     @patch("spoke.transcribe_local.supports_eager_eval", return_value=True)
     @patch("spoke.transcribe_local.mlx_whisper", create=True)

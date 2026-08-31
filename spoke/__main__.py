@@ -6071,18 +6071,33 @@ class SpokeAppDelegate(NSObject):
     def _resolve_model_ids(self) -> tuple[str, str]:
         prefs = self._load_model_preferences()
         legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
+        explicit_preview_model = os.environ.get("SPOKE_PREVIEW_MODEL") or legacy_model
+        explicit_transcription_model = (
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL") or legacy_model
+        )
         raw_preview_model = (
-            os.environ.get("SPOKE_PREVIEW_MODEL")
+            explicit_preview_model
             or legacy_model
             or prefs.get("preview_model")
             or _DEFAULT_PREVIEW_MODEL
         )
         raw_transcription_model = (
-            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            explicit_transcription_model
             or legacy_model
             or prefs.get("transcription_model")
             or self._default_transcription_model()
         )
+        for role, explicit_model in (
+            ("preview", explicit_preview_model),
+            ("transcription", explicit_transcription_model),
+        ):
+            if explicit_model and not self._model_allowed(explicit_model):
+                detail = "not available on this machine"
+                if explicit_model == _NEMOTRON_CPU_MODEL_ID:
+                    detail = NemotronCPUClient.availability_error() or detail
+                raise RuntimeError(
+                    f"explicit {role} model {explicit_model} is unavailable: {detail}"
+                )
         preview_model, transcription_model = self._sanitize_model_ids(
             raw_preview_model,
             raw_transcription_model,

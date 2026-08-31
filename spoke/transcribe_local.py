@@ -295,10 +295,12 @@ class LocalTranscriptionClient:
             kwargs["initial_prompt"] = prompt.text
         self._last_prompt_receipt = prompt.receipt(
             supported=prompt_supported,
-            effective=prompt_effective,
+            payload_constructed=prompt_effective,
+            submission_attempted=False,
+            runtime_accepted=None,
         )
         logger.info(
-            "Local transcription prompt: requested=%s supported=%s effective=%s "
+            "Local transcription prompt: requested=%s supported=%s payload=%s "
             "sha256=%s chars=%d sources=%s",
             self._last_prompt_receipt["requested"],
             prompt_supported,
@@ -324,7 +326,11 @@ class LocalTranscriptionClient:
         else:
             kwargs["decode_timeout"] = self._decode_timeout
 
+        if prompt_effective:
+            self._last_prompt_receipt["submission_attempted"] = True
         result = runtime_whisper.transcribe(audio, **kwargs)
+        if prompt_effective:
+            self._last_prompt_receipt["runtime_accepted"] = True
 
         text = result.get("text", "").strip()
         duration_seconds = float(len(audio)) / _WHISPER_SAMPLE_RATE

@@ -10,7 +10,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_SCHEMA = "spoke.transcription-prompt.v1"
+_PROMPT_SCHEMA = "spoke.transcription-prompt.v2"
 _DEFAULT_PROMPT_PATH = Path.home() / ".config" / "spoke" / "transcription_prompt.txt"
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _BUILTIN_PROMPT = (
@@ -29,12 +29,23 @@ class TranscriptionPrompt:
     def char_count(self) -> int:
         return len(self.text)
 
-    def receipt(self, *, supported: bool, effective: bool) -> dict:
+    def receipt(
+        self,
+        *,
+        supported: bool,
+        payload_constructed: bool,
+        submission_attempted: bool,
+        runtime_accepted: bool | None,
+    ) -> dict:
         return {
             "schema": _PROMPT_SCHEMA,
             "requested": bool(self.text),
+            "source_resolved": bool(self.text),
             "supported": supported,
-            "effective": effective,
+            "payload_constructed": payload_constructed,
+            "submission_attempted": submission_attempted,
+            "runtime_accepted": runtime_accepted,
+            "semantic_effect_observed": None,
             "sha256": self.sha256,
             "char_count": self.char_count,
             "sources": list(self.sources),
