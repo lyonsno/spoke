@@ -39,6 +39,8 @@ class DiaulosCandidate:
     window_id: int
     title: str
     cwd: str
+    tty: str
+    resume_backend: str
     thread_id: str
     match_basis: tuple[str, ...]
     observed_at: str
@@ -50,6 +52,47 @@ class DiaulosCandidate:
 
 
 def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
+    return _parse_inventory_payload(
+        payload,
+        expected_authority="complete-live-pane-enumeration",
+    )
+
+
+def _parse_selected_pane_inventory(
+    payload: Any,
+    *,
+    pane_id: int,
+) -> list[DiaulosCandidate]:
+    if not isinstance(payload, dict):
+        raise DiaulosInventoryError("selected-pane observation is not an object")
+    if payload.get("observation_scope") != "selected-pane":
+        raise DiaulosInventoryError(
+            "selected-pane observation does not name selected-pane scope"
+        )
+    observed_pane_id = _required_int(
+        payload.get("requested_pane_id"),
+        "selected-pane observation requested_pane_id",
+    )
+    if observed_pane_id != pane_id:
+        raise DiaulosInventoryError(
+            f"selected-pane observation targeted pane {observed_pane_id}, not {pane_id}"
+        )
+    candidates = _parse_inventory_payload(
+        payload,
+        expected_authority="exact-selected-pane-enumeration",
+    )
+    if len(candidates) > 1:
+        raise DiaulosInventoryError(
+            "selected-pane observation returned multiple current identities"
+        )
+    return candidates
+
+
+def _parse_inventory_payload(
+    payload: Any,
+    *,
+    expected_authority: str,
+) -> list[DiaulosCandidate]:
     if not isinstance(payload, dict):
         raise DiaulosInventoryError("live Diaulos inventory is not an object")
     if payload.get("status") != "complete":
@@ -60,9 +103,13 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
     if not observed_at:
         raise DiaulosInventoryError("live Diaulos inventory has no observation timestamp")
     authority = str(payload.get("discovery_authority") or "").strip()
-    if authority != "complete-live-pane-enumeration":
+    if authority != expected_authority:
         raise DiaulosInventoryError(
             f"live Diaulos inventory has non-authoritative discovery route: {authority or 'missing'}"
+        )
+    if payload.get("runtime_lineage_required") is not True:
+        raise DiaulosInventoryError(
+            "live Diaulos inventory does not require runtime lineage"
         )
     rows = payload.get("entries")
     if not isinstance(rows, list):
@@ -122,7 +169,15 @@ def parse_live_inventory(payload: Any) -> list[DiaulosCandidate]:
                 window_id=window_id,
                 title=str(row.get("title") or "").strip(),
                 cwd=cwd,
-                thread_id=str(row.get("thread_id") or "").strip(),
+                tty=_required_text(row.get("tty"), f"row {index} tty"),
+                resume_backend=_required_text(
+                    row.get("resume_backend"),
+                    f"row {index} resume_backend",
+                ),
+                thread_id=_required_text(
+                    row.get("thread_id"),
+                    f"row {index} thread_id",
+                ),
                 match_basis=tuple(
                     str(value).strip()
                     for value in row.get("match_basis") or []
@@ -185,6 +240,7 @@ class EpistaxisDiaulosClient:
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         timeout_seconds: float | None = None,
         epistaxis_executable: str | None = None,
+        epistaxis_repo_root: str | Path | None = None,
         wezterm_executable: str | None = None,
         snapshot_path: str | Path | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -192,6 +248,16 @@ class EpistaxisDiaulosClient:
         self._runner = runner
         self._timeout_seconds = timeout_seconds
         self._epistaxis_executable = epistaxis_executable
+        self._epistaxis_repo_root = Path(
+            epistaxis_repo_root
+            or os.environ.get("EPISTAXIS_READ_REPO_ROOT", "").strip()
+            or Path.home()
+            / ".local"
+            / "state"
+            / "epistaxis"
+            / "directive-state"
+            / "epistaxis"
+        ).expanduser()
         self._wezterm_executable = (
             wezterm_executable
             or os.environ.get("WEZTERM_CLI", "").strip()
@@ -225,7 +291,14 @@ class EpistaxisDiaulosClient:
         return parse_live_inventory(payload)
 
     def refresh(self) -> list[DiaulosCandidate]:
-        command = ["epistaxis", "diaulos", "live", "--json"]
+        command = [
+            "epistaxis",
+            "diaulos",
+            "live",
+            "--repo-root",
+            str(self._epistaxis_repo_root),
+            "--json",
+        ]
         result = self._run_epistaxis(command)
         if result.returncode:
             raise DiaulosInventoryError(
@@ -240,6 +313,44 @@ class EpistaxisDiaulosClient:
         return candidates
 
     def activate(self, candidate: DiaulosCandidate) -> dict[str, Any]:
+        probe_command = [
+            "epistaxis",
+            "diaulos",
+            "live",
+            "--repo-root",
+            str(self._epistaxis_repo_root),
+            "--pane-id",
+            str(candidate.pane_id),
+            "--json",
+        ]
+        try:
+            result = self._run_epistaxis(probe_command)
+        except DiaulosInventoryError as exc:
+            raise DiaulosActivationError(str(exc)) from exc
+        if result.returncode:
+            raise DiaulosActivationError(
+                result.stderr.strip()
+                or f"selected-pane lineage observation exited {result.returncode}"
+            )
+        try:
+            payload = json.loads(result.stdout)
+            current_candidates = _parse_selected_pane_inventory(
+                payload,
+                pane_id=candidate.pane_id,
+            )
+        except (json.JSONDecodeError, TypeError, DiaulosInventoryError) as exc:
+            raise DiaulosActivationError(
+                f"selected-pane lineage observation was invalid: {exc}"
+            ) from exc
+        if len(current_candidates) != 1:
+            exclusions = payload.get("excluded")
+            raise DiaulosActivationError(
+                "selected route no longer has one exact current lineage; "
+                f"selected={_format_route(candidate)}; excluded={exclusions!r}"
+            )
+        current = current_candidates[0]
+        self._verify_selected_identity(candidate, current)
+
         list_command = self._wezterm_command("list", "--format", "json")
         result = self._run_process(list_command, DiaulosActivationError)
         if result.returncode:
@@ -291,7 +402,9 @@ class EpistaxisDiaulosClient:
             "expected_pane_id": candidate.pane_id,
             "tab_id": candidate.tab_id,
             "window_id": candidate.window_id,
-            "verification": "direct-wezterm-pane-enumeration",
+            "verification": (
+                "selected-pane-lineage-and-direct-wezterm-enumeration"
+            ),
         }
 
     def _run_epistaxis(self, command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -373,6 +486,34 @@ class EpistaxisDiaulosClient:
         return command
 
     @staticmethod
+    def _verify_selected_identity(
+        selected: DiaulosCandidate,
+        current: DiaulosCandidate,
+    ) -> None:
+        fields = (
+            "handle",
+            "diaulos_id",
+            "pane_id",
+            "tab_id",
+            "window_id",
+            "cwd",
+            "tty",
+            "resume_backend",
+            "thread_id",
+        )
+        changed = [
+            field
+            for field in fields
+            if getattr(selected, field) != getattr(current, field)
+        ]
+        if changed:
+            raise DiaulosActivationError(
+                "selected pane lineage changed "
+                f"({', '.join(changed)}); selected={_format_route(selected)}; "
+                f"current={_format_route(current)}"
+            )
+
+    @staticmethod
     def _verify_live_route(
         candidate: DiaulosCandidate,
         live: dict[str, Any],
@@ -397,6 +538,11 @@ class EpistaxisDiaulosClient:
             raise DiaulosActivationError(
                 f"selected pane cwd changed from {candidate.cwd} to {observed_cwd or 'missing'}"
             )
+        observed_tty = str(live.get("tty_name") or live.get("tty") or "").strip()
+        if observed_tty != candidate.tty:
+            raise DiaulosActivationError(
+                f"selected pane tty changed from {candidate.tty} to {observed_tty or 'missing'}"
+            )
 
 
 def _epistaxis_search_path() -> str:
@@ -419,6 +565,8 @@ def _subprocess_phase(command: Sequence[str]) -> str:
     if "list" in command and "--format" in command:
         return "wezterm_list"
     if "diaulos" in command and "live" in command:
+        if "--pane-id" in command:
+            return "epistaxis_selected_pane_lineage"
         return "epistaxis_live_inventory"
     return "unknown"
 
@@ -455,6 +603,22 @@ def _required_int(value: Any, field: str) -> int:
     if parsed is None:
         raise DiaulosInventoryError(f"{field} is missing")
     return parsed
+
+
+def _required_text(value: Any, field: str) -> str:
+    parsed = str(value or "").strip()
+    if not parsed:
+        raise DiaulosInventoryError(f"{field} is missing")
+    return parsed
+
+
+def _format_route(candidate: DiaulosCandidate) -> str:
+    return (
+        f"handle={candidate.handle!r} diaulos_id={candidate.diaulos_id!r} "
+        f"lineage={candidate.resume_backend}:{candidate.thread_id} "
+        f"pane={candidate.pane_id} tty={candidate.tty!r} tab={candidate.tab_id} "
+        f"window={candidate.window_id} cwd={candidate.cwd!r}"
+    )
 
 
 def _optional_int(value: Any, field: str) -> int | None:

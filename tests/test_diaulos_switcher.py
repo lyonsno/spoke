@@ -28,6 +28,7 @@ def _payload(count: int = 3) -> dict:
         "status": "complete",
         "observed_at": "2026-07-17T20:00:00Z",
         "discovery_authority": "complete-live-pane-enumeration",
+        "runtime_lineage_required": True,
         "entries": [
             {
                 "handle": f"thing-{index}",
@@ -38,6 +39,8 @@ def _payload(count: int = 3) -> dict:
                 "window_id": 1,
                 "title": f"Thing {index}",
                 "cwd": f"/tmp/thing-{index}",
+                "tty": f"/dev/ttys{index + 10:03d}",
+                "resume_backend": "codex",
                 "thread_id": f"thread-{index}",
                 "match_basis": ["endpoint_thread_id"],
             }
@@ -45,6 +48,36 @@ def _payload(count: int = 3) -> dict:
         ],
         "excluded": [],
     }
+
+
+def _selected_pane_payload(candidate, **overrides) -> dict:
+    entry = {
+        "handle": candidate.handle,
+        "diaulos_id": candidate.diaulos_id,
+        "aliases": list(candidate.aliases),
+        "pane_id": candidate.pane_id,
+        "tab_id": candidate.tab_id,
+        "window_id": candidate.window_id,
+        "title": candidate.title,
+        "cwd": candidate.cwd,
+        "tty": candidate.tty,
+        "resume_backend": candidate.resume_backend,
+        "thread_id": candidate.thread_id,
+        "match_basis": list(candidate.match_basis),
+    }
+    entry.update(overrides.pop("entry", {}))
+    payload = {
+        "status": "complete",
+        "observed_at": "2026-08-31T12:10:51Z",
+        "discovery_authority": "exact-selected-pane-enumeration",
+        "observation_scope": "selected-pane",
+        "requested_pane_id": candidate.pane_id,
+        "runtime_lineage_required": True,
+        "entries": [entry],
+        "excluded": [],
+    }
+    payload.update(overrides)
+    return payload
 
 
 @pytest.fixture
@@ -163,12 +196,13 @@ def _live_panes(count: int = 3) -> list[dict]:
             "window_id": 1,
             "title": f"Thing {index}",
             "cwd": f"file:///tmp/thing-{index}",
+            "tty_name": f"/dev/ttys{index + 10:03d}",
         }
         for index in range(count)
     ]
 
 
-def test_client_loads_snapshot_without_epistaxis_and_activates_directly(
+def test_client_loads_snapshot_and_activates_after_selected_lineage_probe(
     tmp_path,
 ):
     calls: list[list[str]] = []
@@ -177,6 +211,11 @@ def test_client_loads_snapshot_without_epistaxis_and_activates_directly(
 
     def runner(command, **kwargs):
         calls.append(command)
+        if "diaulos" in command and "live" in command:
+            candidate = parse_live_inventory(_payload(1))[0]
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(_selected_pane_payload(candidate)), ""
+            )
         if command[-3:] == ["list", "--format", "json"]:
             return subprocess.CompletedProcess(command, 0, json.dumps(_live_panes()), "")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -184,18 +223,69 @@ def test_client_loads_snapshot_without_epistaxis_and_activates_directly(
     client = EpistaxisDiaulosClient(
         runner=runner,
         snapshot_path=snapshot,
+        epistaxis_executable="epistaxis",
+        epistaxis_repo_root="/explicit/read-mirror",
         wezterm_executable="wezterm",
     )
     candidate = client.load()[0]
     receipt = client.activate(candidate)
 
     assert calls == [
+        [
+            "epistaxis", "diaulos", "live",
+            "--repo-root", "/explicit/read-mirror",
+            "--pane-id", "10",
+            "--json",
+        ],
         ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
         ["wezterm", "cli", "--no-auto-start", "activate-pane", "--pane-id", "10"],
     ]
     assert receipt["pane_id"] == 10
     assert receipt["diaulos"] == "thing-0"
-    assert receipt["verification"] == "direct-wezterm-pane-enumeration"
+    assert receipt["verification"] == "selected-pane-lineage-and-direct-wezterm-enumeration"
+
+
+def test_activation_refuses_recycled_pane_with_different_live_lineage(tmp_path):
+    calls: list[list[str]] = []
+    candidate = parse_live_inventory(_payload(1))[0]
+    recycled = _selected_pane_payload(
+        candidate,
+        entry={
+            "handle": "beaming-baby-cloud-milk",
+            "diaulos_id": "dia-beaming",
+            "thread_id": "different-thread",
+            "tty": "/dev/ttys037",
+        },
+    )
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(recycled), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
+        epistaxis_repo_root="/explicit/read-mirror",
+        wezterm_executable="wezterm",
+    )
+
+    with pytest.raises(DiaulosActivationError) as error:
+        client.activate(candidate)
+
+    message = str(error.value)
+    assert "thing-0" in message
+    assert "beaming-baby-cloud-milk" in message
+    assert "thread-0" in message
+    assert "different-thread" in message
+    assert calls == [
+        [
+            "epistaxis", "diaulos", "live",
+            "--repo-root", "/explicit/read-mirror",
+            "--pane-id", "10",
+            "--json",
+        ]
+    ]
 
 
 def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
@@ -250,6 +340,11 @@ def test_activation_drops_inherited_wezterm_socket_from_both_cli_calls(
 
     def runner(command, **kwargs):
         observed_environments.append(dict(kwargs.get("env", os.environ)))
+        if "diaulos" in command and "live" in command:
+            candidate = parse_live_inventory(_payload(1))[0]
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(_selected_pane_payload(candidate)), ""
+            )
         if command[-3:] == ["list", "--format", "json"]:
             return subprocess.CompletedProcess(
                 command,
@@ -262,11 +357,12 @@ def test_activation_drops_inherited_wezterm_socket_from_both_cli_calls(
     client = EpistaxisDiaulosClient(
         runner=runner,
         snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
         wezterm_executable="wezterm",
     )
     client.activate(parse_live_inventory(_payload(1))[0])
 
-    assert len(observed_environments) == 2
+    assert len(observed_environments) == 3
     assert all(
         "WEZTERM_UNIX_SOCKET" not in environment
         for environment in observed_environments
@@ -347,11 +443,16 @@ def test_direct_activation_refuses_recycled_route_identity(
 
     def runner(command, **kwargs):
         calls.append(command)
+        if "diaulos" in command and "live" in command:
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(_selected_pane_payload(candidate)), ""
+            )
         return subprocess.CompletedProcess(command, 0, json.dumps(panes), "")
 
     client = EpistaxisDiaulosClient(
         runner=runner,
         snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
         wezterm_executable="wezterm",
     )
     candidate = parse_live_inventory(_payload(1))[0]
@@ -359,8 +460,9 @@ def test_direct_activation_refuses_recycled_route_identity(
     with pytest.raises(DiaulosActivationError, match=message):
         client.activate(candidate)
 
-    assert len(calls) == 1
-    assert calls[0][-3:] == ["list", "--format", "json"]
+    assert len(calls) == 2
+    assert calls[0][-3:] == ["--pane-id", "10", "--json"]
+    assert calls[1][-3:] == ["list", "--format", "json"]
 
 
 def test_client_rejects_malformed_snapshot_and_refresh_output(tmp_path):
@@ -455,6 +557,31 @@ def test_activation_failure_restores_visible_interaction(overlay_module):
         overlay._search_field
     )
     overlay._status_label.setStringValue_.assert_called_once_with("route moved")
+
+
+def test_unexpected_activation_exception_returns_control_to_overlay(overlay_module):
+    candidate = parse_live_inventory(_payload(1))[0]
+
+    class BrokenClient:
+        def activate(self, selected):
+            raise ValueError("malformed activation environment")
+
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay._client = BrokenClient()
+    overlay.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
+
+    overlay._activation_worker(7, candidate)
+
+    selector = overlay.performSelectorOnMainThread_withObject_waitUntilDone_
+    selector.assert_called_once()
+    name, payload, wait = selector.call_args.args
+    assert name == "activationFinished:"
+    assert payload["generation"] == 7
+    assert "unexpected activation failure" in payload["error"]
+    assert "malformed activation environment" in payload["error"]
+    assert wait is False
 
 
 @pytest.mark.parametrize(

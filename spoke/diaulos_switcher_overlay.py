@@ -607,6 +607,16 @@ class DiaulosSwitcherOverlay(NSObject):
             payload = {"generation": generation, "receipt": receipt}
         except DiaulosActivationError as exc:
             payload = {"generation": generation, "error": str(exc)}
+        except Exception as exc:
+            logger.exception(
+                "Unexpected Diaulos activation failure: generation=%s handle=%s",
+                generation,
+                candidate.handle,
+            )
+            payload = {
+                "generation": generation,
+                "error": f"unexpected activation failure: {type(exc).__name__}: {exc}",
+            }
         logger.info(
             "Diaulos activation worker complete: generation=%s handle=%s "
             "elapsed_ms=%.1f outcome=%s",
