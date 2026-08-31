@@ -219,6 +219,7 @@ from .transcribe_whisper_cpp import (
     WhisperCppCoreMLClient,
     _WHISPER_CPP_COREML_MODEL_ID,
 )
+from .transcribe_nemotron import NemotronCPUClient, _NEMOTRON_CPU_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient, RemoteTTSClient, CloudTTSClient, GEMINI_VOICES, _DEFAULT_VOICE
 from .heartbeat import (
@@ -1100,10 +1101,14 @@ class SpokeAppDelegate(NSObject):
         # Per-role backend selection: preview (partials) and transcription (finals).
         default_backend = "sidecar" if whisper_url else "local"
         self._whisper_backend = (
-            self._load_preference("whisper_backend") or default_backend
+            os.environ.get("SPOKE_TRANSCRIPTION_BACKEND", "").strip()
+            or self._load_preference("whisper_backend")
+            or default_backend
         )
         self._preview_backend = (
-            self._load_preference("preview_backend") or self._whisper_backend
+            os.environ.get("SPOKE_PREVIEW_BACKEND", "").strip()
+            or self._load_preference("preview_backend")
+            or self._whisper_backend
         )
 
         # Resolve effective URL + API key for each role.
@@ -5462,12 +5467,14 @@ class SpokeAppDelegate(NSObject):
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
         ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         (_WHISPER_CPP_COREML_MODEL_ID, "whisper.cpp CoreML/ANE (configured)"),
+        (_NEMOTRON_CPU_MODEL_ID, "Nemotron 3.5 ASR 0.6B (CPU, final only)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
         (_PARAKEET_MODEL_ID, "Parakeet CTC-110M (CoreML/ANE, preview only)"),
     ]
 
     # Parakeet is preview-only: too rough for final transcription
     _PREVIEW_ONLY_MODELS = frozenset({_PARAKEET_MODEL_ID})
+    _FINAL_ONLY_MODELS = frozenset({_NEMOTRON_CPU_MODEL_ID})
 
     def _select_model(self, model_id):
         """Model picker. Pass None to get the menu list, or a model ID to switch."""
@@ -5935,6 +5942,10 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text(f"Switching to {target_id}…")
 
     def _apply_model_selection(self, preview_model: str, transcription_model: str) -> None:
+        preview_model, transcription_model = self._sanitize_model_ids(
+            preview_model,
+            transcription_model,
+        )
         if not self._model_allowed(preview_model):
             logger.warning(
                 "Preview model %s not available on this machine (%.0fGB RAM)",
@@ -6021,6 +6032,14 @@ class SpokeAppDelegate(NSObject):
                 fallback,
             )
             return fallback
+        if role == "preview" and model_id in self._FINAL_ONLY_MODELS:
+            fallback = _DEFAULT_PREVIEW_MODEL
+            logger.warning(
+                "Model %s is final-only and cannot be used for preview — falling back to %s",
+                model_id,
+                fallback,
+            )
+            return fallback
         if self._model_allowed(model_id):
             return model_id
         fallback = self._fallback_model_for_role(role)
@@ -6053,15 +6072,15 @@ class SpokeAppDelegate(NSObject):
         prefs = self._load_model_preferences()
         legacy_model = os.environ.get("SPOKE_WHISPER_MODEL")
         raw_preview_model = (
-            prefs.get("preview_model")
-            or os.environ.get("SPOKE_PREVIEW_MODEL")
+            os.environ.get("SPOKE_PREVIEW_MODEL")
             or legacy_model
+            or prefs.get("preview_model")
             or _DEFAULT_PREVIEW_MODEL
         )
         raw_transcription_model = (
-            prefs.get("transcription_model")
-            or os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
+            os.environ.get("SPOKE_TRANSCRIPTION_MODEL")
             or legacy_model
+            or prefs.get("transcription_model")
             or self._default_transcription_model()
         )
         preview_model, transcription_model = self._sanitize_model_ids(
@@ -6729,6 +6748,9 @@ class SpokeAppDelegate(NSObject):
         if model_id == _WHISPER_CPP_COREML_MODEL_ID:
             logger.info("Using whisper.cpp CoreML transcription route")
             return WhisperCppCoreMLClient()
+        if model_id == _NEMOTRON_CPU_MODEL_ID:
+            logger.info("Using Nemotron 3.5 ASR through the explicit CPU route")
+            return NemotronCPUClient()
         if model_id.startswith("Qwen/"):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
@@ -7913,6 +7935,8 @@ class SpokeAppDelegate(NSObject):
             return False
         if model_id == _WHISPER_CPP_COREML_MODEL_ID:
             return WhisperCppCoreMLClient.available()
+        if model_id == _NEMOTRON_CPU_MODEL_ID:
+            return NemotronCPUClient.available()
         return True
 
     def _quit(self) -> None:

@@ -2006,6 +2006,82 @@ class TestModelPicker:
         ):
             assert d._model_allowed(main_module._WHISPER_CPP_COREML_MODEL_ID) is True
 
+    def test_model_allowed_requires_seated_nemotron_cpu(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=False
+        ) as available:
+            assert d._model_allowed(main_module._NEMOTRON_CPU_MODEL_ID) is False
+
+        available.assert_called_once_with()
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            assert d._model_allowed(main_module._NEMOTRON_CPU_MODEL_ID) is True
+
+    def test_nemotron_cpu_is_final_only(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            preview, transcription = d._sanitize_model_ids(
+                main_module._NEMOTRON_CPU_MODEL_ID,
+                main_module._NEMOTRON_CPU_MODEL_ID,
+            )
+
+        assert preview == main_module._DEFAULT_PREVIEW_MODEL
+        assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
+
+    def test_apply_model_selection_sanitizes_final_only_preview(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_model_id = "mlx-community/whisper-small.en-mlx"
+        d._transcription_model_id = "mlx-community/whisper-medium.en-mlx"
+        d._save_model_preferences = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            d._apply_model_selection(
+                main_module._NEMOTRON_CPU_MODEL_ID,
+                main_module._NEMOTRON_CPU_MODEL_ID,
+            )
+
+        d._save_model_preferences.assert_called_once_with(
+            main_module._DEFAULT_PREVIEW_MODEL,
+            main_module._NEMOTRON_CPU_MODEL_ID,
+        )
+
+    def test_explicit_role_env_models_override_saved_preferences(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": "mlx-community/whisper-medium.en-mlx",
+        }
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", main_module._NEMOTRON_CPU_MODEL_ID
+        )
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            preview, transcription = d._resolve_model_ids()
+
+        assert preview == "mlx-community/whisper-base.en-mlx-8bit"
+        assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
+
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
@@ -2045,6 +2121,41 @@ class TestModelPicker:
 
 class TestDualModelConfiguration:
     """Test separate preview/final model selection and persistence hooks."""
+
+    def test_explicit_role_backend_env_overrides_saved_sidecar_preferences(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.setenv("SPOKE_TRANSCRIPTION_BACKEND", "local")
+        monkeypatch.setenv("SPOKE_PREVIEW_BACKEND", "local")
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-medium.en-mlx"
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {
+                "whisper_backend": "sidecar",
+                "preview_backend": "sidecar",
+                "whisper_sidecar_url": "http://stale-sidecar:8000",
+            },
+            raising=False,
+        )
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            MockLocal.side_effect = [MagicMock(), MagicMock()]
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._whisper_backend == "local"
+        assert d._preview_backend == "local"
+        assert d._whisper_url == ""
+        assert d._preview_url == ""
+        assert MockLocal.call_count == 2
 
     def test_init_uses_separate_preview_and_transcription_model_env_vars(
         self, main_module, monkeypatch
@@ -6944,6 +7055,17 @@ class TestBuildClientRouting:
 
         with patch.object(main_module, "WhisperCppCoreMLClient") as MockClient:
             client = d._build_client("", main_module._WHISPER_CPP_COREML_MODEL_ID)
+
+        MockClient.assert_called_once_with()
+        assert client is MockClient.return_value
+
+    def test_nemotron_cpu_model_returns_nemotron_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module, "NemotronCPUClient") as MockClient:
+            client = d._build_client("", main_module._NEMOTRON_CPU_MODEL_ID)
 
         MockClient.assert_called_once_with()
         assert client is MockClient.return_value
