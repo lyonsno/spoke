@@ -346,13 +346,17 @@ class NemotronCPUClient:
                         timeout=self._timeout,
                         check=False,
                     )
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
                     self._raise_failure(
                         route,
                         phase="transcribe_timeout",
                         detail="nemo-speech exceeded the explicit timeout",
                         operator_message="Nemotron CPU transcription timed out",
                         started=started,
+                        evidence=_opaque_output_evidence(
+                            stdout=exc.output,
+                            stderr=exc.stderr,
+                        ),
                     )
                 except Exception as exc:
                     self._raise_failure(
@@ -637,9 +641,8 @@ def run_replay(
                 "input_path": str(source),
                 "expected_audio_sha256": expected_audio_sha256,
                 "wall_seconds": time.monotonic() - started,
-                **receipt,
+                "receipt": receipt,
             }
-            report.pop("transcript", None)
             _write_replay_report(destination, report)
             raise NemotronCPUError(
                 "Nemotron replay route identity did not prove CPU/full-buffer use; "

@@ -37,6 +37,29 @@ def _seated_paths(tmp_path: Path) -> tuple[Path, Path]:
 _TEST_MODEL_SHA256 = hashlib.sha256(b"model").hexdigest()
 
 
+def _complete_route_receipt(audio_sha256: str) -> dict:
+    return {
+        "schema": "spoke.nemotron-cpu-transcription.v2",
+        "status": "success",
+        "requested_model": nemotron_module._NEMOTRON_CPU_MODEL_ID,
+        "effective_binary": "/pinned/nemo-speech",
+        "effective_model_path": "/pinned/nemotron.gguf",
+        "model_sha256_expected": "a" * 64,
+        "model_sha256_actual": "a" * 64,
+        "effective_device": "cpu",
+        "audio_sha256": audio_sha256,
+        "streaming": False,
+        "endpointing": False,
+        "vad": False,
+        "recognizer_configuration": {
+            "authority": "explicit_cli_with_nemo_environment_cleared",
+            "streaming": False,
+            "endpointing": False,
+            "vad": False,
+        },
+    }
+
+
 def test_available_requires_executable_and_model(tmp_path):
     binary, model = _seated_paths(tmp_path)
 
@@ -394,6 +417,8 @@ def test_timeout_report_and_error_do_not_retain_private_phrases(tmp_path):
     binary, model = _seated_paths(tmp_path)
     failure_dir = tmp_path / "failures"
     private_phrase = "PRIVATE-SENTINEL-NEVER-PERSIST"
+    private_stdout = b"PRIVATE-PARTIAL-STDOUT"
+    private_stderr = b"PRIVATE-PARTIAL-STDERR"
     client = NemotronCPUClient(
         binary=binary,
         model_path=model,
@@ -407,7 +432,12 @@ def test_timeout_report_and_error_do_not_retain_private_phrases(tmp_path):
     )
 
     def time_out(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            cmd,
+            kwargs["timeout"],
+            output=private_stdout,
+            stderr=private_stderr,
+        )
 
     with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=time_out):
         with pytest.raises(NemotronCPUError) as exc_info:
@@ -415,11 +445,19 @@ def test_timeout_report_and_error_do_not_retain_private_phrases(tmp_path):
 
     report_text = next(failure_dir.glob("*.json")).read_text(encoding="utf-8")
     assert private_phrase not in report_text
+    assert private_stdout.decode() not in report_text
+    assert private_stderr.decode() not in report_text
     assert private_phrase not in str(exc_info.value)
     report = json.loads(report_text)
     assert report["failure_phase"] == "transcribe_timeout"
     assert report["prompt"]["sha256"]
     assert report["speech_context_count"] == 1
+    assert report["evidence"] == {
+        "stdout_bytes": len(private_stdout),
+        "stdout_sha256": hashlib.sha256(private_stdout).hexdigest(),
+        "stderr_bytes": len(private_stderr),
+        "stderr_sha256": hashlib.sha256(private_stderr).hexdigest(),
+    }
 
 
 def test_process_failure_report_hashes_diagnostics_without_private_bodies(tmp_path):
@@ -484,11 +522,10 @@ def test_replay_harness_rejects_false_cpu_route_and_still_writes_report(tmp_path
         _last_receipt = None
 
         def transcribe(self, wav_bytes):
-            self._last_receipt = {
-                "requested_model": nemotron_module._NEMOTRON_CPU_MODEL_ID,
-                "effective_device": "metal",
-                "audio_sha256": "wrong",
-            }
+            self._last_receipt = _complete_route_receipt(
+                hashlib.sha256(wav_bytes).hexdigest()
+            )
+            self._last_receipt["effective_device"] = "metal"
             return "false success"
 
     with pytest.raises(NemotronCPUError, match="route identity"):
@@ -500,8 +537,10 @@ def test_replay_harness_rejects_false_cpu_route_and_still_writes_report(tmp_path
 
     report = json.loads(output_path.read_text(encoding="utf-8"))
     assert report["status"] == "failure"
+    assert report["schema"] == "spoke.nemotron-cpu-replay.v2"
     assert report["failure_phase"] == "route_identity"
-    assert report["effective_device"] == "metal"
+    assert report["receipt"]["status"] == "success"
+    assert report["receipt"]["effective_device"] == "metal"
     assert "transcript" not in report
 
 
@@ -536,24 +575,7 @@ def test_replay_harness_requires_complete_effective_identity(tmp_path, missing_f
         _last_receipt = None
 
         def transcribe(self, wav_bytes):
-            self._last_receipt = {
-                "requested_model": nemotron_module._NEMOTRON_CPU_MODEL_ID,
-                "effective_binary": "/pinned/nemo-speech",
-                "effective_model_path": "/pinned/nemotron.gguf",
-                "model_sha256_expected": "a" * 64,
-                "model_sha256_actual": "a" * 64,
-                "effective_device": "cpu",
-                "audio_sha256": expected_audio_sha256,
-                "streaming": False,
-                "endpointing": False,
-                "vad": False,
-                "recognizer_configuration": {
-                    "authority": "explicit_cli_with_nemo_environment_cleared",
-                    "streaming": False,
-                    "endpointing": False,
-                    "vad": False,
-                },
-            }
+            self._last_receipt = _complete_route_receipt(expected_audio_sha256)
             self._last_receipt.pop(missing_field)
             return "false success"
 
@@ -566,4 +588,7 @@ def test_replay_harness_requires_complete_effective_identity(tmp_path, missing_f
 
     report = json.loads(output_path.read_text(encoding="utf-8"))
     assert report["status"] == "failure"
+    assert report["schema"] == "spoke.nemotron-cpu-replay.v2"
     assert report["failure_phase"] == "route_identity"
+    assert report["receipt"]["status"] == "success"
+    assert missing_field not in report["receipt"]
