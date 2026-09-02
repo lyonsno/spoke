@@ -1454,6 +1454,38 @@ class TestTranscriptionToken:
             owner="user",
         )
 
+    def test_coordination_shift_dismiss_rechecks_pending_text_recovery(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording.return_value = False
+        recovery = d._add_tray_entry(
+            "text recovery waits behind coordination dismissal",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            recovery.coordination_surface_id
+        ]
+        d._add_diaulos_card_to_stack(
+            {
+                "diaulos": "coordination-owner",
+                "display_name": "Coordination Owner",
+            },
+            activate=True,
+        )
+        d._overlay.show_tray.reset_mock()
+
+        d._on_tray_shift_tap()
+
+        assert d._tray_active is True
+        assert d._tray_deck == main_module._TRAY_DECK_TEXT
+        assert d._pending_focus_diverted_dictation_ids == []
+        d._overlay.show_tray.assert_called_once_with(
+            "text recovery waits behind coordination dismissal",
+            owner="user",
+        )
+
     def test_grace_cancellation_rechecks_an_earlier_focus_diverted_recovery(
         self, main_module, monkeypatch
     ):
@@ -1537,6 +1569,103 @@ class TestTranscriptionToken:
         assert d._tray_active is True
         d._overlay.show_tray.assert_called_once_with(
             "recovery waits for command overlay dismissal",
+            owner="user",
+        )
+
+    def test_compositor_dismiss_keeps_recovery_pending_until_screen_release(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording.return_value = False
+        recovery = d._add_tray_entry(
+            "recovery waits for compositor-backed dismissal",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            recovery.coordination_surface_id
+        ]
+        overlay = MagicMock()
+        overlay.__dict__.update(
+            {
+                "_visible": True,
+                "_fade_timer": None,
+                "_fade_direction": 0,
+                "_cancel_timer_anim": None,
+                "_materialization_timer": None,
+                "_materialization_direction": 1,
+                "_fullscreen_compositor": object(),
+            }
+        )
+
+        def begin_compositor_dismissal():
+            overlay.__dict__["_visible"] = False
+            overlay.__dict__["_fade_timer"] = object()
+            overlay.__dict__["_fade_direction"] = -1
+
+        overlay.cancel_dismiss.side_effect = begin_compositor_dismissal
+        d._command_overlay = overlay
+        timer = MagicMock()
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.return_value = timer
+
+        d._dismiss_command_overlay()
+
+        assert d._tray_active is False
+        assert d._pending_focus_diverted_dictation_ids == [
+            recovery.coordination_surface_id
+        ]
+        assert schedule.call_args.args[2] == "focusDivertedRecoveryRecheck:"
+
+        overlay.__dict__["_fade_timer"] = None
+        overlay.__dict__["_fullscreen_compositor"] = None
+        d.focusDivertedRecoveryRecheck_(timer)
+
+        assert d._tray_active is True
+        assert d._pending_focus_diverted_dictation_ids == []
+        d._overlay.show_tray.assert_called_once_with(
+            "recovery waits for compositor-backed dismissal",
+            owner="user",
+        )
+
+    @pytest.mark.parametrize(
+        ("wav_bytes", "shift_held"),
+        [(b"", False), (b"short captured audio", True)],
+        ids=["actual-empty", "short-shift-conversion"],
+    )
+    def test_empty_capture_terminal_rechecks_pending_focus_recovery(
+        self, main_module, monkeypatch, wav_bytes, shift_held
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        recovery = d._add_tray_entry(
+            "recovery waits for capture release",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            recovery.coordination_surface_id
+        ]
+        d._capture.is_recording.return_value = True
+
+        def stop_capture():
+            d._capture.is_recording.return_value = False
+            return wav_bytes
+
+        d._capture.stop.side_effect = stop_capture
+        d._record_start_time = time.monotonic() - 0.2
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end(shift_held=shift_held)
+
+        MockThread.assert_not_called()
+        assert d._tray_active is True
+        assert d._pending_focus_diverted_dictation_ids == []
+        d._overlay.show_tray.assert_called_once_with(
+            "recovery waits for capture release",
             owner="user",
         )
 

@@ -2096,7 +2096,7 @@ class SpokeAppDelegate(NSObject):
             )
         )
 
-    def _command_overlay_still_owns_screen_for_throughglass(self) -> bool:
+    def _command_overlay_still_owns_screen(self) -> bool:
         overlay = getattr(self, "_command_overlay", None)
         if overlay is None:
             return False
@@ -2121,6 +2121,9 @@ class SpokeAppDelegate(NSObject):
         if explicit_attr("_fullscreen_compositor") is not None:
             return True
         return False
+
+    def _command_overlay_still_owns_screen_for_throughglass(self) -> bool:
+        return self._command_overlay_still_owns_screen()
 
     def restorePerceptasiaThroughglassAfterCommandOverlay_(self, timer) -> None:
         self._perceptasia_throughglass_restore_timer = None
@@ -2161,7 +2164,7 @@ class SpokeAppDelegate(NSObject):
             return
         if (
             getattr(self, "_pending_focus_diverted_dictation_ids", [])
-            and getattr(overlay, "_visible", False)
+            and self._command_overlay_still_owns_screen()
         ):
             self._schedule_focus_diverted_recovery_recheck()
 
@@ -2186,11 +2189,9 @@ class SpokeAppDelegate(NSObject):
         self._focus_diverted_recovery_recheck_timer = None
         if self._present_focus_diverted_dictations_if_idle():
             return
-        overlay = getattr(self, "_command_overlay", None)
         if (
             getattr(self, "_pending_focus_diverted_dictation_ids", [])
-            and overlay is not None
-            and getattr(overlay, "_visible", False)
+            and self._command_overlay_still_owns_screen()
         ):
             self._schedule_focus_diverted_recovery_recheck()
 
@@ -2920,6 +2921,15 @@ class SpokeAppDelegate(NSObject):
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
+            had_pending_recovery = bool(
+                getattr(self, "_pending_focus_diverted_dictation_ids", [])
+            )
+            if had_pending_recovery:
+                if self._present_focus_diverted_dictations_if_idle():
+                    return
+                if getattr(self, "_pending_focus_diverted_dictation_ids", []):
+                    self._resume_handsfree_after_hold()
+                    return
             if shift_held:
                 recall_index = self._latest_tray_index_for_deck()
                 if recall_index is not None:
@@ -3523,10 +3533,7 @@ class SpokeAppDelegate(NSObject):
             diaulos_switcher, "visible", False
         ):
             return False
-        command_overlay = getattr(self, "_command_overlay", None)
-        if command_overlay is not None and getattr(
-            command_overlay, "_visible", False
-        ):
+        if self._command_overlay_still_owns_screen():
             return False
         if self._tray_active and self._active_tray_deck() != _TRAY_DECK_TEXT:
             return False
@@ -4569,6 +4576,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Shift tap during tray — dismiss")
             self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
+            self._present_focus_diverted_dictations_if_idle()
 
     def _toggle_command_overlay(self) -> None:
         """Toggle command overlay visibility."""
