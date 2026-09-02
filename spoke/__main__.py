@@ -3449,7 +3449,57 @@ class SpokeAppDelegate(NSObject):
             return
 
         self._refresh_grace_cancel_callback()
+        if self._present_focus_diverted_dictations_if_idle():
+            return
         self._resume_handsfree_after_hold()
+
+    def _present_focus_diverted_dictations_if_idle(self) -> bool:
+        pending_ids = list(
+            getattr(self, "_pending_focus_diverted_dictation_ids", [])
+        )
+        if not pending_ids:
+            return False
+        if (
+            self._transcribing
+            or self._dictation_delivery_records()
+            or getattr(self, "_dictation_paste_in_flight", False)
+            or self._capture.is_recording()
+            or self._tray_active
+        ):
+            return False
+
+        pending_set = set(pending_ids)
+        matching_indices = [
+            index
+            for index, item in enumerate(self._tray_stack)
+            if self._get_tray_entry(index).coordination_surface_id in pending_set
+        ]
+        self._pending_focus_diverted_dictation_ids = []
+        if not matching_indices:
+            return False
+
+        self._tray_index = matching_indices[-1]
+        self._tray_deck = _TRAY_DECK_TEXT
+        self._tray_active = True
+        self._detector.tray_active = True
+        if self._glow is not None:
+            if hasattr(self._glow, "show_tray_dim"):
+                self._glow.show_tray_dim()
+            else:
+                self._glow.hide()
+        self._show_tray_current()
+        recovered_count = len(matching_indices)
+        logger.warning(
+            "Opened tray for %d focus-diverted dictation%s",
+            recovered_count,
+            "" if recovered_count == 1 else "s",
+        )
+        if self._menubar is not None:
+            label = "dictation" if recovered_count == 1 else "dictations"
+            self._menubar.set_status_text(
+                f"{recovered_count} {label} recovered — tray opened"
+            )
+        return True
 
     def transcriptionComplete_(self, payload: dict) -> None:
         """Main thread: inject transcribed text at cursor (with grace window)."""
@@ -3488,6 +3538,8 @@ class SpokeAppDelegate(NSObject):
             return
         if self._overlay is not None:
             self._overlay.hide()
+        if self._present_focus_diverted_dictations_if_idle():
+            return
         if not self._resume_handsfree_after_hold() and self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
@@ -3587,6 +3639,8 @@ class SpokeAppDelegate(NSObject):
         logger.error("Transcription failed — no text injected: %s", error_text)
         if self._overlay is not None:
             self._overlay.hide()
+        if self._present_focus_diverted_dictations_if_idle():
+            return
         if not self._resume_handsfree_after_hold() and self._menubar is not None:
             self._menubar.set_status_text(error_text)
 
@@ -3596,6 +3650,8 @@ class SpokeAppDelegate(NSObject):
             return
         error_text = payload.get("error") or "Error — try again"
         logger.error("Parallel transcription failed — no text injected: %s", error_text)
+        if self._present_focus_diverted_dictations_if_idle():
+            return
         if not self._resume_handsfree_after_hold() and self._menubar is not None:
             self._menubar.set_status_text(error_text)
 
@@ -7721,7 +7777,12 @@ class SpokeAppDelegate(NSObject):
         ):
             if self._overlay is not None:
                 self._overlay.order_out()
-            self._add_tray_entry(text, owner="user", activate=False)
+            entry = self._add_tray_entry(text, owner="user", activate=False)
+            pending_ids = list(
+                getattr(self, "_pending_focus_diverted_dictation_ids", [])
+            )
+            pending_ids.append(entry.coordination_surface_id)
+            self._pending_focus_diverted_dictation_ids = pending_ids
             logger.warning(
                 "Focus surface changed during insert grace; preserved dictation in tray"
             )

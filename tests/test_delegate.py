@@ -1178,6 +1178,72 @@ class TestTranscriptionToken:
         assert d._dictation_delivery_records() == {}
         d._handsfree.enable.assert_called_once_with()
 
+    def test_focus_diverted_overlap_opens_recovery_tray_once_capture_is_idle(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._parallel_insert_token = 2
+        d._transcribing = True
+        d._capture.is_recording.return_value = True
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 10
+        timers = [MagicMock() for _ in range(4)]
+        for timer, delivery_id in zip(
+            timers,
+            ["primary:5", "parallel:2", "primary:5", "parallel:2"],
+            strict=True,
+        ):
+            timer.userInfo.return_value = delivery_id
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.side_effect = timers
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_(
+                {
+                    "token": 5,
+                    "text": "long primary delivery",
+                    "switcher_generation": 10,
+                }
+            )
+            d.parallelTranscriptionComplete_(
+                {
+                    "token": 2,
+                    "text": "short parallel delivery",
+                    "switcher_generation": 20,
+                }
+            )
+            d.graceTimerFired_(timers[0])
+            d.graceTimerFired_(timers[1])
+            d._diaulos_switcher.presentation_generation = 30
+            d.resultInjectDelayed_(timers[2])
+            d.resultInjectDelayed_(timers[3])
+
+            assert d._tray_active is False
+            assert [entry.text for entry in d._tray_stack] == [
+                "long primary delivery",
+                "short parallel delivery",
+            ]
+
+            d._capture.is_recording.return_value = False
+            d._drain_dictation_deliveries()
+
+        mock_inject.assert_not_called()
+        assert d._tray_active is True
+        assert d._tray_index == 1
+        d._overlay.show_tray.assert_called_with(
+            "short parallel delivery",
+            owner="user",
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "2 dictations recovered — tray opened"
+        )
+
     def test_parallel_result_routes_to_visible_switcher_without_paste(
         self, main_module, monkeypatch
     ):
