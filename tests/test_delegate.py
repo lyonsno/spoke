@@ -1244,6 +1244,51 @@ class TestTranscriptionToken:
             "2 dictations recovered — tray opened"
         )
 
+    def test_focus_diverted_result_retargets_an_already_visible_text_tray(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._capture.is_recording.return_value = False
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher.presentation_generation = 20
+        d._add_tray_entry("older tray text", owner="user", activate=True)
+        d._overlay.show_tray.reset_mock()
+        grace_timer = MagicMock()
+        grace_timer.userInfo.return_value = "primary:5"
+        inject_timer = MagicMock()
+        inject_timer.userInfo.return_value = "primary:5"
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.side_effect = [grace_timer, inject_timer]
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_(
+                {
+                    "token": 5,
+                    "text": "newly recovered dictation",
+                    "switcher_generation": 10,
+                }
+            )
+            d.graceTimerFired_(grace_timer)
+            d.resultInjectDelayed_(inject_timer)
+
+        mock_inject.assert_not_called()
+        assert d._tray_active is True
+        assert d._tray_index == 1
+        d._overlay.show_tray.assert_called_once_with(
+            "newly recovered dictation",
+            owner="user",
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "1 dictation recovered — tray opened"
+        )
+
     def test_parallel_result_routes_to_visible_switcher_without_paste(
         self, main_module, monkeypatch
     ):

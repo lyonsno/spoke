@@ -3464,7 +3464,6 @@ class SpokeAppDelegate(NSObject):
             or self._dictation_delivery_records()
             or getattr(self, "_dictation_paste_in_flight", False)
             or self._capture.is_recording()
-            or self._tray_active
         ):
             return False
 
