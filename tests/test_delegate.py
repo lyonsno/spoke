@@ -1289,6 +1289,257 @@ class TestTranscriptionToken:
             "1 dictation recovered — tray opened"
         )
 
+    def test_focus_diverted_recovery_waits_for_each_parallel_worker_identity(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 2
+        d._parallel_final_asr_tokens = {2}
+        d._capture.is_recording.return_value = False
+        entry = d._add_tray_entry(
+            "primary recovery waits for parallel final ASR",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            entry.coordination_surface_id
+        ]
+
+        assert d._present_focus_diverted_dictations_if_idle() is False
+        assert d._tray_active is False
+
+        d.parallelTranscriptionComplete_({"token": 2, "text": ""})
+
+        assert d._parallel_final_asr_tokens == set()
+        assert d._tray_active is True
+        d._overlay.show_tray.assert_called_once_with(
+            "primary recovery waits for parallel final ASR",
+            owner="user",
+        )
+
+    def test_parallel_terminal_callbacks_release_their_exact_worker_identity(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 2
+        d._parallel_final_asr_tokens = {1, 2}
+
+        d.parallelTranscriptionComplete_({"token": 1, "text": "stale"})
+
+        assert d._parallel_final_asr_tokens == {2}
+
+        d.parallelTranscriptionFailed_({"token": 2, "error": "failed"})
+
+        assert d._parallel_final_asr_tokens == set()
+
+    def test_parallel_worker_identity_is_registered_before_thread_start(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._capture.stop.return_value = b"wav"
+
+        def assert_registered_before_start():
+            assert d._parallel_final_asr_tokens == {1}
+
+        thread = MagicMock()
+        thread.start.side_effect = assert_registered_before_start
+        with patch.object(main_module.threading, "Thread", return_value=thread):
+            d._on_hold_end()
+
+        assert d._parallel_final_asr_tokens == {1}
+
+    def test_focus_diverted_recovery_defers_to_switcher_then_opens_on_hide(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._parallel_insert_token = 2
+        d._parallel_final_asr_tokens = {2}
+        d._capture.is_recording.return_value = False
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        entry = d._add_tray_entry(
+            "recovery waits for the switcher",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            entry.coordination_surface_id
+        ]
+
+        d.parallelTranscriptionFailed_({"token": 2, "error": "failed"})
+
+        assert d._tray_active is False
+        assert d._pending_focus_diverted_dictation_ids == [
+            entry.coordination_surface_id
+        ]
+
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher_did_hide()
+
+        assert d._tray_active is True
+        d._overlay.show_tray.assert_called_once_with(
+            "recovery waits for the switcher",
+            owner="user",
+        )
+
+    @pytest.mark.parametrize("terminal", ["success", "empty", "failure"])
+    def test_primary_terminal_paths_leave_recovery_with_switcher_until_hide(
+        self, main_module, monkeypatch, terminal
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._capture.is_recording.return_value = False
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.set_dictation_filter.return_value = 1
+        entry = d._add_tray_entry(
+            "recovery remains subordinate to the switcher",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            entry.coordination_surface_id
+        ]
+
+        if terminal == "success":
+            d.transcriptionComplete_({"token": 5, "text": "switcher filter"})
+        elif terminal == "empty":
+            d.transcriptionComplete_({"token": 5, "text": ""})
+        else:
+            d.transcriptionFailed_({"token": 5, "error": "failed"})
+
+        assert d._tray_active is False
+        assert d._pending_focus_diverted_dictation_ids == [
+            entry.coordination_surface_id
+        ]
+
+        d._diaulos_switcher.visible = False
+        d._diaulos_switcher_did_hide()
+
+        assert d._tray_active is True
+        d._overlay.show_tray.assert_called_once_with(
+            "recovery remains subordinate to the switcher",
+            owner="user",
+        )
+
+    def test_focus_diverted_recovery_waits_for_coordination_deck_to_relinquish(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording.return_value = False
+        entry = d._add_tray_entry(
+            "text recovery waits behind coordination",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            entry.coordination_surface_id
+        ]
+        d._tray_active = True
+        d._tray_deck = main_module._TRAY_DECK_COORDINATION
+
+        assert d._present_focus_diverted_dictations_if_idle() is False
+        assert d._tray_deck == main_module._TRAY_DECK_COORDINATION
+        d._overlay.show_tray.assert_not_called()
+
+        d._tray_active = False
+        d._tray_deck = main_module._TRAY_DECK_TEXT
+
+        assert d._present_focus_diverted_dictations_if_idle() is True
+        assert d._tray_active is True
+        d._overlay.show_tray.assert_called_once_with(
+            "text recovery waits behind coordination",
+            owner="user",
+        )
+
+    def test_grace_cancellation_rechecks_an_earlier_focus_diverted_recovery(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording.return_value = False
+        earlier = d._add_tray_entry(
+            "earlier focus-diverted dictation",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            earlier.coordination_surface_id
+        ]
+        d._dictation_delivery_records()["primary:5"] = (
+            main_module.PendingDictationDelivery(
+                delivery_id="primary:5",
+                text="later cancelled delivery",
+                switcher_generation=0,
+                lane="primary",
+                token=5,
+            )
+        )
+        d._toggle_command_overlay = MagicMock()
+
+        d._cancel_grace_insert()
+
+        assert d._dictation_delivery_records() == {}
+        assert d._tray_active is True
+        assert d._tray_index == 0
+        d._overlay.show_tray.assert_called_once_with(
+            "earlier focus-diverted dictation",
+            owner="user",
+        )
+
+    def test_command_overlay_dismiss_rechecks_recovery_deferred_by_cancellation(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording.return_value = False
+        earlier = d._add_tray_entry(
+            "recovery waits for command overlay dismissal",
+            owner="user",
+            activate=False,
+        )
+        d._pending_focus_diverted_dictation_ids = [
+            earlier.coordination_surface_id
+        ]
+        d._dictation_delivery_records()["primary:5"] = (
+            main_module.PendingDictationDelivery(
+                delivery_id="primary:5",
+                text="later cancelled delivery",
+                switcher_generation=0,
+                lane="primary",
+                token=5,
+            )
+        )
+        d._command_client = MagicMock()
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._toggle_command_overlay = MagicMock(
+            side_effect=lambda: setattr(d._command_overlay, "_visible", True)
+        )
+
+        d._cancel_grace_insert()
+
+        assert d._tray_active is False
+        timer = MagicMock()
+        Foundation = __import__("Foundation")
+        schedule = (
+            Foundation.NSTimer
+            .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
+        schedule.return_value = timer
+        d._dismiss_command_overlay()
+
+        assert d._tray_active is False
+        assert schedule.call_args.args[2] == "focusDivertedRecoveryRecheck:"
+        d._command_overlay._visible = False
+        d.focusDivertedRecoveryRecheck_(timer)
+
+        assert d._tray_active is True
+        d._overlay.show_tray.assert_called_once_with(
+            "recovery waits for command overlay dismissal",
+            owner="user",
+        )
+
     def test_parallel_result_routes_to_visible_switcher_without_paste(
         self, main_module, monkeypatch
     ):

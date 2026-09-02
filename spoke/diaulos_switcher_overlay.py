@@ -293,6 +293,14 @@ class DiaulosSwitcherOverlay(NSObject):
             except Exception:
                 logger.debug("Could not restore prior foreground app", exc_info=True)
         self._previous_app = None
+        if was_visible:
+            callback = getattr(
+                getattr(self, "_delegate", None),
+                "_diaulos_switcher_did_hide",
+                None,
+            )
+            if callable(callback):
+                callback()
         return True
 
     def cleanup(self) -> None:

@@ -521,6 +521,30 @@ def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_mod
     assert events == ["panel-hidden", "wezterm-foregrounded"]
 
 
+def test_hiding_visible_switcher_notifies_delegate_after_relinquishing_authority(
+    overlay_module,
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay._delegate = MagicMock()
+    overlay.visible = True
+    overlay.presentation_generation = 4
+    overlay._activation_generation = 0
+    overlay._activation_in_flight = False
+    overlay._key_monitor_token = None
+    overlay._key_monitor_handler = None
+    overlay._keyboard_monitor_available = True
+    overlay._panel = MagicMock()
+    overlay._previous_app = None
+
+    assert overlay.hide(restore_previous=False) is True
+
+    assert overlay.visible is False
+    assert overlay.presentation_generation == 5
+    overlay._delegate._diaulos_switcher_did_hide.assert_called_once_with()
+
+
 def test_visible_overlay_owns_navigation_through_local_key_monitor(
     overlay_module,
     monkeypatch,

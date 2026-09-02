@@ -1179,6 +1179,7 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         self._transcription_token = 0
         self._parallel_insert_token = 0
+        self._parallel_final_asr_tokens: set[int] = set()
         self._cancel_spring_active = False
         self._cancel_spring_start = 0.0
         self._preview_active = False
@@ -2156,6 +2157,42 @@ class SpokeAppDelegate(NSObject):
         if overlay is None:
             return
         overlay.cancel_dismiss()
+        if self._present_focus_diverted_dictations_if_idle():
+            return
+        if (
+            getattr(self, "_pending_focus_diverted_dictation_ids", [])
+            and getattr(overlay, "_visible", False)
+        ):
+            self._schedule_focus_diverted_recovery_recheck()
+
+    def _schedule_focus_diverted_recovery_recheck(self) -> None:
+        timer = getattr(self, "_focus_diverted_recovery_recheck_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        from Foundation import NSTimer
+        self._focus_diverted_recovery_recheck_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.1,
+                self,
+                "focusDivertedRecoveryRecheck:",
+                None,
+                False,
+            )
+        )
+
+    def focusDivertedRecoveryRecheck_(self, timer) -> None:
+        if getattr(self, "_focus_diverted_recovery_recheck_timer", None) is not timer:
+            return
+        self._focus_diverted_recovery_recheck_timer = None
+        if self._present_focus_diverted_dictations_if_idle():
+            return
+        overlay = getattr(self, "_command_overlay", None)
+        if (
+            getattr(self, "_pending_focus_diverted_dictation_ids", [])
+            and overlay is not None
+            and getattr(overlay, "_visible", False)
+        ):
+            self._schedule_focus_diverted_recovery_recheck()
 
     def _toggle_perceptasia_throughglass(self) -> None:
         graft = self._ensure_perceptasia_throughglass()
@@ -2954,7 +2991,16 @@ class SpokeAppDelegate(NSObject):
                 args=(wav_bytes, parallel_token, switcher_generation),
                 daemon=True,
             )
-            thread.start()
+            parallel_tokens = getattr(self, "_parallel_final_asr_tokens", None)
+            if parallel_tokens is None:
+                parallel_tokens = set()
+                self._parallel_final_asr_tokens = parallel_tokens
+            parallel_tokens.add(parallel_token)
+            try:
+                thread.start()
+            except Exception:
+                parallel_tokens.discard(parallel_token)
+                raise
             return
 
         # Invalidate any in-flight transcription so its result is discarded
@@ -3453,6 +3499,11 @@ class SpokeAppDelegate(NSObject):
             return
         self._resume_handsfree_after_hold()
 
+    def _finish_parallel_final_asr(self, token: int) -> None:
+        tokens = getattr(self, "_parallel_final_asr_tokens", None)
+        if tokens is not None:
+            tokens.discard(token)
+
     def _present_focus_diverted_dictations_if_idle(self) -> bool:
         pending_ids = list(
             getattr(self, "_pending_focus_diverted_dictation_ids", [])
@@ -3461,10 +3512,23 @@ class SpokeAppDelegate(NSObject):
             return False
         if (
             self._transcribing
+            or getattr(self, "_parallel_final_asr_tokens", set())
             or self._dictation_delivery_records()
             or getattr(self, "_dictation_paste_in_flight", False)
             or self._capture.is_recording()
         ):
+            return False
+        diaulos_switcher = getattr(self, "_diaulos_switcher", None)
+        if diaulos_switcher is not None and getattr(
+            diaulos_switcher, "visible", False
+        ):
+            return False
+        command_overlay = getattr(self, "_command_overlay", None)
+        if command_overlay is not None and getattr(
+            command_overlay, "_visible", False
+        ):
+            return False
+        if self._tray_active and self._active_tray_deck() != _TRAY_DECK_TEXT:
             return False
 
         pending_set = set(pending_ids)
@@ -3544,8 +3608,10 @@ class SpokeAppDelegate(NSObject):
 
     def parallelTranscriptionComplete_(self, payload: dict) -> None:
         """Main thread: inject a parallel plain-space transcription at cursor."""
+        self._finish_parallel_final_asr(payload["token"])
         if payload["token"] != self._parallel_insert_token:
             logger.info("Discarding stale parallel transcription (token %d)", payload["token"])
+            self._present_focus_diverted_dictations_if_idle()
             return
         text = payload["text"]
         if (
@@ -3567,6 +3633,10 @@ class SpokeAppDelegate(NSObject):
                 lane="parallel",
                 token=payload["token"],
             )
+            return
+        if self._present_focus_diverted_dictations_if_idle():
+            return
+        self._resume_handsfree_after_hold()
 
     def graceTimerFired_(self, timer) -> None:
         """Grace window expired — proceed with insert."""
@@ -3608,6 +3678,8 @@ class SpokeAppDelegate(NSObject):
         if cancelled:
             self._toggle_command_overlay()
             if not getattr(self, "_dictation_paste_in_flight", False):
+                if self._present_focus_diverted_dictations_if_idle():
+                    return
                 self._resume_handsfree_after_hold()
 
     def transcriptionFailed_(self, payload: dict) -> None:
@@ -3645,7 +3717,9 @@ class SpokeAppDelegate(NSObject):
 
     def parallelTranscriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle failure on the parallel insert lane."""
+        self._finish_parallel_final_asr(payload["token"])
         if payload["token"] != self._parallel_insert_token:
+            self._present_focus_diverted_dictations_if_idle()
             return
         error_text = payload.get("error") or "Error — try again"
         logger.error("Parallel transcription failed — no text injected: %s", error_text)
@@ -4415,6 +4489,11 @@ class SpokeAppDelegate(NSObject):
         self._tray_active = True
         self._detector.tray_active = True
         logger.info("Tray deck switch -> %s index=%d", target_deck, target_index)
+        if (
+            target_deck == _TRAY_DECK_TEXT
+            and self._present_focus_diverted_dictations_if_idle()
+        ):
+            return
         self._show_tray_current(acknowledge=True)
 
     def _toggle_diaulos_switcher(self) -> None:
@@ -4426,6 +4505,10 @@ class SpokeAppDelegate(NSObject):
                 DiaulosSwitcherOverlay.alloc().initWithDelegate_(self)
             )
         self._diaulos_switcher.toggle()
+
+    def _diaulos_switcher_did_hide(self) -> None:
+        """Re-evaluate recovered dictation after switcher focus is released."""
+        self._present_focus_diverted_dictations_if_idle()
 
     def _tray_entry_allows_text_action(self, entry: TrayEntry | str) -> bool:
         """Return whether a tray entry can be pasted or sent as plain text."""
