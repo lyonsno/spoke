@@ -1,4 +1,4 @@
-"""Full-buffer Nemotron ASR through NVIDIA's CPU-only NeMo-Speech CLI."""
+"""Full-capture Nemotron ASR through NVIDIA's CPU-only NeMo-Speech CLI."""
 
 from __future__ import annotations
 
@@ -307,7 +307,7 @@ class NemotronCPUClient:
         child_environment, removed_environment_keys = _controlled_child_environment()
         recognizer_configuration = {
             "authority": "explicit_cli_with_nemo_environment_cleared",
-            "streaming": False,
+            "streaming": True,
             "endpointing": False,
             "vad": False,
         }
@@ -485,6 +485,7 @@ class NemotronCPUClient:
             "en",
             "--format",
             "json",
+            "--stream",
             "--no-batching",
         ]
         for phrase in phrases:
@@ -577,7 +578,7 @@ def _write_replay_report(path: Path, payload: dict) -> None:
     temporary.replace(path)
 
 
-def _receipt_proves_cpu_full_buffer(receipt: dict, audio_sha256: str) -> bool:
+def _receipt_proves_cpu_full_capture_streaming(receipt: dict, audio_sha256: str) -> bool:
     configuration = receipt.get("recognizer_configuration")
     return bool(
         receipt.get("status") == "success"
@@ -588,13 +589,13 @@ def _receipt_proves_cpu_full_buffer(receipt: dict, audio_sha256: str) -> bool:
         and receipt.get("model_sha256_actual")
         and receipt.get("model_sha256_actual") == receipt.get("model_sha256_expected")
         and receipt.get("audio_sha256") == audio_sha256
-        and receipt.get("streaming") is False
+        and receipt.get("streaming") is True
         and receipt.get("endpointing") is False
         and receipt.get("vad") is False
         and isinstance(configuration, dict)
         and configuration.get("authority")
         == "explicit_cli_with_nemo_environment_cleared"
-        and configuration.get("streaming") is False
+        and configuration.get("streaming") is True
         and configuration.get("endpointing") is False
         and configuration.get("vad") is False
     )
@@ -633,7 +634,7 @@ def run_replay(
         receipt = active_client._last_receipt
         if not isinstance(receipt, dict):
             raise NemotronCPUError("Replay route identity is missing")
-        if not _receipt_proves_cpu_full_buffer(receipt, expected_audio_sha256):
+        if not _receipt_proves_cpu_full_capture_streaming(receipt, expected_audio_sha256):
             report = {
                 "schema": "spoke.nemotron-cpu-replay.v2",
                 "status": "failure",
@@ -645,7 +646,7 @@ def run_replay(
             }
             _write_replay_report(destination, report)
             raise NemotronCPUError(
-                "Nemotron replay route identity did not prove CPU/full-buffer use; "
+                "Nemotron replay route identity did not prove CPU full-capture streaming use; "
                 f"report={destination}"
             )
         report = {
