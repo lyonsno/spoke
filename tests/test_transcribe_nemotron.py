@@ -48,12 +48,12 @@ def _complete_route_receipt(audio_sha256: str) -> dict:
         "model_sha256_actual": "a" * 64,
         "effective_device": "cpu",
         "audio_sha256": audio_sha256,
-        "streaming": False,
+        "streaming": True,
         "endpointing": False,
         "vad": False,
         "recognizer_configuration": {
             "authority": "explicit_cli_with_nemo_environment_cleared",
-            "streaming": False,
+            "streaming": True,
             "endpointing": False,
             "vad": False,
         },
@@ -68,7 +68,7 @@ def test_available_requires_executable_and_model(tmp_path):
     assert not NemotronCPUClient.available(binary=binary, model_path=model)
 
 
-def test_transcribe_uses_cpu_full_buffer_and_uncapped_decoder_phrases(tmp_path):
+def test_transcribe_uses_cpu_full_capture_streaming_and_uncapped_decoder_phrases(tmp_path):
     binary, model = _seated_paths(tmp_path)
     prompt_path = tmp_path / "prompt.txt"
     prompt_path.write_text("Kaminos, Epistaxis\nTrellis2MLX", encoding="utf-8")
@@ -125,7 +125,7 @@ def test_transcribe_uses_cpu_full_buffer_and_uncapped_decoder_phrases(tmp_path):
         "Trellis2MLX",
     ]
     assert "--speech-context-boost" in cmd
-    assert "--stream" not in cmd
+    assert "--stream" in cmd
     assert "--endpointing" not in cmd
     assert "--vad-model" not in cmd
     assert "--vad-masking" not in cmd
@@ -137,7 +137,7 @@ def test_transcribe_uses_cpu_full_buffer_and_uncapped_decoder_phrases(tmp_path):
     assert client._last_receipt["prompt"]["semantic_effect_observed"] is None
     assert client._last_receipt["recognizer_configuration"] == {
         "authority": "explicit_cli_with_nemo_environment_cleared",
-        "streaming": False,
+        "streaming": True,
         "endpointing": False,
         "vad": False,
     }
@@ -286,7 +286,7 @@ def test_process_failure_writes_replayable_route_report(tmp_path):
     assert report["status"] == "failure"
     assert report["failure_phase"] == "transcribe_process"
     assert report["effective_device"] == "cpu"
-    assert report["streaming"] is False
+    assert report["streaming"] is True
     assert report["endpointing"] is False
     assert report["vad"] is False
     assert report["audio_sha256"]
@@ -600,7 +600,7 @@ def test_replay_harness_requires_complete_effective_identity(tmp_path, missing_f
         ("audio_sha256", "f" * 64),
         ("model_sha256_actual", "b" * 64),
         ("recognizer_configuration.authority", "inherited_environment"),
-        ("recognizer_configuration.streaming", True),
+        ("recognizer_configuration.streaming", False),
         ("recognizer_configuration.endpointing", True),
         ("recognizer_configuration.vad", True),
     ],
