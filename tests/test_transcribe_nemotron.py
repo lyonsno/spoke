@@ -49,12 +49,12 @@ def _complete_route_receipt(audio_sha256: str) -> dict:
         "model_sha256_actual": "a" * 64,
         "effective_device": "cpu",
         "audio_sha256": audio_sha256,
-        "streaming": False,
         "endpointing": False,
         "vad": False,
         "recognizer_configuration": {
             "authority": "explicit_cli_with_nemo_environment_cleared",
-            "streaming": False,
+            "runner_selection": "automatic",
+            "streaming_cli_requested": False,
             "endpointing": False,
             "vad": False,
         },
@@ -140,7 +140,8 @@ def test_transcribe_uses_cpu_full_buffer_automatic_runner_and_uncapped_decoder_p
     assert client._last_receipt["prompt"]["semantic_effect_observed"] is None
     assert client._last_receipt["recognizer_configuration"] == {
         "authority": "explicit_cli_with_nemo_environment_cleared",
-        "streaming": False,
+        "runner_selection": "automatic",
+        "streaming_cli_requested": False,
         "endpointing": False,
         "vad": False,
     }
@@ -180,6 +181,7 @@ def test_transcribe_strips_inherited_nemo_configuration(tmp_path, monkeypatch):
         key == "NEMO_SPEECH" or key.startswith("NEMO_SPEECH_")
         for key in seen["env"]
     )
+    assert client._last_receipt["phase_timing"]["collection_status"] == "disabled"
 
 
 def test_phase_timing_is_explicit_controlled_and_private_safe(
@@ -197,8 +199,9 @@ def test_phase_timing_is_explicit_controlled_and_private_safe(
             0,
             stdout=json.dumps({"text": "private transcript must not enter timing logs"}),
             stderr=(
-                "[timing] fe path=stream n_samples=2560 n_frames=16 = 0.40 ms\n"
+                "[timing] fe path=cpu n_samples=2560 n_frames=16 = 0.40 ms\n"
                 "[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n"
+                "[timing] postproc-cpu chars=44 profanity=0.00 itn=0.00 ms\n"
                 "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n"
                 "[timing] session out=private_tensor nodes=9 in=0.1 total=8.0 ms\n"
                 "private diagnostic body must not enter timing logs\n"
@@ -221,15 +224,266 @@ def test_phase_timing_is_explicit_controlled_and_private_safe(
     messages = "\n".join(record.getMessage() for record in caplog.records)
     audio_identity = hashlib.sha256(_wav_bytes()).hexdigest()[:12]
     assert seen["env"]["NEMO_SPEECH_TIMING"] == "1"
-    assert client._last_receipt["phase_timing"] == {
-        "enabled": True,
-        "emitted_lines": 3,
-    }
-    assert f"audio={audio_identity} [timing] fe path=stream" in messages
+    timing = client._last_receipt["phase_timing"]
+    assert timing["enabled"] is True
+    assert timing["collection_status"] == "complete"
+    assert timing["effective_runner"] == "cache_stream"
+    assert timing["observed_families"] == [
+        "cache_chunk",
+        "feature_extraction",
+        "postprocess_cpu",
+        "postprocess_dispatch",
+    ]
+    assert timing["missing_families"] == []
+    assert timing["contradictory_families"] == []
+    assert timing["rejected_lines"] == 0
+    assert timing["suppressed_detail_lines"] == 1
+    assert f"audio={audio_identity} [timing] fe path=cpu" in messages
     assert "[timing] cache-chunk" in messages
     assert "[timing] postproc-dispatch" in messages
     assert "private_tensor" not in messages
     assert "private diagnostic body" not in messages
+
+
+def test_phase_timing_rejects_template_text_malformed_numbers_and_partial_output(
+    tmp_path, monkeypatch, caplog
+):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    completed = subprocess.CompletedProcess(
+        [str(binary)],
+        0,
+        stdout=json.dumps({"text": "valid transcript"}),
+        stderr=(
+            "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n"
+            "[timing] fe path=PRIVATE_SENTINEL n_samples=1 n_frames=1 = 0.40 ms\n"
+            "[timing] cache-chunk enc_frames=8 encode=... decode=1..3 ms\n"
+        ),
+    )
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=tmp_path / "failures",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="spoke.transcribe_nemotron"):
+        with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+            assert client.transcribe(_wav_bytes()) == "valid transcript"
+
+    timing = client._last_receipt["phase_timing"]
+    assert timing["collection_status"] == "partial"
+    assert timing["effective_runner"] == "unobserved"
+    assert timing["observed_families"] == ["postprocess_dispatch"]
+    assert timing["missing_families"] == ["effective_runner"]
+    assert timing["rejected_lines"] == 2
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "PRIVATE_SENTINEL" not in messages
+    assert "1..3" not in messages
+    assert "rejected=2" in messages
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_runner"),
+    [
+        (
+            "[timing] fe path=cpu n_samples=2560 n_frames=16 = 0.40 ms\n"
+            "[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n"
+            "[timing] postproc-cpu chars=4 profanity=0.00 itn=0.00 ms\n"
+            "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n",
+            "cache_stream",
+        ),
+        (
+            "[timing] fe path=cpu n_samples=1600 n_frames=10 = 0.40 ms\n"
+            "[timing] offline-transducer frames=12 enc_frames=3 fe=0.40 "
+            "encoder+encproj=4.20 ms\n"
+            "[timing] offline-transducer decode frames=3 segments=1 = 1.30 ms\n"
+            "[timing] postproc-cpu chars=4 profanity=0.00 itn=0.00 ms\n"
+            "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n",
+            "offline",
+        ),
+    ],
+)
+def test_automatic_runner_receipt_identifies_both_effective_paths(
+    tmp_path, monkeypatch, stderr, expected_runner
+):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"text": "path"}), stderr=stderr
+        )
+
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=tmp_path / "failures",
+    )
+    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+        client.transcribe(_wav_bytes())
+
+    assert "--stream" not in seen["cmd"]
+    assert client._last_receipt["recognizer_configuration"]["runner_selection"] == (
+        "automatic"
+    )
+    assert client._last_receipt["phase_timing"]["effective_runner"] == expected_runner
+    assert client._last_receipt["phase_timing"]["collection_status"] == "complete"
+
+
+def test_phase_timing_timeout_preserves_admitted_partial_stderr(
+    tmp_path, monkeypatch
+):
+    binary, model = _seated_paths(tmp_path)
+    failure_dir = tmp_path / "failures"
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        timeout=0.01,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=failure_dir,
+    )
+    timeout = subprocess.TimeoutExpired(
+        [str(binary)],
+        0.01,
+        stderr=b"[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n",
+    )
+
+    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=timeout):
+        with pytest.raises(NemotronCPUError):
+            client.transcribe(_wav_bytes())
+
+    report = json.loads(next(failure_dir.glob("*.json")).read_text(encoding="utf-8"))
+    timing = report["phase_timing"]
+    assert timing["effective_runner"] == "cache_stream"
+    assert timing["observed_families"] == ["cache_chunk"]
+    assert timing["missing_families"] == [
+        "feature_extraction",
+        "postprocess_cpu",
+        "postprocess_dispatch",
+    ]
+    assert timing["collection_status"] == "partial"
+
+
+def test_invalid_phase_timing_configuration_writes_durable_failure(
+    tmp_path, monkeypatch
+):
+    binary, model = _seated_paths(tmp_path)
+    failure_dir = tmp_path / "failures"
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "definitely")
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        failure_dir=failure_dir,
+    )
+
+    with pytest.raises(NemotronCPUError, match="timing configuration is invalid"):
+        client.transcribe(_wav_bytes())
+
+    report = json.loads(next(failure_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["failure_phase"] == "resolve_phase_timing"
+    assert report["phase_timing"]["requested"] is True
+    assert report["phase_timing"]["configuration_valid"] is False
+    assert report["phase_timing"]["collection_status"] == "invalid_configuration"
+
+
+@pytest.mark.parametrize("failure_point", ["prepare", "prompt"])
+def test_phase_timing_request_survives_early_failure(
+    tmp_path, monkeypatch, failure_point
+):
+    binary, model = _seated_paths(tmp_path)
+    failure_dir = tmp_path / "failures"
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    provider = TranscriptionPromptProvider(include_builtin=False)
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=provider,
+        failure_dir=failure_dir,
+    )
+
+    target = client if failure_point == "prepare" else provider
+    method = "prepare" if failure_point == "prepare" else "resolve"
+    with patch.object(target, method, side_effect=RuntimeError("fixture failure")):
+        with pytest.raises(NemotronCPUError):
+            client.transcribe(_wav_bytes())
+
+    report = json.loads(next(failure_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["failure_phase"] == (
+        "prepare_runtime" if failure_point == "prepare" else "resolve_prompt"
+    )
+    assert report["phase_timing"]["requested"] is True
+    assert report["phase_timing"]["enabled"] is True
+    assert report["phase_timing"]["collection_status"] == "not_reached"
+
+
+def test_phase_timing_marks_runner_family_contradiction(tmp_path, monkeypatch):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    completed = subprocess.CompletedProcess(
+        [str(binary)],
+        0,
+        stdout=json.dumps({"text": "contradiction remains a transcript success"}),
+        stderr=(
+            "[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n"
+            "[timing] offline-transducer decode frames=3 segments=1 = 1.30 ms\n"
+        ),
+    )
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=tmp_path / "failures",
+    )
+
+    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+        client.transcribe(_wav_bytes())
+
+    timing = client._last_receipt["phase_timing"]
+    assert timing["collection_status"] == "contradictory"
+    assert timing["effective_runner"] == "contradictory"
+    assert timing["contradictory_families"] == ["cache_stream", "offline"]
+
+
+def test_phase_timing_enabled_without_timing_output_is_absent(
+    tmp_path, monkeypatch, caplog
+):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    completed = subprocess.CompletedProcess(
+        [str(binary)],
+        0,
+        stdout=json.dumps({"text": "transcript survives absent telemetry"}),
+        stderr="ordinary runtime status",
+    )
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=tmp_path / "failures",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="spoke.transcribe_nemotron"):
+        with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+            client.transcribe(_wav_bytes())
+
+    timing = client._last_receipt["phase_timing"]
+    assert timing["collection_status"] == "absent"
+    assert timing["missing_families"] == ["effective_runner"]
+    assert "status=absent" in "\n".join(
+        record.getMessage() for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("runtime_text", ["", "   "])
@@ -339,7 +593,8 @@ def test_process_failure_writes_replayable_route_report(tmp_path):
     assert report["status"] == "failure"
     assert report["failure_phase"] == "transcribe_process"
     assert report["effective_device"] == "cpu"
-    assert report["streaming"] is False
+    assert report["recognizer_configuration"]["runner_selection"] == "automatic"
+    assert report["recognizer_configuration"]["streaming_cli_requested"] is False
     assert report["endpointing"] is False
     assert report["vad"] is False
     assert report["audio_sha256"]
@@ -653,7 +908,7 @@ def test_replay_harness_requires_complete_effective_identity(tmp_path, missing_f
         ("audio_sha256", "f" * 64),
         ("model_sha256_actual", "b" * 64),
         ("recognizer_configuration.authority", "inherited_environment"),
-        ("recognizer_configuration.streaming", True),
+        ("recognizer_configuration.streaming_cli_requested", True),
         ("recognizer_configuration.endpointing", True),
         ("recognizer_configuration.vad", True),
     ],

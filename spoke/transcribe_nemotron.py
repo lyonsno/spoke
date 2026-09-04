@@ -50,32 +50,64 @@ _DEFAULT_FAILURE_DIR = (
     Path.home() / "Library" / "Application Support" / "Spoke" / "nemotron-failures"
 )
 _DEFAULT_SPEECH_CONTEXT_BOOST = 2.5
+_TIMING_NUMBER = r"(?:0|[1-9]\d*)\.\d{2}"
 _PHASE_TIMING_PATTERNS = (
-    re.compile(
-        r"^\[timing\] fe path=[A-Za-z0-9_.:-]+ n_samples=\d+ n_frames=\d+ "
-        r"= [0-9.]+ ms$"
+    (
+        "feature_extraction",
+        re.compile(
+            rf"^\[timing\] fe path=cpu n_samples=\d+ n_frames=\d+ "
+            rf"= {_TIMING_NUMBER} ms$"
+        ),
     ),
-    re.compile(
-        r"^\[timing\] cache-chunk enc_frames=\d+ encode=[0-9.]+ "
-        r"decode=[0-9.]+ ms$"
+    (
+        "cache_chunk",
+        re.compile(
+            rf"^\[timing\] cache-chunk enc_frames=\d+ encode={_TIMING_NUMBER} "
+            rf"decode={_TIMING_NUMBER} ms$"
+        ),
     ),
-    re.compile(
-        r"^\[timing\] postproc-dispatch queue=[0-9.]+ pnc=[0-9.]+ "
-        r"total=[0-9.]+ ms$"
+    (
+        "postprocess_dispatch",
+        re.compile(
+            rf"^\[timing\] postproc-dispatch queue={_TIMING_NUMBER} "
+            rf"pnc={_TIMING_NUMBER} total={_TIMING_NUMBER} ms$"
+        ),
     ),
-    re.compile(
-        r"^\[timing\] postproc-cpu chars=\d+ profanity=[0-9.]+ "
-        r"itn=[0-9.]+ ms$"
+    (
+        "postprocess_cpu",
+        re.compile(
+            rf"^\[timing\] postproc-cpu chars=\d+ profanity={_TIMING_NUMBER} "
+            rf"itn={_TIMING_NUMBER} ms$"
+        ),
     ),
-    re.compile(
-        r"^\[timing\] offline-transducer decode frames=\d+ segments=\d+ "
-        r"= [0-9.]+ ms$"
+    (
+        "offline_decoder",
+        re.compile(
+            rf"^\[timing\] offline-transducer decode frames=\d+ segments=\d+ "
+            rf"= {_TIMING_NUMBER} ms$"
+        ),
     ),
-    re.compile(
-        r"^\[timing\] offline-transducer frames=\d+ enc_frames=\d+ "
-        r"fe=[0-9.]+ encoder\+encproj=[0-9.]+ ms$"
+    (
+        "offline_encoder",
+        re.compile(
+            rf"^\[timing\] offline-transducer frames=\d+ enc_frames=\d+ "
+            rf"fe={_TIMING_NUMBER} encoder\+encproj={_TIMING_NUMBER} ms$"
+        ),
     ),
 )
+_CACHE_TIMING_FAMILIES = {
+    "feature_extraction",
+    "cache_chunk",
+    "postprocess_cpu",
+    "postprocess_dispatch",
+}
+_OFFLINE_TIMING_FAMILIES = {
+    "feature_extraction",
+    "offline_encoder",
+    "offline_decoder",
+    "postprocess_cpu",
+    "postprocess_dispatch",
+}
 
 
 class NemotronCPUError(RuntimeError):
@@ -189,14 +221,110 @@ def _opaque_output_evidence(
     return evidence
 
 
-def _privacy_safe_phase_timing_lines(value: bytes | str | None) -> list[str]:
+def _initial_phase_timing_state(
+    *, requested: bool, enabled: bool, configuration_valid: bool
+) -> dict:
+    return {
+        "requested": requested,
+        "enabled": enabled,
+        "configuration_valid": configuration_valid,
+        "collection_status": "not_reached" if enabled else "disabled",
+        "effective_runner": "unobserved",
+        "emitted_lines": 0,
+        "observed_families": [],
+        "family_counts": {},
+        "missing_families": [],
+        "contradictory_families": [],
+        "rejected_lines": 0,
+        "suppressed_detail_lines": 0,
+    }
+
+
+def _parse_phase_timing(
+    value: bytes | str | None, *, enabled: bool
+) -> tuple[dict, list[str]]:
+    if not enabled:
+        return (
+            _initial_phase_timing_state(
+                requested=False, enabled=False, configuration_valid=True
+            ),
+            [],
+        )
+
     raw = _subprocess_output_bytes(value)
     lines = raw.decode("utf-8", errors="replace").splitlines()
-    return [
-        line
-        for line in lines
-        if any(pattern.fullmatch(line) for pattern in _PHASE_TIMING_PATTERNS)
-    ]
+    admitted_lines: list[str] = []
+    family_counts: dict[str, int] = {}
+    rejected_lines = 0
+    suppressed_detail_lines = 0
+    timing_prefixed_lines = 0
+    for line in lines:
+        if not line.startswith("[timing]"):
+            continue
+        timing_prefixed_lines += 1
+        matched_family = next(
+            (
+                family
+                for family, pattern in _PHASE_TIMING_PATTERNS
+                if pattern.fullmatch(line)
+            ),
+            None,
+        )
+        if matched_family is not None:
+            admitted_lines.append(line)
+            family_counts[matched_family] = family_counts.get(matched_family, 0) + 1
+        elif line.startswith("[timing] session "):
+            suppressed_detail_lines += 1
+        else:
+            rejected_lines += 1
+
+    observed = set(family_counts)
+    cache_seen = "cache_chunk" in observed
+    offline_seen = "offline_encoder" in observed or "offline_decoder" in observed
+    contradictory: list[str] = []
+    if cache_seen and offline_seen:
+        effective_runner = "contradictory"
+        contradictory = ["cache_stream", "offline"]
+        expected: set[str] = set()
+    elif cache_seen:
+        effective_runner = "cache_stream"
+        expected = _CACHE_TIMING_FAMILIES
+    elif offline_seen:
+        effective_runner = "offline"
+        expected = _OFFLINE_TIMING_FAMILIES
+    else:
+        effective_runner = "unobserved"
+        expected = set()
+
+    missing = (
+        sorted(expected - observed)
+        if effective_runner not in {"unobserved", "contradictory"}
+        else (["effective_runner"] if effective_runner == "unobserved" else [])
+    )
+    if contradictory:
+        collection_status = "contradictory"
+    elif effective_runner == "unobserved" or missing or rejected_lines:
+        collection_status = "partial" if timing_prefixed_lines else "absent"
+    else:
+        collection_status = "complete"
+
+    return (
+        {
+            "requested": True,
+            "enabled": True,
+            "configuration_valid": True,
+            "collection_status": collection_status,
+            "effective_runner": effective_runner,
+            "emitted_lines": len(admitted_lines),
+            "observed_families": sorted(observed),
+            "family_counts": dict(sorted(family_counts.items())),
+            "missing_families": missing,
+            "contradictory_families": contradictory,
+            "rejected_lines": rejected_lines,
+            "suppressed_detail_lines": suppressed_detail_lines,
+        },
+        admitted_lines,
+    )
 
 
 def _controlled_child_environment(
@@ -321,6 +449,34 @@ class NemotronCPUClient:
         self._last_receipt = None
         started = time.monotonic()
         route = self._initial_route(wav_bytes)
+        timing_value = os.environ.get("SPOKE_NEMOTRON_PHASE_TIMING", "")
+        timing_requested = bool(timing_value.strip())
+        route["phase_timing"] = _initial_phase_timing_state(
+            requested=timing_requested,
+            enabled=False,
+            configuration_valid=True,
+        )
+        try:
+            phase_timing_enabled = _phase_timing_enabled()
+        except NemotronCPUError:
+            route["phase_timing"] = _initial_phase_timing_state(
+                requested=timing_requested,
+                enabled=False,
+                configuration_valid=False,
+            )
+            route["phase_timing"]["collection_status"] = "invalid_configuration"
+            self._raise_failure(
+                route,
+                phase="resolve_phase_timing",
+                detail="invalid boolean value",
+                operator_message="Nemotron CPU timing configuration is invalid",
+                started=started,
+            )
+        route["phase_timing"] = _initial_phase_timing_state(
+            requested=timing_requested,
+            enabled=phase_timing_enabled,
+            configuration_valid=True,
+        )
 
         try:
             self.prepare()
@@ -358,25 +514,20 @@ class NemotronCPUClient:
         route["speech_context_boost"] = (
             self._speech_context_boost if phrases else None
         )
-        phase_timing_enabled = _phase_timing_enabled()
         child_environment, removed_environment_keys = _controlled_child_environment(
             phase_timing=phase_timing_enabled
         )
         recognizer_configuration = {
             "authority": "explicit_cli_with_nemo_environment_cleared",
-            "streaming": False,
+            "runner_selection": "automatic",
+            "streaming_cli_requested": False,
             "endpointing": False,
             "vad": False,
         }
         route["recognizer_configuration"] = recognizer_configuration
         route["cleared_nemo_environment_keys"] = removed_environment_keys
-        route["phase_timing"] = {
-            "enabled": phase_timing_enabled,
-            "emitted_lines": 0,
-        }
         route.update(
             {
-                "streaming": recognizer_configuration["streaming"],
                 "endpointing": recognizer_configuration["endpointing"],
                 "vad": recognizer_configuration["vad"],
             }
@@ -408,6 +559,11 @@ class NemotronCPUClient:
                         check=False,
                     )
                 except subprocess.TimeoutExpired as exc:
+                    self._collect_phase_timing(
+                        route,
+                        stderr=exc.stderr,
+                        enabled=phase_timing_enabled,
+                    )
                     self._raise_failure(
                         route,
                         phase="transcribe_timeout",
@@ -429,24 +585,11 @@ class NemotronCPUClient:
                     )
 
                 wall_seconds = time.monotonic() - started
-                phase_timing_lines = (
-                    _privacy_safe_phase_timing_lines(result.stderr)
-                    if phase_timing_enabled
-                    else []
+                phase_timing_lines = self._collect_phase_timing(
+                    route,
+                    stderr=result.stderr,
+                    enabled=phase_timing_enabled,
                 )
-                route["phase_timing"]["emitted_lines"] = len(phase_timing_lines)
-                for timing_line in phase_timing_lines:
-                    logger.info(
-                        "Nemotron CPU phase: audio=%s %s",
-                        route["audio_sha256"][:12],
-                        timing_line,
-                    )
-                if phase_timing_enabled and not phase_timing_lines:
-                    logger.warning(
-                        "Nemotron CPU phase timing enabled but no recognized timing "
-                        "lines were emitted (stderr_bytes=%d)",
-                        len(_subprocess_output_bytes(result.stderr)),
-                    )
                 if result.returncode != 0:
                     self._raise_failure(
                         route,
@@ -533,6 +676,39 @@ class NemotronCPUClient:
             len(phase_timing_lines),
         )
         return text
+
+    def _collect_phase_timing(
+        self,
+        route: dict,
+        *,
+        stderr: bytes | str | None,
+        enabled: bool,
+    ) -> list[str]:
+        timing, admitted_lines = _parse_phase_timing(stderr, enabled=enabled)
+        timing["requested"] = route["phase_timing"]["requested"]
+        route["phase_timing"] = timing
+        for timing_line in admitted_lines:
+            logger.info(
+                "Nemotron CPU phase: audio=%s %s",
+                route["audio_sha256"][:12],
+                timing_line,
+            )
+        if enabled and timing["collection_status"] != "complete":
+            logger.warning(
+                "Nemotron CPU phase timing degraded: audio=%s status=%s "
+                "runner=%s observed=%s missing=%s contradictory=%s rejected=%d "
+                "suppressed=%d stderr_bytes=%d",
+                route["audio_sha256"][:12],
+                timing["collection_status"],
+                timing["effective_runner"],
+                ",".join(timing["observed_families"]) or "none",
+                ",".join(timing["missing_families"]) or "none",
+                ",".join(timing["contradictory_families"]) or "none",
+                timing["rejected_lines"],
+                timing["suppressed_detail_lines"],
+                len(_subprocess_output_bytes(stderr)),
+            )
+        return admitted_lines
 
     def _initial_route(self, wav_bytes: bytes) -> dict:
         return {
@@ -670,13 +846,13 @@ def _receipt_proves_cpu_full_buffer(receipt: dict, audio_sha256: str) -> bool:
         and receipt.get("model_sha256_actual")
         and receipt.get("model_sha256_actual") == receipt.get("model_sha256_expected")
         and receipt.get("audio_sha256") == audio_sha256
-        and receipt.get("streaming") is False
         and receipt.get("endpointing") is False
         and receipt.get("vad") is False
         and isinstance(configuration, dict)
         and configuration.get("authority")
         == "explicit_cli_with_nemo_environment_cleared"
-        and configuration.get("streaming") is False
+        and configuration.get("runner_selection") == "automatic"
+        and configuration.get("streaming_cli_requested") is False
         and configuration.get("endpointing") is False
         and configuration.get("vad") is False
     )
