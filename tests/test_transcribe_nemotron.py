@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import logging
 from pathlib import Path
 import subprocess
 from unittest.mock import patch
@@ -177,6 +178,55 @@ def test_transcribe_strips_inherited_nemo_configuration(tmp_path, monkeypatch):
         key == "NEMO_SPEECH" or key.startswith("NEMO_SPEECH_")
         for key in seen["env"]
     )
+
+
+def test_phase_timing_is_explicit_controlled_and_private_safe(
+    tmp_path, monkeypatch, caplog
+):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    monkeypatch.setenv("NEMO_SPEECH_TIMING", "inherited-value-must-not-win")
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"text": "private transcript must not enter timing logs"}),
+            stderr=(
+                "[timing] fe path=stream n_samples=2560 n_frames=16 = 0.40 ms\n"
+                "[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n"
+                "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n"
+                "[timing] session out=private_tensor nodes=9 in=0.1 total=8.0 ms\n"
+                "private diagnostic body must not enter timing logs\n"
+            ),
+        )
+
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=tmp_path / "failures",
+    )
+    with caplog.at_level(logging.INFO, logger="spoke.transcribe_nemotron"):
+        with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+            assert client.transcribe(_wav_bytes()) == (
+                "private transcript must not enter timing logs"
+            )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert seen["env"]["NEMO_SPEECH_TIMING"] == "1"
+    assert client._last_receipt["phase_timing"] == {
+        "enabled": True,
+        "emitted_lines": 3,
+    }
+    assert "[timing] fe path=stream" in messages
+    assert "[timing] cache-chunk" in messages
+    assert "[timing] postproc-dispatch" in messages
+    assert "private_tensor" not in messages
+    assert "private diagnostic body" not in messages
 
 
 @pytest.mark.parametrize("runtime_text", ["", "   "])

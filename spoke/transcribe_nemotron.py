@@ -50,6 +50,32 @@ _DEFAULT_FAILURE_DIR = (
     Path.home() / "Library" / "Application Support" / "Spoke" / "nemotron-failures"
 )
 _DEFAULT_SPEECH_CONTEXT_BOOST = 2.5
+_PHASE_TIMING_PATTERNS = (
+    re.compile(
+        r"^\[timing\] fe path=[A-Za-z0-9_.:-]+ n_samples=\d+ n_frames=\d+ "
+        r"= [0-9.]+ ms$"
+    ),
+    re.compile(
+        r"^\[timing\] cache-chunk enc_frames=\d+ encode=[0-9.]+ "
+        r"decode=[0-9.]+ ms$"
+    ),
+    re.compile(
+        r"^\[timing\] postproc-dispatch queue=[0-9.]+ pnc=[0-9.]+ "
+        r"total=[0-9.]+ ms$"
+    ),
+    re.compile(
+        r"^\[timing\] postproc-cpu chars=\d+ profanity=[0-9.]+ "
+        r"itn=[0-9.]+ ms$"
+    ),
+    re.compile(
+        r"^\[timing\] offline-transducer decode frames=\d+ segments=\d+ "
+        r"= [0-9.]+ ms$"
+    ),
+    re.compile(
+        r"^\[timing\] offline-transducer frames=\d+ enc_frames=\d+ "
+        r"fe=[0-9.]+ encoder\+encproj=[0-9.]+ ms$"
+    ),
+)
 
 
 class NemotronCPUError(RuntimeError):
@@ -89,6 +115,20 @@ def _resolve_boost(boost: float | None = None) -> float:
             "SPOKE_NEMOTRON_SPEECH_CONTEXT_BOOST must be numeric, "
             f"got {value!r}"
         ) from exc
+
+
+def _phase_timing_enabled() -> bool:
+    value = os.environ.get("SPOKE_NEMOTRON_PHASE_TIMING", "").strip().lower()
+    if not value:
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise NemotronCPUError(
+        "SPOKE_NEMOTRON_PHASE_TIMING must be a boolean value, "
+        f"got {value!r}"
+    )
 
 
 def _prompt_phrases(text: str) -> list[str]:
@@ -149,7 +189,19 @@ def _opaque_output_evidence(
     return evidence
 
 
-def _controlled_child_environment() -> tuple[dict[str, str], list[str]]:
+def _privacy_safe_phase_timing_lines(value: bytes | str | None) -> list[str]:
+    raw = _subprocess_output_bytes(value)
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    return [
+        line
+        for line in lines
+        if any(pattern.fullmatch(line) for pattern in _PHASE_TIMING_PATTERNS)
+    ]
+
+
+def _controlled_child_environment(
+    *, phase_timing: bool = False
+) -> tuple[dict[str, str], list[str]]:
     environment = os.environ.copy()
     removed = sorted(
         key
@@ -158,6 +210,8 @@ def _controlled_child_environment() -> tuple[dict[str, str], list[str]]:
     )
     for key in removed:
         environment.pop(key, None)
+    if phase_timing:
+        environment["NEMO_SPEECH_TIMING"] = "1"
     return environment, removed
 
 
@@ -304,7 +358,10 @@ class NemotronCPUClient:
         route["speech_context_boost"] = (
             self._speech_context_boost if phrases else None
         )
-        child_environment, removed_environment_keys = _controlled_child_environment()
+        phase_timing_enabled = _phase_timing_enabled()
+        child_environment, removed_environment_keys = _controlled_child_environment(
+            phase_timing=phase_timing_enabled
+        )
         recognizer_configuration = {
             "authority": "explicit_cli_with_nemo_environment_cleared",
             "streaming": True,
@@ -313,6 +370,10 @@ class NemotronCPUClient:
         }
         route["recognizer_configuration"] = recognizer_configuration
         route["cleared_nemo_environment_keys"] = removed_environment_keys
+        route["phase_timing"] = {
+            "enabled": phase_timing_enabled,
+            "emitted_lines": 0,
+        }
         route.update(
             {
                 "streaming": recognizer_configuration["streaming"],
@@ -368,6 +429,20 @@ class NemotronCPUClient:
                     )
 
                 wall_seconds = time.monotonic() - started
+                phase_timing_lines = (
+                    _privacy_safe_phase_timing_lines(result.stderr)
+                    if phase_timing_enabled
+                    else []
+                )
+                route["phase_timing"]["emitted_lines"] = len(phase_timing_lines)
+                for timing_line in phase_timing_lines:
+                    logger.info("Nemotron CPU phase: %s", timing_line)
+                if phase_timing_enabled and not phase_timing_lines:
+                    logger.warning(
+                        "Nemotron CPU phase timing enabled but no recognized timing "
+                        "lines were emitted (stderr_bytes=%d)",
+                        len(_subprocess_output_bytes(result.stderr)),
+                    )
                 if result.returncode != 0:
                     self._raise_failure(
                         route,
