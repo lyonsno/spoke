@@ -219,12 +219,13 @@ def test_phase_timing_is_explicit_controlled_and_private_safe(
             )
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
+    audio_identity = hashlib.sha256(_wav_bytes()).hexdigest()[:12]
     assert seen["env"]["NEMO_SPEECH_TIMING"] == "1"
     assert client._last_receipt["phase_timing"] == {
         "enabled": True,
         "emitted_lines": 3,
     }
-    assert "[timing] fe path=stream" in messages
+    assert f"audio={audio_identity} [timing] fe path=stream" in messages
     assert "[timing] cache-chunk" in messages
     assert "[timing] postproc-dispatch" in messages
     assert "private_tensor" not in messages

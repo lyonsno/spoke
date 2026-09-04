@@ -436,7 +436,11 @@ class NemotronCPUClient:
                 )
                 route["phase_timing"]["emitted_lines"] = len(phase_timing_lines)
                 for timing_line in phase_timing_lines:
-                    logger.info("Nemotron CPU phase: %s", timing_line)
+                    logger.info(
+                        "Nemotron CPU phase: audio=%s %s",
+                        route["audio_sha256"][:12],
+                        timing_line,
+                    )
                 if phase_timing_enabled and not phase_timing_lines:
                     logger.warning(
                         "Nemotron CPU phase timing enabled but no recognized timing "
@@ -519,11 +523,14 @@ class NemotronCPUClient:
             "reported_duration_seconds": payload.get("duration"),
         }
         logger.info(
-            "Nemotron CPU transcription: wall=%.3fs audio=%s bytes=%d prompt=%s",
+            "Nemotron CPU transcription: wall=%.3fs audio=%s bytes=%d prompt=%s "
+            "phase_timing=%s/%d",
             wall_seconds,
             route["audio_duration_seconds"],
             len(wav_bytes),
             prompt.sha256,
+            phase_timing_enabled,
+            len(phase_timing_lines),
         )
         return text
 
