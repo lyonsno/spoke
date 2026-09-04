@@ -95,6 +95,18 @@ _PHASE_TIMING_PATTERNS = (
         ),
     ),
 )
+_SESSION_TIMING_PATTERNS = (
+    re.compile(
+        rf"^\[timing\] session out=.+ +nodes=\d+ in={_TIMING_NUMBER} "
+        rf"direct compute={_TIMING_NUMBER} out={_TIMING_NUMBER} "
+        rf"total={_TIMING_NUMBER} ms$"
+    ),
+    re.compile(
+        rf"^\[timing\] session out=.+ +nodes=\d+ in={_TIMING_NUMBER} "
+        rf"alloc={_TIMING_NUMBER} compute={_TIMING_NUMBER} "
+        rf"out={_TIMING_NUMBER} total={_TIMING_NUMBER} ms$"
+    ),
+)
 _CACHE_TIMING_FAMILIES = {
     "feature_extraction",
     "cache_chunk",
@@ -273,7 +285,7 @@ def _parse_phase_timing(
         if matched_family is not None:
             admitted_lines.append(line)
             family_counts[matched_family] = family_counts.get(matched_family, 0) + 1
-        elif line.startswith("[timing] session "):
+        elif any(pattern.fullmatch(line) for pattern in _SESSION_TIMING_PATTERNS):
             suppressed_detail_lines += 1
         else:
             rejected_lines += 1

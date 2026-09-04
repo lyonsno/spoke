@@ -203,7 +203,10 @@ def test_phase_timing_is_explicit_controlled_and_private_safe(
                 "[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n"
                 "[timing] postproc-cpu chars=44 profanity=0.00 itn=0.00 ms\n"
                 "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n"
-                "[timing] session out=private_tensor nodes=9 in=0.1 total=8.0 ms\n"
+                "[timing] session out=private_tensor       nodes=9 in=0.10 "
+                "direct compute=4.20 out=1.30 total=8.00 ms\n"
+                "[timing] session out=private_alloc_tensor nodes=7 in=0.20 "
+                "alloc=0.30 compute=3.10 out=0.40 total=4.00 ms\n"
                 "private diagnostic body must not enter timing logs\n"
             ),
         )
@@ -237,11 +240,12 @@ def test_phase_timing_is_explicit_controlled_and_private_safe(
     assert timing["missing_families"] == []
     assert timing["contradictory_families"] == []
     assert timing["rejected_lines"] == 0
-    assert timing["suppressed_detail_lines"] == 1
+    assert timing["suppressed_detail_lines"] == 2
     assert f"audio={audio_identity} [timing] fe path=cpu" in messages
     assert "[timing] cache-chunk" in messages
     assert "[timing] postproc-dispatch" in messages
     assert "private_tensor" not in messages
+    assert "private_alloc_tensor" not in messages
     assert "private diagnostic body" not in messages
 
 
@@ -282,6 +286,48 @@ def test_phase_timing_rejects_template_text_malformed_numbers_and_partial_output
     assert "PRIVATE_SENTINEL" not in messages
     assert "1..3" not in messages
     assert "rejected=2" in messages
+
+
+def test_phase_timing_rejects_malformed_session_detail_without_logging_body(
+    tmp_path, monkeypatch, caplog
+):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_PHASE_TIMING", "1")
+    private_body = "PRIVATE_SESSION_SENTINEL"
+    completed = subprocess.CompletedProcess(
+        [str(binary)],
+        0,
+        stdout=json.dumps({"text": "valid transcript"}),
+        stderr=(
+            "[timing] fe path=cpu n_samples=2560 n_frames=16 = 0.40 ms\n"
+            "[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n"
+            "[timing] postproc-cpu chars=4 profanity=0.00 itn=0.00 ms\n"
+            "[timing] postproc-dispatch queue=0.00 pnc=0.00 total=0.01 ms\n"
+            f"[timing] session {private_body}\n"
+        ),
+    )
+    client = NemotronCPUClient(
+        binary=binary,
+        model_path=model,
+        expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+        failure_dir=tmp_path / "failures",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="spoke.transcribe_nemotron"):
+        with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+            assert client.transcribe(_wav_bytes()) == "valid transcript"
+
+    timing = client._last_receipt["phase_timing"]
+    assert timing["collection_status"] == "partial"
+    assert timing["effective_runner"] == "cache_stream"
+    assert timing["missing_families"] == []
+    assert timing["rejected_lines"] == 1
+    assert timing["suppressed_detail_lines"] == 0
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "rejected=1" in messages
+    assert private_body not in messages
+    assert private_body not in json.dumps(client._last_receipt)
 
 
 @pytest.mark.parametrize(
