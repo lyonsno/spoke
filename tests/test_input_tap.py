@@ -18,7 +18,6 @@ class TestSpacebarStateMachine:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._repeat_watchdog_timer = None
         det._last_space_keydown_monotonic = 0.0
         det._forwarding = False
@@ -300,25 +299,23 @@ class TestSpacebarStateMachine:
         assert det._awaiting_space_release is False
         on_start.assert_called_once()
 
-    def test_safety_timer_stops_recording(self, input_tap_module):
-        """Safety timeout should auto-stop recording."""
+    def test_recording_promotion_does_not_schedule_elapsed_time_cutoff(
+        self, input_tap_module
+    ):
+        """Valid recording duration alone must never end a capture."""
         det, on_start, on_end = self._make_detector(input_tap_module)
         mod = input_tap_module
+        timer_factory = (
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        )
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        timer_factory.reset_mock()
         det.holdTimerFired_(None)  # → RECORDING
+
         assert det._state == mod._State.RECORDING
-
-        det.safetyTimerFired_(None)
-        assert det._state == mod._State.IDLE
-        on_end.assert_called_once()
-
-    def test_safety_timer_noop_if_not_recording(self, input_tap_module):
-        """Safety timer firing when not RECORDING should be a no-op."""
-        det, _, on_end = self._make_detector(input_tap_module)
-
-        # Fire safety timer while IDLE
-        det.safetyTimerFired_(None)
+        timer_factory.assert_not_called()
+        on_start.assert_called_once_with()
         on_end.assert_not_called()
 
     def test_hold_timer_noop_if_not_waiting(self, input_tap_module):
@@ -478,7 +475,6 @@ class TestEventTapCallback:
         det._hold_s = 0.4
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._repeat_watchdog_timer = None
         det._last_space_keydown_monotonic = 0.0
         det._forwarding = False
@@ -526,7 +522,6 @@ class TestEventTapCallback:
         det._hold_s = 0.4
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._repeat_watchdog_timer = None
         det._last_space_keydown_monotonic = 0.0
         det._forwarding = False
@@ -570,7 +565,6 @@ class TestForwardingRecovery:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -629,7 +623,6 @@ class TestForceEnd:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -705,7 +698,6 @@ class TestUninstall:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = MagicMock()
@@ -765,7 +757,6 @@ class TestShiftLateLatching:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -890,7 +881,6 @@ class TestLatchedRecording:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -1116,7 +1106,6 @@ class TestTrayAwareness:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._release_decision_timer = None
@@ -1903,7 +1892,6 @@ class TestCommandOverlayFlags:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._release_decision_timer = None
@@ -2010,7 +1998,6 @@ class TestDoubleTapGestures:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._release_decision_timer = None

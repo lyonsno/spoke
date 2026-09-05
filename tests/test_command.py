@@ -2094,7 +2094,6 @@ class TestShiftReleaseRouting:
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
-        det._safety_timer = None
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None

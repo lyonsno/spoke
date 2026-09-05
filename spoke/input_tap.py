@@ -75,7 +75,6 @@ _MODIFIER_MASK = (
     | kCGEventFlagMaskAlternate
 )
 _DEFAULT_HOLD_MS = 400
-_SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
 _DOUBLE_TAP_WINDOW_S = 0.3  # 300ms window for double-tap detection
@@ -169,7 +168,6 @@ class SpacebarHoldDetector(NSObject):
         self._suppress_enter_keyup = False  # swallow trailing Enter keyUp after a consumed chord
         self._suppress_delete_keyup = False
         self._hold_timer: NSTimer | None = None
-        self._safety_timer: NSTimer | None = None
         self._repeat_watchdog_timer: NSTimer | None = None
         self._forwarding = False
         self._forwarding_timer: NSTimer | None = None
@@ -262,10 +260,9 @@ class SpacebarHoldDetector(NSObject):
         return True
 
     def force_end(self) -> None:
-        """Programmatically end a recording hold (e.g. recording cap reached)."""
+        """Programmatically end an active recording hold."""
         if self._state in (_State.RECORDING, _State.LATCHED):
             source_state = self._state
-            self._cancel_safety_timer()
             self._cancel_repeat_watchdog()
             self._state = _State.IDLE
             self._awaiting_space_release = True
@@ -286,7 +283,6 @@ class SpacebarHoldDetector(NSObject):
         if source_state == _State.WAITING:
             self._cancel_hold_timer()
         elif source_state in (_State.RECORDING, _State.LATCHED):
-            self._cancel_safety_timer()
             self._cancel_repeat_watchdog()
         if source_state == _State.LATCHED:
             self._latched_space_down = False
@@ -303,7 +299,6 @@ class SpacebarHoldDetector(NSObject):
             self._tap = None
             self._tap_source = None
         self._cancel_hold_timer()
-        self._cancel_safety_timer()
         self._cancel_forwarding_timer()
         self._cancel_release_decision_timer()
         self._cancel_shift_single_tap_timer()
@@ -447,7 +442,6 @@ class SpacebarHoldDetector(NSObject):
         # Cancel spring capture: space released while spring is winding
         if getattr(self, 'cancel_spring_active', False):
             self._cancel_hold_timer()
-            self._cancel_safety_timer()
             self._cancel_repeat_watchdog()
             self._suppress_enter_keyup = getattr(self, '_enter_held', False)
             self._state = _State.IDLE
@@ -503,7 +497,6 @@ class SpacebarHoldDetector(NSObject):
             return True
 
         if self._state == _State.RECORDING:
-            self._cancel_safety_timer()
             self._cancel_repeat_watchdog()
             self._suppress_enter_keyup = getattr(self, '_enter_held', False)
             self._state = _State.IDLE
@@ -539,7 +532,6 @@ class SpacebarHoldDetector(NSObject):
 
             if getattr(self, '_latched_space_down', False):
                 self._latched_space_down = False
-                self._cancel_safety_timer()
                 self._cancel_repeat_watchdog()
                 self._suppress_enter_keyup = getattr(self, '_enter_held', False)
                 self._state = _State.IDLE
@@ -576,7 +568,6 @@ class SpacebarHoldDetector(NSObject):
             command_overlay_active=bool(getattr(self, "command_overlay_active", False)),
             enter_held=bool(getattr(self, "_enter_held", False)),
         )
-        self._start_safety_timer()
         self._on_hold_start()
 
     def _waiting_elapsed_meets_threshold(self, event_timestamp_ns: int | None) -> bool:
@@ -596,37 +587,6 @@ class SpacebarHoldDetector(NSObject):
         if self._hold_timer is not None:
             self._hold_timer.invalidate()
             self._hold_timer = None
-
-    def _start_safety_timer(self) -> None:
-        """Auto-stop recording after 30s in case keyUp is missed."""
-        self._safety_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _SAFETY_TIMEOUT_S, self, "safetyTimerFired:", None, False
-        )
-
-    def safetyTimerFired_(self, timer: NSTimer) -> None:
-        """Emergency stop — spacebar keyUp was never received."""
-        self._safety_timer = None
-        if self._state in (_State.RECORDING, _State.LATCHED):
-            logger.warning("Safety timeout — auto-stopping recording")
-            source_state = self._state
-            self._state = _State.IDLE
-            self._cancel_repeat_watchdog()
-            self._awaiting_space_release = True
-            self._on_hold_end(
-                shift_held=False,
-                enter_held=(
-                    getattr(self, '_enter_held', False)
-                    or (
-                        source_state == _State.LATCHED
-                        and getattr(self, '_enter_latched', False)
-                    )
-                ),
-            )
-
-    def _cancel_safety_timer(self) -> None:
-        if self._safety_timer is not None:
-            self._safety_timer.invalidate()
-            self._safety_timer = None
 
     def _start_repeat_watchdog(self) -> None:
         self._cancel_repeat_watchdog()
@@ -664,7 +624,6 @@ class SpacebarHoldDetector(NSObject):
 
         logger.warning("%s recovered a missed spacebar keyUp", reason)
         source_state = self._state
-        self._cancel_safety_timer()
         self._cancel_repeat_watchdog()
         self._state = _State.IDLE
         # Quartz confirmed the physical key is up. Requiring another release
