@@ -171,7 +171,20 @@ def _run_modal_with_paste(alert) -> int:
     finally:
         NSEvent.removeMonitor_(monitor)
 
-from .capture import AudioCapture
+from .launch_targets import apply_selected_launch_target_env, publish_launch_admission
+
+try:
+    _RUNTIME_LAUNCH_ENV_RECEIPT = apply_selected_launch_target_env(Path.cwd())
+except Exception as _launch_admission_error:
+    try:
+        publish_launch_admission("refused", error=_launch_admission_error)
+    except Exception:
+        pass
+    raise
+else:
+    publish_launch_admission("admitted", receipt=_RUNTIME_LAUNCH_ENV_RECEIPT)
+
+from .capture import AudioCapture, vad_enabled
 from .audio_spool import AudioSpool
 from .asr_recovery import WhisperKitRecoveryClient
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
@@ -1478,6 +1491,7 @@ class SpokeAppDelegate(NSObject):
         # tracked independently.
         self._menubar.set_status_text("Starting up…")
         self._setup_event_tap()
+        self._prepare_diaulos_switcher()
         self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:
@@ -2373,7 +2387,16 @@ class SpokeAppDelegate(NSObject):
         # Each silence-bounded segment is dispatched to the final client as it
         # arrives, so that on release we only need to transcribe the tail.
         self._segment_accumulator = SegmentAccumulator()
-        use_segments = getattr(self, "_whisper_backend", "local") in ("sidecar", "cloud")
+        self._vad_active_for_hold = vad_enabled()
+        use_segments = (
+            self._vad_active_for_hold
+            and getattr(self, "_whisper_backend", "local") in ("sidecar", "cloud")
+        )
+        if not self._vad_active_for_hold:
+            logger.info(
+                "VAD disabled: capturing one raw full buffer with no "
+                "silence-bounded segment acceleration"
+            )
         segment_cb = None
         if use_segments:
             def segment_cb(wav_bytes: bytes):
@@ -3153,9 +3176,20 @@ class SpokeAppDelegate(NSObject):
 
     def _transcribe_final_buffer(self, wav_bytes: bytes, *, release_cutover: bool = False) -> str:
         """Choose the final transcription route for all hold-release pathways."""
+        raw_full_buffer_required = not getattr(
+            self, "_vad_active_for_hold", vad_enabled()
+        )
         if _audio_contention_mode_enabled():
             self._cancel_preview_stream_for_full_buffer()
             return self._transcribe_contention_buffer(wav_bytes)
+        if raw_full_buffer_required:
+            self._cancel_preview_stream_for_full_buffer()
+            logger.info(
+                "VAD disabled: final transcription uses the stopped raw "
+                "full buffer as sole audio authority (%d bytes)",
+                len(wav_bytes),
+            )
+            return self._transcribe_full_buffer(wav_bytes)
 
         text = self._transcribe_segments_and_tail(wav_bytes)
         if text is not None:
@@ -4359,13 +4393,18 @@ class SpokeAppDelegate(NSObject):
 
     def _toggle_diaulos_switcher(self) -> None:
         """Open or close the voice-native live Diaulos switcher."""
+        self._prepare_diaulos_switcher()
+        self._diaulos_switcher.toggle()
+
+    def _prepare_diaulos_switcher(self) -> None:
+        """Construct and prime the Teleporter outside the user gesture path."""
         if self._diaulos_switcher is None:
             from .diaulos_switcher_overlay import DiaulosSwitcherOverlay
 
             self._diaulos_switcher = (
                 DiaulosSwitcherOverlay.alloc().initWithDelegate_(self)
             )
-        self._diaulos_switcher.toggle()
+        self._diaulos_switcher.prewarm()
 
     def _tray_entry_allows_text_action(self, entry: TrayEntry | str) -> bool:
         """Return whether a tray entry can be pasted or sent as plain text."""
@@ -5903,16 +5942,15 @@ class SpokeAppDelegate(NSObject):
             return False
         import subprocess
 
-        subprocess.Popen(
+        result = subprocess.run(
             ["/bin/bash", str(helper_path), target_id],
             cwd=helper_path.parent.parent,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+            check=False,
         )
-        return True
+        return result.returncode == 0
 
     def _apply_launch_target_selection(self, target_id: str) -> None:
         current_target = current_launch_target_id(self._current_checkout_root())
@@ -8056,7 +8094,21 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
     _install_crash_diagnostics()
-    _record_runtime_phase("process.start")
+    repaired_env_keys = _RUNTIME_LAUNCH_ENV_RECEIPT["repaired_env_keys"]
+    if repaired_env_keys:
+        logger.warning(
+            "Repaired missing or stale selected-target env before runtime imports: %s",
+            repaired_env_keys,
+        )
+    _record_runtime_phase(
+        "process.start",
+        launch_env_status=_RUNTIME_LAUNCH_ENV_RECEIPT["status"],
+        launch_registry_path=_RUNTIME_LAUNCH_ENV_RECEIPT["registry_path"],
+        launch_target_env_keys=_RUNTIME_LAUNCH_ENV_RECEIPT["target_env_keys"],
+        launch_target_env_repaired_keys=repaired_env_keys,
+        vad_enabled=vad_enabled(),
+        vad_env=os.environ.get("SPOKE_VAD_ENABLED"),
+    )
 
     zombie_sweep()
     _acquire_instance_lock()

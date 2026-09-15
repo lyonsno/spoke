@@ -89,6 +89,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     delegate._audio_spool = MagicMock()
     delegate._asr_recovery_client = MagicMock()
+    delegate._prepare_diaulos_switcher = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -2644,6 +2645,22 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
+
+    def test_launch_target_helper_returns_child_admission_result(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        completed = MagicMock(returncode=1)
+
+        with patch("subprocess.run", return_value=completed) as run, patch(
+            "subprocess.Popen"
+        ) as popen:
+            outcome = d._invoke_launch_target_helper("superseded")
+
+        assert outcome is False
+        run.assert_called_once()
+        popen.assert_not_called()
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -4341,6 +4358,11 @@ class TestRuntimePhaseLogging:
         d._refresh_command_model_options_async = MagicMock()
         d._request_mic_permission = MagicMock()
         d._setup_event_tap = MagicMock()
+        startup_events: list[str] = []
+        d._setup_event_tap.side_effect = lambda: startup_events.append("event-tap")
+        d._prepare_diaulos_switcher.side_effect = lambda: startup_events.append(
+            "teleporter-prewarm"
+        )
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
@@ -4367,6 +4389,8 @@ class TestRuntimePhaseLogging:
 
         d._refresh_command_model_options_async.assert_called_once_with()
         d._setup_event_tap.assert_called_once_with()
+        d._prepare_diaulos_switcher.assert_called_once_with()
+        assert startup_events == ["event-tap", "teleporter-prewarm"]
         overlay.set_compositor_registry.assert_called_once()
         command_overlay.set_compositor_registry.assert_called_once()
         assert (
@@ -7203,6 +7227,31 @@ class TestSegmentAcceleratedTranscription:
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "full buffer text"
 
+    def test_vad_disabled_uses_full_buffer_even_with_cached_segments(
+        self, main_module, monkeypatch
+    ):
+        """VAD-off finalization must decode the stopped raw buffer exactly once."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
+
+        acc = main_module.SegmentAccumulator()
+        segment_client = MagicMock()
+        segment_client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", segment_client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+        d._pre_stop_tail_wav = b"tail_wav"
+        d._pre_stop_segment_count = acc.count
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "full buffer text"
+
     def test_contention_mode_does_not_wait_for_preview_wind_down(
         self, main_module, monkeypatch
     ):
@@ -7516,6 +7565,20 @@ class TestSegmentAcceleratedTranscription:
         """_on_hold_start should keep local capture raw-first and VAD-free."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
+
+    def test_hold_start_no_segment_callback_when_vad_disabled(
+        self, main_module, monkeypatch
+    ):
+        """Remote transcription must stay raw-first when VAD is explicitly off."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
 
         d._on_hold_start()
 
