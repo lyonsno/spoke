@@ -655,6 +655,8 @@ def _format_route(candidate: DiaulosCandidate) -> str:
 def _optional_int(value: Any, field: str) -> int | None:
     if value is None or value == "":
         return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise DiaulosInventoryError(f"{field} is not an integer")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:

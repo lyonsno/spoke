@@ -2041,6 +2041,13 @@ class TestModelPicker:
     def test_apply_model_selection_sanitizes_final_only_preview(
         self, main_module, monkeypatch
     ):
+        # Register even absent keys before production writes/deletes them.
+        for key in (
+            "SPOKE_PREVIEW_MODEL",
+            "SPOKE_TRANSCRIPTION_MODEL",
+            "SPOKE_WHISPER_MODEL",
+        ):
+            monkeypatch.setenv(key, os.environ.get(key, ""))
         d = _make_delegate(main_module, monkeypatch)
         d._preview_model_id = "mlx-community/whisper-small.en-mlx"
         d._transcription_model_id = "mlx-community/whisper-medium.en-mlx"

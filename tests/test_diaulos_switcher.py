@@ -156,6 +156,25 @@ def test_parse_live_inventory_rejects_partial_activation_route(field):
         parse_live_inventory(payload)
 
 
+@pytest.mark.parametrize("field", ["pane_id", "tab_id", "window_id"])
+@pytest.mark.parametrize("value", [True, False, 1.9, 1.0])
+def test_parse_live_inventory_rejects_coercive_identity(field, value):
+    payload = _payload(1)
+    payload["entries"][0][field] = value
+
+    with pytest.raises(DiaulosInventoryError, match=f"{field} is not an integer"):
+        parse_live_inventory(payload)
+
+
+def test_parse_live_inventory_preserves_integer_string_compatibility():
+    payload = _payload(1)
+    for field in ("pane_id", "tab_id", "window_id"):
+        payload["entries"][0][field] = str(payload["entries"][0][field])
+
+    candidate = parse_live_inventory(payload)[0]
+    assert (candidate.pane_id, candidate.tab_id, candidate.window_id) == (10, 20, 1)
+
+
 @pytest.mark.parametrize("cwd", ["file://", "relative/path"])
 def test_parse_live_inventory_rejects_malformed_activation_cwd(cwd):
     payload = _payload(1)
@@ -247,6 +266,47 @@ def test_client_loads_snapshot_and_activates_after_selected_lineage_probe(
     assert receipt["pane_id"] == 10
     assert receipt["diaulos"] == "thing-0"
     assert receipt["verification"] == "selected-pane-lineage-and-direct-wezterm-enumeration"
+
+
+@pytest.mark.parametrize(
+    ("source", "field"),
+    [("selected", field) for field in ("requested_pane_id", "pane_id", "tab_id", "window_id")]
+    + [("wezterm", field) for field in ("pane_id", "tab_id", "window_id")],
+)
+@pytest.mark.parametrize("value", [True, 1.9, 1.0, "1.9", None, {}, []])
+def test_activation_rejects_malformed_identity_before_activation(
+    tmp_path, source, field, value
+):
+    payload = _payload(1)
+    payload["entries"][0].update(pane_id=1, tab_id=1, window_id=1)
+    candidate = parse_live_inventory(payload)[0]
+    selected = _selected_pane_payload(candidate)
+    live = _live_panes(1)
+    live[0].update(pane_id=1, tab_id=1, window_id=1)
+    if source == "wezterm":
+        live[0][field] = value
+    elif field == "requested_pane_id":
+        selected[field] = value
+    else:
+        selected["entries"][0][field] = value
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        result = selected if "diaulos" in command else live
+        return subprocess.CompletedProcess(command, 0, json.dumps(result), "")
+
+    client = EpistaxisDiaulosClient(
+        runner=runner,
+        snapshot_path=tmp_path / "unused.json",
+        epistaxis_executable="epistaxis",
+        wezterm_executable="wezterm",
+    )
+    with pytest.raises(DiaulosActivationError):
+        client.activate(candidate)
+
+    assert len(calls) == (1 if source == "selected" else 2)
+    assert not any("activate-pane" in command for command in calls)
 
 
 def test_activation_refuses_recycled_pane_with_different_live_lineage(tmp_path):
