@@ -948,10 +948,14 @@ def run_replay(
             f"Nemotron replay input is unavailable; report={destination}"
         ) from None
     expected_audio_sha256 = hashlib.sha256(wav_bytes).hexdigest()
-    active_client = client or NemotronCPUClient()
+    active_client = client
     started = time.monotonic()
     report_published = False
+    failure_phase = "configure_client"
     try:
+        if active_client is None:
+            active_client = NemotronCPUClient()
+        failure_phase = "transcription"
         transcript = active_client.transcribe(wav_bytes)
         receipt = active_client._last_receipt
         if not isinstance(receipt, dict):
@@ -993,9 +997,9 @@ def run_replay(
                 "status": "failure",
                 "requirements": {"offline_costs": require_offline_costs},
                 "failure_phase": (
-                    receipt.get("failure_phase", "transcription")
+                    receipt.get("failure_phase", failure_phase)
                     if isinstance(receipt, dict)
-                    else "transcription"
+                    else failure_phase
                 ),
                 "input_path": str(source),
                 "expected_audio_sha256": expected_audio_sha256,

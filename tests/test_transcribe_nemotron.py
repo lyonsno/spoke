@@ -1162,3 +1162,21 @@ def test_failed_replay_replaces_previous_success_with_current_failure(tmp_path):
     assert report["expected_audio_sha256"] == hashlib.sha256(wav_path.read_bytes()).hexdigest()
     assert report["error"] == "native launch failed"
     assert "transcript" not in report
+
+
+def test_replay_configuration_failure_replaces_previous_success(tmp_path, monkeypatch):
+    wav_path = tmp_path / "input.wav"
+    wav_path.write_bytes(_wav_bytes())
+    output_path = tmp_path / "replay.json"
+    output_path.write_text(json.dumps({"status": "success", "transcript": "stale"}))
+    monkeypatch.setenv("SPOKE_NEMOTRON_TIMEOUT", "invalid-timeout")
+
+    with pytest.raises(NemotronCPUError, match="SPOKE_NEMOTRON_TIMEOUT"):
+        nemotron_module.run_replay(wav_path, output_path, require_offline_costs=True)
+    report = json.loads(output_path.read_text())
+    assert report["status"] == "failure"
+    assert report["failure_phase"] == "configure_client"
+    assert report["requirements"] == {"offline_costs": True}
+    assert report["expected_audio_sha256"] == hashlib.sha256(wav_path.read_bytes()).hexdigest()
+    assert report["receipt"] is None
+    assert "transcript" not in report
