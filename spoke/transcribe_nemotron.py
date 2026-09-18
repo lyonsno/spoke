@@ -939,6 +939,7 @@ def run_replay(
                 "schema": "spoke.nemotron-cpu-replay.v2",
                 "status": "failure",
                 "failure_phase": "read_input",
+                "requirements": {"offline_costs": require_offline_costs},
                 "input_path": str(source),
                 "error_type": type(exc).__name__,
             },
@@ -949,6 +950,7 @@ def run_replay(
     expected_audio_sha256 = hashlib.sha256(wav_bytes).hexdigest()
     active_client = client or NemotronCPUClient()
     started = time.monotonic()
+    report_published = False
     try:
         transcript = active_client.transcribe(wav_bytes)
         receipt = active_client._last_receipt
@@ -968,6 +970,7 @@ def run_replay(
                 "receipt": receipt,
             }
             _write_replay_report(destination, report)
+            report_published = True
             raise NemotronCPUError(
                 "Nemotron replay route identity did not prove requested CPU/full-buffer evidence; "
                 f"report={destination}"
@@ -983,11 +986,12 @@ def run_replay(
         _write_replay_report(destination, report)
         return report
     except Exception as exc:
-        if not destination.exists():
+        if not report_published:
             receipt = getattr(active_client, "_last_receipt", None)
             report = {
                 "schema": "spoke.nemotron-cpu-replay.v2",
                 "status": "failure",
+                "requirements": {"offline_costs": require_offline_costs},
                 "failure_phase": (
                     receipt.get("failure_phase", "transcription")
                     if isinstance(receipt, dict)

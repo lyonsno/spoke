@@ -980,6 +980,7 @@ def test_replay_harness_reports_missing_input_before_transcription(tmp_path):
         "schema": "spoke.nemotron-cpu-replay.v2",
         "status": "failure",
         "failure_phase": "read_input",
+        "requirements": {"offline_costs": False},
         "input_path": str(missing_path),
         "error_type": "FileNotFoundError",
     }
@@ -1136,3 +1137,28 @@ def test_replay_without_cost_admission_allows_legacy_timing(tmp_path):
 
     report = nemotron_module.run_replay(wav_path, tmp_path / "out.json", client=ReplayClient())
     assert report["status"] == "success"
+
+
+def test_failed_replay_replaces_previous_success_with_current_failure(tmp_path):
+    wav_path = tmp_path / "input.wav"
+    wav_path.write_bytes(_wav_bytes())
+    output_path = tmp_path / "replay.json"
+    output_path.write_text(json.dumps({"status": "success", "transcript": "stale"}))
+
+    class FailedClient:
+        _last_receipt = {"status": "failure", "failure_phase": "process_launch"}
+
+        def transcribe(self, wav_bytes):
+            raise NemotronCPUError("native launch failed")
+
+    with pytest.raises(NemotronCPUError, match="native launch failed"):
+        nemotron_module.run_replay(
+            wav_path, output_path, client=FailedClient(), require_offline_costs=True,
+        )
+    report = json.loads(output_path.read_text())
+    assert report["status"] == "failure"
+    assert report["failure_phase"] == "process_launch"
+    assert report["requirements"] == {"offline_costs": True}
+    assert report["expected_audio_sha256"] == hashlib.sha256(wav_path.read_bytes()).hexdigest()
+    assert report["error"] == "native launch failed"
+    assert "transcript" not in report
