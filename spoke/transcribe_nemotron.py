@@ -896,8 +896,27 @@ def _receipt_proves_cpu_full_buffer(receipt: dict, audio_sha256: str) -> bool:
         == "explicit_cli_with_nemo_environment_cleared"
         and configuration.get("runner_selection") == "automatic"
         and configuration.get("streaming_cli_requested") is False
+        and configuration.get("warmup_cli_requested") is False
         and configuration.get("endpointing") is False
         and configuration.get("vad") is False
+    )
+
+
+def _receipt_proves_offline_costs(receipt: dict) -> bool:
+    timing = receipt.get("phase_timing")
+    if not isinstance(timing, dict):
+        return False
+    breakdown = timing.get("offline_cost_breakdown")
+    families = timing.get("observed_families")
+    return bool(
+        timing.get("enabled") is True
+        and timing.get("configuration_valid") is True
+        and timing.get("collection_status") == "complete"
+        and timing.get("effective_runner") == "offline"
+        and isinstance(breakdown, dict)
+        and breakdown.get("status") == "complete"
+        and isinstance(families, list)
+        and all(family in families for family in _OFFLINE_COST_FAMILIES)
     )
 
 
@@ -906,6 +925,7 @@ def run_replay(
     output_path: str | os.PathLike[str],
     *,
     client: NemotronCPUClient | None = None,
+    require_offline_costs: bool = False,
 ) -> dict:
     """Replay one retained WAV and preserve success or failure evidence."""
     source = Path(input_path).expanduser()
@@ -934,11 +954,14 @@ def run_replay(
         receipt = active_client._last_receipt
         if not isinstance(receipt, dict):
             raise NemotronCPUError("Replay route identity is missing")
-        if not _receipt_proves_cpu_full_buffer(receipt, expected_audio_sha256):
+        if not _receipt_proves_cpu_full_buffer(receipt, expected_audio_sha256) or (
+            require_offline_costs and not _receipt_proves_offline_costs(receipt)
+        ):
             report = {
                 "schema": "spoke.nemotron-cpu-replay.v2",
                 "status": "failure",
                 "failure_phase": "route_identity",
+                "requirements": {"offline_costs": require_offline_costs},
                 "input_path": str(source),
                 "expected_audio_sha256": expected_audio_sha256,
                 "wall_seconds": time.monotonic() - started,
@@ -946,12 +969,13 @@ def run_replay(
             }
             _write_replay_report(destination, report)
             raise NemotronCPUError(
-                "Nemotron replay route identity did not prove CPU/full-buffer use; "
+                "Nemotron replay route identity did not prove requested CPU/full-buffer evidence; "
                 f"report={destination}"
             )
         report = {
             "schema": "spoke.nemotron-cpu-replay.v2",
             "status": "success",
+            "requirements": {"offline_costs": require_offline_costs},
             "input_path": str(source),
             "transcript": transcript,
             "receipt": receipt,
@@ -988,6 +1012,10 @@ def replay_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--require-offline-costs", action="store_true",
+        help="Require complete patched offline timing evidence for candidate admission.",
+    )
     args = parser.parse_args(argv)
-    run_replay(args.input, args.output)
+    run_replay(args.input, args.output, require_offline_costs=args.require_offline_costs)
     return 0

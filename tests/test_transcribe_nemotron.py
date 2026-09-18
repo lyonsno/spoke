@@ -55,6 +55,7 @@ def _complete_route_receipt(audio_sha256: str) -> dict:
             "authority": "explicit_cli_with_nemo_environment_cleared",
             "runner_selection": "automatic",
             "streaming_cli_requested": False,
+            "warmup_cli_requested": False,
             "endpointing": False,
             "vad": False,
         },
@@ -1024,6 +1025,9 @@ def test_replay_harness_requires_complete_effective_identity(tmp_path, missing_f
         ("model_sha256_actual", "b" * 64),
         ("recognizer_configuration.authority", "inherited_environment"),
         ("recognizer_configuration.streaming_cli_requested", True),
+        ("recognizer_configuration.warmup_cli_requested", True),
+        ("recognizer_configuration.warmup_cli_requested", None),
+        ("recognizer_configuration.warmup_cli_requested", 0),
         ("recognizer_configuration.endpointing", True),
         ("recognizer_configuration.vad", True),
     ],
@@ -1070,3 +1074,65 @@ def test_replay_harness_rejects_each_false_effective_identity_independently(
     for part in field_path.split("."):
         observed = observed[part]
     assert observed == false_value
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [None, "missing", "disabled", "cache_runner", "partial", "legacy",
+     "offline_setup", "offline_decoder_step", "offline_rnnt_work"],
+)
+def test_replay_offline_cost_admission_rejects_drift(tmp_path, drift):
+    wav_path = tmp_path / "input.wav"
+    wav_path.write_bytes(_wav_bytes())
+    output_path = tmp_path / "replay.json"
+    receipt = _complete_route_receipt(hashlib.sha256(wav_path.read_bytes()).hexdigest())
+    raw = (Path(__file__).parent / "fixtures/nemotron/v010-offline-phase-costs.stderr").read_bytes()
+    timing, _ = nemotron_module._parse_phase_timing(raw, enabled=True)
+    receipt["phase_timing"] = timing
+    if drift == "missing":
+        receipt.pop("phase_timing")
+    elif drift == "disabled":
+        timing["enabled"] = False
+    elif drift == "cache_runner":
+        timing["effective_runner"] = "cache_stream"
+    elif drift == "partial":
+        timing["collection_status"] = "partial"
+    elif drift == "legacy":
+        timing["offline_cost_breakdown"]["status"] = "unobserved"
+    elif drift is not None:
+        timing["observed_families"].remove(drift)
+
+    class ReplayClient:
+        _last_receipt = receipt
+
+        def transcribe(self, wav_bytes):
+            return "retained transcript"
+
+    if drift is None:
+        report = nemotron_module.run_replay(
+            wav_path, output_path, client=ReplayClient(), require_offline_costs=True,
+        )
+        assert report["status"] == "success"
+    else:
+        with pytest.raises(NemotronCPUError, match="route identity"):
+            nemotron_module.run_replay(
+                wav_path, output_path, client=ReplayClient(), require_offline_costs=True,
+            )
+        report = json.loads(output_path.read_text())
+        assert report["status"] == "failure"
+        assert report["failure_phase"] == "route_identity"
+    assert report["requirements"]["offline_costs"] is True
+
+
+def test_replay_without_cost_admission_allows_legacy_timing(tmp_path):
+    wav_path = tmp_path / "input.wav"
+    wav_path.write_bytes(_wav_bytes())
+
+    class ReplayClient:
+        _last_receipt = _complete_route_receipt(hashlib.sha256(wav_path.read_bytes()).hexdigest())
+
+        def transcribe(self, wav_bytes):
+            return "retained transcript"
+
+    report = nemotron_module.run_replay(wav_path, tmp_path / "out.json", client=ReplayClient())
+    assert report["status"] == "success"

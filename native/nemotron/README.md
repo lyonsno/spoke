@@ -39,6 +39,13 @@ in the rollout receipt. Verify the actual selected binary with `--json doctor`
 and full-buffer audio before selecting it for the operator. Never replace a
 runtime in place underneath an active Spoke process.
 
+Candidate admission uses `uv run python scripts/nemotron-asr-replay.py INPUT --output REPORT
+--require-offline-costs` with `SPOKE_NEMOTRON_PHASE_TIMING=1`. This opt-in mode
+requires the effective offline runner and complete patched cost families;
+ordinary replay continues to support legacy timing. Every successful replay
+requires an explicit false `warmup_cli_requested` receipt. These checks do not
+turn missing telemetry into a production transcription failure.
+
 The local timing-only composition retains the official CLI and all official
 runtime libraries except `libnemo_speech_asr.dylib`. Replace that library only
 in the new prefix, relocate its build-directory RPATH to `@loader_path`, and
