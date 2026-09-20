@@ -7653,7 +7653,6 @@ class TestSegmentAcceleratedTranscription:
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.delenv("SPOKE_NEMOTRON_RECOVERY_FALLBACK", raising=False)
         client = MagicMock()
         client.transcribe.side_effect = TimeoutError("primary decode broke")
         d._asr_recovery_client.transcribe.side_effect = RuntimeError(
@@ -7667,27 +7666,6 @@ class TestSegmentAcceleratedTranscription:
         assert "primary decode broke" in message
         assert "escape decode broke" in message
         client.unload.assert_called_once_with()
-
-    def test_local_and_whisperkit_failure_can_recover_through_nemotron(
-        self, main_module, monkeypatch
-    ):
-        """The selected Nemotron environment supplies a final independent escape."""
-        d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setenv("SPOKE_NEMOTRON_RECOVERY_FALLBACK", "1")
-        client = MagicMock()
-        client.transcribe.side_effect = TimeoutError("primary decode broke")
-        d._asr_recovery_client.transcribe.side_effect = RuntimeError(
-            "escape decode broke"
-        )
-        nemotron = MagicMock()
-        nemotron.transcribe.return_value = "nemotron recovered text"
-        d._nemotron_recovery_client = nemotron
-
-        with patch.object(main_module.NemotronCPUClient, "available", return_value=True):
-            result = d._transcribe_local_whisper_with_recovery(b"full_wav", client)
-
-        assert result == "nemotron recovered text"
-        nemotron.transcribe.assert_called_once_with(b"full_wav")
 
     def test_local_success_does_not_call_distinct_recovery(
         self, main_module, monkeypatch

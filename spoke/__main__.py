@@ -3228,7 +3228,7 @@ class SpokeAppDelegate(NSObject):
     def _transcribe_local_whisper_with_recovery(
         self, wav_bytes: bytes, client: LocalTranscriptionClient
     ) -> str:
-        """Try MLX, WhisperKit, and the selected CPU escape in that order."""
+        """Try MLX once, then cross to the independent WhisperKit route."""
         try:
             with self._local_inference_context(client):
                 text = client.transcribe(wav_bytes)
@@ -3252,41 +3252,10 @@ class SpokeAppDelegate(NSObject):
                 return recovery_client.transcribe(wav_bytes)
             except Exception as recovery_error:
                 logger.exception("Independent ASR recovery failed")
-                nemotron_error: Exception | None = None
-                fallback_enabled = os.environ.get(
-                    "SPOKE_NEMOTRON_RECOVERY_FALLBACK", ""
-                ).strip().lower() in {"1", "true", "yes", "on"}
-                if fallback_enabled and NemotronCPUClient.available():
-                    nemotron_client = getattr(
-                        self, "_nemotron_recovery_client", None
-                    )
-                    if nemotron_client is None:
-                        nemotron_client = NemotronCPUClient()
-                        self._nemotron_recovery_client = nemotron_client
-                    try:
-                        text = nemotron_client.transcribe(wav_bytes)
-                        if not text.strip():
-                            raise RuntimeError(
-                                "Nemotron CPU returned a blank final transcript"
-                            )
-                        logger.warning(
-                            "Local Whisper and WhisperKit failed; recovered with "
-                            "the selected Nemotron CPU route"
-                        )
-                        return text
-                    except Exception as exc:
-                        nemotron_error = exc
-                        logger.exception("Nemotron CPU ASR recovery failed")
-
-                failure = (
+                raise RuntimeError(
                     "Local transcription and independent WhisperKit recovery failed: "
                     f"local={local_error}; recovery={recovery_error}"
-                )
-                if nemotron_error is not None:
-                    failure += f"; nemotron={nemotron_error}"
-                raise RuntimeError(failure) from (
-                    nemotron_error or recovery_error
-                )
+                ) from recovery_error
 
     def _transcribe_worker(
         self,
