@@ -89,6 +89,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     delegate._audio_spool = MagicMock()
     delegate._asr_recovery_client = MagicMock()
+    delegate._prepare_diaulos_switcher = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -516,6 +517,18 @@ class TestHoldCallbacks:
 
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
+
+    def test_duplicate_hold_start_preserves_active_recording(
+        self, main_module, monkeypatch
+    ):
+        """A repeated hold event must not replace the active capture buffer."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._manual_hold_active = True
+
+        d._on_hold_start()
+
+        d._capture.start.assert_not_called()
+        d._menubar.set_recording.assert_not_called()
 
     def test_hold_start_shows_preview_before_starting_capture(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -2006,6 +2019,132 @@ class TestModelPicker:
         ):
             assert d._model_allowed(main_module._WHISPER_CPP_COREML_MODEL_ID) is True
 
+    def test_model_allowed_requires_seated_nemotron_cpu(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=False
+        ) as available:
+            assert d._model_allowed(main_module._NEMOTRON_CPU_MODEL_ID) is False
+
+        available.assert_called_once_with()
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            assert d._model_allowed(main_module._NEMOTRON_CPU_MODEL_ID) is True
+
+    def test_nemotron_cpu_is_final_only(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            preview, transcription = d._sanitize_model_ids(
+                main_module._NEMOTRON_CPU_MODEL_ID,
+                main_module._NEMOTRON_CPU_MODEL_ID,
+            )
+
+        assert preview == main_module._DEFAULT_PREVIEW_MODEL
+        assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
+
+    def test_apply_model_selection_sanitizes_final_only_preview(
+        self, main_module, monkeypatch
+    ):
+        # Register even absent keys before production writes/deletes them.
+        for key in (
+            "SPOKE_PREVIEW_MODEL",
+            "SPOKE_TRANSCRIPTION_MODEL",
+            "SPOKE_WHISPER_MODEL",
+        ):
+            monkeypatch.setenv(key, os.environ.get(key, ""))
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_model_id = "mlx-community/whisper-small.en-mlx"
+        d._transcription_model_id = "mlx-community/whisper-medium.en-mlx"
+        d._save_model_preferences = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            d._apply_model_selection(
+                main_module._NEMOTRON_CPU_MODEL_ID,
+                main_module._NEMOTRON_CPU_MODEL_ID,
+            )
+
+        d._save_model_preferences.assert_called_once_with(
+            main_module._DEFAULT_PREVIEW_MODEL,
+            main_module._NEMOTRON_CPU_MODEL_ID,
+        )
+
+    def test_explicit_role_env_models_override_saved_preferences(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": "mlx-community/whisper-medium.en-mlx",
+        }
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", main_module._NEMOTRON_CPU_MODEL_ID
+        )
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            preview, transcription = d._resolve_model_ids()
+
+        assert preview == "mlx-community/whisper-base.en-mlx-8bit"
+        assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
+
+    def test_unavailable_explicit_nemotron_route_fails_loud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": "mlx-community/whisper-medium.en-mlx",
+        }
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", main_module._NEMOTRON_CPU_MODEL_ID
+        )
+
+        with patch.object(
+            main_module.NemotronCPUClient,
+            "availability_error",
+            return_value="missing CPU executable and pinned GGUF",
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="explicit transcription model.*missing CPU executable and pinned GGUF",
+            ):
+                d._resolve_model_ids()
+
+    def test_unavailable_saved_nemotron_preference_is_repaired(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": main_module._NEMOTRON_CPU_MODEL_ID,
+        }
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+
+        with patch.object(
+            main_module.NemotronCPUClient,
+            "availability_error",
+            return_value="missing pinned GGUF",
+        ):
+            _preview, transcription = d._resolve_model_ids()
+
+        assert transcription != main_module._NEMOTRON_CPU_MODEL_ID
+
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
@@ -2045,6 +2184,41 @@ class TestModelPicker:
 
 class TestDualModelConfiguration:
     """Test separate preview/final model selection and persistence hooks."""
+
+    def test_explicit_role_backend_env_overrides_saved_sidecar_preferences(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.setenv("SPOKE_TRANSCRIPTION_BACKEND", "local")
+        monkeypatch.setenv("SPOKE_PREVIEW_BACKEND", "local")
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-medium.en-mlx"
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {
+                "whisper_backend": "sidecar",
+                "preview_backend": "sidecar",
+                "whisper_sidecar_url": "http://stale-sidecar:8000",
+            },
+            raising=False,
+        )
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            MockLocal.side_effect = [MagicMock(), MagicMock()]
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._whisper_backend == "local"
+        assert d._preview_backend == "local"
+        assert d._whisper_url == ""
+        assert d._preview_url == ""
+        assert MockLocal.call_count == 2
 
     def test_init_uses_separate_preview_and_transcription_model_env_vars(
         self, main_module, monkeypatch
@@ -2644,6 +2818,22 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
+
+    def test_launch_target_helper_returns_child_admission_result(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        completed = MagicMock(returncode=1)
+
+        with patch("subprocess.run", return_value=completed) as run, patch(
+            "subprocess.Popen"
+        ) as popen:
+            outcome = d._invoke_launch_target_helper("superseded")
+
+        assert outcome is False
+        run.assert_called_once()
+        popen.assert_not_called()
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -4341,6 +4531,11 @@ class TestRuntimePhaseLogging:
         d._refresh_command_model_options_async = MagicMock()
         d._request_mic_permission = MagicMock()
         d._setup_event_tap = MagicMock()
+        startup_events: list[str] = []
+        d._setup_event_tap.side_effect = lambda: startup_events.append("event-tap")
+        d._prepare_diaulos_switcher.side_effect = lambda: startup_events.append(
+            "teleporter-prewarm"
+        )
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
@@ -4367,6 +4562,8 @@ class TestRuntimePhaseLogging:
 
         d._refresh_command_model_options_async.assert_called_once_with()
         d._setup_event_tap.assert_called_once_with()
+        d._prepare_diaulos_switcher.assert_called_once_with()
+        assert startup_events == ["event-tap", "teleporter-prewarm"]
         overlay.set_compositor_registry.assert_called_once()
         command_overlay.set_compositor_registry.assert_called_once()
         assert (
@@ -6948,6 +7145,17 @@ class TestBuildClientRouting:
         MockClient.assert_called_once_with()
         assert client is MockClient.return_value
 
+    def test_nemotron_cpu_model_returns_nemotron_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module, "NemotronCPUClient") as MockClient:
+            client = d._build_client("", main_module._NEMOTRON_CPU_MODEL_ID)
+
+        MockClient.assert_called_once_with()
+        assert client is MockClient.return_value
+
     def test_sidecar_takes_precedence_over_qwen_prefix(self, main_module, monkeypatch):
         """When URL is set, sidecar wins even if model starts with Qwen/."""
         d = _make_delegate(main_module, monkeypatch)
@@ -7203,6 +7411,31 @@ class TestSegmentAcceleratedTranscription:
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
         assert payload["text"] == "full buffer text"
 
+    def test_vad_disabled_uses_full_buffer_even_with_cached_segments(
+        self, main_module, monkeypatch
+    ):
+        """VAD-off finalization must decode the stopped raw buffer exactly once."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
+
+        acc = main_module.SegmentAccumulator()
+        segment_client = MagicMock()
+        segment_client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", segment_client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+        d._pre_stop_tail_wav = b"tail_wav"
+        d._pre_stop_segment_count = acc.count
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "full buffer text"
+
     def test_contention_mode_does_not_wait_for_preview_wind_down(
         self, main_module, monkeypatch
     ):
@@ -7420,6 +7653,7 @@ class TestSegmentAcceleratedTranscription:
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.delenv("SPOKE_NEMOTRON_RECOVERY_FALLBACK", raising=False)
         client = MagicMock()
         client.transcribe.side_effect = TimeoutError("primary decode broke")
         d._asr_recovery_client.transcribe.side_effect = RuntimeError(
@@ -7433,6 +7667,27 @@ class TestSegmentAcceleratedTranscription:
         assert "primary decode broke" in message
         assert "escape decode broke" in message
         client.unload.assert_called_once_with()
+
+    def test_local_and_whisperkit_failure_can_recover_through_nemotron(
+        self, main_module, monkeypatch
+    ):
+        """The selected Nemotron environment supplies a final independent escape."""
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setenv("SPOKE_NEMOTRON_RECOVERY_FALLBACK", "1")
+        client = MagicMock()
+        client.transcribe.side_effect = TimeoutError("primary decode broke")
+        d._asr_recovery_client.transcribe.side_effect = RuntimeError(
+            "escape decode broke"
+        )
+        nemotron = MagicMock()
+        nemotron.transcribe.return_value = "nemotron recovered text"
+        d._nemotron_recovery_client = nemotron
+
+        with patch.object(main_module.NemotronCPUClient, "available", return_value=True):
+            result = d._transcribe_local_whisper_with_recovery(b"full_wav", client)
+
+        assert result == "nemotron recovered text"
+        nemotron.transcribe.assert_called_once_with(b"full_wav")
 
     def test_local_success_does_not_call_distinct_recovery(
         self, main_module, monkeypatch
@@ -7516,6 +7771,20 @@ class TestSegmentAcceleratedTranscription:
         """_on_hold_start should keep local capture raw-first and VAD-free."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
+
+    def test_hold_start_no_segment_callback_when_vad_disabled(
+        self, main_module, monkeypatch
+    ):
+        """Remote transcription must stay raw-first when VAD is explicitly off."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
 
         d._on_hold_start()
 
