@@ -16,6 +16,7 @@ State machine:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from enum import Enum, auto
 from typing import Callable
@@ -65,6 +66,7 @@ RETURN_KEYCODE = 36
 ENTER_KEYCODE = RETURN_KEYCODE
 KEYPAD_ENTER_KEYCODE = 76
 ENTER_KEYCODES = frozenset({ENTER_KEYCODE, KEYPAD_ENTER_KEYCODE})
+ENTER_COMMANDS_ENABLED = os.environ.get("SPOKE_ENTER_COMMANDS_ENABLED", "1") != "0"
 DELETE_KEYCODE = 51
 # Modifiers that prevent recording when held during spacebar press.
 # Shift is intentionally excluded — shift+space starts recording normally,
@@ -90,6 +92,8 @@ def _current_enter_key_state() -> bool | None:
     This lets a fresh space-rooted gesture correct stale `_enter_held` state if
     we ever missed a trailing Enter keyUp from an earlier consumed chord.
     """
+    if not ENTER_COMMANDS_ENABLED:
+        return False
     try:
         return any(
             bool(CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, keycode))
@@ -722,6 +726,9 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_release_decision_timer()
         self._pending_release_active = True
         self._pending_release_shift_held = shift_held
+        if not ENTER_COMMANDS_ENABLED:
+            self._finish_pending_release(enter_held=False)
+            return
         self._release_decision_timer = (
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 _ENTER_RELEASE_GRACE_S,
@@ -812,6 +819,10 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         det._cancel_forwarding_timer()
 
     keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+
+    # Dictation-only launches leave Return/Enter entirely with the focused app.
+    if keycode in ENTER_KEYCODES and not ENTER_COMMANDS_ENABLED:
+        return event
 
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
