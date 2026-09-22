@@ -31,11 +31,19 @@ def _return_affordance(row):
         return "Retry Return", True, "Response saved; return in progress or interrupted. Retry is idempotent."
     if state == "unconfirmed":
         return "Retry Return", True, "Response saved; return unconfirmed. You can retry the same return."
-    return "Return Saved Reply", True, "Response saved; not yet returned. You can return the same response."
+    return "Return Reply", True, "Response saved; not yet returned. You can return the same response."
 
 
 def _request_list_text(row):
-    status = {"pending": "Waiting", "responded": "Replied", "withdrawn": "Withdrawn"}[row["status"]]
+    status = {"pending": "Waiting", "withdrawn": "Withdrawn"}.get(row["status"])
+    if row["status"] == "responded":
+        delivery = (row.get("delivery") or {}).get("state")
+        status = {
+            None: "Saved",
+            "sending": "Returning",
+            "unconfirmed": "Return unconfirmed",
+            "delivered": "Returned",
+        }[delivery]
     return f"{row['request']['source']['diaulos']}\n{status}"
 
 

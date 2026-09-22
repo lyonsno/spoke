@@ -4,7 +4,7 @@ from spoke.smoke_inbox import _request_list_text, _return_affordance
 
 
 @pytest.mark.parametrize(("delivery", "title", "enabled", "message"), [
-    (None, "Return Saved Reply", True, "not yet returned"),
+    (None, "Return Reply", True, "not yet returned"),
     ({"state": "sending"}, "Retry Return", True, "interrupted"),
     ({"state": "unconfirmed"}, "Retry Return", True, "unconfirmed"),
     ({"state": "delivered"}, "Send Reply", False, "handed to agent"),
@@ -25,3 +25,18 @@ def test_request_list_keeps_long_titles_in_details_instead_of_clipping_them():
         },
     }
     assert _request_list_text(row) == "greenroom-floor-manager\nWaiting"
+
+
+@pytest.mark.parametrize(("delivery", "status"), [
+    (None, "Saved"),
+    ({"state": "sending"}, "Returning"),
+    ({"state": "unconfirmed"}, "Return unconfirmed"),
+    ({"state": "delivered"}, "Returned"),
+])
+def test_request_list_does_not_call_a_saved_response_returned(delivery, status):
+    row = {
+        "status": "responded",
+        "delivery": delivery,
+        "request": {"source": {"diaulos": "greenroom-floor-manager"}},
+    }
+    assert _request_list_text(row) == f"greenroom-floor-manager\n{status}"
