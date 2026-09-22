@@ -7,6 +7,25 @@ from unittest.mock import MagicMock
 class TestMenuBarIcon:
     """Test the NSStatusItem wrapper."""
 
+    def test_daily_actions_and_configuration_groups(self, menubar_module):
+        AppKit = __import__("AppKit")
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._status_item = MagicMock()
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(return_value={})
+        icon._on_recording_history = MagicMock()
+        icon._on_teleporter = MagicMock()
+        icon._build_menu()
+        titles = [c.args[0] for c in AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list]
+        assert "Recordings" in titles
+        assert "Teleporter" in titles
+        assert "Dictation Settings" in titles
+        assert "Developer" in titles
+        icon.showRecordingHistory_(None)
+        icon.showTeleporter_(None)
+        icon._on_recording_history.assert_called_once_with()
+        icon._on_teleporter.assert_called_once_with()
+
     def test_setup_creates_status_item(self, menubar_module):
         """setup() should create an NSStatusItem with the idle icon."""
         AppKit = __import__("AppKit")
@@ -420,7 +439,7 @@ class TestMenuBarIcon:
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
         assert any(
             call.args == (
-                "Perceptasia Throughglass Graft",
+                "Throughglass",
                 "togglePerceptasiaThroughglass:",
                 "g",
             )

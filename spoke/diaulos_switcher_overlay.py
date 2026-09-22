@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -11,9 +13,12 @@ import objc
 from AppKit import (
     NSApp,
     NSBackingStoreBuffered,
+    NSButton,
     NSColor,
     NSEvent,
     NSFont,
+    NSImage,
+    NSImageView,
     NSPanel,
     NSScreen,
     NSScrollView,
@@ -24,7 +29,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWorkspace,
 )
-from Foundation import NSMakeRect, NSObject
+from Foundation import NSMakeRect, NSObject, NSTimer
 
 from .diaulos_switcher import (
     DiaulosActivationError,
@@ -35,13 +40,13 @@ from .diaulos_switcher import (
 
 logger = logging.getLogger(__name__)
 
-_PANEL_WIDTH = 680.0
-_PANEL_HEIGHT = 520.0
-_PADDING = 20.0
+_PANEL_WIDTH = 720.0
+_PANEL_HEIGHT = 560.0
+_PADDING = 24.0
 _TITLE_HEIGHT = 24.0
 _SEARCH_HEIGHT = 38.0
 _STATUS_HEIGHT = 22.0
-_ROW_HEIGHT = 54.0
+_ROW_HEIGHT = 58.0
 _WINDOW_LEVEL = 1100
 _NSWindowStyleMaskBorderless = 0
 _NSApplicationActivateIgnoringOtherApps = 1 << 1
@@ -128,6 +133,10 @@ class DiaulosSwitcherOverlay(NSObject):
         self._key_monitor_handler = None
         self._keyboard_monitor_available = False
         self._last_render_signature = None
+        self._shell_host = None
+        self._shell_registered = False
+        self._shell_unavailable = False
+        self._row_buttons = []
         self.visible = False
         self.presentation_generation = 0
         return self
@@ -153,8 +162,9 @@ class DiaulosSwitcherOverlay(NSObject):
         panel.setOpaque_(False)
         panel.setHasShadow_(True)
         panel.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.045, 0.052, 0.06, 0.985)
+            NSColor.clearColor()
         )
+        panel.setDelegate_(self)
         panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
@@ -163,12 +173,20 @@ class DiaulosSwitcherOverlay(NSObject):
         panel.setMovableByWindowBackground_(True)
 
         content = panel.contentView()
+        content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(8.0)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.07, 0.075, 0.075, 0.97).CGColor())
         title_y = _PANEL_HEIGHT - _PADDING - _TITLE_HEIGHT
+        mark = NSImageView.alloc().initWithFrame_(NSMakeRect(_PADDING, title_y, 24, 24))
+        mark.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("point.topleft.down.curvedto.point.bottomright.up", "Teleporter"))
+        mark.setContentTintColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.45, 0.91, 0.75, 1))
+        content.addSubview_(mark)
         content.addSubview_(
             _label(
-                "DIAULOI",
-                NSMakeRect(_PADDING, title_y, 300.0, _TITLE_HEIGHT),
-                size=15.0,
+                "Teleporter",
+                NSMakeRect(_PADDING + 34, title_y, 300.0, _TITLE_HEIGHT),
+                size=18.0,
                 bold=True,
                 color=NSColor.colorWithSRGBRed_green_blue_alpha_(
                     0.94, 0.95, 0.96, 1.0
@@ -205,6 +223,7 @@ class DiaulosSwitcherOverlay(NSObject):
         )
         self._search_field.setPlaceholderString_("Find a Diaulos")
         self._search_field.setFont_(NSFont.systemFontOfSize_(16.0))
+        self._search_field.setFocusRingType_(1)
         self._search_field.setDelegate_(self)
         content.addSubview_(self._search_field)
 
@@ -314,6 +333,9 @@ class DiaulosSwitcherOverlay(NSObject):
             app.activateIgnoringOtherApps_(True)
         self._panel.makeFirstResponder_(self._search_field)
         self._render_rows()
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.0, self, "publishOpticalShell:", None, False,
+        )
         logger.info(
             "Diaulos panel ordered front: elapsed_ms=%.1f cached_rows=%d",
             (time.monotonic() - started_at) * 1000.0,
@@ -338,6 +360,11 @@ class DiaulosSwitcherOverlay(NSObject):
         was_visible = self.visible
         self._activation_generation += 1
         self._remove_key_monitor()
+        host = getattr(self, "_shell_host", None)
+        if host is not None:
+            host.release_client("spoke.teleporter")
+        self._shell_host = None
+        self._shell_registered = False
         if self._panel is not None:
             self._panel.orderOut_(None)
         self.visible = False
@@ -354,6 +381,61 @@ class DiaulosSwitcherOverlay(NSObject):
                 logger.debug("Could not restore prior foreground app", exc_info=True)
         self._previous_app = None
         return True
+
+    def windowDidMove_(self, notification):
+        if self.visible:
+            self.publishOpticalShell_(None)
+
+    def publishOpticalShell_(self, timer):
+        if not self.visible or os.environ.get("SPOKE_TELEPORTER_OPTICAL_SHELL", "1") == "0":
+            return
+        registry = getattr(self._delegate, "_overlay_compositor_registry", None)
+        if registry is None:
+            return
+        try:
+            from .house_optical_primitive import compile_external_carrier_config
+            from .optical_field import OpticalFieldRequest, OpticalFieldProfileRef, OpticalFieldPresentation
+            from .perceptasia_throughglass import _display_local_scaled_window_bounds
+            screen = self._panel.screen() or NSScreen.mainScreen()
+            bounds, coordinates = _display_local_scaled_window_bounds(self._panel.frame(), screen)
+            request = OpticalFieldRequest(
+                caller_id="spoke.teleporter", continuity_key="spoke.teleporter", bounds=bounds,
+                role="hud", state="rest", visible=True, visibility_scope="independent",
+                presentation=OpticalFieldPresentation(layer="hud", order=43),
+                presentation_layer="hud", layout_recipe="teleporter-native-carrier",
+                profile=OpticalFieldProfileRef(base="assistant_shell"), z_index=43,
+            )
+            config = compile_external_carrier_config(request, carrier="external_native")
+            config["optical_field"].update(coordinates)
+            host = registry.host_for_screen(screen)
+            if self._shell_host is not None and self._shell_host is not host:
+                self._shell_host.release_client("spoke.teleporter")
+                self._shell_registered = False
+            self._shell_host = host
+            if self._shell_registered:
+                success = host.update_client_config("spoke.teleporter", config)
+            else:
+                success = host.add_client("spoke.teleporter", self._panel, self._panel.contentView(), config)
+            self._shell_registered = bool(success)
+            self._shell_unavailable = not success
+            if not success:
+                self._set_status("Native presentation; optical shell unavailable")
+            logger.info("Teleporter House shell: registered=%s display=%s", success, host.display_id)
+        except Exception:
+            self._shell_unavailable = True
+            self._set_status("Native presentation; optical shell unavailable")
+            logger.exception("Teleporter optical publication failed; native controls remain usable")
+
+    def selectCandidate_(self, sender):
+        if self._activation_in_flight:
+            return
+        identity = str(sender.identifier())
+        for index, current in enumerate(self._model.filtered):
+            if json.dumps([current.diaulos_id, current.pane_id, current.thread_id]) == identity:
+                self._model.selected_index = index
+                self.activate_selected()
+                return
+        self._set_status("That observation changed; select the current row", error=True)
 
     def cleanup(self) -> None:
         if getattr(self, "_activation_in_flight", False):
@@ -655,6 +737,7 @@ class DiaulosSwitcherOverlay(NSObject):
             return
         for view in list(self._document_view.subviews()):
             view.removeFromSuperview()
+        self._row_buttons = []
 
         width = _PANEL_WIDTH - 2.0 * _PADDING
         viewport_height = float(self._scroll_view.contentSize().height)
@@ -663,35 +746,51 @@ class DiaulosSwitcherOverlay(NSObject):
         for index, candidate in enumerate(self._model.filtered):
             y = document_height - (index + 1) * _ROW_HEIGHT
             selected = index == self._model.selected_index
-            marker = "> " if selected else "  "
+            if selected:
+                background = NSView.alloc().initWithFrame_(NSMakeRect(0, y + 2, width - 3, _ROW_HEIGHT - 4))
+                background.setWantsLayer_(True)
+                background.layer().setCornerRadius_(6)
+                background.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.14, 0.23, 0.20, 1).CGColor())
+                self._document_view.addSubview_(background)
             title_color = (
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0.27, 0.85, 0.93, 1.0)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.56, 0.96, 0.80, 1.0)
                 if selected
                 else NSColor.colorWithSRGBRed_green_blue_alpha_(0.91, 0.93, 0.95, 1.0)
             )
             self._document_view.addSubview_(
                 _label(
-                    marker + candidate.handle,
-                    NSMakeRect(6.0, y + 25.0, width - 12.0, 22.0),
+                    candidate.handle,
+                    NSMakeRect(14.0, y + 28.0, width - 110.0, 22.0),
                     size=14.0,
                     bold=selected,
                     color=title_color,
                 )
             )
             detail = candidate.title or Path(candidate.cwd).name or candidate.cwd
-            route = f"pane {candidate.pane_id}"
+            route = f"Pane {candidate.pane_id}"
             if detail:
                 route += f"  {detail}"
             self._document_view.addSubview_(
                 _label(
                     route,
-                    NSMakeRect(26.0, y + 6.0, width - 32.0, 18.0),
+                    NSMakeRect(14.0, y + 9.0, width - 40.0, 18.0),
                     size=11.0,
                     color=NSColor.colorWithSRGBRed_green_blue_alpha_(
                         0.52, 0.59, 0.65, 1.0
                     ),
                 )
             )
+            backend = _label(candidate.resume_backend.title(), NSMakeRect(width - 98, y + 29, 80, 18),
+                             size=10, color=NSColor.colorWithSRGBRed_green_blue_alpha_(0.82, 0.73, 0.54, 1))
+            backend.setAlignment_(2)
+            self._document_view.addSubview_(backend)
+            button = NSButton.buttonWithTitle_target_action_("", self, "selectCandidate:")
+            button.setFrame_(NSMakeRect(0, y, width, _ROW_HEIGHT))
+            button.setBordered_(False)
+            button.setToolTip_(f"Focus {candidate.handle}")
+            button.setIdentifier_(json.dumps([candidate.diaulos_id, candidate.pane_id, candidate.thread_id]))
+            self._row_buttons.append(button)
+            self._document_view.addSubview_(button)
             if selected:
                 self._document_view.scrollRectToVisible_(
                     NSMakeRect(0, y, width, _ROW_HEIGHT)

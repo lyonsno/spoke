@@ -65,6 +65,7 @@ class TranscriptionPromptProvider:
         self._path = path
         self._inline = inline
         self._include_builtin = include_builtin
+        self.last_resolved: TranscriptionPrompt | None = None
 
     @classmethod
     def from_environment(cls) -> "TranscriptionPromptProvider":
@@ -109,8 +110,10 @@ class TranscriptionPromptProvider:
             sources.append("env:SPOKE_TRANSCRIPTION_PROMPT")
 
         text = "\n".join(parts)
-        return TranscriptionPrompt(
+        prompt = TranscriptionPrompt(
             text=text,
             sources=tuple(sources),
             sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         )
+        self.last_resolved = prompt
+        return prompt

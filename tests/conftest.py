@@ -118,6 +118,7 @@ def _make_fake_appkit():
         "NSButton",
         "NSColor",
         "NSImage",
+        "NSImageView",
         "NSMenu",
         "NSMenuItem",
         "NSPasteboard",

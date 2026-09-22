@@ -1147,6 +1147,11 @@ class SpokeAppDelegate(NSObject):
         self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
         self._audio_spool = AudioSpool.from_env()
+        self._history_trace = threading.local()
+        self._recording_history = None
+        self._history_model = self._load_preference("retranscription_route") or {
+            "backend": self._whisper_backend, "model": self._transcription_model_id,
+        }
         self._asr_recovery_client = WhisperKitRecoveryClient()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
@@ -1437,6 +1442,8 @@ class SpokeAppDelegate(NSObject):
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
             self._quit, self._handle_model_menu_action
         )
+        self._menubar._on_recording_history = self._show_recording_history
+        self._menubar._on_teleporter = self._toggle_diaulos_switcher
         self._menubar.setup()
 
         if not hasattr(self, "_optical_shell_metrics"):
@@ -2881,7 +2888,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes = self._capture.stop()
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
         discarded_for_short_shift_hold = bool(shift_held and elapsed < 0.8)
-        self._spool_stopped_audio_capture(
+        capture_id = self._spool_stopped_audio_capture(
             wav_bytes,
             pathway=(
                 "command"
@@ -2983,6 +2990,7 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._parallel_insert_worker,
                 args=(wav_bytes, parallel_token, switcher_generation),
+                kwargs={"capture_id": capture_id},
                 daemon=True,
             )
             thread.start()
@@ -3002,6 +3010,7 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._command_transcribe_worker,
                 args=(wav_bytes, token),
+                kwargs={"capture_id": capture_id},
                 daemon=True,
             )
         elif shift_held:
@@ -3014,6 +3023,7 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._tray_transcribe_worker,
                 args=(wav_bytes, token),
+                kwargs={"capture_id": capture_id},
                 daemon=True,
             )
         else:
@@ -3028,6 +3038,7 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._transcribe_worker,
                 args=(wav_bytes, token, switcher_generation),
+                kwargs={"capture_id": capture_id},
                 daemon=True,
             )
         thread.start()
@@ -3041,7 +3052,7 @@ class SpokeAppDelegate(NSObject):
         enter_held: bool,
         elapsed_seconds: float,
         discarded_for_short_shift_hold: bool,
-    ) -> None:
+    ) -> str | None:
         if not wav_bytes:
             return
         spool = getattr(self, "_audio_spool", None)
@@ -3051,6 +3062,7 @@ class SpokeAppDelegate(NSObject):
             record = spool.spool_capture(
                 wav_bytes,
                 metadata={
+                    "preserve_audio": True,
                     "source": "manual_hold",
                     "pathway": pathway,
                     "shift_held": shift_held,
@@ -3072,6 +3084,111 @@ class SpokeAppDelegate(NSObject):
                 record.wav_path,
                 record.byte_count,
             )
+            return record.capture_id if isinstance(record.capture_id, str) else None
+
+    def _set_history_model(self, backend: str, model: str) -> None:
+        route = {"backend": backend, "model": model}
+        self._save_preference("retranscription_route", route)
+        self._history_model = route
+
+    def _history_live_busy(self) -> bool:
+        return bool(self._capture.is_recording or self._transcribing
+                    or self._dictation_delivery_records()
+                    or getattr(self, "_dictation_paste_in_flight", False))
+
+    def _show_recording_history(self) -> None:
+        from .recording_history_window import RecordingHistoryWindow
+        if getattr(self, "_recording_history", None) is None:
+            self._recording_history = RecordingHistoryWindow.alloc().initWithDelegate_(self)
+        self._recording_history.show()
+
+    def _recording_history_is_key(self) -> bool:
+        history = getattr(self, "_recording_history", None)
+        window = getattr(history, "_window", None)
+        return bool(window is not None and window.isKeyWindow())
+
+    def _history_model_available(self, model: str) -> bool:
+        if model in {_NEMOTRON_CPU_MODEL_ID, _WHISPER_CPP_COREML_MODEL_ID}:
+            return self._model_allowed(model)
+        from .transcribe_local import _resolve_cached_model_source, _huggingface_hub_cache_dir
+        if model.startswith("mlx-community/"):
+            return Path(_resolve_cached_model_source(model)).is_dir()
+        snapshots = _huggingface_hub_cache_dir() / f"models--{model.replace('/', '--')}" / "snapshots"
+        return snapshots.is_dir() and any((p / "config.json").is_file() for p in snapshots.iterdir())
+
+    def _history_model_options(self) -> list[dict]:
+        choices = [
+            {"route": {"backend": "local", "model": model},
+             "label": label, "available": self._history_model_available(model)}
+            for model, label in self._MODEL_OPTIONS if model not in self._PREVIEW_ONLY_MODELS
+        ]
+        for backend, label in (("sidecar", "Sidecar"), ("cloud", "Cloud")):
+            url, key = self._resolve_whisper_endpoint(backend)
+            if url and (backend != "cloud" or key):
+                model = self._whisper_cloud_model if backend == "cloud" else self._transcription_model_id
+                choices.append({"route": {"backend": backend, "model": model},
+                                "label": f"{label}: {model}", "available": True})
+        return choices
+
+    def _build_history_client(self, route: dict):
+        backend, model = route["backend"], route["model"]
+        if backend == "local":
+            if not self._history_model_available(model):
+                raise ValueError(f"Requested recovery model is not installed: {model}")
+            return self._build_client("", model)
+        if backend not in {"sidecar", "cloud"}:
+            raise ValueError(f"Unknown recovery backend: {backend}")
+        url, key = self._resolve_whisper_endpoint(backend)
+        if not url or (backend == "cloud" and not key):
+            raise ValueError(f"Recovery backend is not configured: {backend}")
+        return self._build_client(url, model, api_key=key)
+
+    def _transcribe_with_history(self, wav_bytes, *, capture_id=None, release_cutover=False):
+        if not capture_id:
+            return self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
+        from .recording_history import client_receipt
+
+        requested = {"backend": self._whisper_backend, "model": self._transcription_model_id}
+        spool = self._audio_spool
+        attempt_id = None
+        try:
+            attempt_id = spool.start_attempt(capture_id, requested=requested)
+        except Exception:
+            logger.exception("Could not start recording history attempt for %s", capture_id)
+        trace = getattr(self, "_history_trace", None)
+        if trace is None:
+            trace = self._history_trace = threading.local()
+        trace.routes = []
+        started = time.monotonic()
+        text, error = None, None
+        try:
+            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
+            return text
+        except Exception as exc:
+            error = str(exc)
+            raise
+        finally:
+            if attempt_id:
+                try:
+                    routes = trace.routes
+                    spool.finish_attempt(
+                        capture_id, attempt_id, text=text, error=error,
+                        effective=routes[-1] if routes else client_receipt(self._client),
+                        wall_seconds=time.monotonic() - started,
+                        evidence={"routes": routes, "delivery": "not_verified"},
+                    )
+                except Exception:
+                    logger.exception("Could not finish recording history attempt %s", attempt_id)
+            trace.routes = None
+
+    def _history_route_receipt(self, client, error=None) -> None:
+        trace = getattr(getattr(self, "_history_trace", None), "routes", None)
+        if trace is not None:
+            from .recording_history import client_receipt
+            receipt = client_receipt(client)
+            if error is not None:
+                receipt["error"] = str(error)
+            trace.append(receipt)
 
     def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
         """Approve the pending command from the dedicated approval grammar."""
@@ -3146,7 +3263,10 @@ class SpokeAppDelegate(NSObject):
         if isinstance(active_client, LocalTranscriptionClient):
             return self._transcribe_local_whisper_with_recovery(wav_bytes, active_client)
         with self._local_inference_context(active_client):
-            return active_client.transcribe(wav_bytes)
+            try:
+                return active_client.transcribe(wav_bytes)
+            finally:
+                self._history_route_receipt(active_client)
 
     def _transcribe_contention_buffer(self, wav_bytes: bytes) -> str:
         """Transcribe the stopped buffer once, bypassing latency shortcuts.
@@ -3231,7 +3351,10 @@ class SpokeAppDelegate(NSObject):
         """Try MLX once, then cross to the independent WhisperKit route."""
         try:
             with self._local_inference_context(client):
-                text = client.transcribe(wav_bytes)
+                try:
+                    text = client.transcribe(wav_bytes)
+                finally:
+                    self._history_route_receipt(client)
             if not text.strip():
                 raise RuntimeError("Local Whisper returned a blank final transcript")
             return text
@@ -3249,7 +3372,10 @@ class SpokeAppDelegate(NSObject):
                 recovery_client = WhisperKitRecoveryClient()
                 self._asr_recovery_client = recovery_client
             try:
-                return recovery_client.transcribe(wav_bytes)
+                try:
+                    return recovery_client.transcribe(wav_bytes)
+                finally:
+                    self._history_route_receipt(recovery_client)
             except Exception as recovery_error:
                 logger.exception("Independent ASR recovery failed")
                 raise RuntimeError(
@@ -3262,6 +3388,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes: bytes,
         token: int,
         switcher_generation: int | None = None,
+        *, capture_id: str | None = None,
     ) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -3272,7 +3399,7 @@ class SpokeAppDelegate(NSObject):
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         try:
-            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover)
         except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3299,6 +3426,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes: bytes,
         token: int,
         switcher_generation: int | None = None,
+        *, capture_id: str | None = None,
     ) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
@@ -3307,7 +3435,7 @@ class SpokeAppDelegate(NSObject):
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         try:
-            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover)
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3876,14 +4004,14 @@ class SpokeAppDelegate(NSObject):
 
     # ── tray ───────────────────────────────────────────────
 
-    def _tray_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _tray_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None) -> None:
         """Background thread: transcribe audio, then enter tray on main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         try:
-            text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover)
         except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4976,7 +5104,7 @@ class SpokeAppDelegate(NSObject):
             )
         return _executor
 
-    def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+    def _command_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None) -> None:
         """Background thread: transcribe then send command to OMLX."""
         self._command_tool_used_tts = False
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -4984,8 +5112,9 @@ class SpokeAppDelegate(NSObject):
 
         # Step 1: Transcribe the audio
         try:
-            utterance = self._transcribe_final_buffer(
+            utterance = self._transcribe_with_history(
                 wav_bytes,
+                capture_id=capture_id,
                 release_cutover=release_cutover,
             )
         except Exception as exc:
@@ -7764,6 +7893,7 @@ class SpokeAppDelegate(NSObject):
         if (
             delivery.switcher_generation
             != self._diaulos_switcher_presentation_generation()
+            or self._recording_history_is_key()
         ):
             if self._overlay is not None:
                 self._overlay.order_out()
@@ -8001,6 +8131,8 @@ class SpokeAppDelegate(NSObject):
         return True
 
     def _quit(self) -> None:
+        if getattr(self, "_recording_history", None) is not None:
+            self._recording_history.cleanup()
         self._detector.uninstall()
         self._preview_active = False
         hf = getattr(self, "_handsfree", None)

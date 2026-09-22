@@ -102,6 +102,19 @@ def test_parse_live_inventory_is_uncapped_and_preserves_observation_identity():
     assert candidates[-1].discovery_authority == "complete-live-pane-enumeration"
 
 
+def test_hiding_switcher_releases_only_its_optical_client(overlay_module):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(overlay_module.DiaulosSwitcherOverlay)
+    overlay.visible = True
+    overlay._activation_in_flight = False
+    overlay._activation_generation = 0
+    overlay._panel = MagicMock()
+    overlay._previous_app = None
+    overlay._shell_host = MagicMock()
+    host = overlay._shell_host
+    overlay.hide()
+    host.release_client.assert_called_once_with("spoke.teleporter")
+
+
 @pytest.mark.parametrize(
     "payload",
     [

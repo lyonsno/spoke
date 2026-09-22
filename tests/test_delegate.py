@@ -95,6 +95,57 @@ def _make_delegate(main_module, monkeypatch):
     return delegate
 
 
+class TestRecordingHistory:
+    def test_original_text_survives_ui_delivery_failure(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        d._client.transcribe.return_value = "Keep the original words."
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = RuntimeError("UI unavailable")
+
+        with pytest.raises(RuntimeError, match="UI unavailable"):
+            d._transcribe_worker(wav, 1, capture_id=capture.capture_id)
+
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["text"] == "Keep the original words."
+        assert attempt["status"] == "success"
+        assert attempt["requested"]["model"] == "transcription-model"
+
+    def test_failed_original_remains_visible(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        d._client.transcribe.side_effect = RuntimeError("native decode failed")
+
+        d._transcribe_worker(wav, 1, capture_id=capture.capture_id)
+
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["status"] == "failed"
+        assert "native decode failed" in attempt["error"]
+        assert capture.wav_path.exists()
+
+    def test_recovery_selection_does_not_replace_live_client(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        client = d._client
+        d._save_preference = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+        assert callable(getattr(d, "_set_history_model", None)), "Separate history model selection is absent"
+        d._set_history_model("local", "mlx-community/whisper-tiny.en-mlx")
+        assert d._client is client
+        assert d._transcription_model_id == "transcription-model"
+        d._relaunch.assert_not_called()
+        d._save_preference.assert_called_once_with(
+            "retranscription_route", {"backend": "local", "model": "mlx-community/whisper-tiny.en-mlx"})
+
+
 class TestPerceptasiaThroughglassHook:
     def test_toggle_constructs_throughglass_graft_lazily(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -1273,6 +1324,21 @@ class TestTranscriptionToken:
             activate=False,
         )
         mock_inject.assert_not_called()
+
+    def test_history_window_receives_no_automatic_dictation_paste(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._recording_history = MagicMock()
+        d._recording_history._window.isKeyWindow.return_value = True
+        d._add_tray_entry = MagicMock()
+        text = "Preserve this while I browse recordings"
+        with patch.object(main_module, "inject_text") as inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+        inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(text, owner="user", activate=False)
 
     def test_switcher_focus_completed_before_delayed_inject_suppresses_paste(
         self, main_module, monkeypatch
