@@ -115,6 +115,26 @@ def test_hiding_switcher_releases_only_its_optical_client(overlay_module):
     host.release_client.assert_called_once_with("spoke.teleporter")
 
 
+def test_teleporter_reports_native_fallback_when_async_capture_fails(overlay_module):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    host = object()
+    overlay.visible = True
+    overlay._shell_host = host
+    overlay._shell_unavailable = False
+    overlay._status_label = MagicMock()
+    overlay._keyboard_monitor_available = True
+
+    overlay.opticalShellCaptureStateChanged_(
+        {"host": host, "state": "failed", "error": "SCK denied"}
+    )
+
+    assert overlay._shell_unavailable is True
+    status = overlay._status_label.setStringValue_.call_args.args[0]
+    assert status == "Native presentation; optical shell unavailable (SCK denied)"
+
+
 @pytest.mark.parametrize(
     "payload",
     [

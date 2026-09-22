@@ -415,16 +415,59 @@ class DiaulosSwitcherOverlay(NSObject):
             if self._shell_registered:
                 success = host.update_client_config("spoke.teleporter", config)
             else:
-                success = host.add_client("spoke.teleporter", self._panel, self._panel.contentView(), config)
+                from .fullscreen_compositor import OverlayClientIdentity
+
+                identity = OverlayClientIdentity(
+                    client_id="spoke.teleporter",
+                    display_id=host.display_id,
+                    role="hud",
+                )
+
+                def capture_state_changed(state, error=None):
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "opticalShellCaptureStateChanged:",
+                        {"host": host, "state": state, "error": error},
+                        False,
+                    )
+
+                host.register_client(
+                    identity,
+                    window=self._panel,
+                    content_view=self._panel.contentView(),
+                    on_capture_state=capture_state_changed,
+                )
+                success = host.update_client_config("spoke.teleporter", config)
             self._shell_registered = bool(success)
-            self._shell_unavailable = not success
             if not success:
+                self._shell_unavailable = True
                 self._set_status("Native presentation; optical shell unavailable")
             logger.info("Teleporter House shell: registered=%s display=%s", success, host.display_id)
         except Exception:
             self._shell_unavailable = True
             self._set_status("Native presentation; optical shell unavailable")
             logger.exception("Teleporter optical publication failed; native controls remain usable")
+
+    def opticalShellCaptureStateChanged_(self, payload: dict) -> None:
+        if payload.get("host") is not self._shell_host or not self.visible:
+            return
+        state = payload.get("state")
+        error = payload.get("error")
+        status_label = getattr(self, "_status_label", None)
+        old_status = status_label.stringValue() if status_label is not None else ""
+        if state == "failed":
+            self._shell_unavailable = True
+            suffix = f" ({error})" if error else ""
+            self._set_status(f"Native presentation; optical shell unavailable{suffix}")
+        elif state == "pending":
+            self._shell_unavailable = True
+            self._set_status("Native presentation; optical shell starting")
+        elif state == "started":
+            self._shell_unavailable = False
+            if old_status.startswith("Native presentation; optical shell"):
+                self._set_status("")
+        elif state == "cancelled":
+            self._shell_unavailable = True
+            self._set_status("Native presentation; optical shell stopped")
 
     def selectCandidate_(self, sender):
         if self._activation_in_flight:

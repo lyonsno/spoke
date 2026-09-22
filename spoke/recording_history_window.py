@@ -105,15 +105,15 @@ class RecordingHistoryWindow(NSObject):
         self._meta.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._meta)
 
-        self._attempts = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 533, 442, 30), False)
+        self._attempts = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 533, 398, 30), False)
         self._attempts.setTarget_(self)
         self._attempts.setAction_("selectAttempt:")
         self._attempts.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._attempts)
-        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 805, 530, 8 | 1)
-        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 844, 530, 8 | 1)
-        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 883, 530, 8 | 1)
-        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 922, 530, 8 | 1)
+        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 754, 524, 8 | 1)
+        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 804, 524, 8 | 1)
+        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 854, 524, 8 | 1)
+        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 904, 524, 8 | 1)
 
         text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 310))
         text_scroll.setHasVerticalScroller_(True)
@@ -160,11 +160,11 @@ class RecordingHistoryWindow(NSObject):
     def _tool(self, parent, symbol, tooltip, action, x, y, mask):
         image = AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip)
         if image is not None:
-            image.setSize_((20, 20))
+            image.setSize_((24, 24))
         button = AK.NSButton.buttonWithImage_target_action_(
             image, self, action,
         )
-        button.setFrame_(NSMakeRect(x, y, 36, 36))
+        button.setFrame_(NSMakeRect(x, y, 48, 48))
         button.setToolTip_(tooltip)
         button.setAutoresizingMask_(mask)
         parent.addSubview_(button)

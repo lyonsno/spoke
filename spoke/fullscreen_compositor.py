@@ -20,7 +20,7 @@ import struct
 import threading
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -41,6 +41,16 @@ class OverlayClientIdentity:
     client_id: str
     display_id: int | str
     role: str
+
+
+@dataclass
+class _CaptureStartAttempt:
+    generation: int
+    on_state: Any = None
+    state: str = "pending"
+    error: BaseException | None = None
+    stream: Any = None
+    event: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass(frozen=True)
@@ -314,9 +324,9 @@ class FullScreenCompositor:
         self._stream_renderer_proxy = None
         self._stream_handler_queue = None
         self._capture_thread = None
-        self._capture_start_cancelled = False
-        self._capture_started_event = threading.Event()
-        self._capture_start_error = None
+        self._capture_start_lock = threading.RLock()
+        self._capture_attempt_generation = 0
+        self._capture_attempt: _CaptureStartAttempt | None = None
         self._extra_excluded_ids = set()
         self._capture_content = None
         self._capture_display = None
@@ -358,7 +368,7 @@ class FullScreenCompositor:
         self._brightness_sample_frame = 0
         _BRIGHTNESS_SAMPLE_INTERVAL_FRAMES = 15  # every ~250ms at 60fps
 
-    def start(self, shell_config: dict) -> bool:
+    def start(self, shell_config: dict, *, on_capture_state=None) -> bool:
         """Create the full-screen window and start capture + render loop."""
         if self._running:
             return True
@@ -381,49 +391,116 @@ class FullScreenCompositor:
             self._create_fullscreen_window()
             self._start_display_link()
             self._running = True
-            self._start_capture_async()
-            logger.info("FullScreenCompositor: started")
+            self._start_capture_async(on_capture_state=on_capture_state)
+            logger.info("FullScreenCompositor: capture start requested")
             return True
         except Exception:
-            logger.info("FullScreenCompositor: failed to start", exc_info=True)
+            logger.info("FullScreenCompositor: failed to request capture", exc_info=True)
             self.stop()
             return False
 
-    def _start_capture_async(self) -> None:
-        self._capture_start_cancelled = False
-        self._capture_thread = threading.Thread(
-            target=self._run_capture_start,
-            name="SpokeFullScreenCompositorCapture",
-            daemon=True,
-        )
-        self._capture_thread.start()
+    def _start_capture_async(self, *, on_capture_state=None) -> None:
+        with self._capture_start_lock:
+            previous = self._capture_attempt
+            previous_stream = None
+            if previous is not None and previous.state in {"pending", "started"}:
+                previous.state = "cancelled"
+                previous.event.set()
+                previous_stream = previous.stream
+            self._capture_attempt_generation += 1
+            attempt = _CaptureStartAttempt(
+                generation=self._capture_attempt_generation,
+                on_state=on_capture_state,
+            )
+            self._capture_attempt = attempt
+            if previous_stream is not None and self._stream is previous_stream:
+                self._clear_stream_refs_locked(previous_stream)
+            thread = threading.Thread(
+                target=self._run_capture_start,
+                args=(attempt,),
+                name="SpokeFullScreenCompositorCapture",
+                daemon=True,
+            )
+            self._capture_thread = thread
+        if previous_stream is not None:
+            self._stop_stream(previous_stream)
+        self._publish_capture_state(attempt)
+        thread.start()
 
-    def _run_capture_start(self) -> None:
+    def _capture_attempt_is_current(self, attempt) -> bool:
+        with self._capture_start_lock:
+            return self._capture_attempt is attempt and attempt.state == "pending"
+
+    def _publish_capture_state(self, attempt) -> None:
+        with self._capture_start_lock:
+            if self._capture_attempt is not attempt:
+                return
+            callback = attempt.on_state
+            state = attempt.state
+            error = None if attempt.error is None else str(attempt.error)
+        if callable(callback):
+            try:
+                callback(state, error)
+            except Exception:
+                logger.info("FullScreenCompositor: capture-state callback failed", exc_info=True)
+
+    def _set_capture_attempt_state(self, attempt, state, error=None, *, publish=True) -> bool:
+        with self._capture_start_lock:
+            if self._capture_attempt is not attempt or attempt.state != "pending":
+                return False
+            attempt.state = state
+            attempt.error = error
+            attempt.event.set()
+        if publish:
+            self._publish_capture_state(attempt)
+        return True
+
+    def _run_capture_start(self, attempt) -> None:
         try:
-            self._start_capture()
-            if getattr(self, "_capture_start_cancelled", False):
-                self._stop_capture()
+            self._start_capture(attempt)
         except Exception as exc:
-            if not getattr(self, "_capture_start_cancelled", False):
-                self._capture_start_error = exc
-                event = getattr(self, "_capture_started_event", None)
-                if event is not None:
-                    event.set()
+            if self._set_capture_attempt_state(attempt, "failed", exc, publish=False):
                 logger.info("FullScreenCompositor: capture failed to start", exc_info=True)
-                self._schedule_stop_after_capture_failure()
+                self._schedule_stop_after_capture_failure(attempt)
 
-    def _schedule_stop_after_capture_failure(self) -> None:
+    def _schedule_stop_after_capture_failure(self, attempt) -> None:
         try:
             from PyObjCTools import AppHelper
 
-            AppHelper.callAfter(self.stop)
+            AppHelper.callAfter(self._finish_capture_failure, attempt)
         except Exception:
-            self.stop()
+            self._finish_capture_failure(attempt)
+
+    def _finish_capture_failure(self, attempt) -> None:
+        with self._capture_start_lock:
+            if self._capture_attempt is not attempt or attempt.state != "failed":
+                return
+            stream = attempt.stream
+            attempt.stream = None
+            if stream is not None and getattr(self, "_stream", None) is stream:
+                self._clear_stream_refs_locked(stream)
+            self._running = False
+        self._stop_display_link()
+        self._stop_stream(stream)
+        self._destroy_fullscreen_window()
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                self._latest_iosurface = None
+                self._latest_pixel_buffer = None
+        self._publish_capture_state(attempt)
 
     def stop(self) -> None:
         """Tear down everything."""
-        self._capture_start_cancelled = True
-        self._running = False
+        with self._capture_start_lock:
+            attempt = self._capture_attempt
+            if attempt is not None and attempt.state in {"pending", "started"}:
+                attempt.state = "cancelled"
+                attempt.event.set()
+                notify = True
+            else:
+                notify = False
+            self._running = False
         self._stop_display_link()
         self._stop_capture()
         self._destroy_fullscreen_window()
@@ -434,6 +511,8 @@ class FullScreenCompositor:
             "FullScreenCompositor: stopped (%d presented / %d ticks)",
             self._presented_count, self._frame_count,
         )
+        if notify:
+            self._publish_capture_state(attempt)
 
     def update_shell_config(self, config: dict) -> None:
         """Update the warp parameters (capsule position, size, etc.)."""
@@ -469,18 +548,22 @@ class FullScreenCompositor:
 
     @property
     def capture_start_state(self) -> str:
-        """Truthful state of the asynchronous ScreenCaptureKit start request."""
-        if getattr(self, "_capture_start_error", None) is not None:
-            return "failed"
-        if getattr(self, "_capture_start_cancelled", False):
-            return "cancelled"
-        event = getattr(self, "_capture_started_event", None)
-        return "started" if event is not None and event.is_set() else "pending"
+        """Truthful state of the current ScreenCaptureKit start attempt."""
+        with self._capture_start_lock:
+            attempt = self._capture_attempt
+            return "idle" if attempt is None else attempt.state
 
     @property
     def capture_start_error(self) -> str | None:
-        error = getattr(self, "_capture_start_error", None)
+        with self._capture_start_lock:
+            attempt = self._capture_attempt
+            error = None if attempt is None else attempt.error
         return None if error is None else str(error)
+
+    @property
+    def capture_attempt_generation(self) -> int:
+        with self._capture_start_lock:
+            return self._capture_attempt_generation
 
     @property
     def config_generation(self) -> int:
@@ -877,7 +960,7 @@ class FullScreenCompositor:
     # SCK full-display capture
     # ------------------------------------------------------------------
 
-    def _start_capture(self):
+    def _start_capture(self, attempt):
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             raise RuntimeError("ScreenCaptureKit bridge unavailable")
@@ -885,13 +968,15 @@ class FullScreenCompositor:
         content = self._fetch_shareable_content(bridge)
         if content is None:
             raise RuntimeError("Failed to get shareable content")
-        self._capture_content = content
+        if not self._capture_attempt_is_current(attempt):
+            return
 
         # Find our display
         display = self._match_display(content)
         if display is None:
             raise RuntimeError("No matching display found")
-        self._capture_display = display
+        if not self._capture_attempt_is_current(attempt):
+            return
 
         # Build filter: full display, exclude our compositor window
         SCContentFilter = bridge["SCContentFilter"]
@@ -933,14 +1018,12 @@ class FullScreenCompositor:
         # We need a minimal renderer interface for the stream output
         renderer_proxy = _CompositorRendererProxy(self, bridge)
         stream_output = _ScreenCaptureKitStreamOutput.alloc().initWithRenderer_(renderer_proxy)
-        self._stream_renderer_proxy = renderer_proxy
-
-        self._stream_handler_queue = _make_stream_handler_queue("ai.spoke.fullscreen-compositor")
+        stream_handler_queue = _make_stream_handler_queue("ai.spoke.fullscreen-compositor")
 
         result = stream.addStreamOutput_type_sampleHandlerQueue_error_(
             stream_output,
             bridge["SCStreamOutputTypeScreen"],
-            self._stream_handler_queue,
+            stream_handler_queue,
             None,
         )
         if isinstance(result, tuple):
@@ -950,44 +1033,72 @@ class FullScreenCompositor:
         if not success:
             raise RuntimeError("addStreamOutput failed")
 
-        self._capture_started_event.clear()
-        self._capture_start_error = None
-        self._stream = stream
-        self._stream_output = stream_output
-        stream.startCaptureWithCompletionHandler_(
-            lambda *args: self._capture_start_completed(
-                stream, args[0] if args else None, pixel_w, pixel_h,
-            )
-        )
+        with self._capture_start_lock:
+            if self._capture_attempt is not attempt or attempt.state != "pending":
+                stale = True
+            else:
+                stale = False
+                attempt.stream = stream
+                self._capture_content = content
+                self._capture_display = display
+                self._stream = stream
+                self._stream_output = stream_output
+                self._stream_renderer_proxy = renderer_proxy
+                self._stream_handler_queue = stream_handler_queue
+                stream.startCaptureWithCompletionHandler_(
+                    lambda *args: self._capture_start_completed(
+                        attempt, stream, args[0] if args else None, pixel_w, pixel_h,
+                    )
+                )
+        if stale:
+            self._stop_stream(stream)
+            return
         logger.info("FullScreenCompositor: SCK capture start requested (%dx%d)", pixel_w, pixel_h)
 
-    def _capture_start_completed(self, stream, error, pixel_w, pixel_h):
-        if getattr(self, "_capture_start_cancelled", False) or getattr(self, "_stream", None) is not stream:
-            if error is None:
-                try:
-                    stream.stopCaptureWithCompletionHandler_(lambda *args: None)
-                except Exception:
-                    pass
+    def _capture_start_completed(self, attempt, stream, error, pixel_w, pixel_h):
+        with self._capture_start_lock:
+            current = (
+                self._capture_attempt is attempt
+                and attempt.state == "pending"
+                and self._stream is stream
+            )
+            if not current and self._stream is stream:
+                self._clear_stream_refs_locked(stream)
+        if not current:
+            self._stop_stream(stream)
             return
 
-        event = getattr(self, "_capture_started_event", None)
         if error is not None:
-            self._capture_start_error = error
-            if event is not None:
-                event.set()
-            logger.info("FullScreenCompositor: SCK capture start failed: %s", error)
-            self._schedule_stop_after_capture_failure()
+            if self._set_capture_attempt_state(attempt, "failed", error, publish=False):
+                logger.info("FullScreenCompositor: SCK capture start failed: %s", error)
+                self._schedule_stop_after_capture_failure(attempt)
             return
 
-        if event is not None:
-            event.set()
-        logger.info("FullScreenCompositor: SCK capture started (%dx%d)", pixel_w, pixel_h)
+        if self._set_capture_attempt_state(attempt, "started"):
+            logger.info("FullScreenCompositor: SCK capture started (%dx%d)", pixel_w, pixel_h)
 
     def _stop_capture(self):
-        stream = self._stream
+        with self._capture_start_lock:
+            stream = self._stream
+            if stream is not None:
+                self._clear_stream_refs_locked(stream)
+            attempt = self._capture_attempt
+            if attempt is not None and attempt.stream is stream:
+                attempt.stream = None
+        self._stop_stream(stream)
+
+    def _clear_stream_refs_locked(self, stream):
+        if self._stream is not stream:
+            return
         self._stream = None
         self._stream_output = None
         self._stream_renderer_proxy = None
+        self._stream_handler_queue = None
+        self._capture_content = None
+        self._capture_display = None
+
+    @staticmethod
+    def _stop_stream(stream):
         if stream is not None:
             try:
                 stream.stopCaptureWithCompletionHandler_(lambda *args: None)
@@ -1604,6 +1715,10 @@ class OverlayCompositorHost:
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
         self._started = False
+        self._start_pending = False
+        self._capture_state = "idle"
+        self._start_generation = 0
+        self._state_lock = threading.RLock()
 
     @property
     def display_id(self) -> int | str:
@@ -1611,31 +1726,51 @@ class OverlayCompositorHost:
 
     @property
     def client_count(self) -> int:
-        return len(self._clients)
+        with self._state_lock:
+            return len(self._clients)
 
-    def register_client(self, identity: OverlayClientIdentity, *, window, content_view) -> "OverlayCompositorClient":
-        entry = self._clients.get(identity.client_id)
-        if entry is None:
-            entry = {
-                "identity": identity,
-                "window": window,
-                "content_view": content_view,
-                "snapshot": None,
-                "generation": 0,
-                "client": None,
-            }
-            self._clients[identity.client_id] = entry
-        else:
-            entry["identity"] = identity
-            entry["window"] = window
-            entry["content_view"] = content_view
-        client = entry.get("client")
-        if client is None or getattr(client, "_host", None) is not self:
-            client = OverlayCompositorClient(self, identity)
-            entry["client"] = client
-        else:
-            client.identity = identity
-            client._client_id = identity.client_id
+    def register_client(
+        self, identity: OverlayClientIdentity, *, window, content_view, on_capture_state=None
+    ) -> "OverlayCompositorClient":
+        current_state = None
+        current_error = None
+        with self._state_lock:
+            entry = self._clients.get(identity.client_id)
+            if entry is None:
+                entry = {
+                    "identity": identity,
+                    "window": window,
+                    "content_view": content_view,
+                    "snapshot": None,
+                    "generation": 0,
+                    "client": None,
+                    "on_capture_state": on_capture_state,
+                }
+                self._clients[identity.client_id] = entry
+            else:
+                entry["identity"] = identity
+                entry["window"] = window
+                entry["content_view"] = content_view
+                entry["on_capture_state"] = on_capture_state
+            client = entry.get("client")
+            if client is None or getattr(client, "_host", None) is not self:
+                client = OverlayCompositorClient(self, identity)
+                entry["client"] = client
+            else:
+                client.identity = identity
+                client._client_id = identity.client_id
+            if callable(on_capture_state) and self._capture_state in {"started", "failed", "cancelled"}:
+                current_state = self._capture_state
+                if current_state == "failed":
+                    current_error = getattr(self._compositor, "capture_start_error", None)
+        if current_state is not None:
+            try:
+                on_capture_state(
+                    current_state,
+                    None if current_error is None else str(current_error),
+                )
+            except Exception:
+                logger.debug("Overlay capture-state observer failed during registration", exc_info=True)
         return client
 
     def unregister_client(self, client_id: str) -> None:
@@ -1754,17 +1889,56 @@ class OverlayCompositorHost:
         return True
 
     def release_client(self, client_id: str) -> None:
-        self._clients.pop(client_id, None)
-        if self._clients:
+        with self._state_lock:
+            self._clients.pop(client_id, None)
+            if self._clients:
+                has_clients = True
+                should_stop = False
+            else:
+                has_clients = False
+                should_stop = self._started or self._start_pending
+                self._start_generation += 1
+                self._started = False
+                self._start_pending = False
+                self._capture_state = "cancelled"
+        if has_clients:
             self._sync_host()
             return
-        if self._started:
+        if should_stop:
             try:
                 self._compositor.stop()
             except Exception:
                 logger.debug("Failed to stop shared overlay compositor host", exc_info=True)
-        self._started = False
         _shared_overlay_hosts.pop(self._registry_key, None)
+
+    @property
+    def capture_start_state(self) -> str:
+        with self._state_lock:
+            return self._capture_state
+
+    def _on_capture_state(self, generation: int, state: str, error=None) -> None:
+        with self._state_lock:
+            if generation != self._start_generation:
+                return
+            if (
+                state != "pending"
+                and not self._start_pending
+                and not (state == "failed" and self._capture_state == "cancelled")
+            ):
+                return
+            self._capture_state = state
+            self._start_pending = state == "pending"
+            self._started = state == "started"
+            callbacks = [
+                entry.get("on_capture_state") for entry in self._clients.values()
+                if callable(entry.get("on_capture_state"))
+            ]
+        error_text = None if error is None else str(error)
+        for callback in callbacks:
+            try:
+                callback(state, error_text)
+            except Exception:
+                logger.debug("Overlay capture-state observer failed", exc_info=True)
 
     def render_snapshots(self) -> tuple[OverlayRenderSnapshot, ...]:
         snapshots = [entry["snapshot"] for entry in self._clients.values() if entry.get("snapshot") is not None]
@@ -1911,21 +2085,44 @@ class OverlayCompositorHost:
         if callable(set_excluded):
             set_excluded(overlay_window_ids)
         if not shell_configs:
-            if self._started:
+            with self._state_lock:
+                should_stop = self._started or self._start_pending
+                self._start_generation += 1
+                self._started = False
+                self._start_pending = False
+                self._capture_state = "cancelled"
+            if should_stop:
                 try:
                     self._compositor.stop()
                 except Exception:
                     logger.debug("Failed to stop shared overlay compositor host", exc_info=True)
-                self._started = False
             update_all = getattr(self._compositor, "update_shell_configs", None)
             if callable(update_all):
                 update_all([])
             return True
-        if start_if_needed and not self._started:
-            started = self._compositor.start(shell_configs[0])
-            if not started:
+        with self._state_lock:
+            should_start = start_if_needed and not self._started and not self._start_pending
+            if should_start:
+                self._start_generation += 1
+                generation = self._start_generation
+                self._capture_state = "pending"
+                self._start_pending = True
+                self._started = False
+        if should_start:
+            try:
+                started = self._compositor.start(
+                    shell_configs[0],
+                    on_capture_state=lambda state, error=None: self._on_capture_state(
+                        generation, state, error
+                    ),
+                )
+            except Exception as exc:
+                logger.info("Shared overlay capture start raised", exc_info=True)
+                self._on_capture_state(generation, "failed", exc)
                 return False
-            self._started = True
+            if not started:
+                self._on_capture_state(generation, "failed", "capture start request rejected")
+                return False
         update_all = getattr(self._compositor, "update_shell_configs", None)
         if callable(update_all):
             update_all(shell_configs)
