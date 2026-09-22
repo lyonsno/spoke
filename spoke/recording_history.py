@@ -74,7 +74,7 @@ def first_line(record: dict) -> str:
         return "No original transcript" if not record.get("error") else "Unverified recording"
     text = original.get("text")
     if isinstance(text, str) and text.strip():
-        return " ".join(text.split())
+        return " ".join(text.splitlines()[0].split())
     return {"pending": "Transcription pending", "failed": "Transcription failed",
             "blank": "Blank transcription"}.get(original.get("status"), "Unverified transcription")
 
@@ -84,3 +84,23 @@ def duration_label(seconds) -> str:
         return "Unknown duration"
     minutes, seconds = divmod(int(seconds), 60)
     return f"{minutes}:{seconds:02d}"
+
+
+def delivery_label(attempt: dict) -> str:
+    deliveries = attempt.get("deliveries", [])
+    if not deliveries:
+        return "Delivery: unverified" if attempt.get("kind") == "live" else "Delivery: not requested"
+    state = deliveries[-1]["state"]
+    label = {
+        "routed_to_switcher": "Teleporter filter; saved to tray",
+        "saved_to_tray_focus_changed": "Saved to tray after focus changed",
+        "saved_to_tray_grace_cancelled": "Saved to tray; insertion cancelled",
+        "saved_to_tray": "Saved to tray",
+        "insert_requested": "Paste requested; acceptance unverified",
+        "clipboard_restored": "Clipboard restored; paste acceptance unverified",
+        "paste_failed_saved_to_tray": "Paste failed; saved to tray",
+        "delivery_skipped_stale": "Insertion skipped; retained in history",
+        "command_requested": "Sent to assistant",
+        "copied": "Copied to clipboard",
+    }.get(state, f"Unverified state ({state})")
+    return f"Delivery: {label}"

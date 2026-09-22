@@ -883,6 +883,7 @@ class PendingDictationDelivery:
     state: str = "grace"
     grace_timer: object | None = None
     inject_timer: object | None = None
+    history: dict | None = None
 
 
 def _string_or_none(value) -> str | None:
@@ -3143,7 +3144,7 @@ class SpokeAppDelegate(NSObject):
             raise ValueError(f"Recovery backend is not configured: {backend}")
         return self._build_client(url, model, api_key=key)
 
-    def _transcribe_with_history(self, wav_bytes, *, capture_id=None, release_cutover=False):
+    def _transcribe_with_history(self, wav_bytes, *, capture_id=None, release_cutover=False, history_ref=None):
         if not capture_id:
             return self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
         from .recording_history import client_receipt
@@ -3153,6 +3154,8 @@ class SpokeAppDelegate(NSObject):
         attempt_id = None
         try:
             attempt_id = spool.start_attempt(capture_id, requested=requested)
+            if history_ref is not None:
+                history_ref.update(capture_id=capture_id, attempt_id=attempt_id)
         except Exception:
             logger.exception("Could not start recording history attempt for %s", capture_id)
         trace = getattr(self, "_history_trace", None)
@@ -3165,7 +3168,7 @@ class SpokeAppDelegate(NSObject):
             text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
             return text
         except Exception as exc:
-            error = str(exc)
+            error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
             if attempt_id:
@@ -3180,6 +3183,16 @@ class SpokeAppDelegate(NSObject):
                 except Exception:
                     logger.exception("Could not finish recording history attempt %s", attempt_id)
             trace.routes = None
+
+    def _record_history_delivery(self, history, state, detail="") -> None:
+        if not history:
+            return
+        try:
+            self._audio_spool.record_delivery(
+                history["capture_id"], history["attempt_id"], state=state, detail=detail,
+            )
+        except Exception:
+            logger.exception("Could not record dictation delivery %s", state)
 
     def _history_route_receipt(self, client, error=None) -> None:
         trace = getattr(getattr(self, "_history_trace", None), "routes", None)
@@ -3398,8 +3411,9 @@ class SpokeAppDelegate(NSObject):
         # the final route own recovery from the stopped capture.
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
+        history = {}
         try:
-            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
         except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3417,6 +3431,7 @@ class SpokeAppDelegate(NSObject):
                 "text": text,
                 "elapsed_ms": elapsed_ms,
                 "switcher_generation": switcher_generation,
+                **({"history": history} if history else {}),
             },
             False,
         )
@@ -3434,8 +3449,9 @@ class SpokeAppDelegate(NSObject):
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
+        history = {}
         try:
-            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3453,6 +3469,7 @@ class SpokeAppDelegate(NSObject):
                 "text": text,
                 "elapsed_ms": elapsed_ms,
                 "switcher_generation": switcher_generation,
+                **({"history": history} if history else {}),
             },
             False,
         )
@@ -3556,6 +3573,7 @@ class SpokeAppDelegate(NSObject):
         switcher_generation: int | None,
         lane: str,
         token: int,
+        history: dict | None = None,
     ) -> None:
         delivery_id = f"{lane}:{token}"
         records = self._dictation_delivery_records()
@@ -3571,6 +3589,7 @@ class SpokeAppDelegate(NSObject):
             switcher_generation=switcher_generation,
             lane=lane,
             token=token,
+            history=history,
         )
         records[delivery_id] = delivery
         self._refresh_grace_cancel_callback()
@@ -3606,6 +3625,7 @@ class SpokeAppDelegate(NSObject):
                 delivery.text,
                 resume_handsfree=False,
             ):
+                self._record_history_delivery(delivery.history, "routed_to_switcher")
                 self._remove_dictation_delivery(delivery.delivery_id)
                 records = self._dictation_delivery_records()
                 continue
@@ -3625,6 +3645,7 @@ class SpokeAppDelegate(NSObject):
         """Main thread: inject transcribed text at cursor (with grace window)."""
         if payload["token"] != self._transcription_token:
             logger.info("Discarding stale transcription (token %d)", payload["token"])
+            self._record_history_delivery(payload.get("history"), "delivery_skipped_stale")
             return
         self._transcribing = False
         text = payload["text"]
@@ -3634,6 +3655,7 @@ class SpokeAppDelegate(NSObject):
             and not has_pending_delivery
             and self._route_text_to_visible_diaulos_switcher(text)
         ):
+            self._record_history_delivery(payload.get("history"), "routed_to_switcher")
             return
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
         if (
@@ -3654,6 +3676,7 @@ class SpokeAppDelegate(NSObject):
                 switcher_generation=payload.get("switcher_generation"),
                 lane="primary",
                 token=payload["token"],
+                history=payload.get("history"),
             )
             return
         if self._overlay is not None:
@@ -3665,6 +3688,7 @@ class SpokeAppDelegate(NSObject):
         """Main thread: inject a parallel plain-space transcription at cursor."""
         if payload["token"] != self._parallel_insert_token:
             logger.info("Discarding stale parallel transcription (token %d)", payload["token"])
+            self._record_history_delivery(payload.get("history"), "delivery_skipped_stale")
             return
         text = payload["text"]
         if (
@@ -3672,6 +3696,7 @@ class SpokeAppDelegate(NSObject):
             and not self._dictation_delivery_records()
             and self._route_text_to_visible_diaulos_switcher(text)
         ):
+            self._record_history_delivery(payload.get("history"), "routed_to_switcher")
             return
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
@@ -3685,6 +3710,7 @@ class SpokeAppDelegate(NSObject):
                 switcher_generation=payload.get("switcher_generation"),
                 lane="parallel",
                 token=payload["token"],
+                history=payload.get("history"),
             )
 
     def graceTimerFired_(self, timer) -> None:
@@ -3715,6 +3741,7 @@ class SpokeAppDelegate(NSObject):
                 if timer is not None:
                     timer.invalidate()
             self._add_tray_entry(delivery.text, owner="user", activate=False)
+            self._record_history_delivery(delivery.history, "saved_to_tray_grace_cancelled")
             records.pop(delivery.delivery_id, None)
         self._refresh_grace_cancel_callback()
         if cancelled:
@@ -4010,8 +4037,9 @@ class SpokeAppDelegate(NSObject):
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
+        history = {}
         try:
-            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
         except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4023,7 +4051,7 @@ class SpokeAppDelegate(NSObject):
 
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "trayTranscriptionComplete:",
-            {"token": token, "text": text},
+            {"token": token, "text": text, **({"history": history} if history else {})},
             False,
         )
 
@@ -4031,6 +4059,7 @@ class SpokeAppDelegate(NSObject):
         """Main thread: transcription done — enter tray with the text."""
         if payload["token"] != self._transcription_token:
             logger.info("Discarding stale tray transcription (token %d)", payload["token"])
+            self._record_history_delivery(payload.get("history"), "delivery_skipped_stale")
             return
         self._transcribing = False
         text = payload["text"]
@@ -4046,6 +4075,7 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
         self._enter_tray(text)
+        self._record_history_delivery(payload.get("history"), "saved_to_tray")
 
     def trayTranscriptionFailed_(self, payload: dict) -> None:
         """Main thread: tray transcription failed without promoting preview text."""
@@ -5111,11 +5141,13 @@ class SpokeAppDelegate(NSObject):
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         # Step 1: Transcribe the audio
+        history = {}
         try:
             utterance = self._transcribe_with_history(
                 wav_bytes,
                 capture_id=capture_id,
                 release_cutover=release_cutover,
+                history_ref=history,
             )
         except Exception as exc:
             logger.exception("Command transcription failed")
@@ -5172,6 +5204,8 @@ class SpokeAppDelegate(NSObject):
             self._command_client.set_spoke_headers(
                 pathway="command", utterance_id=str(token),
             )
+            self._record_history_delivery(history, "command_requested",
+                                          "Assistant request started; completion is not verified")
             for event in self._command_client.stream_command_events(
                 utterance,
                 tools=self._tool_schemas,
@@ -7835,6 +7869,7 @@ class SpokeAppDelegate(NSObject):
         *,
         switcher_generation: int | None = None,
         delivery_id: str | None = None,
+        history: dict | None = None,
     ) -> None:
         # Fade the preview overlay first, then order it out just before the
         # paste setup so screenshots/focus checks never capture it.
@@ -7854,6 +7889,7 @@ class SpokeAppDelegate(NSObject):
                 token=0,
                 status_text=status_text,
                 state="ready",
+                history=history,
             )
         delivery = records.get(delivery_id)
         if delivery is None:
@@ -7886,6 +7922,7 @@ class SpokeAppDelegate(NSObject):
             text,
             resume_handsfree=False,
         ):
+            self._record_history_delivery(delivery.history, "routed_to_switcher")
             self._remove_dictation_delivery(delivery.delivery_id)
             self._drain_dictation_deliveries()
             return
@@ -7898,6 +7935,7 @@ class SpokeAppDelegate(NSObject):
             if self._overlay is not None:
                 self._overlay.order_out()
             self._add_tray_entry(text, owner="user", activate=False)
+            self._record_history_delivery(delivery.history, "saved_to_tray_focus_changed")
             logger.warning(
                 "Focus surface changed during insert grace; preserved dictation in tray"
             )
@@ -7920,6 +7958,7 @@ class SpokeAppDelegate(NSObject):
         self._refresh_grace_cancel_callback()
 
         def _on_clipboard_restored():
+            self._record_history_delivery(delivery.history, "clipboard_restored")
             current = self._dictation_delivery_records().get(delivery.delivery_id)
             if current is delivery:
                 self._remove_dictation_delivery(delivery.delivery_id)
@@ -7927,8 +7966,12 @@ class SpokeAppDelegate(NSObject):
             self._drain_dictation_deliveries()
 
         try:
+            self._record_history_delivery(delivery.history, "insert_requested",
+                                          "Synthetic paste requested; destination acceptance is unverified")
             inject_text(text, on_restored=_on_clipboard_restored)
-        except Exception:
+        except Exception as exc:
+            self._record_history_delivery(delivery.history, "paste_failed_saved_to_tray",
+                                          f"{type(exc).__name__}: {exc}")
             logger.exception(
                 "Synthetic paste failed for %s; text remains in tray",
                 delivery.delivery_id,

@@ -12,7 +12,7 @@ import objc
 import AppKit as AK
 from Foundation import NSData, NSIndexSet, NSMakeRect, NSObject, NSTimer, NSURL
 
-from .recording_history import duration_label, first_line, run_retranscription
+from .recording_history import delivery_label, duration_label, first_line, run_retranscription
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ class RecordingHistoryWindow(NSObject):
         self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 885, 534, 8 | 1)
         self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 925, 534, 8 | 1)
 
-        text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 188, 608, 330))
+        text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 310))
         text_scroll.setHasVerticalScroller_(True)
         text_scroll.setAutoresizingMask_(2 | 16)
         self._text = AK.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 608, 330))
@@ -130,8 +130,8 @@ class RecordingHistoryWindow(NSObject):
         text_scroll.setDocumentView_(self._text)
         content.addSubview_(text_scroll)
 
-        self._route = _label("", NSMakeRect(350, 146, 608, 36), 11, True)
-        self._route.setMaximumNumberOfLines_(2)
+        self._route = _label("", NSMakeRect(350, 146, 608, 54), 11, True)
+        self._route.setMaximumNumberOfLines_(3)
         self._route.setAutoresizingMask_(2)
         content.addSubview_(self._route)
         content.addSubview_(_label("Re-transcription model", NSMakeRect(350, 113, 290, 20), 12, True))
@@ -253,7 +253,7 @@ class RecordingHistoryWindow(NSObject):
         view = AK.NSTableCellView.alloc().initWithFrame_(NSMakeRect(0, 0, width, 66))
         view.addSubview_(_label(_date_label(record.get("created_at")), NSMakeRect(8, 42, width - 16, 18), 12, True))
         view.addSubview_(_label(first_line(record), NSMakeRect(8, 21, width - 16, 20), 13))
-        status = "Audio missing" if not record["audio_available"] else record["status"].replace("_", " ")
+        status = "Audio missing" if not record["audio_available"] else f"Transcription: {record['status'].replace('_', ' ')}"
         view.addSubview_(_label(f"{duration_label(record.get('duration_seconds'))}  |  {status}", NSMakeRect(8, 3, width - 16, 17), 10, True))
         return view
 
@@ -285,7 +285,9 @@ class RecordingHistoryWindow(NSObject):
             self._update_controls()
             return
         self._title.setStringValue_(_date_label(record.get("created_at")))
-        self._meta.setStringValue_(f"{duration_label(record.get('duration_seconds'))}  |  {record['capture_id']}")
+        pathway = record.get("pathway", "Unverified pathway")
+        self._meta.setStringValue_(f"{duration_label(record.get('duration_seconds'))}  |  Pathway: {pathway}")
+        self._meta.setToolTip_(record["capture_id"])
         attempts = record["attempts"]
         if self._attempt_id not in {a["attempt_id"] for a in attempts}:
             self._attempt_id = attempts[-1]["attempt_id"] if attempts else None
@@ -316,7 +318,7 @@ class RecordingHistoryWindow(NSObject):
             duration = attempt.get("wall_seconds")
             timing = f"{duration:.2f}s" if isinstance(duration, (int, float)) else "Unfinished"
             client = effective.get("client", "No effective route yet").split(".")[-1]
-            self._route.setStringValue_(f"{client}  |  {model}\n{attempt['status']}  |  {timing}")
+            self._route.setStringValue_(f"{client}  |  {model}\nTranscription: {attempt['status']}  |  {timing}\n{delivery_label(attempt)}")
             self._route.setToolTip_(json.dumps(attempt, indent=2, sort_keys=True))
         else:
             self._text.setString_(record.get("error") or "No original transcript was retained." if record else "")
@@ -392,9 +394,10 @@ class RecordingHistoryWindow(NSObject):
         self._window.orderOut_(None)
         if self._previous_app is not None:
             self._previous_app.activateWithOptions_(1 << 1)
-        self._delegate._inject_result_text(attempt["text"], "History insertion requested")
-        self._spool.record_delivery(self._selected_id, self._attempt_id, state="insert_requested",
-                                    detail="Synthetic paste requested; target acceptance is not verified")
+        self._delegate._inject_result_text(
+            attempt["text"], "History insertion requested",
+            history={"capture_id": self._selected_id, "attempt_id": self._attempt_id},
+        )
 
     def _stop_audio(self):
         if self._sound is not None:

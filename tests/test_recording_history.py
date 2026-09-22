@@ -72,6 +72,40 @@ def test_history_list_preview_keeps_original_after_successful_retry():
     ]}) == "Original words"
 
 
+def test_history_preview_uses_only_first_physical_line(tmp_path):
+    from spoke.recording_history import first_line
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    attempt = spool.start_attempt(capture.capture_id, requested={"model": "original"})
+    text = "First  line\nSecond line\n\nFinal paragraph"
+    spool.finish_attempt(capture.capture_id, attempt, text=text, effective={}, wall_seconds=1)
+    record = spool.list_recordings()[0]
+    assert first_line(record) == "First line"
+    assert record["attempts"][0]["text"] == text
+
+
+def test_empty_error_still_marks_attempt_failed(tmp_path):
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    attempt = spool.start_attempt(capture.capture_id, requested={})
+    spool.finish_attempt(capture.capture_id, attempt, text=None, error="", effective={}, wall_seconds=0)
+    assert spool.list_recordings()[0]["attempts"][0]["status"] == "failed"
+
+
+def test_delivery_events_are_chronological_not_uuid_order(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from spoke import audio_spool
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    attempt = spool.start_attempt(capture.capture_id, requested={})
+    ids = iter(["z", "z-temp", "a", "a-temp"])
+    monkeypatch.setattr(audio_spool.uuid, "uuid4", lambda: SimpleNamespace(hex=next(ids)))
+    spool.record_delivery(capture.capture_id, attempt, state="insert_requested")
+    spool.record_delivery(capture.capture_id, attempt, state="clipboard_restored")
+    assert [d["state"] for d in spool.list_recordings()[0]["attempts"][0]["deliveries"]] == [
+        "insert_requested", "clipboard_restored"]
+
+
 def test_history_prompt_snapshot_is_private_and_does_not_reread_source(tmp_path):
     from types import SimpleNamespace
     from spoke.recording_history import client_receipt

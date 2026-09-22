@@ -96,6 +96,71 @@ def _make_delegate(main_module, monkeypatch):
 
 
 class TestRecordingHistory:
+    @pytest.mark.parametrize("parallel", [False, True])
+    @pytest.mark.parametrize("outcome", ["focus", "paste_error", "restored", "switcher", "stale"])
+    def test_live_delivery_receipts_preserve_audio_and_original(
+        self, main_module, monkeypatch, tmp_path, parallel, outcome,
+    ):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav, metadata={"pathway": "parallel" if parallel else "text"})
+        d._vad_active_for_hold = False
+        d._client.transcribe.return_value = "Keep these words."
+        d._transcription_token = d._parallel_insert_token = 1
+        d._add_tray_entry = MagicMock()
+        worker = d._parallel_insert_worker if parallel else d._transcribe_worker
+        worker(wav, 1, capture_id=capture.capture_id)
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args.args[1]
+        if outcome == "stale":
+            d._transcription_token = d._parallel_insert_token = 2
+        elif outcome == "switcher":
+            d._diaulos_switcher = MagicMock(visible=True)
+            d._diaulos_switcher.set_dictation_filter.return_value = 1
+        complete = d.parallelTranscriptionComplete_ if parallel else d.transcriptionComplete_
+        complete(payload)
+        d.graceTimerFired_(None)
+        if outcome == "focus":
+            d._recording_history = MagicMock()
+            d._recording_history._window.isKeyWindow.return_value = True
+        def paste(text, *, on_restored):
+            if outcome == "paste_error":
+                raise RuntimeError("paste rejected")
+            on_restored()
+        with patch.object(main_module, "inject_text", side_effect=paste) as inject:
+            d.resultInjectDelayed_(None)
+        expected = {
+            "focus": ["saved_to_tray_focus_changed"],
+            "paste_error": ["insert_requested", "paste_failed_saved_to_tray"],
+            "restored": ["insert_requested", "clipboard_restored"],
+            "switcher": ["routed_to_switcher"],
+            "stale": ["delivery_skipped_stale"],
+        }[outcome]
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert [e["state"] for e in attempt["deliveries"]] == expected
+        assert attempt["text"] == "Keep these words."
+        assert attempt["status"] == "success"
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
+        if outcome in {"focus", "switcher", "stale"}:
+            inject.assert_not_called()
+
+    def test_empty_message_live_exception_is_failed(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        d._client.transcribe.side_effect = RuntimeError()
+        d._transcribe_worker(wav, 1, capture_id=capture.capture_id)
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["status"] == "failed"
+        assert attempt["error"].startswith("RuntimeError:")
+        assert attempt["text"] is None
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
+
     def test_original_text_survives_ui_delivery_failure(self, main_module, monkeypatch, tmp_path):
         from spoke.audio_spool import AudioSpool, AudioSpoolConfig
 

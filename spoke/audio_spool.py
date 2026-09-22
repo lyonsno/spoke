@@ -156,7 +156,7 @@ class AudioSpool:
             "schema": "spoke.recording_attempt.result.v1",
             "capture_id": capture_id, "attempt_id": attempt_id,
             "completed_at": datetime.now(timezone.utc).isoformat(),
-            "status": "failed" if error else "success" if text and text.strip() else "blank",
+            "status": "failed" if error is not None else "success" if text and text.strip() else "blank",
             "text": text, "error": error, "effective": effective,
             "wall_seconds": wall_seconds, "evidence": evidence or {},
         }
@@ -213,9 +213,14 @@ class AudioSpool:
                                 or (result.get("status") == "success" and not str(result.get("text") or "").strip())):
                             raise ValueError("Result identity mismatch")
                         attempt.update(result)
-                    attempt["deliveries"] = [
-                        _read_json_object(p) for p in sorted(directory.glob(f"{attempt_id}.delivery-*.json"))
-                    ]
+                    deliveries = [_read_json_object(p) for p in directory.glob(f"{attempt_id}.delivery-*.json")]
+                    for event in deliveries:
+                        if (event.get("schema") != "spoke.recording_delivery.v1"
+                                or event.get("attempt_id") != attempt_id
+                                or not isinstance(event.get("state"), str)
+                                or not isinstance(event.get("created_at"), str)):
+                            raise ValueError("Unverified delivery event")
+                    attempt["deliveries"] = sorted(deliveries, key=lambda event: event["created_at"])
                 except (OSError, ValueError, KeyError) as exc:
                     attempt = {"attempt_id": path.name.removesuffix(".request.json"),
                                "status": "unverified", "error": str(exc)}
