@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlparse
 logger = logging.getLogger(__name__)
 
 SUPPORTED_INVENTORY_SCHEMA_VERSION = 1
+LIVE_DIAULOS_DISCOVERY_TIMEOUT_SECONDS = 30.0
 
 
 class DiaulosInventoryError(RuntimeError):
@@ -328,6 +329,8 @@ class EpistaxisDiaulosClient:
             "live",
             "--repo-root",
             str(self._epistaxis_repo_root),
+            "--timeout-seconds",
+            f"{LIVE_DIAULOS_DISCOVERY_TIMEOUT_SECONDS:g}",
             "--json",
         ]
         result = self._run_epistaxis(command)
@@ -350,6 +353,8 @@ class EpistaxisDiaulosClient:
             "live",
             "--repo-root",
             str(self._epistaxis_repo_root),
+            "--timeout-seconds",
+            f"{LIVE_DIAULOS_DISCOVERY_TIMEOUT_SECONDS:g}",
             "--pane-id",
             str(candidate.pane_id),
             "--json",

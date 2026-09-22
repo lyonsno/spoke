@@ -270,6 +270,7 @@ def test_client_loads_snapshot_and_activates_after_selected_lineage_probe(
         [
             "epistaxis", "diaulos", "live",
             "--repo-root", "/explicit/read-mirror",
+            "--timeout-seconds", "30",
             "--pane-id", "10",
             "--json",
         ],
@@ -359,6 +360,7 @@ def test_activation_refuses_recycled_pane_with_different_live_lineage(tmp_path):
         [
             "epistaxis", "diaulos", "live",
             "--repo-root", "/explicit/read-mirror",
+            "--timeout-seconds", "30",
             "--pane-id", "10",
             "--json",
         ]
@@ -519,8 +521,10 @@ def test_activation_reports_selected_and_current_routes_from_exclusion(tmp_path)
 def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
     snapshot = tmp_path / "live-diauloi.json"
     payload = _payload(4)
+    calls: list[list[str]] = []
 
     def runner(command, **kwargs):
+        calls.append(command)
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     candidates = EpistaxisDiaulosClient(
@@ -530,6 +534,13 @@ def test_refresh_atomically_persists_only_complete_inventory(tmp_path):
     ).refresh()
 
     assert len(candidates) == 4
+    assert calls == [[
+        "epistaxis", "diaulos", "live",
+        "--repo-root",
+        str(Path.home() / ".local/state/epistaxis/directive-state/epistaxis"),
+        "--timeout-seconds", "30",
+        "--json",
+    ]]
     assert json.loads(snapshot.read_text()) == payload
     assert not list(tmp_path.glob(".live-diauloi.json.*"))
 
