@@ -1195,6 +1195,7 @@ class SpokeAppDelegate(NSObject):
         self._overlay: TranscriptionOverlay | None = None
         self._overlay_compositor_registry = None
         self._diaulos_switcher = None
+        self._smoke_inbox = None
         self._transcribing = False
         self._transcription_token = 0
         self._parallel_insert_token = 0
@@ -1446,6 +1447,12 @@ class SpokeAppDelegate(NSObject):
         self._menubar._on_recording_history = self._show_recording_history
         self._menubar._on_teleporter = self._toggle_diaulos_switcher
         self._menubar.setup()
+
+        try:
+            from .smoke_inbox import SmokeInbox
+            self._smoke_inbox = SmokeInbox.alloc().initWithMenuBar_queue_(self._menubar, None)
+        except Exception:
+            logger.exception("Interactive smoke inbox unavailable; dictation startup continues")
 
         if not hasattr(self, "_optical_shell_metrics"):
             self._optical_shell_metrics = OpticalShellMetrics()
@@ -8176,6 +8183,8 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         if getattr(self, "_recording_history", None) is not None:
             self._recording_history.cleanup()
+        if getattr(self, "_smoke_inbox", None) is not None:
+            self._smoke_inbox.cleanup()
         self._detector.uninstall()
         self._preview_active = False
         hf = getattr(self, "_handsfree", None)

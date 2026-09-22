@@ -93,6 +93,8 @@ class MenuBarIcon(NSObject):
         self._on_toggle_handsfree = None
         self._on_recording_history = None
         self._on_teleporter = None
+        self._on_smoke_inbox = None
+        self._smoke_pending_count = 0
         self._status_item = None
         self._status_text = "Idle"
         self._branch_label = _branch_menu_label()
@@ -184,6 +186,16 @@ class MenuBarIcon(NSObject):
             return
         self._build_menu()
 
+    def set_smoke_pending_count(self, count: int) -> None:
+        self._smoke_pending_count = count
+        if self._status_item is not None:
+            self._status_item.button().setTitle_(f" {count}" if count else "")
+            self.refresh_menu()
+
+    def showSmokeInbox_(self, sender) -> None:
+        if getattr(self, "_on_smoke_inbox", None):
+            self._on_smoke_inbox()
+
     # ── private ─────────────────────────────────────────────
 
     def _build_menu(self) -> None:
@@ -211,6 +223,12 @@ class MenuBarIcon(NSObject):
         developer.addItem_(branch_item)
 
         menu.addItem_(NSMenuItem.separatorItem())
+        if getattr(self, "_on_smoke_inbox", None):
+            inbox = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                f"Needs You ({getattr(self, '_smoke_pending_count', 0)})", "showSmokeInbox:", ""
+            )
+            inbox.setTarget_(self)
+            menu.addItem_(inbox)
         for callback, title, action in (
             ("_on_recording_history", "Recordings", "showRecordingHistory:"),
             ("_on_teleporter", "Teleporter", "showTeleporter:"),
