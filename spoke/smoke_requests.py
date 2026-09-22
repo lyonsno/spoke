@@ -334,10 +334,19 @@ def _peer_return_verified(raw, source_diaulos, identity):
     receipt = submit.get("durable_receipt")
     if not isinstance(response, dict) or not isinstance(receipt, dict):
         return False
+    authority_layers = (raw, submit, response, receipt)
+    if any(
+        layer.get(field) not in (None, "")
+        for layer in authority_layers
+        for field in ("failure_phase", "error")
+    ):
+        return False
     return all((
         raw.get("schema") == "epistaxis.pty_broker.peer_send_result.v1",
         raw.get("source_diaulos") == source_diaulos,
         raw.get("target_diaulos") == source_diaulos,
+        ("reply_target_diaulos" not in raw
+         or raw.get("reply_target_diaulos") == source_diaulos),
         raw.get("status") == "submitted",
         raw.get("transport_verified") is True,
         raw.get("submit_signal_written") is True,

@@ -325,13 +325,22 @@ def test_peer_return_uses_fixed_argv_exact_source_and_strict_receipt(tmp_path, s
 @pytest.mark.parametrize(("path", "value"), [
     (("status",), "failed"),
     (("submit_signal_written",), False),
+    (("failure_phase",), "control-write-failed"),
+    (("error",), "peer send failed"),
+    (("reply_target_diaulos",), "wrong-diaulos"),
     (("submit_result", "schema"), "wrong.schema"),
     (("submit_result", "status"), "failed"),
     (("submit_result", "transport_verified"), False),
     (("submit_result", "submit_signal_written"), False),
+    (("submit_result", "failure_phase"), "control-write-failed"),
+    (("submit_result", "error"), "submit failed"),
     (("submit_result", "response", "request_id"), "wrong-request"),
     (("submit_result", "response", "status"), "failed"),
     (("submit_result", "response", "submit_signal_written"), False),
+    (("submit_result", "response", "failure_phase"), "submit-signal-failed"),
+    (("submit_result", "response", "error"), "control response failed"),
+    (("submit_result", "durable_receipt", "failure_phase"), "receipt-write-failed"),
+    (("submit_result", "durable_receipt", "error"), "durable write failed"),
 ])
 def test_contradictory_peer_receipt_is_never_verified(
     tmp_path, smoke_request, path, value
