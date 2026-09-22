@@ -1242,6 +1242,155 @@ def test_fullscreen_compositor_start_returns_before_capture_completion():
         release_capture.set()
 
 
+def test_fullscreen_capture_start_failure_is_visible_to_optical_diagnostics():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    scheduled_stops = []
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_cancelled = False
+    compositor._capture_started_event = threading.Event()
+    compositor._capture_start_error = None
+    compositor._start_capture = lambda: (_ for _ in ()).throw(RuntimeError("bridge unavailable"))
+    compositor._schedule_stop_after_capture_failure = lambda: scheduled_stops.append(True)
+
+    compositor._run_capture_start()
+
+    assert compositor.capture_start_state == "failed"
+    assert compositor.capture_start_error == "bridge unavailable"
+    assert compositor._capture_started_event.is_set()
+    assert scheduled_stops == [True]
+
+
+def test_late_screen_capture_start_callback_cannot_resurrect_a_stopped_compositor():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Stream:
+        def __init__(self):
+            self.stop_requests = 0
+
+        def stopCaptureWithCompletionHandler_(self, callback):
+            self.stop_requests += 1
+
+    stream = Stream()
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_cancelled = True
+    compositor._capture_start_error = None
+    compositor._capture_started_event = threading.Event()
+    compositor._stream = None
+
+    compositor._capture_start_completed(stream, None, 80, 60)
+
+    assert compositor.capture_start_state == "cancelled"
+    assert not compositor._capture_started_event.is_set()
+    assert stream.stop_requests == 1
+
+
+@pytest.mark.parametrize(("completion_error", "expected_state"), [(None, "started"), ("SCK denied", "failed")])
+def test_screen_capture_start_acknowledgment_is_async_and_truthful(
+    monkeypatch, completion_error, expected_state
+):
+    import importlib
+
+    compositor_module = importlib.import_module("spoke.fullscreen_compositor")
+    backdrop_stream = importlib.import_module("spoke.backdrop_stream")
+    FullScreenCompositor = compositor_module.FullScreenCompositor
+
+    class Factory:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def init(self):
+            return self
+
+    class ContentFilter(Factory):
+        def initWithDisplay_excludingWindows_(self, display, excluded):
+            return self
+
+    class StreamConfiguration(Factory):
+        def __getattr__(self, name):
+            if name.startswith("set"):
+                return lambda value: None
+            raise AttributeError(name)
+
+    class Stream(Factory):
+        def initWithFilter_configuration_delegate_(self, content_filter, config, delegate):
+            return self
+
+        def addStreamOutput_type_sampleHandlerQueue_error_(self, *args):
+            return True
+
+        def startCaptureWithCompletionHandler_(self, callback):
+            self.completion = callback
+
+    class StreamOutput(Factory):
+        def initWithRenderer_(self, renderer):
+            return self
+
+    class Display:
+        def frame(self):
+            return SimpleNamespace(size=SimpleNamespace(width=80, height=60))
+
+    class Screen:
+        def backingScaleFactor(self):
+            return 2.0
+
+    display = Display()
+    content = SimpleNamespace()
+    bridge = {
+        "SCContentFilter": ContentFilter,
+        "SCStreamConfiguration": StreamConfiguration,
+        "SCStream": Stream,
+        "SCStreamOutputTypeScreen": 0,
+    }
+    monkeypatch.setattr(compositor_module, "_load_screencapturekit_bridge", lambda: bridge)
+    monkeypatch.setattr(compositor_module, "_configure_stream_frame_interval", lambda config: None)
+    monkeypatch.setattr(compositor_module, "_build_stream_output_class", lambda: None)
+    monkeypatch.setattr(compositor_module, "_make_stream_handler_queue", lambda name: object())
+    monkeypatch.setattr(compositor_module, "_CompositorRendererProxy", lambda *args: object())
+    monkeypatch.setattr(backdrop_stream, "_ScreenCaptureKitStreamOutput", StreamOutput, raising=False)
+    monkeypatch.setattr(
+        backdrop_stream,
+        "_screen_display_id",
+        lambda screen: 1,
+        raising=False,
+    )
+    scheduled_stops = []
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._screen = Screen()
+    compositor._capture_started_event = threading.Event()
+    compositor._capture_start_error = None
+    compositor._capture_start_cancelled = False
+    compositor._stream = None
+    compositor._stream_output = None
+    compositor._stream_renderer_proxy = None
+    compositor._stream_handler_queue = None
+    compositor._capture_content = None
+    compositor._capture_display = None
+    compositor._extra_excluded_ids = set()
+    compositor._fetch_shareable_content = lambda bridge: content
+    compositor._match_display = lambda content: display
+    compositor._excluded_windows = lambda content: []
+    compositor._schedule_stop_after_capture_failure = lambda: scheduled_stops.append(True)
+    monkeypatch.setattr(
+        threading.Event,
+        "wait",
+        lambda self, timeout=None: pytest.fail("ScreenCaptureKit startup must not block on an assumed timeout"),
+    )
+
+    compositor._start_capture()
+
+    stream = compositor._stream
+    assert isinstance(stream, Stream)
+    assert compositor.capture_start_state == "pending"
+    stream.completion(completion_error)
+    assert compositor.capture_start_state == expected_state
+    assert compositor._capture_started_event.is_set()
+    assert (compositor.capture_start_error is not None) is (completion_error is not None)
+    assert scheduled_stops == ([True] if completion_error is not None else [])
+
+
 def test_fullscreen_compositor_skips_display_link_when_frame_and_config_unchanged():
     from spoke.fullscreen_compositor import FullScreenCompositor
 

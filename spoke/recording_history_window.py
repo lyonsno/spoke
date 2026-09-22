@@ -110,10 +110,10 @@ class RecordingHistoryWindow(NSObject):
         self._attempts.setAction_("selectAttempt:")
         self._attempts.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._attempts)
-        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 805, 534, 8 | 1)
-        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 845, 534, 8 | 1)
-        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 885, 534, 8 | 1)
-        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 925, 534, 8 | 1)
+        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 805, 530, 8 | 1)
+        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 844, 530, 8 | 1)
+        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 883, 530, 8 | 1)
+        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 922, 530, 8 | 1)
 
         text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 310))
         text_scroll.setHasVerticalScroller_(True)
@@ -158,10 +158,13 @@ class RecordingHistoryWindow(NSObject):
 
     @objc.python_method
     def _tool(self, parent, symbol, tooltip, action, x, y, mask):
+        image = AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip)
+        if image is not None:
+            image.setSize_((20, 20))
         button = AK.NSButton.buttonWithImage_target_action_(
-            AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip), self, action,
+            image, self, action,
         )
-        button.setFrame_(NSMakeRect(x, y, 32, 30))
+        button.setFrame_(NSMakeRect(x, y, 36, 36))
         button.setToolTip_(tooltip)
         button.setAutoresizingMask_(mask)
         parent.addSubview_(button)

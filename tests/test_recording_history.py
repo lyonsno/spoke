@@ -147,3 +147,27 @@ def test_history_omits_stale_unmatched_prompt_snapshot():
     provider = TranscriptionPromptProvider(inline="Earlier context", include_builtin=False)
     provider.resolve()
     assert "prompt_snapshot" not in client_receipt(SimpleNamespace(_prompt_provider=provider))
+
+
+def test_history_action_buttons_have_legible_symbols_and_click_targets():
+    from spoke.recording_history_window import AK, NSMakeRect, RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    parent = AK.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 200, 100))
+    buttons = [
+        owner._tool(parent, symbol, tooltip, action, index * 40, 0, 0)
+        for index, (symbol, tooltip, action) in enumerate((
+            ("play.fill", "Play original audio", "playAudio:"),
+            ("doc.on.doc", "Copy selected transcript", "copyText:"),
+            ("arrow.up.doc", "Insert selected transcript", "insertText:"),
+            ("trash", "Move recording and attempts to Trash", "trashRecording:"),
+        ))
+    ]
+
+    for button in buttons:
+        frame = button.frame()
+        image = button.image()
+        assert frame.size.width >= 36
+        assert frame.size.height >= 36
+        assert image.size().width >= 18
+        assert image.size().height >= 18

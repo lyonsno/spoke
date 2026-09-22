@@ -315,6 +315,8 @@ class FullScreenCompositor:
         self._stream_handler_queue = None
         self._capture_thread = None
         self._capture_start_cancelled = False
+        self._capture_started_event = threading.Event()
+        self._capture_start_error = None
         self._extra_excluded_ids = set()
         self._capture_content = None
         self._capture_display = None
@@ -401,8 +403,12 @@ class FullScreenCompositor:
             self._start_capture()
             if getattr(self, "_capture_start_cancelled", False):
                 self._stop_capture()
-        except Exception:
+        except Exception as exc:
             if not getattr(self, "_capture_start_cancelled", False):
+                self._capture_start_error = exc
+                event = getattr(self, "_capture_started_event", None)
+                if event is not None:
+                    event.set()
                 logger.info("FullScreenCompositor: capture failed to start", exc_info=True)
                 self._schedule_stop_after_capture_failure()
 
@@ -460,6 +466,21 @@ class FullScreenCompositor:
     def presented_count(self) -> int:
         """Number of frames the compositor has successfully presented."""
         return self._presented_count
+
+    @property
+    def capture_start_state(self) -> str:
+        """Truthful state of the asynchronous ScreenCaptureKit start request."""
+        if getattr(self, "_capture_start_error", None) is not None:
+            return "failed"
+        if getattr(self, "_capture_start_cancelled", False):
+            return "cancelled"
+        event = getattr(self, "_capture_started_event", None)
+        return "started" if event is not None and event.is_set() else "pending"
+
+    @property
+    def capture_start_error(self) -> str | None:
+        error = getattr(self, "_capture_start_error", None)
+        return None if error is None else str(error)
 
     @property
     def config_generation(self) -> int:
@@ -929,22 +950,37 @@ class FullScreenCompositor:
         if not success:
             raise RuntimeError("addStreamOutput failed")
 
-        started_event = threading.Event()
-        started_result = {"error": None}
-
-        def on_started(*args):
-            if args:
-                started_result["error"] = args[0]
-            started_event.set()
-
-        stream.startCaptureWithCompletionHandler_(on_started)
-        started_event.wait(timeout=5.0)
-
-        if started_result["error"] is not None:
-            raise RuntimeError(f"startCapture failed: {started_result['error']}")
-
+        self._capture_started_event.clear()
+        self._capture_start_error = None
         self._stream = stream
         self._stream_output = stream_output
+        stream.startCaptureWithCompletionHandler_(
+            lambda *args: self._capture_start_completed(
+                stream, args[0] if args else None, pixel_w, pixel_h,
+            )
+        )
+        logger.info("FullScreenCompositor: SCK capture start requested (%dx%d)", pixel_w, pixel_h)
+
+    def _capture_start_completed(self, stream, error, pixel_w, pixel_h):
+        if getattr(self, "_capture_start_cancelled", False) or getattr(self, "_stream", None) is not stream:
+            if error is None:
+                try:
+                    stream.stopCaptureWithCompletionHandler_(lambda *args: None)
+                except Exception:
+                    pass
+            return
+
+        event = getattr(self, "_capture_started_event", None)
+        if error is not None:
+            self._capture_start_error = error
+            if event is not None:
+                event.set()
+            logger.info("FullScreenCompositor: SCK capture start failed: %s", error)
+            self._schedule_stop_after_capture_failure()
+            return
+
+        if event is not None:
+            event.set()
         logger.info("FullScreenCompositor: SCK capture started (%dx%d)", pixel_w, pixel_h)
 
     def _stop_capture(self):
