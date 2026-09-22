@@ -9,7 +9,7 @@ import threading
 import objc
 from AppKit import (
     NSApplication, NSApplicationActivateIgnoringOtherApps, NSButton, NSColor,
-    NSFont, NSImage, NSMakeRect, NSPanel, NSScrollView, NSTableColumn, NSTableView,
+    NSFont, NSImage, NSImageLeading, NSMakeRect, NSPanel, NSScrollView, NSTableColumn, NSTableView,
     NSTextField, NSTextView, NSWindowStyleMaskClosable, NSWindowStyleMaskTitled,
     NSWorkspace,
 )
@@ -32,6 +32,11 @@ def _return_affordance(row):
     if state == "unconfirmed":
         return "Retry Return", True, "Response saved; return unconfirmed. You can retry the same return."
     return "Return Saved Reply", True, "Response saved; not yet returned. You can return the same response."
+
+
+def _request_list_text(row):
+    status = {"pending": "Waiting", "responded": "Replied", "withdrawn": "Withdrawn"}[row["status"]]
+    return f"{row['request']['source']['diaulos']}\n{status}"
 
 
 def _label(parent, text, frame, size=13):
@@ -174,6 +179,7 @@ class SmokeInbox(NSObject):
             button = NSButton.buttonWithTitle_target_action_(title, self, selector)
             button.setFrame_(NSMakeRect(x, 53, width, 32))
             button.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title))
+            button.setImagePosition_(NSImageLeading)
             button.setToolTip_(title)
             view.addSubview_(button)
             self._buttons[title] = button
@@ -196,9 +202,7 @@ class SmokeInbox(NSObject):
         return len(self._rows)
 
     def tableView_objectValueForTableColumn_row_(self, table, column, index):
-        row = self._rows[index]
-        status = {"pending": "Waiting", "responded": "Replied", "withdrawn": "Withdrawn"}[row["status"]]
-        return f"{row['request']['source']['diaulos']}\n{status}: {row['request']['title']}"
+        return _request_list_text(self._rows[index])
 
     def tableViewSelectionDidChange_(self, notification):
         self._render()
