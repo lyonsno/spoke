@@ -28,6 +28,14 @@ from .smoke_requests import (
 logger = logging.getLogger(__name__)
 
 
+def _needs_operator_attention(row):
+    if row.get("status") == "pending":
+        return True
+    if row.get("status") != "responded":
+        return False
+    return (row.get("delivery") or {}).get("state") != "delivered"
+
+
 def _return_affordance(row):
     if not row or not row.get("response"):
         return "Send Reply", bool(row and row.get("status") == "pending"), ""
@@ -161,7 +169,9 @@ class SmokeInbox(NSObject):
         self._last_snapshot = payload
         self._rows, self._errors = payload["rows"], payload["errors"]
         if self._menu is not None:
-            self._menu.set_smoke_pending_count(sum(row["status"] == "pending" for row in self._rows))
+            self._menu.set_smoke_pending_count(
+                sum(_needs_operator_attention(row) for row in self._rows)
+            )
         if self._panel is not None:
             self._table.reloadData()
             if self._rows:

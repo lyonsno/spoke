@@ -53,6 +53,24 @@ def test_open_smoke_requires_effective_prepared_state():
     assert "not prepared" in message.lower()
 
 
+def test_needs_you_count_survives_saved_and_unconfirmed_return_restart():
+    rows = [
+        {"status": "pending", "delivery": None},
+        {"status": "responded", "delivery": None},
+        {"status": "responded", "delivery": {"state": "sending"}},
+        {"status": "responded", "delivery": {"state": "unconfirmed"}},
+        {"status": "responded", "delivery": {"state": "delivered"}},
+        {"status": "withdrawn", "delivery": None},
+    ]
+    inbox = SmokeInbox.__new__(SmokeInbox)
+    inbox._closed = False
+    inbox._last_snapshot = None
+    inbox._menu = MagicMock()
+    inbox._panel = None
+    inbox.snapshotChanged_({"rows": rows, "errors": []})
+    inbox._menu.set_smoke_pending_count.assert_called_once_with(4)
+
+
 def test_request_list_keeps_long_titles_in_details_instead_of_clipping_them():
     row = {
         "status": "pending",
