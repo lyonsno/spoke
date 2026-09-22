@@ -91,6 +91,8 @@ class MenuBarIcon(NSObject):
         self._on_toggle_seam_pucker = None
         self._on_toggle_perceptasia_throughglass = None
         self._on_toggle_handsfree = None
+        self._on_smoke_inbox = None
+        self._smoke_pending_count = 0
         self._status_item = None
         self._status_text = "Idle"
         self._branch_label = _branch_menu_label()
@@ -182,6 +184,16 @@ class MenuBarIcon(NSObject):
             return
         self._build_menu()
 
+    def set_smoke_pending_count(self, count: int) -> None:
+        self._smoke_pending_count = count
+        if self._status_item is not None:
+            self._status_item.button().setTitle_(f" {count}" if count else "")
+            self.refresh_menu()
+
+    def showSmokeInbox_(self, sender) -> None:
+        if getattr(self, "_on_smoke_inbox", None):
+            self._on_smoke_inbox()
+
     # ── private ─────────────────────────────────────────────
 
     def _build_menu(self) -> None:
@@ -192,6 +204,13 @@ class MenuBarIcon(NSObject):
         )
         self._status_item_label.setEnabled_(False)
         menu.addItem_(self._status_item_label)
+
+        if getattr(self, "_on_smoke_inbox", None):
+            inbox = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                f"Needs You ({getattr(self, '_smoke_pending_count', 0)})", "showSmokeInbox:", ""
+            )
+            inbox.setTarget_(self)
+            menu.addItem_(inbox)
 
         source_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             _SOURCE_LABEL, None, ""

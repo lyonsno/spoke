@@ -7,6 +7,22 @@ from unittest.mock import MagicMock
 class TestMenuBarIcon:
     """Test the NSStatusItem wrapper."""
 
+    def test_interactive_smoke_inbox_is_reachable_without_model_menus(self, menubar_module):
+        AppKit = __import__("AppKit")
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = None
+        icon._on_smoke_inbox = MagicMock()
+        icon._smoke_pending_count = 2
+        icon._status_item = MagicMock()
+        icon._status_text = "Recording"
+        icon._build_menu()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Needs You (2)", "showSmokeInbox:", "") for call in calls)
+        icon.showSmokeInbox_(None)
+        icon._on_smoke_inbox.assert_called_once_with()
+
     def test_setup_creates_status_item(self, menubar_module):
         """setup() should create an NSStatusItem with the idle icon."""
         AppKit = __import__("AppKit")
