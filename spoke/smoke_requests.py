@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 SCHEMA = "spoke.interactive-smoke.v1"
+TERMINAL_AVAILABILITY = {"prepared", "unavailable"}
 
 
 def now():
@@ -75,6 +76,14 @@ def validate_request(value):
 def default_queue():
     return Path(os.environ.get("SPOKE_SMOKE_REQUEST_DIR") or
                 Path.home() / ".local/state/spoke/interactive-smokes").expanduser()
+
+
+def effective_availability(row):
+    readiness = row.get("readiness")
+    if readiness is not None:
+        return readiness["state"], readiness["note"]
+    request = row["request"]
+    return request["availability"], request["availability_note"]
 
 
 class SmokeRequests:
@@ -163,6 +172,15 @@ class SmokeRequests:
                     raise ValueError("terminal delivery needs a receipt")
         if row.get("status") not in {"pending", "responded", "withdrawn"}:
             raise ValueError("unknown request status")
+        readiness = row.get("readiness")
+        if readiness is not None:
+            if (not isinstance(readiness, dict)
+                    or readiness.get("state") not in TERMINAL_AVAILABILITY
+                    or not isinstance(readiness.get("note"), str)
+                    or not readiness["note"].strip()
+                    or readiness.get("request_digest") != row["request_digest"]):
+                raise ValueError("invalid readiness transition")
+            timestamp(readiness.get("at"), "readiness.at")
         if row["status"] == "responded" and response is None:
             raise ValueError("responded state has no response")
         if row["status"] == "pending" and response is not None:
@@ -210,6 +228,32 @@ class SmokeRequests:
                 raise ValueError("unsupported request action")
             return self._write(row)
 
+    def set_availability(
+        self, identity, state, note, expected_request_digest
+    ):
+        if state not in TERMINAL_AVAILABILITY:
+            raise ValueError("availability transition must be prepared or unavailable")
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("availability transition needs a note")
+        with self._locked(identity):
+            row = self.get(identity)
+            if row["request_digest"] != expected_request_digest:
+                raise ValueError("request digest mismatch")
+            if row["status"] == "withdrawn":
+                raise ValueError("request has been withdrawn")
+            current, current_note = effective_availability(row)
+            if current == state and current_note == note:
+                return row
+            if current != "preparation-needed":
+                raise ValueError(f"availability is already terminal: {current}")
+            row["readiness"] = {
+                "state": state,
+                "note": note,
+                "request_digest": row["request_digest"],
+                "at": now(),
+            }
+            return self._write(row)
+
     def claim_notifications(self):
         claimed = []
         rows, _ = self.scan()
@@ -255,6 +299,8 @@ class SmokeRequests:
                 return self.get(identity)
             with self._locked(identity):
                 row = self.get(identity)
+                if row["status"] == "withdrawn":
+                    raise ValueError("request has been withdrawn")
                 if row["response"] is None:
                     raise ValueError("no saved response")
                 previous = row["delivery"]
@@ -276,6 +322,43 @@ class SmokeRequests:
                     state="delivered" if receipt.get("transport_verified") is True else "unconfirmed",
                     finished_at=now(), receipt=receipt)
                 return self._write(row)
+
+
+def _peer_return_verified(raw, source_diaulos, identity):
+    if not isinstance(raw, dict):
+        return False
+    submit = raw.get("submit_result")
+    if not isinstance(submit, dict):
+        return False
+    response = submit.get("response")
+    receipt = submit.get("durable_receipt")
+    if not isinstance(response, dict) or not isinstance(receipt, dict):
+        return False
+    return all((
+        raw.get("schema") == "epistaxis.pty_broker.peer_send_result.v1",
+        raw.get("source_diaulos") == source_diaulos,
+        raw.get("target_diaulos") == source_diaulos,
+        raw.get("status") == "submitted",
+        raw.get("transport_verified") is True,
+        raw.get("submit_signal_written") is True,
+        raw.get("semantic_receipt") is False,
+        submit.get("schema") == "epistaxis.pty_broker.submit_result.v1",
+        submit.get("status") == "submitted",
+        submit.get("request_id") == identity,
+        submit.get("target_diaulos") == source_diaulos,
+        submit.get("transport_verified") is True,
+        submit.get("submit_signal_written") is True,
+        submit.get("semantic_receipt") is False,
+        response.get("schema") == "epistaxis.pty_broker.control_response.v1",
+        response.get("status") == "submitted",
+        response.get("request_id") == identity,
+        response.get("target_diaulos") == source_diaulos,
+        response.get("submit_signal_written") is True,
+        response.get("semantic_receipt") is False,
+        receipt.get("required") is True,
+        receipt.get("write_verified") is True,
+        receipt.get("submit_verified") is True,
+    ))
 
 
 def return_response(row, *, executable=None, registry=None, runner=subprocess.run):
@@ -302,16 +385,8 @@ def return_response(row, *, executable=None, registry=None, runner=subprocess.ru
     result = runner(argv, capture_output=True, text=True, check=False)
     try:
         raw = json.loads(result.stdout)
-        submit = raw.get("submit_result", {})
-        receipt = submit.get("durable_receipt", {})
-        valid = (raw.get("schema") == "epistaxis.pty_broker.peer_send_result.v1"
-                 and raw.get("source_diaulos") == source["diaulos"]
-                 and raw.get("target_diaulos") == source["diaulos"]
-                 and submit.get("request_id") == identity
-                 and submit.get("target_diaulos") == source["diaulos"]
-                 and all(receipt.get(key) is True for key in
-                         ("required", "write_verified", "submit_verified")))
-        verified = result.returncode == 0 and valid and raw.get("transport_verified") is True
+        verified = (result.returncode == 0
+                    and _peer_return_verified(raw, source["diaulos"], identity))
     except (ValueError, AttributeError, TypeError):
         raw, verified = result.stdout, False
     return {"transport_verified": verified, "semantic_receipt": False,
@@ -387,13 +462,19 @@ def main(argv=None):
     submit = commands.add_parser("submit")
     submit.add_argument("--file", type=Path, required=True)
     commands.add_parser("list")
-    for name in ("get", "withdraw", "reply", "deliver"):
+    for name in ("get", "withdraw", "availability", "reply", "deliver"):
         sub = commands.add_parser(name)
         sub.add_argument("--id", required=True)
         if name == "withdraw":
             sub.add_argument("--reason", required=True)
         if name == "reply":
             sub.add_argument("--text-file", type=Path, required=True)
+        if name == "availability":
+            sub.add_argument(
+                "--state", choices=sorted(TERMINAL_AVAILABILITY), required=True
+            )
+            sub.add_argument("--note", required=True)
+            sub.add_argument("--request-sha256", required=True)
         if name == "deliver":
             sub.add_argument("--retry", action="store_true")
     args = parser.parse_args(argv)
@@ -406,6 +487,10 @@ def main(argv=None):
             result = {"requests": rows, "errors": errors, "queue": str(queue.directory)}
         elif args.command == "withdraw":
             result = queue.act(args.id, "withdraw", args.reason)
+        elif args.command == "availability":
+            result = queue.set_availability(
+                args.id, args.state, args.note, args.request_sha256
+            )
         elif args.command == "reply":
             result = queue.reply(args.id, args.text_file.read_text())
         elif args.command == "deliver":

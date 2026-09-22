@@ -16,7 +16,14 @@ from AppKit import (
 from Foundation import NSObject, NSURL
 
 from .diaulos_switcher import EpistaxisDiaulosClient
-from .smoke_requests import DirectoryWatch, SmokeRequests, default_queue, notify_requests, return_response
+from .smoke_requests import (
+    DirectoryWatch,
+    SmokeRequests,
+    default_queue,
+    effective_availability,
+    notify_requests,
+    return_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,17 @@ def _return_affordance(row):
     if not row or not row.get("response"):
         return "Send Reply", bool(row and row.get("status") == "pending"), ""
     state = (row.get("delivery") or {}).get("state")
+    if row.get("status") == "withdrawn":
+        if state == "delivered":
+            message = "Request withdrawn after the response was handed to the agent."
+        elif state == "sending":
+            message = (
+                "Request withdrawn after return began; "
+                "the saved transport state is retained."
+            )
+        else:
+            message = "Request withdrawn; the saved response will not be returned."
+        return "Send Reply", False, message
     if state == "delivered":
         return "Send Reply", False, "Response handed to agent. Interpretation is not yet confirmed."
     if state == "sending":
@@ -223,6 +241,7 @@ class SmokeInbox(NSObject):
     @objc.python_method
     def _render(self):
         row = self._selected()
+        availability_state = None
         if self._selected_id:
             self._drafts[self._selected_id] = str(self._reply.string())
         identity = row["request"]["id"] if row else None
@@ -233,12 +252,13 @@ class SmokeInbox(NSObject):
             self._reply.setString_("")
         else:
             request = row["request"]
+            availability_state, availability_note = effective_availability(row)
             submitted = datetime.fromisoformat(row["created_at"]).astimezone().strftime("%b %d, %I:%M %p")
             availability = {"prepared": "Prepared (agent-reported)",
                             "preparation-needed": "Preparation still needed",
-                            "unavailable": "Currently unavailable"}[request["availability"]]
+                            "unavailable": "Currently unavailable"}[availability_state]
             text = (f"{request['title']}\n\n{request['source']['diaulos']}\nRequested {submitted}\n\n"
-                    f"{request['prompt']}\n\n{availability}\n{request['availability_note']}\n\n{request['url']}")
+                    f"{request['prompt']}\n\n{availability}\n{availability_note}\n\n{request['url']}")
             if row["status"] == "withdrawn":
                 text += f"\n\nWithdrawn: {row['withdrawal_reason']}"
             if row["response"]:
@@ -247,7 +267,10 @@ class SmokeInbox(NSObject):
                 self._reply.setString_(self._drafts.get(identity, ""))
             self._details.setString_(text)
         pending = bool(row and row["status"] == "pending")
-        for name in ("Open Smoke", "Go to Agent", "Later"):
+        self._buttons["Open Smoke"].setEnabled_(
+            pending and availability_state == "prepared"
+        )
+        for name in ("Go to Agent", "Later"):
             self._buttons[name].setEnabled_(pending)
         self._reply.setEditable_(pending)
         return_title, return_enabled, return_status = _return_affordance(row)
@@ -276,8 +299,9 @@ class SmokeInbox(NSObject):
         def opened(row):
             if row["status"] != "pending":
                 raise ValueError("This smoke is no longer pending")
-            if row["request"]["availability"] == "unavailable":
-                raise ValueError("The requesting agent reports this smoke unavailable")
+            availability, _ = effective_availability(row)
+            if availability != "prepared":
+                raise ValueError("This smoke is not prepared yet")
             if not NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(row["request"]["url"])):
                 raise OSError("The smoke URL could not be opened")
             self._queue.act(row["request"]["id"], "opened")
