@@ -5204,8 +5204,6 @@ class SpokeAppDelegate(NSObject):
             self._command_client.set_spoke_headers(
                 pathway="command", utterance_id=str(token),
             )
-            self._record_history_delivery(history, "command_requested",
-                                          "Assistant request started; completion is not verified")
             for event in self._command_client.stream_command_events(
                 utterance,
                 tools=self._tool_schemas,
@@ -5219,6 +5217,11 @@ class SpokeAppDelegate(NSObject):
                 # Stop loading vamp on first event from the model
                 if not first_event_received:
                     first_event_received = True
+                    self._record_history_delivery(
+                        history,
+                        "command_response_started",
+                        "Assistant response started; completion is not verified",
+                    )
                     if vamp_started and self._narrator is not None:
                         self._narrator.stop_loading_vamp()
                         vamp_started = False
@@ -5279,14 +5282,19 @@ class SpokeAppDelegate(NSObject):
                     return
         except urllib.error.HTTPError as exc:
             logger.exception("Command stream failed with HTTP error")
+            error = _format_command_http_error(exc)
+            self._record_history_delivery(history, "command_failed", error)
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandFailed:",
-                {"token": token, "error": _format_command_http_error(exc)},
+                {"token": token, "error": error},
                 False,
             )
             return
-        except Exception:
+        except Exception as exc:
             logger.exception("Command stream failed")
+            self._record_history_delivery(
+                history, "command_failed", f"{type(exc).__name__}: {exc}",
+            )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandFailed:", {"token": token, "error": "Command failed"}, False
             )

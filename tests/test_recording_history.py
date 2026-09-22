@@ -106,6 +106,20 @@ def test_delivery_events_are_chronological_not_uuid_order(tmp_path, monkeypatch)
         "insert_requested", "clipboard_restored"]
 
 
+def test_command_delivery_labels_do_not_overstate_request_success():
+    from spoke.recording_history import delivery_label
+
+    assert delivery_label({"deliveries": [{"state": "command_requested"}]}) == (
+        "Delivery: Assistant request started; completion unverified"
+    )
+    assert delivery_label({"deliveries": [{"state": "command_response_started"}]}) == (
+        "Delivery: Assistant response started; completion unverified"
+    )
+    assert delivery_label({"deliveries": [{"state": "command_failed"}]}) == (
+        "Delivery: Assistant request failed; retained in history"
+    )
+
+
 def test_history_prompt_snapshot_is_private_and_does_not_reread_source(tmp_path):
     from types import SimpleNamespace
     from spoke.recording_history import client_receipt

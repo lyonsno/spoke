@@ -5305,26 +5305,42 @@ class TestCommandTranscribeWorker:
         # Should NOT have tried to stream
         d._command_client.stream_command_events.assert_not_called()
 
-    def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
-        """Streaming exception → commandFailed after utterance dispatched."""
+    def test_stream_failure_records_failed_delivery(self, main_module, monkeypatch, tmp_path):
+        """A command stream failure remains recoverable, not a successful send."""
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
         d = self._make_command_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav, metadata={"pathway": "command"})
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
         d._command_client.stream_command_events.side_effect = ConnectionError("OMLX down")
 
-        d._command_transcribe_worker(b"wav-data", 1)
+        d._command_transcribe_worker(wav, 1, capture_id=capture.capture_id)
 
         calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         selectors = [c[0][0] for c in calls]
         assert "commandUtteranceReady:" in selectors
         assert "commandFailed:" in selectors
         assert "commandComplete:" not in selectors
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["text"] == "do something"
+        assert attempt["status"] == "success"
+        assert [event["state"] for event in attempt["deliveries"]] == ["command_failed"]
+        assert "OMLX down" in attempt["deliveries"][-1]["detail"]
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
 
-    def test_stream_http_error_dispatches_provider_status_detail(
-        self, main_module, monkeypatch
+    def test_stream_http_error_records_failed_delivery(
+        self, main_module, monkeypatch, tmp_path
     ):
-        """HTTP failures should preserve provider status/body detail for the UI."""
+        """HTTP stream failures keep exact provider detail in recovery history."""
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
         d = self._make_command_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav, metadata={"pathway": "command"})
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
         error_body = json.dumps(
@@ -5338,7 +5354,7 @@ class TestCommandTranscribeWorker:
             fp=io.BytesIO(error_body),
         )
 
-        d._command_transcribe_worker(b"wav-data", 1)
+        d._command_transcribe_worker(wav, 1, capture_id=capture.capture_id)
 
         failure_call = next(
             c
@@ -5349,6 +5365,12 @@ class TestCommandTranscribeWorker:
             failure_call[0][1]["error"]
             == "HTTP 429 Too Many Requests — This model is temporarily rate-limited."
         )
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["text"] == "do something"
+        assert attempt["status"] == "success"
+        assert [event["state"] for event in attempt["deliveries"]] == ["command_failed"]
+        assert attempt["deliveries"][-1]["detail"] == failure_call[0][1]["error"]
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
 
     def test_stale_token_breaks_stream(self, main_module, monkeypatch):
         """If transcription_token changes mid-stream, stop dispatching tokens."""

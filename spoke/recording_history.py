@@ -100,7 +100,9 @@ def delivery_label(attempt: dict) -> str:
         "clipboard_restored": "Clipboard restored; paste acceptance unverified",
         "paste_failed_saved_to_tray": "Paste failed; saved to tray",
         "delivery_skipped_stale": "Insertion skipped; retained in history",
-        "command_requested": "Sent to assistant",
+        "command_requested": "Assistant request started; completion unverified",
+        "command_response_started": "Assistant response started; completion unverified",
+        "command_failed": "Assistant request failed; retained in history",
         "copied": "Copied to clipboard",
     }.get(state, f"Unverified state ({state})")
     return f"Delivery: {label}"
