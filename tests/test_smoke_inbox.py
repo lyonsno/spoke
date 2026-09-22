@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import spoke.smoke_inbox as smoke_inbox_module
 from spoke.smoke_inbox import SmokeInbox, _request_list_text, _return_affordance
 
 
@@ -45,7 +46,7 @@ def test_open_smoke_requires_effective_prepared_state():
     inbox._queue = MagicMock()
     inbox._queue.get.return_value = row
     inbox._status = MagicMock()
-    with patch("spoke.smoke_inbox.NSWorkspace") as workspace:
+    with patch.object(smoke_inbox_module, "NSWorkspace") as workspace:
         inbox.openSmoke_(None)
     workspace.sharedWorkspace.assert_not_called()
     inbox._queue.act.assert_not_called()
