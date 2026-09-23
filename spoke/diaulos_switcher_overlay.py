@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import threading
+import time
 from pathlib import Path
 
 import objc
 from AppKit import (
     NSApp,
     NSBackingStoreBuffered,
+    NSButton,
     NSColor,
     NSEvent,
     NSFont,
+    NSImage,
+    NSImageView,
     NSPanel,
     NSScreen,
     NSScrollView,
@@ -23,7 +29,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWorkspace,
 )
-from Foundation import NSMakeRect, NSObject
+from Foundation import NSMakeRect, NSObject, NSTimer
 
 from .diaulos_switcher import (
     DiaulosActivationError,
@@ -34,13 +40,13 @@ from .diaulos_switcher import (
 
 logger = logging.getLogger(__name__)
 
-_PANEL_WIDTH = 680.0
-_PANEL_HEIGHT = 520.0
-_PADDING = 20.0
+_PANEL_WIDTH = 720.0
+_PANEL_HEIGHT = 560.0
+_PADDING = 24.0
 _TITLE_HEIGHT = 24.0
 _SEARCH_HEIGHT = 38.0
 _STATUS_HEIGHT = 22.0
-_ROW_HEIGHT = 54.0
+_ROW_HEIGHT = 58.0
 _WINDOW_LEVEL = 1100
 _NSWindowStyleMaskBorderless = 0
 _NSApplicationActivateIgnoringOtherApps = 1 << 1
@@ -117,12 +123,20 @@ class DiaulosSwitcherOverlay(NSObject):
         self._previous_app = None
         self._load_generation = 0
         self._load_in_flight = False
+        self._prewarm_in_flight = False
+        self._pending_inventory_payload = None
+        self._pending_inventory_error_payload = None
         self._activation_generation = 0
         self._activation_in_flight = False
         self._activation_handle = None
         self._key_monitor_token = None
         self._key_monitor_handler = None
         self._keyboard_monitor_available = False
+        self._last_render_signature = None
+        self._shell_host = None
+        self._shell_registered = False
+        self._shell_unavailable = False
+        self._row_buttons = []
         self.visible = False
         self.presentation_generation = 0
         return self
@@ -148,8 +162,9 @@ class DiaulosSwitcherOverlay(NSObject):
         panel.setOpaque_(False)
         panel.setHasShadow_(True)
         panel.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.045, 0.052, 0.06, 0.985)
+            NSColor.clearColor()
         )
+        panel.setDelegate_(self)
         panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
@@ -158,12 +173,20 @@ class DiaulosSwitcherOverlay(NSObject):
         panel.setMovableByWindowBackground_(True)
 
         content = panel.contentView()
+        content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(8.0)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.07, 0.075, 0.075, 0.97).CGColor())
         title_y = _PANEL_HEIGHT - _PADDING - _TITLE_HEIGHT
+        mark = NSImageView.alloc().initWithFrame_(NSMakeRect(_PADDING, title_y, 24, 24))
+        mark.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("point.topleft.down.curvedto.point.bottomright.up", "Teleporter"))
+        mark.setContentTintColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.45, 0.91, 0.75, 1))
+        content.addSubview_(mark)
         content.addSubview_(
             _label(
-                "DIAULOI",
-                NSMakeRect(_PADDING, title_y, 300.0, _TITLE_HEIGHT),
-                size=15.0,
+                "Teleporter",
+                NSMakeRect(_PADDING + 34, title_y, 300.0, _TITLE_HEIGHT),
+                size=18.0,
                 bold=True,
                 color=NSColor.colorWithSRGBRed_green_blue_alpha_(
                     0.94, 0.95, 0.96, 1.0
@@ -200,6 +223,7 @@ class DiaulosSwitcherOverlay(NSObject):
         )
         self._search_field.setPlaceholderString_("Find a Diaulos")
         self._search_field.setFont_(NSFont.systemFontOfSize_(16.0))
+        self._search_field.setFocusRingType_(1)
         self._search_field.setDelegate_(self)
         content.addSubview_(self._search_field)
 
@@ -228,6 +252,55 @@ class DiaulosSwitcherOverlay(NSObject):
         content.addSubview_(self._status_label)
         self._panel = panel
 
+    def prewarm(self) -> None:
+        """Build the hidden panel and prime cached rows before the user gesture."""
+        self.setup()
+        if self._prewarm_in_flight or self._model.all_candidates:
+            return
+        self._prewarm_in_flight = True
+        threading.Thread(
+            target=self._prewarm_worker,
+            daemon=True,
+            name="diaulos-snapshot-prewarm",
+        ).start()
+
+    def _prewarm_worker(self) -> None:
+        started_at = time.monotonic()
+        try:
+            payload = {
+                "candidates": self._client.load(),
+                "elapsed_ms": (time.monotonic() - started_at) * 1000.0,
+            }
+        except DiaulosInventoryError as exc:
+            payload = {
+                "error": str(exc),
+                "elapsed_ms": (time.monotonic() - started_at) * 1000.0,
+            }
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "prewarmFinished:",
+            payload,
+            False,
+        )
+
+    def prewarmFinished_(self, payload: dict) -> None:
+        self._prewarm_in_flight = False
+        if payload.get("error"):
+            logger.info(
+                "Diaulos prewarm snapshot unavailable: elapsed_ms=%.1f error=%s",
+                float(payload.get("elapsed_ms") or 0.0),
+                payload["error"],
+            )
+            return
+        if self.visible or self._load_in_flight or self._model.all_candidates:
+            return
+        self._model = DiaulosSwitcherModel(payload["candidates"])
+        self._render_rows()
+        logger.info(
+            "Diaulos prewarm complete: elapsed_ms=%.1f rows=%d",
+            float(payload.get("elapsed_ms") or 0.0),
+            len(self._model.all_candidates),
+        )
+
     def toggle(self) -> None:
         if self.visible:
             self.hide()
@@ -235,6 +308,7 @@ class DiaulosSwitcherOverlay(NSObject):
             self.show()
 
     def show(self) -> None:
+        started_at = time.monotonic()
         self.setup()
         was_visible = self.visible
         workspace = NSWorkspace.sharedWorkspace()
@@ -253,12 +327,20 @@ class DiaulosSwitcherOverlay(NSObject):
             if self._model.all_candidates
             else "Loading live Diauloi"
         )
-        self._render_rows()
         self._panel.makeKeyAndOrderFront_(None)
         app = NSApp()
         if app is not None:
             app.activateIgnoringOtherApps_(True)
         self._panel.makeFirstResponder_(self._search_field)
+        self._render_rows()
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.0, self, "publishOpticalShell:", None, False,
+        )
+        logger.info(
+            "Diaulos panel ordered front: elapsed_ms=%.1f cached_rows=%d",
+            (time.monotonic() - started_at) * 1000.0,
+            len(self._model.all_candidates),
+        )
         if not getattr(self, "_load_in_flight", False):
             self._load_generation += 1
             generation = self._load_generation
@@ -278,6 +360,11 @@ class DiaulosSwitcherOverlay(NSObject):
         was_visible = self.visible
         self._activation_generation += 1
         self._remove_key_monitor()
+        host = getattr(self, "_shell_host", None)
+        if host is not None:
+            host.release_client("spoke.teleporter")
+        self._shell_host = None
+        self._shell_registered = False
         if self._panel is not None:
             self._panel.orderOut_(None)
         self.visible = False
@@ -295,8 +382,106 @@ class DiaulosSwitcherOverlay(NSObject):
         self._previous_app = None
         return True
 
-    def cleanup(self) -> None:
+    def windowDidMove_(self, notification):
+        if self.visible:
+            self.publishOpticalShell_(None)
+
+    def publishOpticalShell_(self, timer):
+        if not self.visible or os.environ.get("SPOKE_TELEPORTER_OPTICAL_SHELL", "1") == "0":
+            return
+        registry = getattr(self._delegate, "_overlay_compositor_registry", None)
+        if registry is None:
+            return
+        try:
+            from .house_optical_primitive import compile_external_carrier_config
+            from .optical_field import OpticalFieldRequest, OpticalFieldProfileRef, OpticalFieldPresentation
+            from .perceptasia_throughglass import _display_local_scaled_window_bounds
+            screen = self._panel.screen() or NSScreen.mainScreen()
+            bounds, coordinates = _display_local_scaled_window_bounds(self._panel.frame(), screen)
+            request = OpticalFieldRequest(
+                caller_id="spoke.teleporter", continuity_key="spoke.teleporter", bounds=bounds,
+                role="hud", state="rest", visible=True, visibility_scope="independent",
+                presentation=OpticalFieldPresentation(layer="hud", order=43),
+                presentation_layer="hud", layout_recipe="teleporter-native-carrier",
+                profile=OpticalFieldProfileRef(base="assistant_shell"), z_index=43,
+            )
+            config = compile_external_carrier_config(request, carrier="external_native")
+            config["optical_field"].update(coordinates)
+            host = registry.host_for_screen(screen)
+            if self._shell_host is not None and self._shell_host is not host:
+                self._shell_host.release_client("spoke.teleporter")
+                self._shell_registered = False
+            self._shell_host = host
+            if self._shell_registered:
+                success = host.update_client_config("spoke.teleporter", config)
+            else:
+                from .fullscreen_compositor import OverlayClientIdentity
+
+                identity = OverlayClientIdentity(
+                    client_id="spoke.teleporter",
+                    display_id=host.display_id,
+                    role="hud",
+                )
+
+                def capture_state_changed(state, error=None):
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "opticalShellCaptureStateChanged:",
+                        {"host": host, "state": state, "error": error},
+                        False,
+                    )
+
+                host.register_client(
+                    identity,
+                    window=self._panel,
+                    content_view=self._panel.contentView(),
+                    on_capture_state=capture_state_changed,
+                )
+                success = host.update_client_config("spoke.teleporter", config)
+            self._shell_registered = bool(success)
+            if not success:
+                self._shell_unavailable = True
+                self._set_status("Native presentation; optical shell unavailable")
+            logger.info("Teleporter House shell: registered=%s display=%s", success, host.display_id)
+        except Exception:
+            self._shell_unavailable = True
+            self._set_status("Native presentation; optical shell unavailable")
+            logger.exception("Teleporter optical publication failed; native controls remain usable")
+
+    def opticalShellCaptureStateChanged_(self, payload: dict) -> None:
+        if payload.get("host") is not self._shell_host or not self.visible:
+            return
+        state = payload.get("state")
+        error = payload.get("error")
+        status_label = getattr(self, "_status_label", None)
+        old_status = status_label.stringValue() if status_label is not None else ""
+        if state == "failed":
+            self._shell_unavailable = True
+            suffix = f" ({error})" if error else ""
+            self._set_status(f"Native presentation; optical shell unavailable{suffix}")
+        elif state == "pending":
+            self._shell_unavailable = True
+            self._set_status("Native presentation; optical shell starting")
+        elif state == "started":
+            self._shell_unavailable = False
+            if old_status.startswith("Native presentation; optical shell"):
+                self._set_status("")
+        elif state == "cancelled":
+            self._shell_unavailable = True
+            self._set_status("Native presentation; optical shell stopped")
+
+    def selectCandidate_(self, sender):
         if self._activation_in_flight:
+            return
+        identity = str(sender.identifier())
+        for index, current in enumerate(self._model.filtered):
+            if json.dumps([current.diaulos_id, current.pane_id, current.thread_id]) == identity:
+                self._model.selected_index = index
+                self.activate_selected()
+                return
+        self._set_status("That observation changed; select the current row", error=True)
+
+    def cleanup(self) -> None:
+        if getattr(self, "_activation_in_flight", False):
             logger.info(
                 "Hiding during shutdown without cancelling committed Diaulos focus"
             )
@@ -402,6 +587,24 @@ class DiaulosSwitcherOverlay(NSObject):
         refreshing = bool(payload.get("refreshing"))
         if not refreshing:
             self._load_in_flight = False
+        if getattr(self, "_activation_in_flight", False):
+            if payload.get("error"):
+                self._pending_inventory_error_payload = payload
+            else:
+                self._pending_inventory_payload = payload
+                if not refreshing:
+                    self._pending_inventory_error_payload = None
+            logger.info(
+                "Diaulos inventory application deferred behind committed activation: "
+                "generation=%s refreshing=%s",
+                payload["generation"],
+                refreshing,
+            )
+            return
+        self._apply_inventory_payload(payload)
+
+    def _apply_inventory_payload(self, payload: dict) -> None:
+        refreshing = bool(payload.get("refreshing"))
         error = payload.get("error")
         if error:
             if self.visible:
@@ -436,12 +639,30 @@ class DiaulosSwitcherOverlay(NSObject):
         self._activation_in_flight = False
         self._activation_handle = None
         self._search_field.setEnabled_(True)
+        pending_inventory = getattr(self, "_pending_inventory_payload", None)
+        pending_inventory_error = getattr(
+            self, "_pending_inventory_error_payload", None
+        )
+        self._pending_inventory_payload = None
+        self._pending_inventory_error_payload = None
         if payload.get("error"):
-            self._set_status(str(payload["error"]), error=True)
+            activation_error = str(payload["error"])
             self._panel.makeFirstResponder_(self._search_field)
+            if pending_inventory is not None:
+                self._apply_inventory_payload(pending_inventory)
+            if pending_inventory_error is not None:
+                refresh_error = str(pending_inventory_error["error"])
+                self._set_status(
+                    f"{activation_error}; inventory refresh failed: {refresh_error}",
+                    error=True,
+                )
+            else:
+                self._set_status(activation_error, error=True)
             return
         self.hide(restore_previous=False)
         self._activate_wezterm()
+        if pending_inventory is not None:
+            self._apply_inventory_payload(pending_inventory)
 
     def _activate_wezterm(self) -> None:
         workspace = NSWorkspace.sharedWorkspace()
@@ -458,6 +679,7 @@ class DiaulosSwitcherOverlay(NSObject):
         logger.error("Focused Diaulos pane but could not foreground WezTerm")
 
     def _load_worker(self, generation: int) -> None:
+        started_at = time.monotonic()
         snapshot_error = None
         try:
             candidates = self._client.load()
@@ -488,6 +710,13 @@ class DiaulosSwitcherOverlay(NSObject):
                 "refreshing": False,
             }
         self._publish_inventory(payload)
+        logger.info(
+            "Diaulos inventory worker complete: generation=%s elapsed_ms=%.1f "
+            "outcome=%s",
+            generation,
+            (time.monotonic() - started_at) * 1000.0,
+            "error" if payload.get("error") else "complete",
+        )
 
     def _publish_inventory(self, payload: dict) -> None:
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -497,11 +726,30 @@ class DiaulosSwitcherOverlay(NSObject):
         )
 
     def _activation_worker(self, generation: int, candidate) -> None:
+        started_at = time.monotonic()
         try:
             receipt = self._client.activate(candidate)
             payload = {"generation": generation, "receipt": receipt}
         except DiaulosActivationError as exc:
             payload = {"generation": generation, "error": str(exc)}
+        except Exception as exc:
+            logger.exception(
+                "Unexpected Diaulos activation failure: generation=%s handle=%s",
+                generation,
+                candidate.handle,
+            )
+            payload = {
+                "generation": generation,
+                "error": f"unexpected activation failure: {type(exc).__name__}: {exc}",
+            }
+        logger.info(
+            "Diaulos activation worker complete: generation=%s handle=%s "
+            "elapsed_ms=%.1f outcome=%s",
+            generation,
+            candidate.handle,
+            (time.monotonic() - started_at) * 1000.0,
+            "error" if payload.get("error") else "complete",
+        )
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "activationFinished:",
             payload,
@@ -515,8 +763,24 @@ class DiaulosSwitcherOverlay(NSObject):
     def _render_rows(self) -> None:
         if self._document_view is None:
             return
+        render_signature = (
+            self._model.query,
+            self._model.selected_index,
+            tuple(
+                (
+                    candidate.handle,
+                    candidate.pane_id,
+                    candidate.title,
+                    candidate.cwd,
+                )
+                for candidate in self._model.filtered
+            ),
+        )
+        if getattr(self, "_last_render_signature", None) == render_signature:
+            return
         for view in list(self._document_view.subviews()):
             view.removeFromSuperview()
+        self._row_buttons = []
 
         width = _PANEL_WIDTH - 2.0 * _PADDING
         viewport_height = float(self._scroll_view.contentSize().height)
@@ -525,35 +789,51 @@ class DiaulosSwitcherOverlay(NSObject):
         for index, candidate in enumerate(self._model.filtered):
             y = document_height - (index + 1) * _ROW_HEIGHT
             selected = index == self._model.selected_index
-            marker = "> " if selected else "  "
+            if selected:
+                background = NSView.alloc().initWithFrame_(NSMakeRect(0, y + 2, width - 3, _ROW_HEIGHT - 4))
+                background.setWantsLayer_(True)
+                background.layer().setCornerRadius_(6)
+                background.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.14, 0.23, 0.20, 1).CGColor())
+                self._document_view.addSubview_(background)
             title_color = (
-                NSColor.colorWithSRGBRed_green_blue_alpha_(0.27, 0.85, 0.93, 1.0)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.56, 0.96, 0.80, 1.0)
                 if selected
                 else NSColor.colorWithSRGBRed_green_blue_alpha_(0.91, 0.93, 0.95, 1.0)
             )
             self._document_view.addSubview_(
                 _label(
-                    marker + candidate.handle,
-                    NSMakeRect(6.0, y + 25.0, width - 12.0, 22.0),
+                    candidate.handle,
+                    NSMakeRect(14.0, y + 28.0, width - 110.0, 22.0),
                     size=14.0,
                     bold=selected,
                     color=title_color,
                 )
             )
             detail = candidate.title or Path(candidate.cwd).name or candidate.cwd
-            route = f"pane {candidate.pane_id}"
+            route = f"Pane {candidate.pane_id}"
             if detail:
                 route += f"  {detail}"
             self._document_view.addSubview_(
                 _label(
                     route,
-                    NSMakeRect(26.0, y + 6.0, width - 32.0, 18.0),
+                    NSMakeRect(14.0, y + 9.0, width - 40.0, 18.0),
                     size=11.0,
                     color=NSColor.colorWithSRGBRed_green_blue_alpha_(
                         0.52, 0.59, 0.65, 1.0
                     ),
                 )
             )
+            backend = _label(candidate.resume_backend.title(), NSMakeRect(width - 98, y + 29, 80, 18),
+                             size=10, color=NSColor.colorWithSRGBRed_green_blue_alpha_(0.82, 0.73, 0.54, 1))
+            backend.setAlignment_(2)
+            self._document_view.addSubview_(backend)
+            button = NSButton.buttonWithTitle_target_action_("", self, "selectCandidate:")
+            button.setFrame_(NSMakeRect(0, y, width, _ROW_HEIGHT))
+            button.setBordered_(False)
+            button.setToolTip_(f"Focus {candidate.handle}")
+            button.setIdentifier_(json.dumps([candidate.diaulos_id, candidate.pane_id, candidate.thread_id]))
+            self._row_buttons.append(button)
+            self._document_view.addSubview_(button)
             if selected:
                 self._document_view.scrollRectToVisible_(
                     NSMakeRect(0, y, width, _ROW_HEIGHT)
@@ -563,6 +843,7 @@ class DiaulosSwitcherOverlay(NSObject):
             if self._model.query
             else f"{len(self._model.all_candidates)} live"
         )
+        self._last_render_signature = render_signature
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         if self._status_label is None:

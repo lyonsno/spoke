@@ -75,6 +75,20 @@ def test_passport_carrier_keeps_live_webview_external_at_rest():
     assert "phase" not in config["optical_field"]
 
 
+def test_shared_carrier_accepts_independent_native_consumer_identity():
+    import spoke.house_optical_primitive as house
+    from dataclasses import replace
+    request = replace(build_perceptasia_primitive_request(_bounds()),
+                      caller_id="spoke.teleporter", continuity_key="spoke.teleporter")
+    assert callable(getattr(house, "compile_external_carrier_config", None)), "House lacks a native carrier compiler"
+    config = house.compile_external_carrier_config(request, carrier="external_native")
+    assert config["client_id"] == "spoke.teleporter"
+    assert config["throughglass_content_carrier"] == "external_native"
+    assert config["include_carrier_window_in_capture"] is False
+    assert config["visibility_scope"] == "independent"
+    _assert_house_shell_fields(config, compile_house_optical_shell_config(_bounds().width, _bounds().height))
+
+
 def test_passport_transition_shell_does_not_capture_live_webview_source_plate():
     for state, progress in (("materialize", 0.45), ("dismiss", 0.45)):
         config = compile_perceptasia_primitive_carrier_config(

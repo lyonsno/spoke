@@ -91,6 +91,8 @@ class MenuBarIcon(NSObject):
         self._on_toggle_seam_pucker = None
         self._on_toggle_perceptasia_throughglass = None
         self._on_toggle_handsfree = None
+        self._on_recording_history = None
+        self._on_teleporter = None
         self._status_item = None
         self._status_text = "Idle"
         self._branch_label = _branch_menu_label()
@@ -186,6 +188,9 @@ class MenuBarIcon(NSObject):
 
     def _build_menu(self) -> None:
         menu = NSMenu.new()
+        settings = NSMenu.new()
+        assistant_settings = NSMenu.new()
+        developer = NSMenu.new()
 
         self._status_item_label = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             getattr(self, "_status_text", "Idle"), None, ""
@@ -197,14 +202,23 @@ class MenuBarIcon(NSObject):
             _SOURCE_LABEL, None, ""
         )
         source_item.setEnabled_(False)
-        menu.addItem_(source_item)
+        developer.addItem_(source_item)
 
         branch_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             getattr(self, "_branch_label", "Branch: unknown"), None, ""
         )
         branch_item.setEnabled_(False)
-        menu.addItem_(branch_item)
+        developer.addItem_(branch_item)
 
+        menu.addItem_(NSMenuItem.separatorItem())
+        for callback, title, action in (
+            ("_on_recording_history", "Recordings", "showRecordingHistory:"),
+            ("_on_teleporter", "Teleporter", "showTeleporter:"),
+        ):
+            if getattr(self, callback, None) is not None:
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
+                item.setTarget_(self)
+                menu.addItem_(item)
         menu.addItem_(NSMenuItem.separatorItem())
         added_menu_section = False
         launch_target = None
@@ -217,7 +231,7 @@ class MenuBarIcon(NSObject):
                 transcription = model_state.get("transcription")
                 preview = model_state.get("preview")
                 if assistant:
-                    menu.addItem_(
+                    assistant_settings.addItem_(
                         self._build_choice_submenu_item(
                             assistant.get("title", "Assistant Model"),
                             "assistant",
@@ -227,7 +241,7 @@ class MenuBarIcon(NSObject):
                     )
                     added_menu_section = True
                 if assistant_backend:
-                    menu.addItem_(
+                    assistant_settings.addItem_(
                         self._build_toggle_submenu_item(
                             assistant_backend["title"],
                             "assistant_backend",
@@ -246,7 +260,7 @@ class MenuBarIcon(NSObject):
                     )
                     added_menu_section = True
                 if preview:
-                    menu.addItem_(
+                    settings.addItem_(
                         self._build_choice_submenu_item(
                             "Preview",
                             "preview",
@@ -256,7 +270,7 @@ class MenuBarIcon(NSObject):
                     )
                 transcription_backend = model_state.get("transcription_backend")
                 if transcription_backend:
-                    menu.addItem_(
+                    settings.addItem_(
                         self._build_toggle_submenu_item(
                             transcription_backend["title"],
                             "transcription_backend",
@@ -266,7 +280,7 @@ class MenuBarIcon(NSObject):
                     added_menu_section = True
                 preview_backend = model_state.get("preview_backend")
                 if preview_backend:
-                    menu.addItem_(
+                    settings.addItem_(
                         self._build_toggle_submenu_item(
                             preview_backend["title"],
                             "preview_backend",
@@ -276,7 +290,7 @@ class MenuBarIcon(NSObject):
                     added_menu_section = True
                 tts_backend = model_state.get("tts_backend")
                 if tts_backend:
-                    menu.addItem_(
+                    assistant_settings.addItem_(
                         self._build_toggle_submenu_item(
                             tts_backend["title"],
                             "tts_backend",
@@ -286,7 +300,7 @@ class MenuBarIcon(NSObject):
                     added_menu_section = True
                 tts_model = model_state.get("tts")
                 if tts_model:
-                    menu.addItem_(
+                    assistant_settings.addItem_(
                         self._build_choice_submenu_item(
                             tts_model.get("title", "TTS Model"),
                             "tts",
@@ -298,7 +312,7 @@ class MenuBarIcon(NSObject):
                 tts_voice = model_state.get("tts_voice")
                 if tts_voice:
                     if tts_voice.get("type") == "choice":
-                        menu.addItem_(
+                        assistant_settings.addItem_(
                             self._build_choice_submenu_item(
                                 tts_voice.get("title", "TTS Voice"),
                                 "tts_voice",
@@ -307,7 +321,7 @@ class MenuBarIcon(NSObject):
                             )
                         )
                     else:
-                        menu.addItem_(
+                        assistant_settings.addItem_(
                             self._build_toggle_submenu_item(
                                 tts_voice["title"],
                                 "tts_voice",
@@ -317,13 +331,13 @@ class MenuBarIcon(NSObject):
                     added_menu_section = True
                 tts_endpoint = model_state.get("tts_endpoint")
                 if tts_endpoint:
-                    menu.addItem_(self._build_info_item(tts_endpoint["title"]))
+                    assistant_settings.addItem_(self._build_info_item(tts_endpoint["title"]))
                     note = tts_endpoint.get("note")
                     if note:
-                        menu.addItem_(self._build_info_item(note))
+                        assistant_settings.addItem_(self._build_info_item(note))
                 local_whisper = model_state.get("local_whisper")
                 if local_whisper:
-                    menu.addItem_(
+                    settings.addItem_(
                         self._build_toggle_submenu_item(
                             local_whisper["title"],
                             "local_whisper",
@@ -350,41 +364,40 @@ class MenuBarIcon(NSObject):
                 "Hands-Free Mode", "toggleHandsFree:", "h"
             )
             handsfree_item.setTarget_(self)
-            menu.addItem_(handsfree_item)
+            settings.addItem_(handsfree_item)
 
         if getattr(self, "_on_toggle_preview_warp", None) is not None:
             preview_warp_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Preview Warp Tuner", "togglePreviewWarp:", "w"
             )
             preview_warp_item.setTarget_(self)
-            menu.addItem_(preview_warp_item)
+            developer.addItem_(preview_warp_item)
 
         if getattr(self, "_on_toggle_seam_pucker", None) is not None:
             seam_pucker_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Assistant Seam Pucker Tuner", "toggleSeamPucker:", "p"
             )
             seam_pucker_item.setTarget_(self)
-            menu.addItem_(seam_pucker_item)
+            developer.addItem_(seam_pucker_item)
 
         if getattr(self, "_on_toggle_perceptasia_throughglass", None) is not None:
             throughglass_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Perceptasia Throughglass Graft", "togglePerceptasiaThroughglass:", "g"
+                "Throughglass", "togglePerceptasiaThroughglass:", "g"
             )
             throughglass_item.setTarget_(self)
             menu.addItem_(throughglass_item)
 
+        for title, submenu in (("Dictation Settings", settings), ("Assistant", assistant_settings)):
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+            item.setSubmenu_(submenu)
+            menu.addItem_(item)
         if launch_target:
-            menu.addItem_(NSMenuItem.separatorItem())
-            for item_id, label, enabled in launch_target["items"]:
-                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    label, "selectModel:", ""
-                )
-                item.setTarget_(self)
-                item.setRepresentedObject_(("launch_target", item_id))
-                item.setEnabled_(enabled)
-                if item_id == launch_target["selected"]:
-                    item.setState_(1)
-                menu.addItem_(item)
+            menu.addItem_(self._build_choice_submenu_item(
+                "Switch Build", "launch_target", launch_target["selected"], launch_target["items"],
+            ))
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Developer", None, "")
+        item.setSubmenu_(developer)
+        menu.addItem_(item)
 
         menu.addItem_(NSMenuItem.separatorItem())
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -394,6 +407,14 @@ class MenuBarIcon(NSObject):
         menu.addItem_(quit_item)
 
         self._status_item.setMenu_(menu)
+
+    def showRecordingHistory_(self, sender) -> None:
+        if self._on_recording_history is not None:
+            self._on_recording_history()
+
+    def showTeleporter_(self, sender) -> None:
+        if self._on_teleporter is not None:
+            self._on_teleporter()
 
     def _build_choice_submenu_item(
         self,
