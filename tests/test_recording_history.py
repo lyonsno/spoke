@@ -1,6 +1,8 @@
 import importlib.util
 from contextlib import nullcontext
 
+import pytest
+
 from spoke.audio_spool import AudioSpool, AudioSpoolConfig
 from tests.test_audio_spool import _wav_bytes
 
@@ -169,8 +171,40 @@ def test_history_action_buttons_have_legible_symbols_and_click_targets():
         image = button.image()
         assert button.bezelStyle() == AK.NSBezelStyleCircular
         assert button.controlSize() == AK.NSControlSizeLarge
-        assert frame.size.width >= 60
-        assert frame.size.height >= 60
-        assert image.size().width >= 42
-        assert image.size().height >= 42
-        assert image.symbolConfiguration().pointSize() >= 32
+        assert frame.size.width >= 72
+        assert frame.size.height >= 72
+        assert image.size().width >= 56
+        assert image.size().height >= 56
+        assert image.symbolConfiguration().pointSize() >= 44
+
+
+@pytest.mark.parametrize("content_width", [980, 860])
+def test_history_action_toolbar_fits_without_overlapping_adjacent_content(content_width):
+    from types import SimpleNamespace
+
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    delegate = SimpleNamespace(
+        _audio_spool=SimpleNamespace(
+            config=SimpleNamespace(enabled=True, root="/tmp/history-layout-test")
+        ),
+        _history_model={},
+        _history_model_options=lambda: [],
+        _history_live_busy=lambda: False,
+    )
+    owner = RecordingHistoryWindow.alloc().initWithDelegate_(delegate)
+    owner.setup()
+    owner._window.setContentSize_((content_width, 650))
+
+    content = owner._window.contentView()
+    width = float(content.bounds().size.width)
+    buttons = [owner._play, owner._copy, owner._insert, owner._trash]
+    frames = [button.frame() for button in buttons]
+    selector = owner._attempts.frame()
+    transcript = owner._text.enclosingScrollView().frame()
+
+    assert selector.origin.x + selector.size.width + 8 <= frames[0].origin.x
+    assert frames[-1].origin.x + frames[-1].size.width <= width - 22
+    assert transcript.origin.y + transcript.size.height <= frames[0].origin.y
+    for left, right in zip(frames, frames[1:]):
+        assert right.origin.x - (left.origin.x + left.size.width) >= 4

@@ -1634,6 +1634,7 @@ def test_late_screen_capture_start_callback_cannot_resurrect_a_stopped_composito
 
 
 @pytest.mark.parametrize(("completion_error", "expected_state"), [(None, "started"), ("SCK denied", "failed")])
+@pytest.mark.parametrize("empty_content_responses", [0, 1, 8])
 @pytest.mark.parametrize(
     ("requested_ids", "available_ids", "expected_applied_ids"),
     [
@@ -1646,6 +1647,7 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     monkeypatch,
     completion_error,
     expected_state,
+    empty_content_responses,
     requested_ids,
     available_ids,
     expected_applied_ids,
@@ -1705,6 +1707,21 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
         def backingScaleFactor(self):
             return 2.0
 
+    class AttemptEvent:
+        def __init__(self):
+            self.is_set_value = False
+            self.waits = []
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            return self.is_set_value
+
+        def is_set(self):
+            return self.is_set_value
+
+        def set(self):
+            self.is_set_value = True
+
     display = Display()
     content = SimpleNamespace(windows=lambda: [Window(value) for value in available_ids])
     bridge = {
@@ -1732,6 +1749,7 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     from spoke.fullscreen_compositor import _CaptureStartAttempt
     compositor._capture_start_lock = threading.RLock()
     attempt = _CaptureStartAttempt(generation=1)
+    attempt.event = AttemptEvent()
     compositor._capture_attempt = attempt
     compositor._stream = None
     compositor._stream_output = None
@@ -1748,7 +1766,15 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     compositor._capture_filter_applied_generation = 0
     compositor._capture_filter_update_in_flight = None
     compositor._capture_filter_update_token = 0
-    compositor._fetch_shareable_content = lambda bridge, attempt=None: content
+    shareable_content_calls = []
+
+    def fetch_shareable_content(bridge, attempt=None):
+        shareable_content_calls.append(attempt)
+        if len(shareable_content_calls) <= empty_content_responses:
+            return None
+        return content
+
+    compositor._fetch_shareable_content = fetch_shareable_content
     compositor._match_display = lambda content: display
     compositor._excluded_windows = lambda content, *, extra_excluded_ids=None: [
         window
@@ -1756,16 +1782,17 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
         if int(window.windowID()) in (extra_excluded_ids or set())
     ]
     compositor._schedule_stop_after_capture_failure = lambda current: scheduled_stops.append(current)
-    monkeypatch.setattr(
-        threading.Event,
-        "wait",
-        lambda self, timeout=None: pytest.fail("ScreenCaptureKit startup must not block on an assumed timeout"),
-    )
-
-    compositor._start_capture(attempt)
+    compositor._run_capture_start(attempt)
 
     stream = compositor._stream
     assert isinstance(stream, Stream)
+    assert shareable_content_calls == [attempt] * (empty_content_responses + 1)
+    expected_delays = []
+    retry_delay = compositor_module._SCK_START_RETRY_BASE_SECONDS
+    for _ in range(empty_content_responses):
+        expected_delays.append(retry_delay)
+        retry_delay = min(retry_delay * 2.0, compositor_module._SCK_START_RETRY_MAX_SECONDS)
+    assert attempt.event.waits == pytest.approx(expected_delays)
     assert stream.initial_excluded_ids == expected_applied_ids
     assert compositor._capture_filter_applied_signature == expected_applied_ids
     assert compositor.capture_start_state == "pending"
@@ -1774,6 +1801,47 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     assert attempt.event.is_set()
     assert (compositor.capture_start_error is not None) is (completion_error is not None)
     assert scheduled_stops == ([attempt] if completion_error is not None else [])
+
+
+def test_capture_start_empty_content_backoff_stops_with_its_cancelled_attempt():
+    import importlib
+
+    compositor_module = importlib.import_module("spoke.fullscreen_compositor")
+    from spoke.fullscreen_compositor import FullScreenCompositor, _CaptureStartAttempt
+
+    class AttemptEvent:
+        def __init__(self, attempt):
+            self.attempt = attempt
+            self.wait_count = 0
+
+        def wait(self, timeout=None):
+            self.wait_count += 1
+            self.attempt.state = "cancelled"
+            return True
+
+        def set(self):
+            pass
+
+        def is_set(self):
+            return True
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_lock = threading.RLock()
+    attempt = _CaptureStartAttempt(generation=1)
+    attempt.event = AttemptEvent(attempt)
+    compositor._capture_attempt = attempt
+    calls = []
+
+    def unavailable(current):
+        calls.append(current)
+        raise compositor_module._ShareableContentUnavailableError("empty shareable-content response")
+
+    compositor._start_capture = unavailable
+    compositor._run_capture_start(attempt)
+
+    assert calls == [attempt]
+    assert attempt.event.wait_count == 1
+    assert attempt.state == "cancelled"
 
 
 def test_fullscreen_compositor_skips_display_link_when_frame_and_config_unchanged():

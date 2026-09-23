@@ -34,6 +34,8 @@ if hasattr(objc, "ObjCPointerWarning"):
 _shared_overlay_hosts: dict[tuple[str, int], "_SharedOverlayHost"] = {}
 _SCK_TARGET_FPS = max(1, int(float(os.environ.get("SPOKE_FULLSCREEN_COMPOSITOR_FPS", "30"))))
 _SCK_FRAME_INTERVAL = (1, _SCK_TARGET_FPS, 0, 0)
+_SCK_START_RETRY_BASE_SECONDS = 0.25
+_SCK_START_RETRY_MAX_SECONDS = 30.0
 _FILTER_RETRY_BASE_SECONDS = 0.25
 _FILTER_RETRY_MAX_SECONDS = 30.0
 
@@ -53,6 +55,10 @@ class _CaptureStartAttempt:
     error: BaseException | None = None
     stream: Any = None
     event: threading.Event = field(default_factory=threading.Event)
+
+
+class _ShareableContentUnavailableError(RuntimeError):
+    """ScreenCaptureKit completed without content or a reported error."""
 
 
 @dataclass(frozen=True)
@@ -469,12 +475,27 @@ class FullScreenCompositor:
         return True
 
     def _run_capture_start(self, attempt) -> None:
-        try:
-            self._start_capture(attempt)
-        except Exception as exc:
-            if self._set_capture_attempt_state(attempt, "failed", exc, publish=False):
-                logger.info("FullScreenCompositor: capture failed to start", exc_info=True)
-                self._schedule_stop_after_capture_failure(attempt)
+        retry_delay = _SCK_START_RETRY_BASE_SECONDS
+        while self._capture_attempt_is_current(attempt):
+            try:
+                self._start_capture(attempt)
+                return
+            except _ShareableContentUnavailableError as exc:
+                if not self._capture_attempt_is_current(attempt):
+                    return
+                logger.info(
+                    "FullScreenCompositor: shareable content unavailable; retrying in %.2fs: %s",
+                    retry_delay,
+                    exc,
+                )
+                if attempt.event.wait(retry_delay):
+                    return
+                retry_delay = min(retry_delay * 2.0, _SCK_START_RETRY_MAX_SECONDS)
+            except Exception as exc:
+                if self._set_capture_attempt_state(attempt, "failed", exc, publish=False):
+                    logger.info("FullScreenCompositor: capture failed to start", exc_info=True)
+                    self._schedule_stop_after_capture_failure(attempt)
+                return
 
     def _schedule_stop_after_capture_failure(self, attempt) -> None:
         try:
@@ -980,7 +1001,11 @@ class FullScreenCompositor:
 
         content = self._fetch_shareable_content(bridge, attempt)
         if content is None:
-            raise RuntimeError("Failed to get shareable content")
+            if not self._capture_attempt_is_current(attempt):
+                return
+            raise _ShareableContentUnavailableError(
+                "ScreenCaptureKit returned no shareable content"
+            )
         if not self._capture_attempt_is_current(attempt):
             return
 
@@ -1408,7 +1433,7 @@ class FullScreenCompositor:
                 raise RuntimeError(message) from result["error"]
             raise RuntimeError(message)
         if result["completed"] and result["content"] is None:
-            raise RuntimeError(
+            raise _ShareableContentUnavailableError(
                 "ScreenCaptureKit completed shareable-content request without content or error"
             )
         return result["content"]

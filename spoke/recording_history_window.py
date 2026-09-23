@@ -105,17 +105,17 @@ class RecordingHistoryWindow(NSObject):
         self._meta.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._meta)
 
-        self._attempts = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 533, 348, 30), False)
+        self._attempts = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 523, 300, 30), False)
         self._attempts.setTarget_(self)
         self._attempts.setAction_("selectAttempt:")
         self._attempts.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._attempts)
-        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 706, 514, 8 | 1)
-        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 770, 514, 8 | 1)
-        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 834, 514, 8 | 1)
-        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 898, 514, 8 | 1)
+        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 658, 502, 8 | 1)
+        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 734, 502, 8 | 1)
+        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 810, 502, 8 | 1)
+        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 886, 502, 8 | 1)
 
-        text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 306))
+        text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 294))
         text_scroll.setHasVerticalScroller_(True)
         text_scroll.setAutoresizingMask_(2 | 16)
         self._text = AK.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 608, 330))
@@ -161,16 +161,16 @@ class RecordingHistoryWindow(NSObject):
         image = AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip)
         if image is not None:
             configuration = AK.NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(
-                34, AK.NSFontWeightMedium, AK.NSImageSymbolScaleMedium,
+                44, AK.NSFontWeightMedium, AK.NSImageSymbolScaleMedium,
             )
             image = image.imageWithSymbolConfiguration_(configuration)
-            image.setSize_((42, 42))
+            image.setSize_((56, 56))
         button = AK.NSButton.buttonWithImage_target_action_(
             image, self, action,
         )
         button.setBezelStyle_(AK.NSBezelStyleCircular)
         button.setControlSize_(AK.NSControlSizeLarge)
-        button.setFrame_(NSMakeRect(x, y, 60, 60))
+        button.setFrame_(NSMakeRect(x, y, 72, 72))
         button.setToolTip_(tooltip)
         button.setAutoresizingMask_(mask)
         parent.addSubview_(button)
