@@ -160,6 +160,10 @@ class RecordingHistoryWindow(NSObject):
     def _tool(self, parent, symbol, tooltip, action, x, y, mask):
         image = AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip)
         if image is not None:
+            configuration = AK.NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(
+                34, AK.NSFontWeightMedium, AK.NSImageSymbolScaleMedium,
+            )
+            image = image.imageWithSymbolConfiguration_(configuration)
             image.setSize_((42, 42))
         button = AK.NSButton.buttonWithImage_target_action_(
             image, self, action,

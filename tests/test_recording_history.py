@@ -171,3 +171,4 @@ def test_history_action_buttons_have_legible_symbols_and_click_targets():
         assert frame.size.height >= 60
         assert image.size().width >= 42
         assert image.size().height >= 42
+        assert image.symbolConfiguration().pointSize() >= 32
