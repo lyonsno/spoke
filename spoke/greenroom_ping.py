@@ -1,7 +1,8 @@
 """One-shot notifier for Greenroom's operator-needed transition.
 
-Greenroom should call this when a smoke first needs the operator, not from a
-status-poll loop.
+Every invocation sends a notification. Greenroom owns event latching and must
+call this only when a smoke first needs the operator, not from a status-poll
+loop.
 """
 
 from __future__ import annotations
@@ -20,7 +21,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="spoke-greenroom-ping",
         description="Send a macOS notification when a Greenroom smoke needs the operator.",
-        epilog="Call once on the operator-needed transition, not on status polls.",
+        epilog=(
+            "Every invocation sends a notification. Greenroom must call once "
+            "on the operator-needed transition, not on status polls."
+        ),
     )
     parser.add_argument("--job-id", required=True, help="Greenroom job identifier")
     parser.add_argument("--agent-id", required=True, help="Greenroom request agent_id")
