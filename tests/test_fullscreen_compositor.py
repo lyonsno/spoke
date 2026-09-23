@@ -2188,6 +2188,8 @@ def test_fullscreen_capture_accepts_shareable_content_after_five_seconds(monkeyp
 
 
 def test_fullscreen_capture_preserves_shareable_content_callback_error():
+    import inspect
+
     from spoke.fullscreen_compositor import FullScreenCompositor
 
     class NSError:
@@ -2197,6 +2199,16 @@ def test_fullscreen_capture_preserves_shareable_content_callback_error():
     class ShareableContent:
         @staticmethod
         def getShareableContentWithCompletionHandler_(completion):
+            positional = [
+                parameter
+                for parameter in inspect.signature(completion).parameters.values()
+                if parameter.kind
+                in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            if len(positional) != 1:
+                raise TypeError(
+                    "observed PyObjC ScreenCaptureKit block requires one argument"
+                )
             completion(None, NSError())
 
     compositor = FullScreenCompositor.__new__(FullScreenCompositor)
@@ -2217,7 +2229,7 @@ def test_fullscreen_capture_classifies_empty_shareable_content_as_retryable():
     class ShareableContent:
         @staticmethod
         def getShareableContentWithCompletionHandler_(completion):
-            completion(None, None)
+            completion(None)
 
     compositor = FullScreenCompositor.__new__(FullScreenCompositor)
 

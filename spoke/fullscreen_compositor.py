@@ -1404,7 +1404,8 @@ class FullScreenCompositor:
         result = {"content": None, "error": None, "completed": False}
         event = threading.Event()
 
-        def got_content(content, error=None, *args):
+        def got_content(content, *args):
+            error = args[0] if args else None
             result["content"] = content
             result["error"] = error
             result["completed"] = True
