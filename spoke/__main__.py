@@ -1428,8 +1428,15 @@ class SpokeAppDelegate(NSObject):
 
         try:
             from AppKit import NSUserNotificationCenter
+            from Foundation import NSBundle
 
+            bundle = NSBundle.mainBundle()
+            if not bundle.bundleIdentifier():
+                # The worktree launcher runs Python outside Spoke.app's bundle.
+                bundle.infoDictionary()["CFBundleIdentifier"] = "com.noahlyons.spoke"
             self._greenroom_notification_center = NSUserNotificationCenter.defaultUserNotificationCenter()
+            if self._greenroom_notification_center is None:
+                raise RuntimeError("macOS did not provide a notification center")
             self._greenroom_notification_center.setDelegate_(self)
             self._greenroom_ping_server = GreenroomPingServer(self._receive_greenroom_ping)
             self._greenroom_ping_server.start()
