@@ -168,6 +168,7 @@ class RecordingHistoryWindow(NSObject):
         button = AK.NSButton.buttonWithImage_target_action_(
             image, self, action,
         )
+        button.setBezelStyle_(AK.NSBezelStyleCircular)
         button.setFrame_(NSMakeRect(x, y, 60, 60))
         button.setToolTip_(tooltip)
         button.setAutoresizingMask_(mask)

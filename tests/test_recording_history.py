@@ -167,6 +167,7 @@ def test_history_action_buttons_have_legible_symbols_and_click_targets():
     for button in buttons:
         frame = button.frame()
         image = button.image()
+        assert button.bezelStyle() == AK.NSBezelStyleCircular
         assert frame.size.width >= 60
         assert frame.size.height >= 60
         assert image.size().width >= 42
