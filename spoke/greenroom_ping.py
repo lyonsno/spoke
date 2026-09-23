@@ -8,9 +8,13 @@ loop.
 from __future__ import annotations
 
 import argparse
+import json
+import socket
 import subprocess
 import sys
 from collections.abc import Sequence
+
+from .greenroom_notifications import GREENROOM_PING_SCHEMA, GREENROOM_PING_SOCKET
 
 
 _TITLE = "GPU Greenroom smoke needs you"
@@ -32,8 +36,38 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _send_to_spoke(payload: dict[str, str]) -> dict[str, str]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(GREENROOM_PING_SOCKET))
+        client.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+        client.shutdown(socket.SHUT_WR)
+        with client.makefile("rb") as response_file:
+            response = json.loads(response_file.readline())
+    if response != {"status": "accepted"}:
+        raise RuntimeError(f"Spoke rejected Greenroom notification: {response.get('status', 'invalid response')}")
+    return response
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    payload = {
+        "schema": GREENROOM_PING_SCHEMA,
+        "job_id": args.job_id,
+        "agent_id": args.agent_id,
+        "reason": args.reason,
+    }
+    try:
+        _send_to_spoke(payload)
+        return 0
+    except (FileNotFoundError, ConnectionRefusedError):
+        print(
+            "spoke-greenroom-ping: Spoke is not running; sending non-clickable notification fallback",
+            file=sys.stderr,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"spoke-greenroom-ping: local Spoke delivery failed: {exc}", file=sys.stderr)
+        return 1
+
     body = f"Job {args.job_id} | {args.agent_id}"
     if args.reason:
         body += f" - {args.reason}"

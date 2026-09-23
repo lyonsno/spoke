@@ -41,6 +41,11 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject, NSTimer
 
+from .greenroom_notifications import (
+    GreenroomPingServer,
+    greenroom_url_for_notification,
+)
+
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
@@ -1421,6 +1426,18 @@ class SpokeAppDelegate(NSObject):
         )
         self._menubar.setup()
 
+        try:
+            from AppKit import NSUserNotificationCenter
+
+            self._greenroom_notification_center = NSUserNotificationCenter.defaultUserNotificationCenter()
+            self._greenroom_notification_center.setDelegate_(self)
+            self._greenroom_ping_server = GreenroomPingServer(self._receive_greenroom_ping)
+            self._greenroom_ping_server.start()
+        except (AttributeError, ImportError, OSError, RuntimeError) as exc:
+            logger.warning("Greenroom notification listener unavailable: %s", exc)
+            self._greenroom_notification_center = None
+            self._greenroom_ping_server = None
+
         if not hasattr(self, "_optical_shell_metrics"):
             self._optical_shell_metrics = OpticalShellMetrics()
 
@@ -1479,6 +1496,39 @@ class SpokeAppDelegate(NSObject):
         self._menubar.set_status_text("Starting up…")
         self._setup_event_tap()
         self._request_mic_permission()
+
+    def _receive_greenroom_ping(self, payload: dict[str, str]) -> None:
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "showGreenroomPing:", payload, True
+        )
+
+    def showGreenroomPing_(self, payload: dict[str, str]) -> None:
+        from AppKit import NSUserNotification
+
+        notification = NSUserNotification.alloc().init()
+        notification.setTitle_("GPU Greenroom smoke needs you")
+        body = f"Job {payload['job_id']} | {payload['agent_id']}"
+        if payload["reason"]:
+            body += f" - {payload['reason']}"
+        notification.setInformativeText_(body)
+        notification.setUserInfo_({"kind": "greenroom-ping"})
+        self._greenroom_notification_center.deliverNotification_(notification)
+
+    def userNotificationCenter_didActivateNotification_(self, center, notification) -> None:
+        from AppKit import NSWorkspace
+        from Foundation import NSURL
+
+        url = greenroom_url_for_notification(notification.userInfo())
+        if url is not None:
+            NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(url))
+
+    def userNotificationCenter_shouldPresentNotification_(self, center, notification) -> bool:
+        return True
+
+    def applicationWillTerminate_(self, notification) -> None:
+        server = getattr(self, "_greenroom_ping_server", None)
+        if server is not None:
+            server.close()
 
     def _request_mic_permission(self) -> None:
         """Check mic permission via AVCaptureDevice (no PortAudio allocation).
