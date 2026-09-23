@@ -105,17 +105,17 @@ class RecordingHistoryWindow(NSObject):
         self._meta.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._meta)
 
-        self._attempts = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 533, 362, 30), False)
+        self._attempts = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 533, 348, 30), False)
         self._attempts.setTarget_(self)
         self._attempts.setAction_("selectAttempt:")
         self._attempts.setAutoresizingMask_(2 | 8)
         content.addSubview_(self._attempts)
-        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 716, 518, 8 | 1)
-        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 776, 518, 8 | 1)
-        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 836, 518, 8 | 1)
-        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 896, 518, 8 | 1)
+        self._play = self._tool(content, "play.fill", "Play original audio", "playAudio:", 706, 514, 8 | 1)
+        self._copy = self._tool(content, "doc.on.doc", "Copy selected transcript", "copyText:", 770, 514, 8 | 1)
+        self._insert = self._tool(content, "arrow.up.doc", "Insert selected transcript", "insertText:", 834, 514, 8 | 1)
+        self._trash = self._tool(content, "trash", "Move recording and attempts to Trash", "trashRecording:", 898, 514, 8 | 1)
 
-        text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 310))
+        text_scroll = AK.NSScrollView.alloc().initWithFrame_(NSMakeRect(350, 208, 608, 306))
         text_scroll.setHasVerticalScroller_(True)
         text_scroll.setAutoresizingMask_(2 | 16)
         self._text = AK.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 608, 330))
@@ -160,11 +160,11 @@ class RecordingHistoryWindow(NSObject):
     def _tool(self, parent, symbol, tooltip, action, x, y, mask):
         image = AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip)
         if image is not None:
-            image.setSize_((32, 32))
+            image.setSize_((42, 42))
         button = AK.NSButton.buttonWithImage_target_action_(
             image, self, action,
         )
-        button.setFrame_(NSMakeRect(x, y, 56, 56))
+        button.setFrame_(NSMakeRect(x, y, 60, 60))
         button.setToolTip_(tooltip)
         button.setAutoresizingMask_(mask)
         parent.addSubview_(button)

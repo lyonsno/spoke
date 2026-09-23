@@ -167,7 +167,7 @@ def test_history_action_buttons_have_legible_symbols_and_click_targets():
     for button in buttons:
         frame = button.frame()
         image = button.image()
-        assert frame.size.width >= 56
-        assert frame.size.height >= 56
-        assert image.size().width >= 32
-        assert image.size().height >= 32
+        assert frame.size.width >= 60
+        assert frame.size.height >= 60
+        assert image.size().width >= 42
+        assert image.size().height >= 42
