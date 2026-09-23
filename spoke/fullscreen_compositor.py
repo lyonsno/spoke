@@ -328,6 +328,9 @@ class FullScreenCompositor:
         self._capture_attempt_generation = 0
         self._capture_attempt: _CaptureStartAttempt | None = None
         self._extra_excluded_ids = set()
+        self._capture_filter_refresh_generation = 0
+        self._capture_filter_refresh_requested = threading.Event()
+        self._capture_filter_refresh_thread = None
         self._capture_content = None
         self._capture_display = None
 
@@ -965,7 +968,7 @@ class FullScreenCompositor:
         if bridge is None:
             raise RuntimeError("ScreenCaptureKit bridge unavailable")
 
-        content = self._fetch_shareable_content(bridge)
+        content = self._fetch_shareable_content(bridge, attempt)
         if content is None:
             raise RuntimeError("Failed to get shareable content")
         if not self._capture_attempt_is_current(attempt):
@@ -1123,13 +1126,61 @@ class FullScreenCompositor:
 
     def set_excluded_window_ids(self, window_ids: list[int]) -> None:
         """Additional window IDs to exclude from capture (e.g. the overlay window)."""
-        self._extra_excluded_ids = set(int(x) for x in window_ids)
-        stream = getattr(self, "_stream", None)
-        if stream is not None:
+        normalized = set(int(x) for x in window_ids)
+        with self._capture_start_lock:
+            if normalized == self._extra_excluded_ids:
+                return
+            self._extra_excluded_ids = normalized
+            self._capture_filter_refresh_generation += 1
+            stream = self._stream
+            if stream is None:
+                return
+            self._capture_filter_refresh_requested.set()
+            worker = self._capture_filter_refresh_thread
+            if worker is not None and worker.is_alive():
+                return
+            worker = threading.Thread(
+                target=self._run_capture_filter_refreshes,
+                name="SpokeFullScreenCompositorFilterRefresh",
+                daemon=True,
+            )
+            self._capture_filter_refresh_thread = worker
             try:
-                self._refresh_capture_filter()
+                worker.start()
             except Exception:
-                logger.debug("Failed to refresh compositor exclusions", exc_info=True)
+                self._capture_filter_refresh_thread = None
+                self._capture_filter_refresh_requested.clear()
+                logger.info(
+                    "FullScreenCompositor: could not schedule capture filter refresh",
+                    exc_info=True,
+                )
+
+    def _run_capture_filter_refreshes(self) -> None:
+        worker = threading.current_thread()
+        while True:
+            with self._capture_start_lock:
+                self._capture_filter_refresh_requested.clear()
+                stream = self._stream
+                generation = self._capture_filter_refresh_generation
+            if stream is not None:
+                try:
+                    self._refresh_capture_filter(stream, generation)
+                except Exception:
+                    logger.debug("Failed to refresh compositor exclusions", exc_info=True)
+            with self._capture_start_lock:
+                if self._capture_filter_refresh_requested.is_set():
+                    continue
+                if self._capture_filter_refresh_thread is worker:
+                    self._capture_filter_refresh_thread = None
+                return
+
+    def _capture_filter_refresh_is_current(self, stream, generation) -> bool:
+        with self._capture_start_lock:
+            return (
+                self._stream is stream
+                and self._capture_filter_refresh_generation == generation
+                and not self._capture_filter_refresh_requested.is_set()
+            )
 
     def _excluded_windows(self, content):
         """Exclude all compositor windows + extra windows from capture."""
@@ -1152,32 +1203,60 @@ class FullScreenCompositor:
                 continue
         return excluded
 
-    def _fetch_shareable_content(self, bridge):
+    def _fetch_shareable_content(self, bridge, attempt=None, *, should_continue=None):
+        if attempt is None and should_continue is None:
+            raise ValueError("shareable-content fetch requires a lifecycle guard")
         SCShareableContent = bridge["SCShareableContent"]
 
-        result = {"content": None}
+        result = {"content": None, "error": None, "completed": False}
         event = threading.Event()
 
-        def got_content(content, *args):
+        def got_content(content, error=None, *args):
             result["content"] = content
+            result["error"] = error
+            result["completed"] = True
             event.set()
 
         SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
-        event.wait(timeout=5.0)
+        started_at = time.monotonic()
+        pending_logged = False
+        while not event.wait(timeout=0.1):
+            if attempt is not None and not self._capture_attempt_is_current(attempt):
+                return None
+            if should_continue is not None and not should_continue():
+                return None
+            elapsed = time.monotonic() - started_at
+            if elapsed >= 5.0 and not pending_logged:
+                logger.info(
+                    "FullScreenCompositor: ScreenCaptureKit shareable-content request "
+                    "still pending after %.1fs",
+                    elapsed,
+                )
+                pending_logged = True
+
+        if result["error"] is not None:
+            message = f"ScreenCaptureKit shareable-content request failed: {result['error']}"
+            if isinstance(result["error"], BaseException):
+                raise RuntimeError(message) from result["error"]
+            raise RuntimeError(message)
+        if result["completed"] and result["content"] is None:
+            raise RuntimeError(
+                "ScreenCaptureKit completed shareable-content request without content or error"
+            )
         return result["content"]
 
-    def _refresh_capture_filter(self):
-        stream = getattr(self, "_stream", None)
-        if stream is None:
+    def _refresh_capture_filter(self, stream, generation):
+        if not self._capture_filter_refresh_is_current(stream, generation):
             return
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             return
-        content = self._fetch_shareable_content(bridge)
-        if content is None:
+        should_continue = lambda: self._capture_filter_refresh_is_current(stream, generation)
+        content = self._fetch_shareable_content(bridge, should_continue=should_continue)
+        if content is None or not should_continue():
             return
         display = self._match_display(content)
-        if display is None:
+        if display is None or not should_continue():
             return
         content_filter = bridge["SCContentFilter"].alloc().initWithDisplay_excludingWindows_(
             display,
@@ -1185,13 +1264,12 @@ class FullScreenCompositor:
         )
         if not hasattr(stream, "updateContentFilter_completionHandler_"):
             return
-        finished = threading.Event()
 
-        def on_updated(*args):
-            finished.set()
+        def on_updated(error=None, *args):
+            if error is not None:
+                logger.info("FullScreenCompositor: capture filter update failed: %s", error)
 
         stream.updateContentFilter_completionHandler_(content_filter, on_updated)
-        finished.wait(timeout=1.0)
 
     def submit_iosurface(self, iosurface, *, width: int, height: int, pixel_buffer=None):
         """Called from SCK handler queue — must never block.

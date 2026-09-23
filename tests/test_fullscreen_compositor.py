@@ -1714,7 +1714,7 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     compositor._capture_content = None
     compositor._capture_display = None
     compositor._extra_excluded_ids = set()
-    compositor._fetch_shareable_content = lambda bridge: content
+    compositor._fetch_shareable_content = lambda bridge, attempt=None: content
     compositor._match_display = lambda content: display
     compositor._excluded_windows = lambda content: []
     compositor._schedule_stop_after_capture_failure = lambda current: scheduled_stops.append(current)
@@ -2025,3 +2025,180 @@ def test_fullscreen_compositor_keeps_residency_diagnostics_when_pipeline_snapsho
     assert diagnostics["presented_frames"] == 2
     assert diagnostics["capture_frames"] == 0
     assert "mip_generation_frames" not in diagnostics
+
+
+def test_fullscreen_capture_accepts_shareable_content_after_five_seconds(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor, _CaptureStartAttempt
+
+    content = object()
+
+    class SimulatedEvent:
+        def __init__(self):
+            self.elapsed = 0.0
+            self.signaled = False
+
+        def set(self):
+            self.signaled = True
+
+        def wait(self, timeout=None):
+            self.elapsed += 5.1 if timeout is None else timeout
+            if self.elapsed > 5.0 and not self.signaled:
+                ShareableContent.completion(content, None)
+            return self.signaled
+
+    class ShareableContent:
+        completion = None
+
+        @classmethod
+        def getShareableContentWithCompletionHandler_(cls, completion):
+            cls.completion = completion
+
+    class DisplayLookupReached(Exception):
+        pass
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_lock = threading.RLock()
+    attempt = _CaptureStartAttempt(generation=1)
+    compositor._capture_attempt = attempt
+
+    def match_display(actual_content):
+        assert actual_content is content
+        raise DisplayLookupReached
+
+    compositor._match_display = match_display
+    monkeypatch.setattr(fullscreen_compositor, "threading", SimpleNamespace(Event=SimulatedEvent))
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "_load_screencapturekit_bridge",
+        lambda: {"SCShareableContent": ShareableContent},
+    )
+
+    with pytest.raises(DisplayLookupReached):
+        compositor._start_capture(attempt)
+
+
+def test_fullscreen_capture_preserves_shareable_content_callback_error():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class NSError:
+        def __str__(self):
+            return "SCK denied display enumeration"
+
+    class ShareableContent:
+        @staticmethod
+        def getShareableContentWithCompletionHandler_(completion):
+            completion(None, NSError())
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+
+    with pytest.raises(RuntimeError, match="SCK denied display enumeration"):
+        compositor._fetch_shareable_content(
+            {"SCShareableContent": ShareableContent},
+            should_continue=lambda: True,
+        )
+
+
+def test_fullscreen_capture_cancels_pending_shareable_content_wait(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor, _CaptureStartAttempt
+
+    real_event = threading.Event
+    callback_registered = real_event()
+    release_callback = {}
+
+    class WaitableEvent:
+        def __init__(self):
+            self.event = real_event()
+
+        def set(self):
+            self.event.set()
+
+        def wait(self, timeout=None):
+            return self.event.wait(timeout)
+
+    class ShareableContent:
+        @classmethod
+        def getShareableContentWithCompletionHandler_(cls, completion):
+            release_callback["completion"] = completion
+            callback_registered.set()
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_lock = threading.RLock()
+    attempt = _CaptureStartAttempt(generation=1)
+    compositor._capture_attempt = attempt
+    monkeypatch.setattr(fullscreen_compositor, "threading", SimpleNamespace(Event=WaitableEvent))
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "_load_screencapturekit_bridge",
+        lambda: {"SCShareableContent": ShareableContent},
+    )
+
+    worker = threading.Thread(target=compositor._run_capture_start, args=(attempt,), daemon=True)
+    worker.start()
+    try:
+        assert callback_registered.wait(timeout=1.0)
+        with compositor._capture_start_lock:
+            attempt.state = "cancelled"
+            attempt.event.set()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive(), "cancelled capture remained blocked on ScreenCaptureKit"
+        assert compositor.capture_start_state == "cancelled"
+        assert compositor.capture_start_error is None
+    finally:
+        if worker.is_alive():
+            release_callback["completion"](object(), None)
+            worker.join(timeout=1.0)
+
+
+def test_fullscreen_capture_skips_filter_refresh_when_excluded_ids_are_unchanged():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_lock = threading.RLock()
+    compositor._capture_filter_refresh_generation = 0
+    compositor._capture_filter_refresh_requested = threading.Event()
+    compositor._capture_filter_refresh_thread = None
+    compositor._extra_excluded_ids = {41}
+    compositor._stream = object()
+    refresh_calls = []
+    compositor._refresh_capture_filter = lambda *args: refresh_calls.append(args)
+
+    compositor.set_excluded_window_ids([41])
+
+    assert compositor._capture_filter_refresh_generation == 0
+    assert refresh_calls == []
+
+
+def test_fullscreen_capture_refreshes_changed_filter_off_caller_thread():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._capture_start_lock = threading.RLock()
+    compositor._capture_filter_refresh_generation = 0
+    compositor._capture_filter_refresh_requested = threading.Event()
+    compositor._capture_filter_refresh_thread = None
+    compositor._extra_excluded_ids = {41}
+    stream = object()
+    compositor._stream = stream
+    caller_thread = threading.current_thread()
+    refresh_finished = threading.Event()
+    refresh_calls = []
+
+    def refresh(*args):
+        refresh_calls.append((threading.current_thread(), args))
+        refresh_finished.set()
+
+    compositor._refresh_capture_filter = refresh
+    compositor.set_excluded_window_ids([42])
+
+    try:
+        assert refresh_finished.wait(timeout=1.0)
+        assert refresh_calls[0][0] is not caller_thread
+        assert refresh_calls[0][1] == (stream, 1)
+    finally:
+        worker = compositor._capture_filter_refresh_thread
+        if worker is not None:
+            worker.join(timeout=1.0)
