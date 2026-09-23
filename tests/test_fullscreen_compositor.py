@@ -2208,6 +2208,29 @@ def test_fullscreen_capture_preserves_shareable_content_callback_error():
         )
 
 
+def test_fullscreen_capture_classifies_empty_shareable_content_as_retryable():
+    import importlib
+
+    compositor_module = importlib.import_module("spoke.fullscreen_compositor")
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class ShareableContent:
+        @staticmethod
+        def getShareableContentWithCompletionHandler_(completion):
+            completion(None, None)
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+
+    with pytest.raises(
+        compositor_module._ShareableContentUnavailableError,
+        match="without content or error",
+    ):
+        compositor._fetch_shareable_content(
+            {"SCShareableContent": ShareableContent},
+            should_continue=lambda: True,
+        )
+
+
 def test_fullscreen_capture_cancels_pending_shareable_content_wait(monkeypatch):
     import spoke.fullscreen_compositor as fullscreen_compositor
 
