@@ -168,6 +168,7 @@ def test_history_action_buttons_have_legible_symbols_and_click_targets():
         frame = button.frame()
         image = button.image()
         assert button.bezelStyle() == AK.NSBezelStyleCircular
+        assert button.controlSize() == AK.NSControlSizeLarge
         assert frame.size.width >= 60
         assert frame.size.height >= 60
         assert image.size().width >= 42

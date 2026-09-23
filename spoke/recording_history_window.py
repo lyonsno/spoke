@@ -169,6 +169,7 @@ class RecordingHistoryWindow(NSObject):
             image, self, action,
         )
         button.setBezelStyle_(AK.NSBezelStyleCircular)
+        button.setControlSize_(AK.NSControlSizeLarge)
         button.setFrame_(NSMakeRect(x, y, 60, 60))
         button.setToolTip_(tooltip)
         button.setAutoresizingMask_(mask)
