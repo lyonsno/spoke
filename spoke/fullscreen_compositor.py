@@ -34,6 +34,8 @@ if hasattr(objc, "ObjCPointerWarning"):
 _shared_overlay_hosts: dict[tuple[str, int], "_SharedOverlayHost"] = {}
 _SCK_TARGET_FPS = max(1, int(float(os.environ.get("SPOKE_FULLSCREEN_COMPOSITOR_FPS", "30"))))
 _SCK_FRAME_INTERVAL = (1, _SCK_TARGET_FPS, 0, 0)
+_FILTER_RETRY_BASE_SECONDS = 0.25
+_FILTER_RETRY_MAX_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -336,6 +338,9 @@ class FullScreenCompositor:
         self._capture_filter_applied_stream = None
         self._capture_filter_update_in_flight = None
         self._capture_filter_update_token = 0
+        self._capture_filter_retry_timer = None
+        self._capture_filter_retry_token = 0
+        self._capture_filter_retry_delay = _FILTER_RETRY_BASE_SECONDS
         self._capture_content = None
         self._capture_display = None
 
@@ -992,6 +997,9 @@ class FullScreenCompositor:
             initial_excluded_ids = frozenset(self._extra_excluded_ids)
             initial_filter_generation = self._capture_filter_refresh_generation
         excluded = self._excluded_windows(content, extra_excluded_ids=initial_excluded_ids)
+        resolved_initial_excluded_ids = self._resolved_extra_exclusion_signature(
+            excluded, initial_excluded_ids
+        )
         logger.info(
             "FullScreenCompositor: excluding %d windows (IDs: %s, total in snapshot: %d)",
             len(excluded),
@@ -1057,7 +1065,7 @@ class FullScreenCompositor:
                 self._stream_renderer_proxy = renderer_proxy
                 self._stream_handler_queue = stream_handler_queue
                 self._capture_filter_applied_stream = stream
-                self._capture_filter_applied_signature = initial_excluded_ids
+                self._capture_filter_applied_signature = resolved_initial_excluded_ids
                 self._capture_filter_applied_generation = initial_filter_generation
                 stream.startCaptureWithCompletionHandler_(
                     lambda *args: self._capture_start_completed(
@@ -1107,6 +1115,7 @@ class FullScreenCompositor:
     def _clear_stream_refs_locked(self, stream):
         if self._stream is not stream:
             return
+        self._cancel_capture_filter_retry_locked(reset_delay=True)
         self._stream = None
         self._capture_filter_applied_stream = None
         self._capture_filter_applied_signature = None
@@ -1154,29 +1163,36 @@ class FullScreenCompositor:
             if changed:
                 self._extra_excluded_ids = normalized
                 self._capture_filter_refresh_generation += 1
+                self._cancel_capture_filter_retry_locked(reset_delay=True)
             stream = self._stream
             if stream is None:
                 return
+            desired_signature = frozenset(normalized)
+            desired_applied = (
+                self._capture_filter_applied_stream is stream
+                and desired_signature == self._capture_filter_applied_signature
+            )
             inflight = self._capture_filter_update_in_flight
             if inflight is not None and inflight[0] is stream:
-                if changed or frozenset(normalized) != self._capture_filter_applied_signature:
+                if changed or not desired_applied:
                     self._capture_filter_refresh_requested.set()
                 return
             worker = self._capture_filter_refresh_thread
             if worker is not None and worker.is_alive():
-                if changed:
+                if changed or (not desired_applied and self._capture_filter_retry_timer is None):
                     self._capture_filter_refresh_requested.set()
                 return
-            if (
-                self._capture_filter_applied_stream is stream
-                and frozenset(normalized) == self._capture_filter_applied_signature
-            ):
+            if self._capture_filter_retry_timer is not None:
+                return
+            if desired_applied:
                 return
             self._schedule_capture_filter_refresh_locked()
 
     def _schedule_capture_filter_refresh_locked(self) -> None:
         stream = self._stream
         if stream is None or self._capture_filter_update_in_flight is not None:
+            return
+        if self._capture_filter_retry_timer is not None:
             return
         if (
             self._capture_filter_applied_stream is stream
@@ -1204,6 +1220,67 @@ class FullScreenCompositor:
                 "FullScreenCompositor: could not schedule capture filter refresh",
                 exc_info=True,
             )
+            self._schedule_capture_filter_retry_locked(
+                stream,
+                self._capture_filter_refresh_generation,
+                frozenset(self._extra_excluded_ids),
+            )
+
+    def _cancel_capture_filter_retry_locked(self, *, reset_delay: bool) -> None:
+        timer = getattr(self, "_capture_filter_retry_timer", None)
+        self._capture_filter_retry_timer = None
+        self._capture_filter_retry_token = getattr(self, "_capture_filter_retry_token", 0) + 1
+        if timer is not None:
+            timer.cancel()
+        if reset_delay:
+            self._capture_filter_retry_delay = _FILTER_RETRY_BASE_SECONDS
+
+    def _schedule_capture_filter_retry_locked(self, stream, generation, desired_signature) -> None:
+        if (
+            self._stream is not stream
+            or self._capture_filter_refresh_generation != generation
+            or frozenset(self._extra_excluded_ids) != desired_signature
+            or (
+                self._capture_filter_applied_stream is stream
+                and self._capture_filter_applied_signature == desired_signature
+            )
+            or self._capture_filter_retry_timer is not None
+        ):
+            return
+
+        delay = self._capture_filter_retry_delay
+        self._capture_filter_retry_delay = min(delay * 2.0, _FILTER_RETRY_MAX_SECONDS)
+        self._capture_filter_retry_token += 1
+        token = self._capture_filter_retry_token
+        timer = threading.Timer(
+            delay,
+            self._capture_filter_retry_fired,
+            args=(token, stream, generation, desired_signature),
+        )
+        timer.daemon = True
+        self._capture_filter_retry_timer = timer
+        try:
+            timer.start()
+        except Exception:
+            self._capture_filter_retry_timer = None
+            logger.info("FullScreenCompositor: could not schedule filter retry", exc_info=True)
+
+    def _capture_filter_retry_fired(self, token, stream, generation, desired_signature) -> None:
+        with self._capture_start_lock:
+            if token != self._capture_filter_retry_token:
+                return
+            self._capture_filter_retry_timer = None
+            if (
+                self._stream is not stream
+                or self._capture_filter_refresh_generation != generation
+                or frozenset(self._extra_excluded_ids) != desired_signature
+                or (
+                    self._capture_filter_applied_stream is stream
+                    and self._capture_filter_applied_signature == desired_signature
+                )
+            ):
+                return
+            self._schedule_capture_filter_refresh_locked()
 
     def _run_capture_filter_refreshes(self) -> None:
         worker = threading.current_thread()
@@ -1229,6 +1306,16 @@ class FullScreenCompositor:
                     self._refresh_capture_filter(stream, generation)
                 except Exception:
                     logger.debug("Failed to refresh compositor exclusions", exc_info=True)
+                    with self._capture_start_lock:
+                        desired_signature = frozenset(self._extra_excluded_ids)
+                        if (
+                            not self._capture_filter_refresh_requested.is_set()
+                            and self._stream is stream
+                            and self._capture_filter_refresh_generation == generation
+                        ):
+                            self._schedule_capture_filter_retry_locked(
+                                stream, generation, desired_signature
+                            )
             with self._capture_start_lock:
                 if self._capture_filter_refresh_requested.is_set():
                     continue
@@ -1271,6 +1358,18 @@ class FullScreenCompositor:
             except Exception:
                 continue
         return excluded
+
+    @staticmethod
+    def _resolved_extra_exclusion_signature(excluded_windows, requested_ids):
+        resolved = set()
+        for window in excluded_windows:
+            try:
+                window_id = int(window.windowID())
+            except Exception:
+                continue
+            if window_id in requested_ids:
+                resolved.add(window_id)
+        return frozenset(resolved)
 
     def _fetch_shareable_content(self, bridge, attempt=None, *, should_continue=None):
         if attempt is None and should_continue is None:
@@ -1321,20 +1420,26 @@ class FullScreenCompositor:
             signature = frozenset(self._extra_excluded_ids)
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
-            return
+            raise RuntimeError("ScreenCaptureKit bridge unavailable during filter refresh")
         should_continue = lambda: self._capture_filter_refresh_is_current(stream, generation)
         content = self._fetch_shareable_content(bridge, should_continue=should_continue)
-        if content is None or not should_continue():
+        if not should_continue():
             return
+        if content is None:
+            raise RuntimeError("shareable-content request ended without content")
         display = self._match_display(content)
-        if display is None or not should_continue():
+        if not should_continue():
             return
+        if display is None:
+            raise RuntimeError("no matching display in shareable content")
+        excluded = self._excluded_windows(content, extra_excluded_ids=signature)
+        resolved_signature = self._resolved_extra_exclusion_signature(excluded, signature)
         content_filter = bridge["SCContentFilter"].alloc().initWithDisplay_excludingWindows_(
             display,
-            self._excluded_windows(content, extra_excluded_ids=signature),
+            excluded,
         )
         if not hasattr(stream, "updateContentFilter_completionHandler_"):
-            return
+            raise RuntimeError("SCStream does not support content-filter updates")
         with self._capture_start_lock:
             if not self._capture_filter_refresh_is_current(stream, generation):
                 return
@@ -1343,14 +1448,20 @@ class FullScreenCompositor:
             self._capture_filter_update_in_flight = (stream, generation, signature, token)
 
         def on_updated(error=None, *args):
-            self._capture_filter_update_completed(stream, generation, signature, token, error)
+            self._capture_filter_update_completed(
+                stream, generation, signature, resolved_signature, token, error
+            )
 
         try:
             stream.updateContentFilter_completionHandler_(content_filter, on_updated)
         except Exception as exc:
-            self._capture_filter_update_completed(stream, generation, signature, token, exc)
+            self._capture_filter_update_completed(
+                stream, generation, signature, resolved_signature, token, exc
+            )
 
-    def _capture_filter_update_completed(self, stream, generation, signature, token, error):
+    def _capture_filter_update_completed(
+        self, stream, generation, requested_signature, resolved_signature, token, error
+    ):
         with self._capture_start_lock:
             inflight = self._capture_filter_update_in_flight
             owns_update = inflight is not None and inflight[3] == token
@@ -1360,7 +1471,7 @@ class FullScreenCompositor:
             current_request = (
                 current_stream
                 and generation == current_generation
-                and signature == desired_signature
+                and requested_signature == desired_signature
             )
             retry_requested = self._capture_filter_refresh_requested.is_set()
             should_refresh = False
@@ -1369,15 +1480,18 @@ class FullScreenCompositor:
                 self._capture_filter_refresh_requested.clear()
                 if error is None and current_stream:
                     self._capture_filter_applied_stream = stream
-                    self._capture_filter_applied_signature = signature
+                    self._capture_filter_applied_signature = resolved_signature
                     self._capture_filter_applied_generation = generation
+                    self._cancel_capture_filter_retry_locked(reset_delay=True)
                 desired_unapplied = current_stream and (
                     self._capture_filter_applied_stream is not stream
                     or self._capture_filter_applied_signature != desired_signature
                 )
-                should_refresh = desired_unapplied and (
-                    error is None or not current_request or retry_requested
-                )
+                should_refresh = desired_unapplied and (not current_request or retry_requested)
+                if error is not None and current_request and desired_unapplied and not retry_requested:
+                    self._schedule_capture_filter_retry_locked(
+                        stream, generation, desired_signature
+                    )
 
         stream_label = f"stream={id(stream)} generation={generation}"
         if error is not None:

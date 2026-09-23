@@ -1634,8 +1634,21 @@ def test_late_screen_capture_start_callback_cannot_resurrect_a_stopped_composito
 
 
 @pytest.mark.parametrize(("completion_error", "expected_state"), [(None, "started"), ("SCK denied", "failed")])
+@pytest.mark.parametrize(
+    ("requested_ids", "available_ids", "expected_applied_ids"),
+    [
+        (set(), set(), frozenset()),
+        ({41}, set(), frozenset()),
+        ({41}, {41}, frozenset({41})),
+    ],
+)
 def test_screen_capture_start_acknowledgment_is_async_and_truthful(
-    monkeypatch, completion_error, expected_state
+    monkeypatch,
+    completion_error,
+    expected_state,
+    requested_ids,
+    available_ids,
+    expected_applied_ids,
 ):
     import importlib
 
@@ -1653,6 +1666,7 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
 
     class ContentFilter(Factory):
         def initWithDisplay_excludingWindows_(self, display, excluded):
+            self.excluded_ids = frozenset(int(window.windowID()) for window in excluded)
             return self
 
     class StreamConfiguration(Factory):
@@ -1663,6 +1677,7 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
 
     class Stream(Factory):
         def initWithFilter_configuration_delegate_(self, content_filter, config, delegate):
+            self.initial_excluded_ids = content_filter.excluded_ids
             return self
 
         def addStreamOutput_type_sampleHandlerQueue_error_(self, *args):
@@ -1679,12 +1694,19 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
         def frame(self):
             return SimpleNamespace(size=SimpleNamespace(width=80, height=60))
 
+    class Window:
+        def __init__(self, window_id):
+            self._window_id = window_id
+
+        def windowID(self):
+            return self._window_id
+
     class Screen:
         def backingScaleFactor(self):
             return 2.0
 
     display = Display()
-    content = SimpleNamespace()
+    content = SimpleNamespace(windows=lambda: [Window(value) for value in available_ids])
     bridge = {
         "SCContentFilter": ContentFilter,
         "SCStreamConfiguration": StreamConfiguration,
@@ -1717,7 +1739,7 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     compositor._stream_handler_queue = None
     compositor._capture_content = None
     compositor._capture_display = None
-    compositor._extra_excluded_ids = set()
+    compositor._extra_excluded_ids = set(requested_ids)
     compositor._capture_filter_refresh_generation = 0
     compositor._capture_filter_refresh_requested = threading.Event()
     compositor._capture_filter_refresh_thread = None
@@ -1728,7 +1750,11 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
     compositor._capture_filter_update_token = 0
     compositor._fetch_shareable_content = lambda bridge, attempt=None: content
     compositor._match_display = lambda content: display
-    compositor._excluded_windows = lambda content, *, extra_excluded_ids=None: []
+    compositor._excluded_windows = lambda content, *, extra_excluded_ids=None: [
+        window
+        for window in content.windows()
+        if int(window.windowID()) in (extra_excluded_ids or set())
+    ]
     compositor._schedule_stop_after_capture_failure = lambda current: scheduled_stops.append(current)
     monkeypatch.setattr(
         threading.Event,
@@ -1740,6 +1766,8 @@ def test_screen_capture_start_acknowledgment_is_async_and_truthful(
 
     stream = compositor._stream
     assert isinstance(stream, Stream)
+    assert stream.initial_excluded_ids == expected_applied_ids
+    assert compositor._capture_filter_applied_signature == expected_applied_ids
     assert compositor.capture_start_state == "pending"
     stream.completion(completion_error)
     assert compositor.capture_start_state == expected_state
@@ -2191,13 +2219,20 @@ def _filter_refresh_compositor(monkeypatch, stream):
     import spoke.fullscreen_compositor as compositor_module
     from spoke.fullscreen_compositor import FullScreenCompositor
 
+    class Window:
+        def __init__(self, window_id):
+            self._window_id = window_id
+
+        def windowID(self):
+            return self._window_id
+
     class Filter:
         @classmethod
         def alloc(cls):
             return cls()
 
         def initWithDisplay_excludingWindows_(self, display, excluded):
-            self.excluded_ids = frozenset(int(value) for value in excluded)
+            self.excluded_ids = frozenset(int(window.windowID()) for window in excluded)
             return self
 
     compositor = FullScreenCompositor.__new__(FullScreenCompositor)
@@ -2210,14 +2245,20 @@ def _filter_refresh_compositor(monkeypatch, stream):
     compositor._capture_filter_applied_stream = stream
     compositor._capture_filter_update_in_flight = None
     compositor._capture_filter_update_token = 0
+    compositor._capture_filter_retry_timer = None
+    compositor._capture_filter_retry_token = 0
+    compositor._capture_filter_retry_delay = 0.05
     compositor._extra_excluded_ids = set()
     compositor._stream = stream
     compositor._fetch_shareable_content = lambda bridge, **kwargs: object()
     compositor._match_display = lambda content: object()
     compositor._excluded_windows = lambda content, *, extra_excluded_ids=None: list(
-        compositor._extra_excluded_ids
-        if extra_excluded_ids is None
-        else extra_excluded_ids
+        Window(value)
+        for value in (
+            compositor._extra_excluded_ids
+            if extra_excluded_ids is None
+            else extra_excluded_ids
+        )
     )
     monkeypatch.setattr(
         compositor_module,
@@ -2255,6 +2296,9 @@ def test_fullscreen_capture_refreshes_changed_filter_off_caller_thread():
     compositor._capture_filter_applied_generation = 0
     compositor._capture_filter_update_in_flight = None
     compositor._capture_filter_update_token = 0
+    compositor._capture_filter_retry_timer = None
+    compositor._capture_filter_retry_token = 0
+    compositor._capture_filter_retry_delay = 0.01
     stream = object()
     compositor._stream = stream
     caller_thread = threading.current_thread()
@@ -2278,7 +2322,7 @@ def test_fullscreen_capture_refreshes_changed_filter_off_caller_thread():
             worker.join(timeout=1.0)
 
 
-def test_fullscreen_capture_retries_same_filter_after_update_error(monkeypatch):
+def test_fullscreen_capture_new_filter_supersedes_failed_retry(monkeypatch):
     from spoke.fullscreen_compositor import FullScreenCompositor
 
     stream = _DeferredFilterStream()
@@ -2288,14 +2332,69 @@ def test_fullscreen_capture_retries_same_filter_after_update_error(monkeypatch):
     assert stream.wait_for_calls(1)
     stream.complete(0, RuntimeError("temporary filter failure"))
 
-    assert compositor._capture_filter_applied_signature == frozenset()
-    compositor.set_excluded_window_ids([42])
+    compositor.set_excluded_window_ids([43])
     assert stream.wait_for_calls(2)
+    assert stream.calls[1][0].excluded_ids == frozenset({43})
+    stream.complete(1)
+
+    assert compositor._capture_filter_applied_signature == frozenset({43})
+    assert compositor._capture_filter_applied_stream is stream
+
+
+def test_fullscreen_capture_retries_latest_filter_error_without_republication(monkeypatch):
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    stream = _DeferredFilterStream()
+    compositor = _filter_refresh_compositor(monkeypatch, stream)
+
+    compositor.set_excluded_window_ids([42])
+    assert stream.wait_for_calls(1)
+    stream.complete(0, RuntimeError("temporary filter failure"))
+
+    assert stream.wait_for_calls(2), "latest failed filter was stranded without a retry"
     assert stream.calls[1][0].excluded_ids == frozenset({42})
     stream.complete(1)
 
     assert compositor._capture_filter_applied_signature == frozenset({42})
     assert compositor._capture_filter_applied_stream is stream
+
+
+def test_same_filter_publication_during_pre_submit_worker_is_not_lost(monkeypatch):
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    stream = _DeferredFilterStream()
+    compositor = _filter_refresh_compositor(monkeypatch, stream)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    retry_started = threading.Event()
+    calls = []
+
+    def refresh(current_stream, generation):
+        calls.append((current_stream, generation))
+        if len(calls) == 1:
+            first_started.set()
+            release_first.wait(timeout=1.0)
+            raise RuntimeError("shareable-content request failed before update submission")
+        compositor._capture_filter_applied_stream = current_stream
+        compositor._capture_filter_applied_signature = frozenset({42})
+        compositor._capture_filter_applied_generation = generation
+        retry_started.set()
+
+    compositor._refresh_capture_filter = refresh
+    compositor.set_excluded_window_ids([42])
+    assert first_started.wait(timeout=1.0)
+
+    compositor.set_excluded_window_ids([42])
+    release_first.set()
+
+    try:
+        assert retry_started.wait(timeout=1.0), "same-set retry intent was discarded"
+        assert calls == [(stream, 1), (stream, 1)]
+    finally:
+        release_first.set()
+        worker = compositor._capture_filter_refresh_thread
+        if worker is not None:
+            worker.join(timeout=1.0)
 
 
 def test_fullscreen_capture_serializes_filter_updates_and_applies_latest(monkeypatch):
