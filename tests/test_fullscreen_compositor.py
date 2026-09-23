@@ -1201,6 +1201,9 @@ def test_fullscreen_compositor_seeds_sampled_brightness_from_shell_config():
     from spoke.fullscreen_compositor import FullScreenCompositor
 
     compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._capture_attempt_generation = 0
+    compositor._capture_start_state = "idle"
     compositor._running = False
     compositor._pipeline = SimpleNamespace(reset_temporal_state=lambda: None)
     compositor._sampled_brightness = 0.5
@@ -1220,6 +1223,9 @@ def test_fullscreen_compositor_start_returns_before_capture_completion():
     release_capture = threading.Event()
 
     compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._capture_attempt_generation = 0
+    compositor._capture_start_state = "idle"
     compositor._running = False
     compositor._pipeline = SimpleNamespace(reset_temporal_state=lambda: None)
     compositor._sampled_brightness = 0.5
@@ -1240,6 +1246,73 @@ def test_fullscreen_compositor_start_returns_before_capture_completion():
         assert elapsed < 0.1
     finally:
         release_capture.set()
+
+
+def test_optical_witness_receipts_are_settled_and_generation_deduplicated(monkeypatch, tmp_path):
+    import spoke.command_overlay_trace as trace
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_TRACE_PATH", str(tmp_path / "trace.jsonl"))
+    events = []
+    monkeypatch.setattr(
+        trace,
+        "record_command_overlay_trace",
+        lambda event, **details: events.append((event, details)),
+    )
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._capture_attempt_generation = 2
+    compositor._capture_start_state = "started"
+    compositor._last_optical_witness_receipts = {}
+    compositor._presented_count = 9
+    config = {
+        "client_id": "spoke.teleporter",
+        "generation": 4,
+        "visible": True,
+        "optical_field": {"state": "rest", "transition_phase": "rest"},
+        "warp_mode": 1.0,
+    }
+
+    compositor._record_optical_witness_presents(
+        [config], frame_generation=19, config_generation=8
+    )
+    compositor._record_optical_witness_presents(
+        [config], frame_generation=20, config_generation=8
+    )
+    compositor._capture_attempt_generation = 3
+    compositor._record_optical_witness_presents(
+        [config], frame_generation=21, config_generation=8
+    )
+    compositor._record_optical_witness_presents(
+        [dict(config, generation=5)], frame_generation=22, config_generation=9
+    )
+    compositor._record_optical_witness_presents(
+        [dict(config, optical_field={"state": "materialize"})],
+        frame_generation=23,
+        config_generation=10,
+    )
+
+    assert len(events) == 3
+    assert events[0][0] == "optical.witness.present"
+    assert events[0][1]["consumer_id"] == "spoke.teleporter"
+    assert events[0][1]["requested_config_generation"] == 8
+    assert events[0][1]["rendered_frame_generation"] == 19
+    assert events[1][1]["capture_attempt_generation"] == 3
+    assert events[2][1]["client_generation"] == 5
+
+
+def test_optical_witness_receipts_are_disabled_without_trace_path(monkeypatch, tmp_path):
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    monkeypatch.delenv("SPOKE_COMMAND_OVERLAY_TRACE_PATH", raising=False)
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._record_optical_witness_presents(
+        [{"client_id": "spoke.teleporter", "visible": True}],
+        frame_generation=1,
+        config_generation=1,
+    )
+
+    assert not (tmp_path / "trace.jsonl").exists()
 
 
 def test_fullscreen_compositor_skips_display_link_when_frame_and_config_unchanged():

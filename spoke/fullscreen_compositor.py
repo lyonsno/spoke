@@ -318,6 +318,9 @@ class FullScreenCompositor:
         self._extra_excluded_ids = set()
         self._capture_content = None
         self._capture_display = None
+        self._capture_attempt_generation = 0
+        self._capture_start_state = "idle"
+        self._last_optical_witness_receipts: dict[str, tuple[int, int, int]] = {}
 
         # First-present callback (called once from render thread on 0->1 transition)
         self._on_first_present = None
@@ -389,20 +392,36 @@ class FullScreenCompositor:
 
     def _start_capture_async(self) -> None:
         self._capture_start_cancelled = False
+        with self._lock:
+            self._capture_attempt_generation += 1
+            generation = self._capture_attempt_generation
+            self._capture_start_state = "pending"
         self._capture_thread = threading.Thread(
             target=self._run_capture_start,
+            args=(generation,),
             name="SpokeFullScreenCompositorCapture",
             daemon=True,
         )
         self._capture_thread.start()
 
-    def _run_capture_start(self) -> None:
+    def _run_capture_start(self, generation: int) -> None:
         try:
             self._start_capture()
-            if getattr(self, "_capture_start_cancelled", False):
+            with self._lock:
+                current = (
+                    generation == self._capture_attempt_generation
+                    and not self._capture_start_cancelled
+                )
+                if current:
+                    self._capture_start_state = "started"
+            if not current:
                 self._stop_capture()
         except Exception:
-            if not getattr(self, "_capture_start_cancelled", False):
+            with self._lock:
+                current = generation == self._capture_attempt_generation
+                if current and not self._capture_start_cancelled:
+                    self._capture_start_state = "failed"
+            if current and not getattr(self, "_capture_start_cancelled", False):
                 logger.info("FullScreenCompositor: capture failed to start", exc_info=True)
                 self._schedule_stop_after_capture_failure()
 
@@ -417,6 +436,9 @@ class FullScreenCompositor:
     def stop(self) -> None:
         """Tear down everything."""
         self._capture_start_cancelled = True
+        with self._lock:
+            if self._capture_start_state in {"pending", "started"}:
+                self._capture_start_state = "stopped"
         self._running = False
         self._stop_display_link()
         self._stop_capture()
@@ -470,6 +492,28 @@ class FullScreenCompositor:
     def rendered_config_generation(self) -> int:
         """Most recent config generation that reached a presented frame."""
         return int(getattr(self, "_rendered_config_generation", -1))
+
+    @property
+    def capture_attempt_generation(self) -> int:
+        with self._lock:
+            return int(self._capture_attempt_generation)
+
+    @property
+    def capture_start_state(self) -> str:
+        with self._lock:
+            return str(self._capture_start_state)
+
+    def optical_witness_state(self) -> dict[str, int | str]:
+        with self._lock:
+            return {
+                "capture_attempt_generation": int(self._capture_attempt_generation),
+                "capture_state": str(self._capture_start_state),
+                "capture_frame_generation": int(self._latest_frame_generation),
+                "rendered_frame_generation": int(self._rendered_frame_generation),
+                "config_generation": int(self._config_generation),
+                "rendered_config_generation": int(self._rendered_config_generation),
+                "presented_count": int(self._presented_count),
+            }
 
     def set_on_config_present(self, callback, *, min_config_generation=None) -> None:
         """Invoke callback once a frame containing min_config_generation presents."""
@@ -1209,6 +1253,11 @@ class FullScreenCompositor:
                         cb()
                     except Exception:
                         pass
+                self._record_optical_witness_presents(
+                    warp_configs,
+                    frame_generation=frame_generation,
+                    config_generation=config_generation,
+                )
                 present_end = time.monotonic()
                 with self._lock:
                     self._total_presented_frame_ms += max(
@@ -1233,6 +1282,70 @@ class FullScreenCompositor:
                     (tick_end - tick_start) * 1000.0,
                     0.0,
                 )
+
+    def _record_optical_witness_presents(
+        self,
+        shell_configs: list[dict],
+        *,
+        frame_generation: int,
+        config_generation: int,
+    ) -> None:
+        if not os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip():
+            return
+        from .command_overlay_trace import record_command_overlay_trace
+
+        with self._lock:
+            capture_attempt_generation = int(self._capture_attempt_generation)
+            capture_state = str(self._capture_start_state)
+            presented_count = int(self._presented_count)
+        for config in shell_configs:
+            client_id = str(config.get("client_id") or "")
+            optical_field = config.get("optical_field")
+            if not client_id or not isinstance(optical_field, dict):
+                continue
+            state = optical_field.get("transition_phase", optical_field.get("state"))
+            if not config.get("visible") or state != "rest":
+                continue
+            client_generation = int(config.get("generation", 0))
+            receipt_generation = (
+                client_generation,
+                int(config_generation),
+                capture_attempt_generation,
+            )
+            if self._last_optical_witness_receipts.get(client_id) == receipt_generation:
+                continue
+            self._last_optical_witness_receipts[client_id] = receipt_generation
+            record_command_overlay_trace(
+                "optical.witness.present",
+                consumer_id=client_id,
+                client_generation=client_generation,
+                requested_config_generation=int(config_generation),
+                rendered_config_generation=int(config_generation),
+                capture_attempt_generation=capture_attempt_generation,
+                capture_state=capture_state,
+                capture_frame_generation=int(frame_generation),
+                rendered_frame_generation=int(frame_generation),
+                presented_count=presented_count,
+                visible=True,
+                optical_field_state=optical_field.get("state"),
+                transition_phase=state,
+                optical_config={
+                    key: config[key]
+                    for key in (
+                        "warp_mode",
+                        "core_magnification",
+                        "ring_amplitude_points",
+                        "tail_amplitude_points",
+                        "mip_blur_strength",
+                        "scar_amount",
+                        "bleed_zone_frac",
+                        "exterior_mix_width_points",
+                        "x_squeeze",
+                        "y_squeeze",
+                    )
+                    if key in config
+                },
+            )
 
 
 class _CompositorRendererProxy:

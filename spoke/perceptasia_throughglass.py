@@ -123,6 +123,10 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() not in {"", "0", "false", "False", "no", "off"}
 
 
+def _runtime_identity_fields() -> tuple[int, str]:
+    return os.getpid(), os.environ.get("SPOKE_LAUNCH_ID", "unknown")
+
+
 def _env_positive_int(name: str, default: int) -> int:
     try:
         value = int(os.environ.get(name, "").strip())
@@ -328,7 +332,13 @@ class PerceptasiaThroughglassGraft(NSObject):
         if self._panel is not None:
             return
         self._content_generation += 1
-        logger.info("Perceptasia Throughglass: setup begin url=%s", self._manifest.url)
+        pid, launch_id = _runtime_identity_fields()
+        logger.info(
+            "Perceptasia Throughglass: setup begin url=%s pid=%s launch_id=%s",
+            self._manifest.url,
+            pid,
+            launch_id,
+        )
         provider_reachable = _is_provider_reachable(self._manifest.url)
         if not provider_reachable:
             logger.warning(
@@ -847,12 +857,15 @@ class PerceptasiaThroughglassGraft(NSObject):
         canvas_count = result.get("canvasCount") if isinstance(result, Mapping) else None
         sampled_pixels = result.get("canvasSampledPixels") if isinstance(result, Mapping) else None
         visual_signal = result.get("canvasVisualSignal") if isinstance(result, Mapping) else None
+        pid, launch_id = _runtime_identity_fields()
         logger.info(
-            "Perceptasia Throughglass: content verified title=%r canvas_count=%s canvas_sampled_pixels=%s canvas_signal=%s",
+            "Perceptasia Throughglass: content verified title=%r canvas_count=%s canvas_sampled_pixels=%s canvas_signal=%s pid=%s launch_id=%s",
             result_title,
             canvas_count,
             sampled_pixels,
             visual_signal,
+            pid,
+            launch_id,
         )
         if self._pending_show:
             if self.__should_publish_shell() and bool(getattr(self, "_visible", False)):
@@ -1508,7 +1521,12 @@ def _make_content_view(url: str, width: float, height: float):
         _set_view_autoresizing(view)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
         view.loadRequest_(request)
-        logger.info("Perceptasia Throughglass: WKWebView request loaded")
+        pid, launch_id = _runtime_identity_fields()
+        logger.info(
+            "Perceptasia Throughglass: WKWebView request loaded pid=%s launch_id=%s",
+            pid,
+            launch_id,
+        )
         return view, "webview"
     except Exception:
         logger.warning("Perceptasia Throughglass: WKWebView unavailable, using fallback", exc_info=True)
