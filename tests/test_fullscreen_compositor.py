@@ -1284,11 +1284,20 @@ def test_optical_witness_receipts_are_settled_and_generation_deduplicated(monkey
     compositor._record_optical_witness_presents(
         [config], frame_generation=19, config_generation=8,
         warp_dispatches_by_client={
-            "spoke.teleporter": {"dispatch_count": 1, "skip_reason": None}
+            "spoke.teleporter": {
+                "dispatch_count": 1, "skip_reason": None,
+                "composited_to_drawable_texture": True,
+            }
         },
     )
     compositor._record_optical_witness_presents(
-        [config], frame_generation=20, config_generation=8
+        [config], frame_generation=20, config_generation=8,
+        warp_dispatches_by_client={
+            "spoke.teleporter": {
+                "dispatch_count": 1, "skip_reason": None,
+                "composited_to_drawable_texture": True,
+            }
+        },
     )
     compositor._capture_attempt_generation = 3
     compositor._capture_attempt = _CaptureStartAttempt(generation=3, state="started")
@@ -1314,6 +1323,49 @@ def test_optical_witness_receipts_are_settled_and_generation_deduplicated(monkey
     assert events[1][1]["capture_attempt_generation"] == 3
     assert events[2][1]["client_generation"] == 5
     assert events[3][1]["transition_phase"] == "materialize"
+
+
+def test_optical_witness_receipt_dedup_tracks_dispatch_outcome(monkeypatch, tmp_path):
+    import spoke.fullscreen_compositor as compositor_module
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_TRACE_PATH", str(tmp_path / "trace.jsonl"))
+    events = []
+    monkeypatch.setattr(
+        compositor_module,
+        "enqueue_command_overlay_trace",
+        lambda event, **details: events.append((event, details)),
+    )
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._capture_start_lock = threading.RLock()
+    compositor._capture_attempt_generation = 1
+    compositor._capture_attempt = None
+    compositor._last_optical_witness_receipts = {}
+    compositor._presented_count = 1
+    config = {
+        "client_id": "spoke.teleporter", "generation": 1, "visible": True,
+        "optical_field": {"state": "materialize"},
+    }
+
+    compositor._record_optical_witness_presents(
+        [config], frame_generation=7, config_generation=2,
+        warp_dispatches_by_client={"spoke.teleporter": {
+            "dispatch_count": 0, "skip_reason": "empty_dispatch_box",
+            "composited_to_drawable_texture": False,
+        }},
+    )
+    compositor._record_optical_witness_presents(
+        [config], frame_generation=8, config_generation=2,
+        warp_dispatches_by_client={"spoke.teleporter": {
+            "dispatch_count": 1, "skip_reason": None,
+            "composited_to_drawable_texture": True,
+        }},
+    )
+
+    assert len(events) == 2
+    assert events[0][1]["warp_applied"] is False
+    assert events[1][1]["warp_applied"] is True
 
 
 def test_optical_witness_records_visible_transition_phases(monkeypatch, tmp_path):
@@ -1342,7 +1394,10 @@ def test_optical_witness_records_visible_transition_phases(monkeypatch, tmp_path
         }],
         frame_generation=4, config_generation=2,
         warp_dispatches_by_client={
-            "spoke.teleporter": {"dispatch_count": 1, "skip_reason": None}
+            "spoke.teleporter": {
+                "dispatch_count": 1, "skip_reason": None,
+                "composited_to_drawable_texture": True,
+            }
         },
     )
 
@@ -1380,8 +1435,29 @@ def test_optical_witness_attributes_shared_dispatches_per_client(monkeypatch, tm
         frame_generation=8,
         config_generation=5,
         warp_dispatches_by_client={
-            "spoke.teleporter": {"dispatch_count": 2, "skip_reason": None},
-            "perceptasia.throughglass": {"dispatch_count": 0, "skip_reason": "empty_dispatch_box"},
+            "spoke.teleporter": {
+                "dispatch_count": 2, "skip_reason": None,
+                "composited_to_drawable_texture": True,
+            },
+            "perceptasia.throughglass": {
+                "dispatch_count": 0, "skip_reason": "empty_dispatch_box",
+                "composited_to_drawable_texture": False,
+            },
+        },
+    )
+    compositor._record_optical_witness_presents(
+        configs,
+        frame_generation=9,
+        config_generation=5,
+        warp_dispatches_by_client={
+            "spoke.teleporter": {
+                "dispatch_count": 2, "skip_reason": None,
+                "composited_to_drawable_texture": True,
+            },
+            "perceptasia.throughglass": {
+                "dispatch_count": 1, "skip_reason": None,
+                "composited_to_drawable_texture": True,
+            },
         },
     )
 
@@ -1391,6 +1467,9 @@ def test_optical_witness_attributes_shared_dispatches_per_client(monkeypatch, tm
     assert events[1][1]["warp_applied"] is False
     assert events[1][1]["warp_dispatch_count"] == 0
     assert events[1][1]["warp_skip_reason"] == "empty_dispatch_box"
+    assert len(events) == 3
+    assert events[2][1]["consumer_id"] == "perceptasia.throughglass"
+    assert events[2][1]["warp_dispatch_count"] == 1
 
 
 def test_optical_witness_receipts_are_disabled_without_trace_path(monkeypatch, tmp_path):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -544,11 +545,18 @@ def write_witness_index(
     manifest_loaded = manifest is not None
     frame_count = len((manifest or {}).get("frames", []))
     trace_event_count = len(trace_events)
+    trace_file = Path(trace_path).expanduser().resolve()
+    try:
+        trace_sha256 = hashlib.sha256(trace_file.read_bytes()).hexdigest()
+    except OSError:
+        trace_sha256 = None
     payload = {
         "schema": "spoke.retina_lasso_trace_witness.v1",
         "started_at": _format_instant(started_at),
         "ended_at": _format_instant(ended_at),
-        "trace_path": str(Path(trace_path).expanduser().resolve()),
+        "trace_path": str(trace_file),
+        "trace_sha256": trace_sha256,
+        "trace_write_failures_path": f"{trace_file}.failures.jsonl",
         "retina_lasso_manifest": str(manifest_path),
         "retina_lasso_manifest_loaded": manifest_loaded,
         "frame_count": frame_count,

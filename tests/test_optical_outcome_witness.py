@@ -34,24 +34,6 @@ def _evidence_files(tmp_path: Path, *, pid: int = 41) -> tuple[Path, Path, Path]
     _png(frame)
     manifest = tmp_path / "capture-manifest.json"
     manifest.write_text(json.dumps({"frames": [str(frame)]}) + "\n", encoding="utf-8")
-    index = tmp_path / "witness-index.json"
-    index.write_text(
-        json.dumps(
-            {
-                "started_at": "2026-09-23T12:00:00Z",
-                "ended_at": "2026-09-23T12:00:03Z",
-                "retina_lasso_manifest": str(manifest),
-                "trace_path": str((tmp_path / "trace.jsonl").resolve()),
-                "frame_count": 1,
-                "command": ["perceptasia-screen-capture"],
-                "capture_profile": "low_perturbation",
-                "source_app": "com.openai.codex",
-                "source_window": "Spoke",
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     event = {
         "timestamp": "2026-09-23T12:00:01Z",
         "event": "optical.witness.present",
@@ -73,6 +55,7 @@ def _evidence_files(tmp_path: Path, *, pid: int = 41) -> tuple[Path, Path, Path]
         "visible": True,
         "transition_phase": "rest",
         "warp_applied": True,
+        "warp_composited_to_drawable": True,
         "warp_dispatch_count": 1,
         "warp_skip_reason": None,
         "optical_config": {"warp_mode": 1.0},
@@ -80,6 +63,26 @@ def _evidence_files(tmp_path: Path, *, pid: int = 41) -> tuple[Path, Path, Path]
     }
     trace = tmp_path / "trace.jsonl"
     trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    index = tmp_path / "witness-index.json"
+    index.write_text(
+        json.dumps(
+            {
+                "started_at": "2026-09-23T12:00:00Z",
+                "ended_at": "2026-09-23T12:00:03Z",
+                "retina_lasso_manifest": str(manifest),
+                "trace_path": str(trace.resolve()),
+                "trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(),
+                "trace_write_failures_path": f"{trace}.failures.jsonl",
+                "frame_count": 1,
+                "command": ["perceptasia-screen-capture"],
+                "capture_profile": "low_perturbation",
+                "source_app": "com.openai.codex",
+                "source_window": "Spoke",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return index, trace, frame
 
 
@@ -94,6 +97,12 @@ def _report(tmp_path: Path, index: Path, trace: Path) -> dict:
         expected_source_app="com.openai.codex",
         expected_source_window="Spoke",
     )
+
+
+def _refresh_trace_snapshot(index: Path, trace: Path) -> None:
+    capture = json.loads(index.read_text(encoding="utf-8"))
+    capture["trace_sha256"] = hashlib.sha256(trace.read_bytes()).hexdigest()
+    index.write_text(json.dumps(capture), encoding="utf-8")
 
 
 def test_report_joins_same_process_consumer_generations_and_preserves_frame_hash(tmp_path):
@@ -120,6 +129,7 @@ def test_report_rejects_mixed_processes_even_when_each_receipt_is_valid(tmp_path
     events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     second = dict(events[0], pid=42, launch_id="launch-b")
     trace.write_text("\n".join(json.dumps(event) for event in (events[0], second)) + "\n")
+    _refresh_trace_snapshot(index, trace)
 
     report = _report(tmp_path, index, trace)
 
@@ -134,6 +144,7 @@ def test_report_rejects_wrong_consumer_and_unrendered_generation(tmp_path):
     event["consumer_id"] = "perceptasia.throughglass"
     event["rendered_config_generation"] = 7
     trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    _refresh_trace_snapshot(index, trace)
 
     report = _report(tmp_path, index, trace)
 
@@ -174,6 +185,32 @@ def test_report_rejects_capture_index_not_bound_to_trace_and_manifest(tmp_path):
     assert "capture_source_app_mismatch" in report["failures"]
 
 
+def test_report_rejects_trace_mutated_after_index_creation(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    with trace.open("a", encoding="utf-8") as handle:
+        handle.write("{}\n")
+
+    report = _report(tmp_path, index, trace)
+
+    assert report["status"] == "incomplete"
+    assert "trace_changed_after_capture_index" in report["failures"]
+
+
+def test_report_rejects_trace_writer_loss_receipt(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    failure_path = Path(f"{trace}.failures.jsonl")
+    failure_path.write_text(
+        json.dumps({"event": "trace.write.failed", "source_event": "optical.witness.present"}) + "\n",
+        encoding="utf-8",
+    )
+
+    report = _report(tmp_path, index, trace)
+
+    assert report["status"] == "incomplete"
+    assert "trace_write_failed:1" in report["failures"]
+    assert report["trace_write_failures_path"] == str(failure_path.resolve())
+
+
 def test_report_accepts_index_written_by_real_capture_index_producer(tmp_path):
     from spoke.retina_lasso_witness import write_witness_index
 
@@ -206,9 +243,11 @@ def test_report_rejects_present_without_warp_dispatch(tmp_path):
     index, trace, _frame = _evidence_files(tmp_path)
     event = json.loads(trace.read_text(encoding="utf-8"))
     event["warp_applied"] = False
+    event["warp_composited_to_drawable"] = False
     event["warp_dispatch_count"] = 0
     event["warp_skip_reason"] = "empty_dispatch_box"
     trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    _refresh_trace_snapshot(index, trace)
 
     report = _report(tmp_path, index, trace)
 
@@ -239,6 +278,7 @@ def test_report_can_join_throughglass_by_its_exact_client_id(tmp_path):
     event = json.loads(trace.read_text(encoding="utf-8"))
     event["consumer_id"] = "perceptasia.throughglass"
     trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    _refresh_trace_snapshot(index, trace)
 
     report = build_optical_outcome_report(
         capture_index_path=index,
@@ -334,6 +374,54 @@ def test_report_writer_protects_paths_parsed_before_malformed_manifest_entry(tmp
         raise AssertionError("report writer must protect paths parsed from malformed manifests")
 
     assert frame.read_bytes() == original
+
+
+def test_report_writer_refuses_to_replace_existing_non_report_file(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    report = _report(tmp_path, index, trace)
+    output = tmp_path / "operator-notes.json"
+    output.write_text('{"keep": true}', encoding="utf-8")
+    original = output.read_bytes()
+
+    try:
+        write_optical_outcome_report(report, output)
+    except ValueError as exc:
+        assert "must not replace an existing non-report file" in str(exc)
+    else:
+        raise AssertionError("report writer must protect existing non-report files")
+
+    assert output.read_bytes() == original
+
+
+def test_report_writer_protects_existing_frame_when_manifest_is_unreadable(tmp_path):
+    index, trace, frame = _evidence_files(tmp_path)
+    capture = json.loads(index.read_text(encoding="utf-8"))
+    Path(capture["retina_lasso_manifest"]).write_bytes(b"not json")
+    index.write_text(json.dumps(capture), encoding="utf-8")
+    report = _report(tmp_path, index, trace)
+    original = frame.read_bytes()
+
+    try:
+        write_optical_outcome_report(report, frame)
+    except ValueError as exc:
+        assert "must not replace an existing non-report file" in str(exc)
+    else:
+        raise AssertionError("report writer must protect existing capture files")
+
+    assert frame.read_bytes() == original
+
+
+def test_report_writer_can_replace_its_own_prior_report(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    report = _report(tmp_path, index, trace)
+    output = tmp_path / "optical-outcome.json"
+
+    write_optical_outcome_report(report, output)
+    write_optical_outcome_report(report, output)
+
+    assert json.loads(output.read_text(encoding="utf-8"))["schema"] == (
+        "spoke.optical_outcome_witness.v1"
+    )
 
 
 def test_incomplete_report_does_not_claim_a_capture_window_join(tmp_path):

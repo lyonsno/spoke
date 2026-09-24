@@ -159,6 +159,8 @@ def build_optical_outcome_report(
     raw_frame_paths: list[str] = []
     candidate_receipts: list[dict[str, Any]] = []
     malformed_trace_lines = 0
+    trace_write_failures: list[dict[str, Any]] = []
+    trace_write_failures_path: Path | None = None
     capture_index: dict[str, Any] = {}
     capture_index_loaded = False
     trace_loaded = False
@@ -210,6 +212,29 @@ def build_optical_outcome_report(
         failures.append(f"trace_load_failed:{type(exc).__name__}:{exc}")
     if malformed_trace_lines:
         failures.append(f"malformed_trace_lines:{malformed_trace_lines}")
+
+    raw_failure_path = capture_index.get("trace_write_failures_path")
+    trace_write_failures_path = (
+        Path(raw_failure_path).expanduser().resolve()
+        if isinstance(raw_failure_path, str) and raw_failure_path.strip()
+        else Path(f"{trace_file}.failures.jsonl")
+    )
+    if trace_write_failures_path.exists():
+        try:
+            trace_write_failures, malformed_failure_lines = _read_trace(trace_write_failures_path)
+            if malformed_failure_lines:
+                failures.append(f"malformed_trace_write_failure_lines:{malformed_failure_lines}")
+            if trace_write_failures:
+                failures.append(f"trace_write_failed:{len(trace_write_failures)}")
+        except (OSError, UnicodeDecodeError) as exc:
+            failures.append(f"trace_write_failures_load_failed:{type(exc).__name__}:{exc}")
+
+    indexed_trace_hash = capture_index.get("trace_sha256")
+    actual_trace_hash = _sha256(trace_file)
+    if not isinstance(indexed_trace_hash, str) or len(indexed_trace_hash) != 64:
+        failures.append("capture_trace_snapshot_hash_missing")
+    elif actual_trace_hash != indexed_trace_hash:
+        failures.append("trace_changed_after_capture_index")
 
     start = _parse_time(capture_window.get("started_at"))
     end = _parse_time(capture_window.get("ended_at"))
@@ -299,9 +324,18 @@ def build_optical_outcome_report(
         if not isinstance(dispatch_count, int) or dispatch_count < 0:
             failures.append(f"receipt_{index}_invalid_warp_dispatch_count")
         if receipt.get("warp_applied") is True:
-            if not isinstance(dispatch_count, int) or dispatch_count <= 0 or skip_reason is not None:
+            if (
+                not isinstance(dispatch_count, int)
+                or dispatch_count <= 0
+                or skip_reason is not None
+                or receipt.get("warp_composited_to_drawable") is not True
+            ):
                 failures.append(f"receipt_{index}_warp_dispatch_conflict")
-        elif not isinstance(skip_reason, str) or not skip_reason:
+        elif (
+            not isinstance(skip_reason, str)
+            or not skip_reason
+            or receipt.get("warp_composited_to_drawable") is True
+        ):
             failures.append(f"receipt_{index}_warp_skip_reason_missing")
         if not isinstance(receipt.get("optical_config"), dict) or not receipt.get("optical_config"):
             failures.append(f"receipt_{index}_optical_config_missing")
@@ -322,7 +356,7 @@ def build_optical_outcome_report(
 
     frame_records, frame_failures = _frame_records(frames)
     failures.extend(frame_failures)
-    if any(failure.startswith(("capture_index_load_failed:", "capture_manifest_", "trace_load_failed:")) for failure in failures):
+    if any(failure.startswith(("capture_index_load_failed:", "capture_manifest_", "trace_load_failed:", "trace_write_failures_load_failed:")) for failure in failures):
         failure_phase = "input_loading"
     elif any(failure.startswith(("frame_", "no_readable_capture_frames", "duplicate_frame_path")) for failure in failures):
         failure_phase = "frame_verification"
@@ -339,7 +373,8 @@ def build_optical_outcome_report(
             "and a capture window overlapping a same-process, same-consumer visible compositor "
             "frame with a warp dispatch. These selectors are not backend-confirmed route evidence. "
             "Retina Lasso does not bind each PNG to an individual compositor frame generation; "
-            "inspect the preserved pixels. This report does not establish optical quality."
+            "the asynchronous writer has no capture-side drain handshake. Inspect preserved pixels. "
+            "This report does not establish optical quality."
         )
     )
     return {
@@ -353,6 +388,8 @@ def build_optical_outcome_report(
         "capture_index_sha256": _sha256(capture_index_file),
         "trace": str(trace_file),
         "trace_sha256": _sha256(trace_file),
+        "trace_write_failures_path": str(trace_write_failures_path) if trace_write_failures_path else None,
+        "trace_write_failures": trace_write_failures,
         "capture_run": {
             "command": capture_index.get("command", []),
             "profile": capture_index.get("capture_profile"),
@@ -385,12 +422,20 @@ def write_optical_outcome_report(report: dict[str, Any], output_path: str | Path
     protected_paths = {
         report.get("capture_index"),
         report.get("trace"),
+        report.get("trace_write_failures_path"),
         report.get("frame_manifest"),
         *report.get("frame_source_paths", []),
         *(frame.get("path") for frame in report.get("frames", [])),
     }
     if str(path) in protected_paths:
         raise ValueError("report output must not overwrite captured evidence")
+    if path.exists():
+        try:
+            existing = _load_json(path)
+        except (OSError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("report output must not replace an existing non-report file") from exc
+        if existing.get("schema") != "spoke.optical_outcome_witness.v1":
+            raise ValueError("report output must not replace an existing non-report file")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

@@ -1789,17 +1789,20 @@ class FullScreenCompositor:
             if not config.get("visible"):
                 continue
             client_generation = int(config.get("generation", 0))
+            dispatch_outcome = dispatches_by_client.get(client_id, {})
+            dispatch_count = dispatch_outcome.get("dispatch_count", 0)
+            dispatch_skip_reason = dispatch_outcome.get("skip_reason", "client_dispatch_outcome_missing")
             receipt_generation = (
                 client_generation,
                 int(config_generation),
                 capture_attempt_generation,
                 str(state or ""),
+                dispatch_count,
+                dispatch_skip_reason,
             )
             if self._last_optical_witness_receipts.get(client_id) == receipt_generation:
                 continue
             self._last_optical_witness_receipts[client_id] = receipt_generation
-            dispatch_outcome = dispatches_by_client.get(client_id, {})
-            dispatch_count = dispatch_outcome.get("dispatch_count", 0)
             enqueue_command_overlay_trace(
                 "optical.witness.present",
                 consumer_id=client_id,
@@ -1811,9 +1814,20 @@ class FullScreenCompositor:
                 capture_frame_generation=int(frame_generation),
                 rendered_frame_generation=int(frame_generation),
                 presented_count=presented_count,
-                warp_applied=isinstance(dispatch_count, int) and dispatch_count > 0,
+                warp_applied=(
+                    isinstance(dispatch_count, int)
+                    and dispatch_count > 0
+                    and dispatch_outcome.get("composited_to_drawable_texture") is True
+                ),
                 warp_dispatch_count=dispatch_count,
-                warp_skip_reason=dispatch_outcome.get("skip_reason", "client_dispatch_outcome_missing"),
+                warp_composited_to_drawable=dispatch_outcome.get("composited_to_drawable_texture") is True,
+                warp_skip_reason=(
+                    dispatch_outcome.get("skip_reason", "client_dispatch_outcome_missing")
+                    if not dispatch_count
+                    else None
+                    if dispatch_outcome.get("composited_to_drawable_texture") is True
+                    else "dispatch_not_composited_to_drawable"
+                ),
                 visible=True,
                 optical_field_state=optical_field.get("state"),
                 transition_phase=state,

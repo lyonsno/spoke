@@ -800,7 +800,7 @@ class MetalWarpPipeline:
         outcome["dispatch_count"] += 1
         outcome["skip_reason"] = None
 
-    def warp_dispatches_by_client_snapshot(self) -> dict[str, dict[str, int | str | None]]:
+    def warp_dispatches_by_client_snapshot(self) -> dict[str, dict[str, int | str | bool | None]]:
         return {client_id: dict(outcome) for client_id, outcome in self._last_warp_dispatches_by_client.items()}
 
     def diagnostics_snapshot(self) -> dict[str, int | float]:
@@ -942,6 +942,7 @@ class MetalWarpPipeline:
             str(config.get("client_id") or ""): {
                 "dispatch_count": 0,
                 "skip_reason": "no_dispatch_recorded",
+                "composited_to_drawable_texture": False,
             }
             for config in shell_configs
         }
@@ -1110,6 +1111,10 @@ class MetalWarpPipeline:
                 encoder.endEncoding()
                 self._record_client_warp_dispatch(config, box_w, box_h)
                 current_source = pass_dest
+            if current_source is not output_texture:
+                final_blit = command_buffer.blitCommandEncoder()
+                final_blit.copyFromTexture_toTexture_(current_source, output_texture)
+                final_blit.endEncoding()
         else:
             # Pass 2: compute warp over capsule bounding box only
             active_config = shell_configs[0] if shell_configs else {}
@@ -1181,6 +1186,9 @@ class MetalWarpPipeline:
             else:
                 self._last_warp_dispatches_by_client[str(active_config.get("client_id") or "")]["skip_reason"] = "empty_dispatch_box"
 
+        for outcome in self._last_warp_dispatches_by_client.values():
+            if outcome["dispatch_count"] > 0:
+                outcome["composited_to_drawable_texture"] = True
         command_buffer.presentDrawable_(drawable)
         command_buffer.commit()
         return True
