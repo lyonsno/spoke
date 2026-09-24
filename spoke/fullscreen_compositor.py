@@ -1690,10 +1690,6 @@ class FullScreenCompositor:
                 return
 
             warp_start = time.monotonic()
-            diagnostics_before = None
-            diagnostics_snapshot = getattr(self._pipeline, "diagnostics_snapshot", None)
-            if callable(diagnostics_snapshot):
-                diagnostics_before = diagnostics_snapshot().get("warp_dispatches")
             did_present = self._pipeline.warp_to_drawable(
                 iosurface,
                 drawable,
@@ -1702,11 +1698,8 @@ class FullScreenCompositor:
                 shell_config=warp_configs if len(warp_configs) > 1 else warp_configs[0],
             )
             warp_end = time.monotonic()
-            warp_dispatch_count = 0
-            if diagnostics_before is not None:
-                diagnostics_after = diagnostics_snapshot().get("warp_dispatches")
-                if isinstance(diagnostics_after, int) and isinstance(diagnostics_before, int):
-                    warp_dispatch_count = max(0, diagnostics_after - diagnostics_before)
+            dispatch_snapshot = getattr(self._pipeline, "warp_dispatches_by_client_snapshot", None)
+            warp_dispatches_by_client = dispatch_snapshot() if callable(dispatch_snapshot) else {}
             with self._lock:
                 self._warp_to_drawable_calls += 1
                 self._total_warp_to_drawable_ms += max(
@@ -1743,8 +1736,7 @@ class FullScreenCompositor:
                     warp_configs,
                     frame_generation=frame_generation,
                     config_generation=config_generation,
-                    warp_applied=warp_dispatch_count > 0 and len(warp_configs) == 1,
-                    warp_dispatch_count=warp_dispatch_count,
+                    warp_dispatches_by_client=warp_dispatches_by_client,
                 )
                 present_end = time.monotonic()
                 with self._lock:
@@ -1777,8 +1769,7 @@ class FullScreenCompositor:
         *,
         frame_generation: int,
         config_generation: int,
-        warp_applied: bool = False,
-        warp_dispatch_count: int = 0,
+        warp_dispatches_by_client: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         if not os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip():
             return
@@ -1788,6 +1779,7 @@ class FullScreenCompositor:
             capture_state = "idle" if attempt is None else str(attempt.state)
         with self._lock:
             presented_count = int(self._presented_count)
+        dispatches_by_client = warp_dispatches_by_client or {}
         for config in shell_configs:
             client_id = str(config.get("client_id") or "")
             optical_field = config.get("optical_field")
@@ -1806,6 +1798,8 @@ class FullScreenCompositor:
             if self._last_optical_witness_receipts.get(client_id) == receipt_generation:
                 continue
             self._last_optical_witness_receipts[client_id] = receipt_generation
+            dispatch_outcome = dispatches_by_client.get(client_id, {})
+            dispatch_count = dispatch_outcome.get("dispatch_count", 0)
             enqueue_command_overlay_trace(
                 "optical.witness.present",
                 consumer_id=client_id,
@@ -1817,8 +1811,9 @@ class FullScreenCompositor:
                 capture_frame_generation=int(frame_generation),
                 rendered_frame_generation=int(frame_generation),
                 presented_count=presented_count,
-                warp_applied=warp_applied,
-                warp_dispatch_count=warp_dispatch_count,
+                warp_applied=isinstance(dispatch_count, int) and dispatch_count > 0,
+                warp_dispatch_count=dispatch_count,
+                warp_skip_reason=dispatch_outcome.get("skip_reason", "client_dispatch_outcome_missing"),
                 visible=True,
                 optical_field_state=optical_field.get("state"),
                 transition_phase=state,

@@ -743,6 +743,7 @@ class MetalWarpPipeline:
         self._accum_texture_size = None
         self._accum_index = 0
         self._accum_generation = 0  # incremented on resize for atomicity
+        self._last_warp_dispatches_by_client = {}
         self._ensure_diagnostics_fields()
 
         # Cache threadgroup dimensions — these are hardware constants
@@ -789,6 +790,18 @@ class MetalWarpPipeline:
         with self._diagnostics_lock:
             self._warp_dispatches += 1
             self._warp_dispatch_pixels += _diagnostic_pixels(width, height)
+
+    def _record_client_warp_dispatch(self, config, width, height) -> None:
+        self._record_warp_dispatch(width, height)
+        client_id = str(config.get("client_id") or "")
+        outcome = self._last_warp_dispatches_by_client.setdefault(
+            client_id, {"dispatch_count": 0, "skip_reason": "no_dispatch_recorded"}
+        )
+        outcome["dispatch_count"] += 1
+        outcome["skip_reason"] = None
+
+    def warp_dispatches_by_client_snapshot(self) -> dict[str, dict[str, int | str | None]]:
+        return {client_id: dict(outcome) for client_id, outcome in self._last_warp_dispatches_by_client.items()}
 
     def diagnostics_snapshot(self) -> dict[str, int | float]:
         """Return counters for the full-screen copy/mip work feeding the shell."""
@@ -922,6 +935,17 @@ class MetalWarpPipeline:
         """
         import objc
 
+        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
+            dict(config) for config in shell_config if config
+        ]
+        self._last_warp_dispatches_by_client = {
+            str(config.get("client_id") or ""): {
+                "dispatch_count": 0,
+                "skip_reason": "no_dispatch_recorded",
+            }
+            for config in shell_configs
+        }
+
         # Input texture from IOSurface (single-level, no mipmaps)
         tex_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
             80,  # MTLPixelFormatBGRA8Unorm
@@ -933,11 +957,15 @@ class MetalWarpPipeline:
             tex_desc, input_surface, 0,
         )
         if input_texture is None:
+            for outcome in self._last_warp_dispatches_by_client.values():
+                outcome["skip_reason"] = "input_texture_unavailable"
             return False
 
         # Output is the drawable's texture
         output_texture = drawable.texture()
         if output_texture is None:
+            for outcome in self._last_warp_dispatches_by_client.values():
+                outcome["skip_reason"] = "output_texture_unavailable"
             return False
 
         out_w = output_texture.width()
@@ -947,14 +975,13 @@ class MetalWarpPipeline:
 
         # Dimension mismatch = skip warp, just present
         if in_w != out_w or in_h != out_h or in_w <= 0 or in_h <= 0:
+            for outcome in self._last_warp_dispatches_by_client.values():
+                outcome["skip_reason"] = "drawable_input_dimension_mismatch"
             command_buffer = self._command_queue.commandBuffer()
             command_buffer.presentDrawable_(drawable)
             command_buffer.commit()
             return True
 
-        shell_configs = [dict(shell_config)] if isinstance(shell_config, dict) else [
-            dict(config) for config in shell_config if config
-        ]
         needs_mip_texture = any(_shell_needs_mip_texture(config) for config in shell_configs)
 
         # Create or reuse a mipmapped texture only for material shells that
@@ -1010,6 +1037,8 @@ class MetalWarpPipeline:
             accum_write = self._accum_textures[1]
             multipass_a, multipass_b = self._multipass_textures
             if multipass_a is None or multipass_b is None:
+                for outcome in self._last_warp_dispatches_by_client.values():
+                    outcome["skip_reason"] = "multipass_texture_unavailable"
                 command_buffer.presentDrawable_(drawable)
                 command_buffer.commit()
                 return True
@@ -1019,6 +1048,7 @@ class MetalWarpPipeline:
                 box_w = box_x1 - box_x0
                 box_h = box_y1 - box_y0
                 if box_w <= 0 or box_h <= 0:
+                    self._last_warp_dispatches_by_client[str(config.get("client_id") or "")]["skip_reason"] = "empty_dispatch_box"
                     continue
                 pass_dest = (
                     output_texture
@@ -1059,6 +1089,7 @@ class MetalWarpPipeline:
                 # shell see whichever config was written last.
                 params_buffer = _create_metal_buffer(self._device, params_data)
                 if params_buffer is None:
+                    self._last_warp_dispatches_by_client[str(config.get("client_id") or "")]["skip_reason"] = "parameter_buffer_unavailable"
                     continue
                 encoder = command_buffer.computeCommandEncoder()
                 encoder.setComputePipelineState_(self._pipeline)
@@ -1077,7 +1108,7 @@ class MetalWarpPipeline:
                 grid_size = (box_w, box_h, 1)
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
-                self._record_warp_dispatch(box_w, box_h)
+                self._record_client_warp_dispatch(config, box_w, box_h)
                 current_source = pass_dest
         else:
             # Pass 2: compute warp over capsule bounding box only
@@ -1117,6 +1148,7 @@ class MetalWarpPipeline:
                     params_buffer = _create_metal_buffer(self._device, params_data)
 
                 if params_buffer is None:
+                    self._last_warp_dispatches_by_client[str(active_config.get("client_id") or "")]["skip_reason"] = "parameter_buffer_unavailable"
                     command_buffer.presentDrawable_(drawable)
                     command_buffer.commit()
                     return True  # blit-only frame
@@ -1139,13 +1171,15 @@ class MetalWarpPipeline:
                 grid_size = (box_w, box_h, 1)
                 encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
                 encoder.endEncoding()
-                self._record_warp_dispatch(box_w, box_h)
+                self._record_client_warp_dispatch(active_config, box_w, box_h)
 
                 # Flip accumulation buffer — only if generation hasn't changed
                 # (a resize between dispatch and here would invalidate the flip).
                 if self._accum_generation == gen_before:
                     self._accum_index = 1 - self._accum_index
                     self._accum_last_used_gen = gen_before
+            else:
+                self._last_warp_dispatches_by_client[str(active_config.get("client_id") or "")]["skip_reason"] = "empty_dispatch_box"
 
         command_buffer.presentDrawable_(drawable)
         command_buffer.commit()

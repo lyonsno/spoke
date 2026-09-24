@@ -1,4 +1,5 @@
 import json
+import threading
 
 from spoke.command_overlay_trace import flush_command_overlay_trace, record_command_overlay_trace
 
@@ -31,3 +32,27 @@ def test_command_overlay_trace_is_noop_without_path(monkeypatch, tmp_path):
     record_command_overlay_trace("gesture.test", path=str(tmp_path / "unused.jsonl"))
 
     assert not (tmp_path / "unused.jsonl").exists()
+
+
+def test_enqueued_trace_captures_event_time_thread_and_destination(monkeypatch, tmp_path):
+    import spoke.command_overlay_trace as trace
+
+    class CaptureQueue:
+        item = None
+
+        def put(self, item):
+            self.item = item
+
+    capture_queue = CaptureQueue()
+    monkeypatch.setattr(trace, "_TRACE_QUEUE", capture_queue)
+    path = tmp_path / "trace.jsonl"
+    monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_TRACE_PATH", str(path))
+    caller = threading.current_thread().name
+
+    trace.enqueue_command_overlay_trace("optical.witness.present", generation=7)
+
+    event, details = capture_queue.item
+    assert event == "optical.witness.present"
+    assert details["timestamp"]
+    assert details["event_thread"] == caller
+    assert details["trace_path"] == str(path)

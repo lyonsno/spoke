@@ -85,16 +85,19 @@ def _source_identity() -> dict[str, object]:
 
 
 def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None:
-    path_text = os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
+    path_text = str(details.pop("trace_path", "") or "").strip()
+    if not path_text:
+        path_text = os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
     if not path_text:
         return
     payload = {
-        "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "timestamp": details.pop("timestamp", datetime.now().astimezone().isoformat(timespec="milliseconds")),
+        "write_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
         "event": event,
-        "pid": os.getpid(),
-        "thread": threading.current_thread().name,
-        "launch_id": os.environ.get("SPOKE_LAUNCH_ID"),
-        "launch_target_id": os.environ.get("SPOKE_LAUNCH_TARGET_ID"),
+        "pid": details.pop("pid", os.getpid()),
+        "thread": details.pop("event_thread", threading.current_thread().name),
+        "launch_id": details.pop("launch_id", os.environ.get("SPOKE_LAUNCH_ID")),
+        "launch_target_id": details.pop("launch_target_id", os.environ.get("SPOKE_LAUNCH_TARGET_ID")),
         **_source_identity(),
     }
     payload.update({key: value for key, value in details.items() if value is not None})
@@ -109,6 +112,12 @@ def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None
 
 def enqueue_command_overlay_trace(event: str, **details) -> None:
     """Queue trace I/O so render callbacks never wait on git or the filesystem."""
+    details.setdefault("timestamp", datetime.now().astimezone().isoformat(timespec="milliseconds"))
+    details.setdefault("event_thread", threading.current_thread().name)
+    details.setdefault("pid", os.getpid())
+    details.setdefault("launch_id", os.environ.get("SPOKE_LAUNCH_ID"))
+    details.setdefault("launch_target_id", os.environ.get("SPOKE_LAUNCH_TARGET_ID"))
+    details.setdefault("trace_path", os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip())
     _TRACE_QUEUE.put((event, details))
 
 

@@ -7,6 +7,21 @@ import pytest
 from spoke import metal_warp
 
 
+def test_metal_warp_dispatch_receipts_are_attributed_by_client():
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._last_warp_dispatches_by_client = {
+        "spoke.teleporter": {"dispatch_count": 0, "skip_reason": "no_dispatch_recorded"}
+    }
+
+    pipeline._record_client_warp_dispatch(
+        {"client_id": "spoke.teleporter"}, width=24, height=12
+    )
+
+    assert pipeline.warp_dispatches_by_client_snapshot() == {
+        "spoke.teleporter": {"dispatch_count": 1, "skip_reason": None}
+    }
+
+
 def test_metal_warp_owns_visual_tuning_constants_while_backdrop_is_fallback():
     from spoke import backdrop_stream
 

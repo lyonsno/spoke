@@ -42,30 +42,37 @@ def _sha256(path: Path) -> str | None:
         return None
 
 
-def _frame_paths(capture_index: dict[str, Any], index_path: Path) -> tuple[Path | None, list[Path]]:
+def _frame_paths(
+    capture_index: dict[str, Any], index_path: Path
+) -> tuple[Path | None, list[Path], list[str]]:
     raw_manifest = capture_index.get("retina_lasso_manifest")
     if not isinstance(raw_manifest, str) or not raw_manifest.strip():
-        return None, []
+        return None, [], ["capture_manifest_path_missing"]
     manifest_path = Path(raw_manifest).expanduser()
     if not manifest_path.is_absolute():
         manifest_path = index_path.parent / manifest_path
     manifest_path = manifest_path.resolve()
-    manifest = _load_json(manifest_path)
+    try:
+        manifest = _load_json(manifest_path)
+    except (OSError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return manifest_path, [], [f"capture_manifest_load_failed:{type(exc).__name__}:{exc}"]
     raw_frames = manifest.get("frames")
     if not isinstance(raw_frames, list):
-        raise ValueError("capture manifest has no frames list")
+        return manifest_path, [], ["capture_manifest_frames_missing"]
     paths: list[Path] = []
+    failures: list[str] = []
     for frame in raw_frames:
         value = frame if isinstance(frame, str) else None
         if isinstance(frame, dict):
             value = frame.get("path") or frame.get("image") or frame.get("file")
         if not isinstance(value, str) or not value.strip():
-            raise ValueError("capture manifest contains a frame without a path")
+            failures.append("capture_manifest_frame_path_missing")
+            continue
         path = Path(value).expanduser()
         if not path.is_absolute():
             path = manifest_path.parent / path
         paths.append(path.resolve())
-    return manifest_path, paths
+    return manifest_path, paths, failures
 
 
 def _read_trace(path: Path) -> tuple[list[dict[str, Any]], int]:
@@ -167,7 +174,8 @@ def build_optical_outcome_report(
         }
         if start is None or end is None or end < start:
             failures.append("invalid_capture_window")
-        frame_manifest_path, frames = _frame_paths(capture_index, capture_index_file)
+        frame_manifest_path, frames, manifest_failures = _frame_paths(capture_index, capture_index_file)
+        failures.extend(manifest_failures)
         raw_frame_paths = [str(path) for path in frames]
         indexed_trace_path = capture_index.get("trace_path")
         if not isinstance(indexed_trace_path, str) or str(Path(indexed_trace_path).expanduser().resolve()) != str(trace_file):
@@ -286,8 +294,15 @@ def build_optical_outcome_report(
             failures.append(f"receipt_{index}_consumer_not_visible")
         if not isinstance(receipt.get("transition_phase"), str) or not receipt.get("transition_phase"):
             failures.append(f"receipt_{index}_transition_phase_missing")
-        if receipt.get("warp_applied") is not True or not isinstance(receipt.get("warp_dispatch_count"), int) or receipt.get("warp_dispatch_count", 0) <= 0:
-            failures.append(f"receipt_{index}_warp_not_applied")
+        dispatch_count = receipt.get("warp_dispatch_count")
+        skip_reason = receipt.get("warp_skip_reason")
+        if not isinstance(dispatch_count, int) or dispatch_count < 0:
+            failures.append(f"receipt_{index}_invalid_warp_dispatch_count")
+        if receipt.get("warp_applied") is True:
+            if not isinstance(dispatch_count, int) or dispatch_count <= 0 or skip_reason is not None:
+                failures.append(f"receipt_{index}_warp_dispatch_conflict")
+        elif not isinstance(skip_reason, str) or not skip_reason:
+            failures.append(f"receipt_{index}_warp_skip_reason_missing")
         if not isinstance(receipt.get("optical_config"), dict) or not receipt.get("optical_config"):
             failures.append(f"receipt_{index}_optical_config_missing")
         smoke_hash = receipt.get("smoke_env_sha256")
@@ -302,9 +317,12 @@ def build_optical_outcome_report(
         ):
             failures.append(f"receipt_{index}_config_not_rendered")
 
+    if candidate_receipts and not any(receipt.get("warp_applied") is True for receipt in candidate_receipts):
+        failures.append("no_warp_dispatch_in_capture_window")
+
     frame_records, frame_failures = _frame_records(frames)
     failures.extend(frame_failures)
-    if any(failure.startswith(("capture_index_load_failed:", "trace_load_failed:")) for failure in failures):
+    if any(failure.startswith(("capture_index_load_failed:", "capture_manifest_", "trace_load_failed:")) for failure in failures):
         failure_phase = "input_loading"
     elif any(failure.startswith(("frame_", "no_readable_capture_frames", "duplicate_frame_path")) for failure in failures):
         failure_phase = "frame_verification"
@@ -312,6 +330,18 @@ def build_optical_outcome_report(
         failure_phase = "process_consumer_generation_join"
     else:
         failure_phase = None
+    claim_limit = (
+        "No capture-window join is asserted because this report is incomplete; consult "
+        "last_trustworthy_evidence and failures."
+        if failures
+        else (
+            "The capture index declares the supplied trace path, frame count, app/window selectors, "
+            "and a capture window overlapping a same-process, same-consumer visible compositor "
+            "frame with a warp dispatch. These selectors are not backend-confirmed route evidence. "
+            "Retina Lasso does not bind each PNG to an individual compositor frame generation; "
+            "inspect the preserved pixels. This report does not establish optical quality."
+        )
+    )
     return {
         "schema": "spoke.optical_outcome_witness.v1",
         "status": "candidate_capture_window_inspection_required" if not failures else "incomplete",
@@ -346,12 +376,7 @@ def build_optical_outcome_report(
         },
         "failures": failures,
         "visual_assessment": "unassessed; inspect the preserved frame files",
-        "claim_limit": (
-            "The capture index is bound to the supplied trace path and manifest count, and the window "
-            "overlaps a same-process, same-consumer visible compositor frame with a warp dispatch. "
-            "Retina Lasso does not bind each PNG to an individual compositor frame generation; inspect "
-            "the preserved pixels. This report does not establish optical quality."
-        ),
+        "claim_limit": claim_limit,
     }
 
 

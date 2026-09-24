@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import struct
 import zlib
+from datetime import datetime, timezone
 
 from spoke.optical_outcome_witness import (
     build_optical_outcome_report,
@@ -73,6 +74,7 @@ def _evidence_files(tmp_path: Path, *, pid: int = 41) -> tuple[Path, Path, Path]
         "transition_phase": "rest",
         "warp_applied": True,
         "warp_dispatch_count": 1,
+        "warp_skip_reason": None,
         "optical_config": {"warp_mode": 1.0},
         "smoke_env_sha256": "a" * 64,
     }
@@ -172,17 +174,46 @@ def test_report_rejects_capture_index_not_bound_to_trace_and_manifest(tmp_path):
     assert "capture_source_app_mismatch" in report["failures"]
 
 
+def test_report_accepts_index_written_by_real_capture_index_producer(tmp_path):
+    from spoke.retina_lasso_witness import write_witness_index
+
+    frame = tmp_path / "frame.png"
+    _png(frame)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"frames": [str(frame)]}), encoding="utf-8"
+    )
+    trace = tmp_path / "trace.jsonl"
+    event = _evidence_files(tmp_path)[1]
+    index = write_witness_index(
+        output_dir=tmp_path,
+        trace_path=trace,
+        started_at=datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 9, 23, 12, 0, 3, tzinfo=timezone.utc),
+        command=["perceptasia-screen-capture", "--source-app", "com.openai.codex"],
+        trace_events=[json.loads(event.read_text(encoding="utf-8"))],
+        source_app="com.openai.codex",
+        source_window="Spoke",
+    )
+
+    report = _report(tmp_path, index, trace)
+
+    assert report["status"] == "candidate_capture_window_inspection_required"
+    assert report["capture_run"]["source_app"] == "com.openai.codex"
+    assert report["capture_run"]["source_window"] == "Spoke"
+
+
 def test_report_rejects_present_without_warp_dispatch(tmp_path):
     index, trace, _frame = _evidence_files(tmp_path)
     event = json.loads(trace.read_text(encoding="utf-8"))
     event["warp_applied"] = False
     event["warp_dispatch_count"] = 0
+    event["warp_skip_reason"] = "empty_dispatch_box"
     trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
     report = _report(tmp_path, index, trace)
 
     assert report["status"] == "incomplete"
-    assert "receipt_0_warp_not_applied" in report["failures"]
+    assert "no_warp_dispatch_in_capture_window" in report["failures"]
 
 
 def test_cli_writes_input_loading_report_for_non_utf8_trace(tmp_path):
@@ -281,3 +312,35 @@ def test_report_writer_protects_corrupt_manifest_frame(tmp_path):
         raise AssertionError("report writer must protect unreadable source pixels")
 
     assert frame.read_bytes() == original
+
+
+def test_report_writer_protects_paths_parsed_before_malformed_manifest_entry(tmp_path):
+    index, trace, frame = _evidence_files(tmp_path)
+    capture = json.loads(index.read_text(encoding="utf-8"))
+    manifest_path = Path(capture["retina_lasso_manifest"])
+    manifest_path.write_text(
+        json.dumps({"frames": [str(frame), {"unexpected": "no-path"}]}),
+        encoding="utf-8",
+    )
+    index.write_text(json.dumps(capture), encoding="utf-8")
+    report = _report(tmp_path, index, trace)
+    original = frame.read_bytes()
+
+    try:
+        write_optical_outcome_report(report, frame)
+    except ValueError as exc:
+        assert "must not overwrite captured evidence" in str(exc)
+    else:
+        raise AssertionError("report writer must protect paths parsed from malformed manifests")
+
+    assert frame.read_bytes() == original
+
+
+def test_incomplete_report_does_not_claim_a_capture_window_join(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    trace.write_bytes(b"\xff")
+
+    report = _report(tmp_path, index, trace)
+
+    assert report["status"] == "incomplete"
+    assert "overlaps" not in report["claim_limit"]
