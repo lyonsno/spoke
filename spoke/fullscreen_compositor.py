@@ -25,6 +25,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 import objc
+from .command_overlay_trace import enqueue_command_overlay_trace
 
 logger = logging.getLogger(__name__)
 
@@ -1689,6 +1690,10 @@ class FullScreenCompositor:
                 return
 
             warp_start = time.monotonic()
+            diagnostics_before = None
+            diagnostics_snapshot = getattr(self._pipeline, "diagnostics_snapshot", None)
+            if callable(diagnostics_snapshot):
+                diagnostics_before = diagnostics_snapshot().get("warp_dispatches")
             did_present = self._pipeline.warp_to_drawable(
                 iosurface,
                 drawable,
@@ -1697,6 +1702,11 @@ class FullScreenCompositor:
                 shell_config=warp_configs if len(warp_configs) > 1 else warp_configs[0],
             )
             warp_end = time.monotonic()
+            warp_dispatch_count = 0
+            if diagnostics_before is not None:
+                diagnostics_after = diagnostics_snapshot().get("warp_dispatches")
+                if isinstance(diagnostics_after, int) and isinstance(diagnostics_before, int):
+                    warp_dispatch_count = max(0, diagnostics_after - diagnostics_before)
             with self._lock:
                 self._warp_to_drawable_calls += 1
                 self._total_warp_to_drawable_ms += max(
@@ -1733,6 +1743,8 @@ class FullScreenCompositor:
                     warp_configs,
                     frame_generation=frame_generation,
                     config_generation=config_generation,
+                    warp_applied=warp_dispatch_count > 0 and len(warp_configs) == 1,
+                    warp_dispatch_count=warp_dispatch_count,
                 )
                 present_end = time.monotonic()
                 with self._lock:
@@ -1765,11 +1777,11 @@ class FullScreenCompositor:
         *,
         frame_generation: int,
         config_generation: int,
+        warp_applied: bool = False,
+        warp_dispatch_count: int = 0,
     ) -> None:
         if not os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip():
             return
-        from .command_overlay_trace import record_command_overlay_trace
-
         with self._capture_start_lock:
             attempt = self._capture_attempt
             capture_attempt_generation = int(self._capture_attempt_generation)
@@ -1782,18 +1794,19 @@ class FullScreenCompositor:
             if not client_id or not isinstance(optical_field, dict):
                 continue
             state = optical_field.get("transition_phase", optical_field.get("state"))
-            if not config.get("visible") or state != "rest":
+            if not config.get("visible"):
                 continue
             client_generation = int(config.get("generation", 0))
             receipt_generation = (
                 client_generation,
                 int(config_generation),
                 capture_attempt_generation,
+                str(state or ""),
             )
             if self._last_optical_witness_receipts.get(client_id) == receipt_generation:
                 continue
             self._last_optical_witness_receipts[client_id] = receipt_generation
-            record_command_overlay_trace(
+            enqueue_command_overlay_trace(
                 "optical.witness.present",
                 consumer_id=client_id,
                 client_generation=client_generation,
@@ -1804,6 +1817,8 @@ class FullScreenCompositor:
                 capture_frame_generation=int(frame_generation),
                 rendered_frame_generation=int(frame_generation),
                 presented_count=presented_count,
+                warp_applied=warp_applied,
+                warp_dispatch_count=warp_dispatch_count,
                 visible=True,
                 optical_field_state=optical_field.get("state"),
                 transition_phase=state,

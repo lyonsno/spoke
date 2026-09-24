@@ -1,6 +1,6 @@
 import json
 
-from spoke.command_overlay_trace import record_command_overlay_trace
+from spoke.command_overlay_trace import flush_command_overlay_trace, record_command_overlay_trace
 
 
 def test_command_overlay_trace_writes_jsonl_when_path_is_set(monkeypatch, tmp_path):
@@ -10,6 +10,7 @@ def test_command_overlay_trace_writes_jsonl_when_path_is_set(monkeypatch, tmp_pa
     monkeypatch.setenv("SPOKE_LAUNCH_TARGET_ID", "smoke")
 
     record_command_overlay_trace("gesture.test", visible=True, ignored=None)
+    flush_command_overlay_trace()
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["event"] == "gesture.test"

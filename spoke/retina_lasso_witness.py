@@ -546,7 +546,7 @@ def write_witness_index(
         "schema": "spoke.retina_lasso_trace_witness.v1",
         "started_at": _format_instant(started_at),
         "ended_at": _format_instant(ended_at),
-        "trace_path": str(Path(trace_path).expanduser()),
+        "trace_path": str(Path(trace_path).expanduser().resolve()),
         "retina_lasso_manifest": str(manifest_path),
         "retina_lasso_manifest_loaded": manifest_loaded,
         "frame_count": frame_count,

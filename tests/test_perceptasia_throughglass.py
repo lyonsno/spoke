@@ -1352,6 +1352,8 @@ def test_throughglass_shell_publish_emits_trace_receipts_for_visual_witness(
 
     assert graft.show() is True
     graft.publishThroughglassShellAfterCarrierPresent_(None)
+    from spoke.command_overlay_trace import flush_command_overlay_trace
+    flush_command_overlay_trace()
 
     events = [
         json.loads(line)

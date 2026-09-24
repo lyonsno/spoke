@@ -133,6 +133,8 @@ def build_optical_outcome_report(
     expected_source_root: str | Path,
     expected_source_revision: str,
     expected_launch_target_id: str,
+    expected_source_app: str | None = None,
+    expected_source_window: str | None = None,
 ) -> dict[str, Any]:
     """Join one Retina Lasso window to same-process, same-consumer present receipts.
 
@@ -147,6 +149,7 @@ def build_optical_outcome_report(
     frame_manifest_path: Path | None = None
     frames: list[Path] = []
     frame_records: list[dict[str, Any]] = []
+    raw_frame_paths: list[str] = []
     candidate_receipts: list[dict[str, Any]] = []
     malformed_trace_lines = 0
     capture_index: dict[str, Any] = {}
@@ -165,14 +168,36 @@ def build_optical_outcome_report(
         if start is None or end is None or end < start:
             failures.append("invalid_capture_window")
         frame_manifest_path, frames = _frame_paths(capture_index, capture_index_file)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raw_frame_paths = [str(path) for path in frames]
+        indexed_trace_path = capture_index.get("trace_path")
+        if not isinstance(indexed_trace_path, str) or str(Path(indexed_trace_path).expanduser().resolve()) != str(trace_file):
+            failures.append("capture_trace_path_mismatch")
+        indexed_frame_count = capture_index.get("frame_count")
+        if not isinstance(indexed_frame_count, int) or indexed_frame_count != len(frames):
+            failures.append("capture_frame_count_mismatch")
+        command = capture_index.get("command")
+        if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command):
+            failures.append("capture_command_missing")
+        if capture_index.get("capture_profile") not in {"low_perturbation", "stress"}:
+            failures.append("capture_profile_unrecognized")
+        source_app = capture_index.get("source_app")
+        if not isinstance(source_app, str) or not source_app.strip():
+            failures.append("capture_source_app_missing")
+        elif expected_source_app and source_app != expected_source_app:
+            failures.append("capture_source_app_mismatch")
+        source_window = capture_index.get("source_window")
+        if not isinstance(source_window, str) or not source_window.strip():
+            failures.append("capture_source_window_missing")
+        elif expected_source_window and source_window != expected_source_window:
+            failures.append("capture_source_window_mismatch")
+    except (OSError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         capture_index = {}
         failures.append(f"capture_index_load_failed:{type(exc).__name__}:{exc}")
 
     try:
         trace_events, malformed_trace_lines = _read_trace(trace_file)
         trace_loaded = True
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         trace_events = []
         failures.append(f"trace_load_failed:{type(exc).__name__}:{exc}")
     if malformed_trace_lines:
@@ -259,8 +284,15 @@ def build_optical_outcome_report(
             failures.append(f"receipt_{index}_capture_not_started")
         if receipt.get("visible") is not True:
             failures.append(f"receipt_{index}_consumer_not_visible")
-        if receipt.get("transition_phase") != "rest":
-            failures.append(f"receipt_{index}_consumer_not_settled")
+        if not isinstance(receipt.get("transition_phase"), str) or not receipt.get("transition_phase"):
+            failures.append(f"receipt_{index}_transition_phase_missing")
+        if receipt.get("warp_applied") is not True or not isinstance(receipt.get("warp_dispatch_count"), int) or receipt.get("warp_dispatch_count", 0) <= 0:
+            failures.append(f"receipt_{index}_warp_not_applied")
+        if not isinstance(receipt.get("optical_config"), dict) or not receipt.get("optical_config"):
+            failures.append(f"receipt_{index}_optical_config_missing")
+        smoke_hash = receipt.get("smoke_env_sha256")
+        if not isinstance(smoke_hash, str) or len(smoke_hash) != 64:
+            failures.append(f"receipt_{index}_effective_config_unproven")
         rendered = receipt.get("rendered_config_generation")
         requested = receipt.get("requested_config_generation")
         if (
@@ -282,7 +314,7 @@ def build_optical_outcome_report(
         failure_phase = None
     return {
         "schema": "spoke.optical_outcome_witness.v1",
-        "status": "joined_evidence_inspection_required" if not failures else "incomplete",
+        "status": "candidate_capture_window_inspection_required" if not failures else "incomplete",
         "failure_phase": failure_phase,
         "consumer": {"name": consumer, "client_id": expected_consumer_id},
         "source_identity": identity,
@@ -301,6 +333,7 @@ def build_optical_outcome_report(
         "frame_manifest_sha256": _sha256(frame_manifest_path) if frame_manifest_path else None,
         "frame_count": len(frame_records),
         "frames": frame_records,
+        "frame_source_paths": raw_frame_paths,
         "presentation_receipts": candidate_receipts,
         "malformed_trace_lines": malformed_trace_lines,
         "last_trustworthy_evidence": {
@@ -314,9 +347,10 @@ def build_optical_outcome_report(
         "failures": failures,
         "visual_assessment": "unassessed; inspect the preserved frame files",
         "claim_limit": (
-            "The capture window overlaps a same-process, same-consumer settled compositor presentation. "
-            "Retina Lasso does not bind each PNG to an individual compositor frame generation, and "
-            "this report does not establish optical quality or prove warp by pixel score."
+            "The capture index is bound to the supplied trace path and manifest count, and the window "
+            "overlaps a same-process, same-consumer visible compositor frame with a warp dispatch. "
+            "Retina Lasso does not bind each PNG to an individual compositor frame generation; inspect "
+            "the preserved pixels. This report does not establish optical quality."
         ),
     }
 
@@ -327,6 +361,7 @@ def write_optical_outcome_report(report: dict[str, Any], output_path: str | Path
         report.get("capture_index"),
         report.get("trace"),
         report.get("frame_manifest"),
+        *report.get("frame_source_paths", []),
         *(frame.get("path") for frame in report.get("frames", [])),
     }
     if str(path) in protected_paths:
@@ -344,6 +379,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--launch-target", required=True)
+    parser.add_argument("--source-app")
+    parser.add_argument("--source-window")
     parser.add_argument("--output", required=True)
     return parser
 
@@ -357,11 +394,13 @@ def main(argv: list[str] | None = None) -> int:
         expected_source_root=args.source_root,
         expected_source_revision=args.source_revision,
         expected_launch_target_id=args.launch_target,
+        expected_source_app=args.source_app,
+        expected_source_window=args.source_window,
     )
     output = write_optical_outcome_report(report, args.output)
     print(output)
     print(report["status"])
-    return 0 if report["status"] == "joined_evidence_inspection_required" else 2
+    return 0 if report["status"] == "candidate_capture_window_inspection_required" else 2
 
 
 if __name__ == "__main__":

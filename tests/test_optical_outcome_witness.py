@@ -40,6 +40,12 @@ def _evidence_files(tmp_path: Path, *, pid: int = 41) -> tuple[Path, Path, Path]
                 "started_at": "2026-09-23T12:00:00Z",
                 "ended_at": "2026-09-23T12:00:03Z",
                 "retina_lasso_manifest": str(manifest),
+                "trace_path": str((tmp_path / "trace.jsonl").resolve()),
+                "frame_count": 1,
+                "command": ["perceptasia-screen-capture"],
+                "capture_profile": "low_perturbation",
+                "source_app": "com.openai.codex",
+                "source_window": "Spoke",
             }
         )
         + "\n",
@@ -65,6 +71,10 @@ def _evidence_files(tmp_path: Path, *, pid: int = 41) -> tuple[Path, Path, Path]
         "presented_count": 12,
         "visible": True,
         "transition_phase": "rest",
+        "warp_applied": True,
+        "warp_dispatch_count": 1,
+        "optical_config": {"warp_mode": 1.0},
+        "smoke_env_sha256": "a" * 64,
     }
     trace = tmp_path / "trace.jsonl"
     trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
@@ -79,6 +89,8 @@ def _report(tmp_path: Path, index: Path, trace: Path) -> dict:
         expected_source_root=tmp_path,
         expected_source_revision="abc123",
         expected_launch_target_id="smoke",
+        expected_source_app="com.openai.codex",
+        expected_source_window="Spoke",
     )
 
 
@@ -87,7 +99,7 @@ def test_report_joins_same_process_consumer_generations_and_preserves_frame_hash
 
     report = _report(tmp_path, index, trace)
 
-    assert report["status"] == "joined_evidence_inspection_required"
+    assert report["status"] == "candidate_capture_window_inspection_required"
     assert report["source_identity"]["pid"] == 41
     assert report["source_identity"]["launch_id"] == "launch-a"
     assert report["presentation_receipts"][0]["requested_config_generation"] == 8
@@ -141,6 +153,56 @@ def test_report_rejects_unreadable_or_non_png_frame(tmp_path):
     assert report["frames"] == []
 
 
+def test_report_rejects_capture_index_not_bound_to_trace_and_manifest(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    capture = json.loads(index.read_text(encoding="utf-8"))
+    capture["trace_path"] = str(tmp_path / "another-trace.jsonl")
+    capture["frame_count"] = 900
+    capture["command"] = ["missing-capturer"]
+    capture["capture_profile"] = "bogus"
+    capture["source_app"] = "wrong.app"
+    index.write_text(json.dumps(capture), encoding="utf-8")
+
+    report = _report(tmp_path, index, trace)
+
+    assert report["status"] == "incomplete"
+    assert "capture_trace_path_mismatch" in report["failures"]
+    assert "capture_frame_count_mismatch" in report["failures"]
+    assert "capture_profile_unrecognized" in report["failures"]
+    assert "capture_source_app_mismatch" in report["failures"]
+
+
+def test_report_rejects_present_without_warp_dispatch(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    event = json.loads(trace.read_text(encoding="utf-8"))
+    event["warp_applied"] = False
+    event["warp_dispatch_count"] = 0
+    trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    report = _report(tmp_path, index, trace)
+
+    assert report["status"] == "incomplete"
+    assert "receipt_0_warp_not_applied" in report["failures"]
+
+
+def test_cli_writes_input_loading_report_for_non_utf8_trace(tmp_path):
+    index, trace, _frame = _evidence_files(tmp_path)
+    trace.write_bytes(b"\xff")
+    output = tmp_path / "outcome.json"
+
+    result = main([
+        "--capture-index", str(index), "--trace", str(trace),
+        "--consumer", "teleporter", "--source-root", str(tmp_path),
+        "--source-revision", "abc123", "--launch-target", "smoke",
+        "--output", str(output),
+    ])
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 2
+    assert report["failure_phase"] == "input_loading"
+    assert any(item.startswith("trace_load_failed:UnicodeDecodeError") for item in report["failures"])
+
+
 def test_report_can_join_throughglass_by_its_exact_client_id(tmp_path):
     index, trace, _frame_path = _evidence_files(tmp_path)
     event = json.loads(trace.read_text(encoding="utf-8"))
@@ -156,7 +218,7 @@ def test_report_can_join_throughglass_by_its_exact_client_id(tmp_path):
         expected_launch_target_id="smoke",
     )
 
-    assert report["status"] == "joined_evidence_inspection_required"
+    assert report["status"] == "candidate_capture_window_inspection_required"
     assert report["consumer"]["client_id"] == "perceptasia.throughglass"
 
 
@@ -201,5 +263,21 @@ def test_report_writer_refuses_to_replace_a_source_frame(tmp_path):
         assert "must not overwrite captured evidence" in str(exc)
     else:
         raise AssertionError("report writer must protect source pixels")
+
+    assert frame.read_bytes() == original
+
+
+def test_report_writer_protects_corrupt_manifest_frame(tmp_path):
+    index, trace, frame = _evidence_files(tmp_path)
+    frame.write_bytes(b"corrupt evidence")
+    report = _report(tmp_path, index, trace)
+    original = frame.read_bytes()
+
+    try:
+        write_optical_outcome_report(report, frame)
+    except ValueError as exc:
+        assert "must not overwrite captured evidence" in str(exc)
+    else:
+        raise AssertionError("report writer must protect unreadable source pixels")
 
     assert frame.read_bytes() == original

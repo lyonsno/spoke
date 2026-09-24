@@ -7,12 +7,31 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import threading
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 _SOURCE_IDENTITY = None
 _SOURCE_IDENTITY_LOCK = threading.Lock()
+_TRACE_QUEUE: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
+
+
+def _trace_writer() -> None:
+    while True:
+        event, details = _TRACE_QUEUE.get()
+        try:
+            _write_command_overlay_trace(event, details)
+        except Exception:
+            pass
+        finally:
+            _TRACE_QUEUE.task_done()
+
+
+_TRACE_WRITER = threading.Thread(
+    target=_trace_writer, name="spoke-command-overlay-trace", daemon=True
+)
+_TRACE_WRITER.start()
 
 
 def _source_identity() -> dict[str, object]:
@@ -65,7 +84,7 @@ def _source_identity() -> dict[str, object]:
     return dict(_SOURCE_IDENTITY)
 
 
-def record_command_overlay_trace(event: str, **details) -> None:
+def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None:
     path_text = os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
     if not path_text:
         return
@@ -86,3 +105,18 @@ def record_command_overlay_trace(event: str, **details) -> None:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
     except Exception:
         return
+
+
+def enqueue_command_overlay_trace(event: str, **details) -> None:
+    """Queue trace I/O so render callbacks never wait on git or the filesystem."""
+    _TRACE_QUEUE.put((event, details))
+
+
+def record_command_overlay_trace(event: str, **details) -> None:
+    """Compatibility entry point; trace writes are asynchronous."""
+    enqueue_command_overlay_trace(event, **details)
+
+
+def flush_command_overlay_trace() -> None:
+    """Wait for queued trace writes; never call from an animation callback."""
+    _TRACE_QUEUE.join()
