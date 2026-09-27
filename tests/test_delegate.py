@@ -975,6 +975,40 @@ class TestTranscriptionToken:
         )
         mock_inject.assert_not_called()
 
+    def test_inactive_switcher_does_not_capture_ordinary_dictation(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.accepts_dictation.return_value = False
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": "ordinary dictation"})
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == "ordinary dictation"
+
+    def test_inactive_switcher_does_not_receive_failed_dictation_preview(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.accepts_dictation.return_value = False
+        d._last_preview_text = "partial"
+
+        d.transcriptionFailed_({"token": 5, "error": "ASR failed"})
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        d._diaulos_switcher.show_error.assert_not_called()
+
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):
         """Failed transcription with old token should be silently ignored."""
         d = _make_delegate(main_module, monkeypatch)

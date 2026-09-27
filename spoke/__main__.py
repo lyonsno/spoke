@@ -3490,7 +3490,11 @@ class SpokeAppDelegate(NSObject):
         resume_handsfree: bool = True,
     ) -> bool:
         switcher = getattr(self, "_diaulos_switcher", None)
-        if switcher is None or not getattr(switcher, "visible", False):
+        if (
+            switcher is None
+            or not getattr(switcher, "visible", False)
+            or not switcher.accepts_dictation()
+        ):
             return False
 
         self._add_tray_entry(text, owner="user", activate=False)
@@ -3662,6 +3666,7 @@ class SpokeAppDelegate(NSObject):
             not text
             and diaulos_switcher is not None
             and getattr(diaulos_switcher, "visible", False)
+            and diaulos_switcher.accepts_dictation()
         ):
             diaulos_switcher.show_error("No speech recognized")
             if self._overlay is not None:
@@ -3762,8 +3767,10 @@ class SpokeAppDelegate(NSObject):
             return  # stale failure, ignore
         self._transcribing = False
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
-        if diaulos_switcher is not None and getattr(
-            diaulos_switcher, "visible", False
+        if (
+            diaulos_switcher is not None
+            and getattr(diaulos_switcher, "visible", False)
+            and diaulos_switcher.accepts_dictation()
         ):
             # Preview text may narrow the switcher's filter box, but must never
             # be injected as final output (see dd0e0f62).
