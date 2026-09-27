@@ -493,6 +493,32 @@ def test_dictation_filter_reports_not_applied_during_committed_activation(
     overlay._search_field.setStringValue_.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("app_active", "panel_key", "activation_in_flight", "expected"),
+    [
+        (True, True, False, True),
+        (False, True, False, False),
+        (True, False, False, False),
+        (False, False, True, True),
+    ],
+)
+def test_switcher_accepts_dictation_only_during_active_interaction(
+    overlay_module, monkeypatch, app_active, panel_key, activation_in_flight, expected
+):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
+        overlay_module.DiaulosSwitcherOverlay
+    )
+    overlay.visible = True
+    overlay._activation_in_flight = activation_in_flight
+    overlay._panel = MagicMock()
+    overlay._panel.isKeyWindow.return_value = panel_key
+    app = MagicMock()
+    app.isActive.return_value = app_active
+    monkeypatch.setattr(overlay_module, "NSApp", lambda: app)
+
+    assert overlay.accepts_dictation() is expected
+
+
 def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_module):
     events: list[str] = []
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(

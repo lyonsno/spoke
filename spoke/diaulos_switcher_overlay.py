@@ -303,6 +303,19 @@ class DiaulosSwitcherOverlay(NSObject):
         self.hide(restore_previous=False, force=True)
         self._panel = None
 
+    def accepts_dictation(self) -> bool:
+        if not self.visible:
+            return False
+        if self._activation_in_flight:
+            return True
+        app = NSApp()
+        return bool(
+            app is not None
+            and app.isActive()
+            and self._panel is not None
+            and self._panel.isKeyWindow()
+        )
+
     def set_dictation_filter(self, text: str) -> int | None:
         if not self.visible or self._activation_in_flight:
             return None
