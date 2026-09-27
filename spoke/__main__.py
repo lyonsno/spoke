@@ -879,6 +879,7 @@ class PendingDictationDelivery:
     switcher_generation: int
     lane: str
     token: int
+    switcher_intent: bool = False
     status_text: str = "Pasted!"
     state: str = "grace"
     grace_timer: object | None = None
@@ -2401,6 +2402,10 @@ class SpokeAppDelegate(NSObject):
         self._manual_hold_switcher_generation = (
             self._diaulos_switcher_presentation_generation()
         )
+        switcher = getattr(self, "_diaulos_switcher", None)
+        self._manual_hold_switcher_intent = bool(
+            switcher is not None and switcher.accepts_dictation()
+        )
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -2991,7 +2996,10 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._parallel_insert_worker,
                 args=(wav_bytes, parallel_token, switcher_generation),
-                kwargs={"capture_id": capture_id},
+                kwargs={
+                    "capture_id": capture_id,
+                    "switcher_intent": getattr(self, "_manual_hold_switcher_intent", False),
+                },
                 daemon=True,
             )
             thread.start()
@@ -3039,7 +3047,10 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._transcribe_worker,
                 args=(wav_bytes, token, switcher_generation),
-                kwargs={"capture_id": capture_id},
+                kwargs={
+                    "capture_id": capture_id,
+                    "switcher_intent": getattr(self, "_manual_hold_switcher_intent", False),
+                },
                 daemon=True,
             )
         thread.start()
@@ -3401,7 +3412,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes: bytes,
         token: int,
         switcher_generation: int | None = None,
-        *, capture_id: str | None = None,
+        *, capture_id: str | None = None, switcher_intent: bool = False,
     ) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -3418,7 +3429,9 @@ class SpokeAppDelegate(NSObject):
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "transcriptionFailed:",
-                {"token": token, "error": str(exc)},
+                {"token": token, "error": str(exc),
+                 "switcher_generation": switcher_generation,
+                 "switcher_intent": switcher_intent},
                 False,
             )
             return
@@ -3431,6 +3444,7 @@ class SpokeAppDelegate(NSObject):
                 "text": text,
                 "elapsed_ms": elapsed_ms,
                 "switcher_generation": switcher_generation,
+                "switcher_intent": switcher_intent,
                 **({"history": history} if history else {}),
             },
             False,
@@ -3441,7 +3455,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes: bytes,
         token: int,
         switcher_generation: int | None = None,
-        *, capture_id: str | None = None,
+        *, capture_id: str | None = None, switcher_intent: bool = False,
     ) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
@@ -3469,6 +3483,7 @@ class SpokeAppDelegate(NSObject):
                 "text": text,
                 "elapsed_ms": elapsed_ms,
                 "switcher_generation": switcher_generation,
+                "switcher_intent": switcher_intent,
                 **({"history": history} if history else {}),
             },
             False,
@@ -3487,6 +3502,7 @@ class SpokeAppDelegate(NSObject):
         self,
         text: str,
         *,
+        switcher_generation: int | None = None,
         resume_handsfree: bool = True,
     ) -> bool:
         switcher = getattr(self, "_diaulos_switcher", None)
@@ -3494,6 +3510,11 @@ class SpokeAppDelegate(NSObject):
             switcher is None
             or not getattr(switcher, "visible", False)
             or not switcher.accepts_dictation()
+            or (
+                switcher_generation is not None
+                and switcher_generation
+                != self._diaulos_switcher_presentation_generation()
+            )
         ):
             return False
 
@@ -3521,6 +3542,19 @@ class SpokeAppDelegate(NSObject):
         if resume_handsfree:
             self._resume_handsfree_after_hold()
         return True
+
+    def _preserve_changed_switcher_dictation(
+        self, text: str, history: dict | None, *, resume_handsfree: bool
+    ) -> None:
+        self._add_tray_entry(text, owner="user", activate=False)
+        self._record_history_delivery(history, "saved_to_tray_focus_changed")
+        logger.warning("Teleporter focus changed; preserved dictation in tray")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Focus changed — dictation saved to tray")
+        if self._overlay is not None:
+            self._overlay.hide()
+        if resume_handsfree:
+            self._resume_handsfree_after_hold()
 
     def _dictation_delivery_records(self) -> dict[str, PendingDictationDelivery]:
         records = getattr(self, "_pending_dictation_deliveries", None)
@@ -3578,6 +3612,7 @@ class SpokeAppDelegate(NSObject):
         lane: str,
         token: int,
         history: dict | None = None,
+        switcher_intent: bool = False,
     ) -> None:
         delivery_id = f"{lane}:{token}"
         records = self._dictation_delivery_records()
@@ -3594,6 +3629,7 @@ class SpokeAppDelegate(NSObject):
             lane=lane,
             token=token,
             history=history,
+            switcher_intent=switcher_intent,
         )
         records[delivery_id] = delivery
         self._refresh_grace_cancel_callback()
@@ -3625,11 +3661,17 @@ class SpokeAppDelegate(NSObject):
                 self._refresh_grace_cancel_callback()
                 return
 
-            if self._route_text_to_visible_diaulos_switcher(
-                delivery.text,
-                resume_handsfree=False,
-            ):
-                self._record_history_delivery(delivery.history, "routed_to_switcher")
+            if delivery.switcher_intent:
+                if self._route_text_to_visible_diaulos_switcher(
+                    delivery.text,
+                    switcher_generation=delivery.switcher_generation,
+                    resume_handsfree=False,
+                ):
+                    self._record_history_delivery(delivery.history, "routed_to_switcher")
+                else:
+                    self._preserve_changed_switcher_dictation(
+                        delivery.text, delivery.history, resume_handsfree=False
+                    )
                 self._remove_dictation_delivery(delivery.delivery_id)
                 records = self._dictation_delivery_records()
                 continue
@@ -3653,20 +3695,27 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         text = payload["text"]
+        switcher_intent = bool(payload.get("switcher_intent", False))
+        switcher_generation = payload.get("switcher_generation")
         has_pending_delivery = bool(self._dictation_delivery_records())
-        if (
-            text
-            and not has_pending_delivery
-            and self._route_text_to_visible_diaulos_switcher(text)
-        ):
-            self._record_history_delivery(payload.get("history"), "routed_to_switcher")
+        if text and switcher_intent and not has_pending_delivery:
+            if self._route_text_to_visible_diaulos_switcher(
+                text, switcher_generation=switcher_generation
+            ):
+                self._record_history_delivery(payload.get("history"), "routed_to_switcher")
+            else:
+                self._preserve_changed_switcher_dictation(
+                    text, payload.get("history"), resume_handsfree=True
+                )
             return
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
         if (
             not text
+            and switcher_intent
             and diaulos_switcher is not None
             and getattr(diaulos_switcher, "visible", False)
             and diaulos_switcher.accepts_dictation()
+            and switcher_generation == self._diaulos_switcher_presentation_generation()
         ):
             diaulos_switcher.show_error("No speech recognized")
             if self._overlay is not None:
@@ -3682,6 +3731,7 @@ class SpokeAppDelegate(NSObject):
                 lane="primary",
                 token=payload["token"],
                 history=payload.get("history"),
+                switcher_intent=switcher_intent,
             )
             return
         if self._overlay is not None:
@@ -3696,12 +3746,16 @@ class SpokeAppDelegate(NSObject):
             self._record_history_delivery(payload.get("history"), "delivery_skipped_stale")
             return
         text = payload["text"]
-        if (
-            text
-            and not self._dictation_delivery_records()
-            and self._route_text_to_visible_diaulos_switcher(text)
-        ):
-            self._record_history_delivery(payload.get("history"), "routed_to_switcher")
+        switcher_intent = bool(payload.get("switcher_intent", False))
+        if text and switcher_intent and not self._dictation_delivery_records():
+            if self._route_text_to_visible_diaulos_switcher(
+                text, switcher_generation=payload.get("switcher_generation")
+            ):
+                self._record_history_delivery(payload.get("history"), "routed_to_switcher")
+            else:
+                self._preserve_changed_switcher_dictation(
+                    text, payload.get("history"), resume_handsfree=True
+                )
             return
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
@@ -3716,6 +3770,7 @@ class SpokeAppDelegate(NSObject):
                 lane="parallel",
                 token=payload["token"],
                 history=payload.get("history"),
+                switcher_intent=switcher_intent,
             )
 
     def graceTimerFired_(self, timer) -> None:
@@ -3768,7 +3823,10 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
         if (
-            diaulos_switcher is not None
+            payload.get("switcher_intent", False)
+            and payload.get("switcher_generation")
+            == self._diaulos_switcher_presentation_generation()
+            and diaulos_switcher is not None
             and getattr(diaulos_switcher, "visible", False)
             and diaulos_switcher.accepts_dictation()
         ):
@@ -7933,19 +7991,16 @@ class SpokeAppDelegate(NSObject):
         delivery.inject_timer = None
         text = delivery.text
 
-        if self._route_text_to_visible_diaulos_switcher(
-            text,
-            resume_handsfree=False,
-        ):
-            self._record_history_delivery(delivery.history, "routed_to_switcher")
-            self._remove_dictation_delivery(delivery.delivery_id)
-            self._drain_dictation_deliveries()
-            return
-
+        diaulos_switcher = getattr(self, "_diaulos_switcher", None)
         if (
             delivery.switcher_generation
             != self._diaulos_switcher_presentation_generation()
             or self._recording_history_is_key()
+            or (
+                diaulos_switcher is not None
+                and getattr(diaulos_switcher, "visible", False)
+                and diaulos_switcher.accepts_dictation()
+            )
         ):
             if self._overlay is not None:
                 self._overlay.order_out()

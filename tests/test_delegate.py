@@ -112,7 +112,7 @@ class TestRecordingHistory:
         d._transcription_token = d._parallel_insert_token = 1
         d._add_tray_entry = MagicMock()
         worker = d._parallel_insert_worker if parallel else d._transcribe_worker
-        worker(wav, 1, capture_id=capture.capture_id)
+        worker(wav, 1, capture_id=capture.capture_id, switcher_intent=outcome == "switcher")
         payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args.args[1]
         if outcome == "stale":
             d._transcription_token = d._parallel_insert_token = 2
@@ -121,7 +121,8 @@ class TestRecordingHistory:
             d._diaulos_switcher.set_dictation_filter.return_value = 1
         complete = d.parallelTranscriptionComplete_ if parallel else d.transcriptionComplete_
         complete(payload)
-        d.graceTimerFired_(None)
+        if outcome != "switcher":
+            d.graceTimerFired_(None)
         if outcome == "focus":
             d._recording_history = MagicMock()
             d._recording_history._window.isKeyWindow.return_value = True
@@ -130,7 +131,8 @@ class TestRecordingHistory:
                 raise RuntimeError("paste rejected")
             on_restored()
         with patch.object(main_module, "inject_text", side_effect=paste) as inject:
-            d.resultInjectDelayed_(None)
+            if outcome != "switcher":
+                d.resultInjectDelayed_(None)
         expected = {
             "focus": ["saved_to_tray_focus_changed"],
             "paste_error": ["insert_requested", "paste_failed_saved_to_tray"],
@@ -909,7 +911,7 @@ class TestTranscriptionToken:
         d._add_tray_entry = MagicMock()
 
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionComplete_({"token": 5, "text": "kynormous bastard"})
+            d.transcriptionComplete_({"token": 5, "text": "kynormous bastard", "switcher_intent": True})
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
             "kynormous bastard"
@@ -937,7 +939,7 @@ class TestTranscriptionToken:
 
         text = "do not retarget the committed focus"
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionComplete_({"token": 5, "text": text})
+            d.transcriptionComplete_({"token": 5, "text": text, "switcher_intent": True})
 
         d._add_tray_entry.assert_called_once_with(
             text,
@@ -962,7 +964,7 @@ class TestTranscriptionToken:
 
         text = "the teleporter failed and this is an ordinary dictation"
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionComplete_({"token": 5, "text": text})
+            d.transcriptionComplete_({"token": 5, "text": text, "switcher_intent": True})
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
         d._add_tray_entry.assert_called_once_with(
@@ -1009,6 +1011,56 @@ class TestTranscriptionToken:
         d._diaulos_switcher.set_dictation_filter.assert_not_called()
         d._diaulos_switcher.show_error.assert_not_called()
 
+    def test_switcher_opened_after_hold_preserves_ordinary_dictation(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.presentation_generation = 1
+        d._diaulos_switcher.accepts_dictation.return_value = True
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({
+                "token": 5, "text": "ordinary dictation",
+                "switcher_generation": 0, "switcher_intent": False,
+            })
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        mock_inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(
+            "ordinary dictation", owner="user", activate=False
+        )
+
+    def test_switcher_dictation_preserved_when_panel_loses_focus(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.presentation_generation = 1
+        d._diaulos_switcher.accepts_dictation.return_value = False
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({
+                "token": 5, "text": "search words",
+                "switcher_generation": 1, "switcher_intent": True,
+            })
+            d.graceTimerFired_(None)
+            d.resultInjectDelayed_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        mock_inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(
+            "search words", owner="user", activate=False
+        )
+
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):
         """Failed transcription with old token should be silently ignored."""
         d = _make_delegate(main_module, monkeypatch)
@@ -1042,7 +1094,7 @@ class TestTranscriptionToken:
         d._diaulos_switcher.visible = True
         d._inject_result_text = MagicMock()
 
-        d.transcriptionFailed_({"token": 3, "error": "final decode failed"})
+        d.transcriptionFailed_({"token": 3, "error": "final decode failed", "switcher_intent": True, "switcher_generation": 0})
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
             "handy fucker man"
@@ -1208,16 +1260,14 @@ class TestTranscriptionToken:
         d._diaulos_switcher.presentation_generation = 1
         d.graceTimerFired_(timer_a)
         d.graceTimerFired_(timer_b)
+        d._cancel_grace_insert()
 
-        assert d._diaulos_switcher.set_dictation_filter.call_args_list == [
-            call("primary delivery"),
-            call("parallel delivery"),
-        ]
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
         assert d._add_tray_entry.call_args_list == [
             call("primary delivery", owner="user", activate=False),
             call("parallel delivery", owner="user", activate=False),
         ]
-        d._inject_result_text.assert_not_called()
+        d._inject_result_text.assert_called()
 
     def test_visible_switcher_completion_queues_behind_older_delivery(
         self, main_module, monkeypatch
@@ -1250,7 +1300,7 @@ class TestTranscriptionToken:
             Foundation.NSTimer
             .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
         )
-        schedule.side_effect = [timer_a, timer_b]
+        schedule.side_effect = [timer_a, timer_b, MagicMock()]
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_(
@@ -1275,9 +1325,10 @@ class TestTranscriptionToken:
             d.graceTimerFired_(timer_a)
             d._handsfree.enable.assert_not_called()
             d.graceTimerFired_(timer_b)
+            d._cancel_grace_insert()
 
-        assert applied_filters == ["primary delivery", "parallel delivery"]
-        assert d._diaulos_switcher.query == "parallel delivery"
+        assert applied_filters == []
+        assert d._diaulos_switcher.query == ""
         assert d._add_tray_entry.call_args_list == [
             call("primary delivery", owner="user", activate=False),
             call("parallel delivery", owner="user", activate=False),
@@ -1354,7 +1405,7 @@ class TestTranscriptionToken:
         d._add_tray_entry = MagicMock()
 
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.parallelTranscriptionComplete_({"token": 2, "text": "warpstorm"})
+            d.parallelTranscriptionComplete_({"token": 2, "text": "warpstorm", "switcher_intent": True})
             d.graceTimerFired_(None)
             d.resultInjectDelayed_(None)
 
@@ -1388,7 +1439,7 @@ class TestTranscriptionToken:
             d.graceTimerFired_(None)
             d.resultInjectDelayed_(None)
 
-        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
         d._add_tray_entry.assert_called_once_with(
             text,
             owner="user",
@@ -1416,7 +1467,7 @@ class TestTranscriptionToken:
             d._diaulos_switcher.presentation_generation = 1
             d.resultInjectDelayed_(None)
 
-        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
         d._add_tray_entry.assert_called_once_with(
             text,
             owner="user",

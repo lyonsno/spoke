@@ -22,7 +22,7 @@ def test_command_overlay_trace_writes_jsonl_when_path_is_set(monkeypatch, tmp_pa
     assert payload["launch_id"] == "launch-a"
     assert payload["launch_target_id"] == "smoke"
     assert payload["source_root"].startswith("/")
-    assert payload["source_root"].endswith("spoke-warpstorm-optical-outcome-witness-0923")
+    assert Path(payload["source_root"]).resolve() == Path(__file__).resolve().parents[1]
     assert isinstance(payload["source_revision"], str)
     assert isinstance(payload["source_dirty"], bool)
 
