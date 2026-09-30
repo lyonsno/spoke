@@ -1,4 +1,5 @@
 import json
+import errno
 import os
 import socket
 from pathlib import Path
@@ -130,6 +131,37 @@ def test_second_listener_cannot_replace_live_spoke_listener():
     try:
         with pytest.raises(RuntimeError, match="another Spoke Greenroom ping listener"):
             second.start()
+        assert socket_path.exists()
+    finally:
+        first.close()
+        socket_path.parent.rmdir()
+
+
+def test_live_listener_probe_handles_server_closing_after_reply(monkeypatch):
+    class RepliedProbe:
+        def connect(self, path):
+            pass
+
+        def sendall(self, data):
+            assert data == b"\n"
+
+        def shutdown(self, how):
+            raise OSError(errno.ENOTCONN, "Socket is not connected")
+
+        def recv(self, size):
+            return b'{"status":"rejected"}\n'
+
+        def close(self):
+            pass
+
+    socket_path = _socket_path()
+    first = GreenroomPingServer(lambda payload: None, socket_path=socket_path)
+    first.start()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr("spoke.greenroom_notifications.socket.socket", lambda *args: RepliedProbe())
+            with pytest.raises(RuntimeError, match="another Spoke Greenroom ping listener"):
+                first._remove_stale_socket()
         assert socket_path.exists()
     finally:
         first.close()
