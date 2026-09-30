@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 spoke = "spoke.__main__:main"
+spoke-greenroom-ping = "spoke.greenroom_ping:main"
 
 [project.optional-dependencies]
 tts = [
