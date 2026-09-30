@@ -153,7 +153,6 @@ class GreenroomPingServer:
             self.socket_path.unlink()
         else:
             probe.sendall(b"\n")
-            probe.shutdown(socket.SHUT_WR)
             probe.recv(1024)
             raise RuntimeError(f"another Spoke Greenroom ping listener is active at {self.socket_path}")
         finally:
