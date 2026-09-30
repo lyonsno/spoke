@@ -8421,7 +8421,9 @@ def main() -> None:
 
     # Clean shutdown on SIGTERM — uninstall event tap and remove status item
     # before dying so we don't leave a zombie tap or ghost menu bar icon
-    def _handle_sigterm(signum, frame):
+    from PyObjCTools import AppHelper
+
+    def _cleanup_after_sigterm(signum, frame):
         lock_pid = "unavailable"
         try:
             with open(_LOCK_PATH, encoding="utf-8") as lock_file:
@@ -8456,9 +8458,12 @@ def main() -> None:
         delegate._drain_delivery_receipts()
         NSApp.terminate_(None)
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
+    def _handle_sigterm(signum, frame):
+        # Python signals can interrupt submission while its locks are held.
+        # Finish that stack before draining accepted jobs on the event loop.
+        AppHelper.callAfter(_cleanup_after_sigterm, signum, None)
 
-    from PyObjCTools import AppHelper
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     AppHelper.runEventLoop()
 
