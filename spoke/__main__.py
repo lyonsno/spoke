@@ -3212,6 +3212,8 @@ class SpokeAppDelegate(NSObject):
             # Terminal transcripts are already durable. Receipt I/O must not
             # hold up paste or clipboard release; one worker preserves order.
             with _DELIVERY_RECEIPT_LOCK:
+                if getattr(self, "_delivery_receipts_closed", False):
+                    raise RuntimeError("Delivery receipt writer is closed")
                 executor = getattr(self, "_delivery_receipt_executor", None)
                 if executor is None:
                     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spoke-delivery")
@@ -3219,6 +3221,13 @@ class SpokeAppDelegate(NSObject):
                 executor.submit(write_receipt)
         except Exception:
             logger.exception("Could not queue dictation delivery receipt %s", state)
+
+    def _drain_delivery_receipts(self) -> None:
+        with _DELIVERY_RECEIPT_LOCK:
+            self._delivery_receipts_closed = True
+            executor = getattr(self, "_delivery_receipt_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     def _history_route_receipt(self, client, error=None) -> None:
         trace = getattr(getattr(self, "_history_trace", None), "routes", None)
@@ -7941,6 +7950,7 @@ class SpokeAppDelegate(NSObject):
         self._detector.uninstall()
         self._preview_active = False
         self._close_clients()
+        self._drain_delivery_receipts()
         os.execv(sys.executable, [sys.executable, "-m", "spoke"])
 
     def _local_inference_context(self, client):
@@ -8260,6 +8270,7 @@ class SpokeAppDelegate(NSObject):
         if self._diaulos_switcher is not None:
             self._diaulos_switcher.cleanup()
         self._close_clients()
+        self._drain_delivery_receipts()
         NSApp.terminate_(None)
 
     def _show_accessibility_alert(self) -> None:
@@ -8442,6 +8453,7 @@ def main() -> None:
         # Remove heartbeat so next launch doesn't see us as a zombie.
         if hasattr(delegate, "_heartbeat"):
             delegate._heartbeat.remove()
+        delegate._drain_delivery_receipts()
         NSApp.terminate_(None)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)

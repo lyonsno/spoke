@@ -5585,6 +5585,7 @@ class TestCommandTranscribeWorker:
             failure_call[0][1]["error"]
             == "HTTP 429 Too Many Requests — This model is temporarily rate-limited."
         )
+        d._delivery_receipt_executor.shutdown(wait=True)
         attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
         assert attempt["text"] == "do something"
         assert attempt["status"] == "success"
