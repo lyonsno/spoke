@@ -216,7 +216,7 @@ from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
 from .inject import inject_text, inject_text_raw, save_pasteboard, restore_pasteboard, set_pasteboard_only
-from .input_tap import SpacebarHoldDetector
+from .input_tap import ENTER_COMMANDS_ENABLED, SpacebarHoldDetector
 from .launch_targets import (
     current_launch_target,
     current_launch_target_id,
@@ -883,7 +883,6 @@ class PendingDictationDelivery:
     status_text: str = "Pasted!"
     state: str = "grace"
     grace_timer: object | None = None
-    inject_timer: object | None = None
     history: dict | None = None
 
 
@@ -3491,7 +3490,6 @@ class SpokeAppDelegate(NSObject):
 
     _INSERT_GRACE_S = 0.35  # grace window before auto-insert after transcription
     _INSERT_OVERLAY_FADE_OUT_S = 0.12
-    _POST_OVERLAY_REFOCUS_DELAY_S = 0.05
 
     def _diaulos_switcher_presentation_generation(self) -> int:
         switcher = getattr(self, "_diaulos_switcher", None)
@@ -3564,13 +3562,13 @@ class SpokeAppDelegate(NSObject):
         return records
 
     def _refresh_grace_cancel_callback(self) -> None:
-        cancellable_states = {"grace", "ready", "inject_wait"}
+        cancellable_states = {"grace", "ready"}
         has_cancellable = any(
             delivery.state in cancellable_states
             for delivery in self._dictation_delivery_records().values()
         )
         self._detector._on_enter_cancel_grace = (
-            self._cancel_grace_insert if has_cancellable else None
+            self._cancel_grace_insert if ENTER_COMMANDS_ENABLED and has_cancellable else None
         )
 
     def _delivery_for_timer(
@@ -3604,7 +3602,7 @@ class SpokeAppDelegate(NSObject):
             None,
         )
 
-    def _schedule_grace_delivery(
+    def _schedule_dictation_delivery(
         self,
         *,
         text: str,
@@ -3633,6 +3631,10 @@ class SpokeAppDelegate(NSObject):
         )
         records[delivery_id] = delivery
         self._refresh_grace_cancel_callback()
+        if not ENTER_COMMANDS_ENABLED:
+            delivery.state = "ready"
+            self._drain_dictation_deliveries()
+            return
         if self._overlay is not None:
             self._overlay.start_insert_windup()
         from Foundation import NSTimer
@@ -3724,8 +3726,8 @@ class SpokeAppDelegate(NSObject):
             return
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
-            logger.info("Transcribed: %r (%.0fms) — starting insert grace window", text, elapsed_ms)
-            self._schedule_grace_delivery(
+            logger.info("Transcribed: %r (%.0fms) — scheduling delivery", text, elapsed_ms)
+            self._schedule_dictation_delivery(
                 text=text,
                 switcher_generation=payload.get("switcher_generation"),
                 lane="primary",
@@ -3760,11 +3762,11 @@ class SpokeAppDelegate(NSObject):
         if text:
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info(
-                "Parallel transcription: %r (%.0fms) — starting insert grace window",
+                "Parallel transcription: %r (%.0fms) — scheduling delivery",
                 text,
                 elapsed_ms,
             )
-            self._schedule_grace_delivery(
+            self._schedule_dictation_delivery(
                 text=text,
                 switcher_generation=payload.get("switcher_generation"),
                 lane="parallel",
@@ -3794,12 +3796,11 @@ class SpokeAppDelegate(NSObject):
         cancelled = [
             delivery
             for delivery in records.values()
-            if delivery.state in {"grace", "ready", "inject_wait"}
+            if delivery.state in {"grace", "ready"}
         ]
         for delivery in cancelled:
-            for timer in (delivery.grace_timer, delivery.inject_timer):
-                if timer is not None:
-                    timer.invalidate()
+            if delivery.grace_timer is not None:
+                delivery.grace_timer.invalidate()
             self._add_tray_entry(delivery.text, owner="user", activate=False)
             self._record_history_delivery(delivery.history, "saved_to_tray_grace_cancelled")
             records.pop(delivery.delivery_id, None)
@@ -7944,11 +7945,6 @@ class SpokeAppDelegate(NSObject):
         delivery_id: str | None = None,
         history: dict | None = None,
     ) -> None:
-        # Fade the preview overlay first, then order it out just before the
-        # paste setup so screenshots/focus checks never capture it.
-        if self._overlay is not None:
-            self._overlay.hide(fade_duration=self._INSERT_OVERLAY_FADE_OUT_S)
-
         if switcher_generation is None:
             switcher_generation = self._diaulos_switcher_presentation_generation()
         records = self._dictation_delivery_records()
@@ -7968,27 +7964,11 @@ class SpokeAppDelegate(NSObject):
         if delivery is None:
             logger.warning("Cannot schedule missing dictation delivery %s", delivery_id)
             return
-        delivery.state = "inject_wait"
         delivery.status_text = status_text
-        self._refresh_grace_cancel_callback()
-        from Foundation import NSTimer
-        delivery.inject_timer = (
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                self._INSERT_OVERLAY_FADE_OUT_S
-                + self._POST_OVERLAY_REFOCUS_DELAY_S,
-                self,
-                "resultInjectDelayed:",
-                delivery_id,
-                False,
-            )
-        )
+        self._deliver_dictation(delivery)
 
-    def resultInjectDelayed_(self, timer) -> None:
-        """Paste normal-path text after a short post-overlay refocus delay."""
-        delivery = self._delivery_for_timer(timer, expected_state="inject_wait")
-        if delivery is None:
-            return
-        delivery.inject_timer = None
+    def _deliver_dictation(self, delivery: PendingDictationDelivery) -> None:
+        """Request paste without waiting for the non-activating preview to fade."""
         text = delivery.text
 
         diaulos_switcher = getattr(self, "_diaulos_switcher", None)
@@ -8016,11 +7996,6 @@ class SpokeAppDelegate(NSObject):
             self._remove_dictation_delivery(delivery.delivery_id)
             self._drain_dictation_deliveries()
             return
-
-        # Ensure the overlay is fully gone before synthetic paste. The visible
-        # path has already faded it.
-        if self._overlay is not None:
-            self._overlay.order_out()
 
         self._add_tray_entry(text, owner="user", activate=False)
         delivery.state = "injecting"
@@ -8052,6 +8027,12 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Paste failed — dictation saved to tray")
             return
+        finally:
+            if self._overlay is not None:
+                try:
+                    self._overlay.hide(fade_duration=self._INSERT_OVERLAY_FADE_OUT_S)
+                except Exception:
+                    logger.exception("Preview fade failed after paste request")
         if self._menubar is not None:
             self._menubar.set_status_text(delivery.status_text)
 
