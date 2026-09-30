@@ -4,6 +4,10 @@ Requires PyObjC mocks since inject.py imports AppKit/Quartz at module level.
 """
 
 from unittest.mock import MagicMock, call
+import json
+import time
+
+import pytest
 
 
 class TestInjectText:
@@ -47,6 +51,46 @@ class TestInjectText:
 
         # Should have read the pasteboard items for save/restore
         mock_pb.pasteboardItems.assert_called_once()
+
+    def test_reports_separate_paste_phases(self, inject_module, monkeypatch, caplog):
+        pb = MagicMock()
+        pb.pasteboardItems.return_value = []
+        __import__("AppKit").NSPasteboard.generalPasteboard.return_value = pb
+        clock = iter([10.0, 10.125, 10.150, 10.160])
+        monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
+        with caplog.at_level("INFO"):
+            inject_module.inject_text("private dictation")
+        records = [r for r in caplog.records if r.msg == "Paste timing %s"]
+        assert len(records) == 1
+        timing = json.loads(records[0].args[0])
+        assert timing["outcome"] == "events_posted_destination_unverified"
+        assert timing["phase"] == "post_cmd_v"
+        assert timing["save_ms"] == pytest.approx(125)
+        assert timing["write_ms"] == pytest.approx(25)
+        assert timing["post_ms"] == pytest.approx(10)
+        assert timing["total_ms"] == pytest.approx(160)
+        assert timing["pid"] > 0
+        assert "private dictation" not in records[0].getMessage()
+
+    @pytest.mark.parametrize("failure_phase", ["save", "write", "post_cmd_v"])
+    def test_reports_failure_without_claiming_paste(self, inject_module, monkeypatch, caplog, failure_phase):
+        pb = MagicMock()
+        pb.pasteboardItems.return_value = []
+        __import__("AppKit").NSPasteboard.generalPasteboard.return_value = pb
+        failure = RuntimeError("native failure")
+        if failure_phase == "save":
+            pb.pasteboardItems.side_effect = failure
+        elif failure_phase == "write":
+            pb.setString_forType_.side_effect = failure
+        else:
+            monkeypatch.setattr(inject_module, "_post_cmd_v", MagicMock(side_effect=failure))
+        with caplog.at_level("INFO"), pytest.raises(RuntimeError, match="native failure"):
+            inject_module.inject_text("private dictation")
+        timing = json.loads(next(r.args[0] for r in caplog.records if r.msg == "Paste timing %s"))
+        assert timing["outcome"] == "failed"
+        assert timing["phase"] == failure_phase
+        assert timing["failed_phase_ms"] >= 0
+        assert not any(r.msg == "Injected %d chars" for r in caplog.records)
 
 
 class TestPasteboardRestore:

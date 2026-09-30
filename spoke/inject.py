@@ -7,8 +7,10 @@ after a configurable delay.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 
 import objc as _objc
 from AppKit import NSPasteboard, NSPasteboardTypeString
@@ -117,17 +119,34 @@ def inject_text(text: str, on_restored: object = None) -> None:
     if not text:
         return
 
-    pb = NSPasteboard.generalPasteboard()
-
-    # Save all pasteboard contents (not just strings)
-    saved = _save_pasteboard(pb)
-
-    # Set our text
-    pb.clearContents()
-    pb.setString_forType_(text, NSPasteboardTypeString)
-
-    # Synthesize Cmd+V
-    _post_cmd_v()
+    timing = {
+        "pid": os.getpid(),
+        "injection_id": f"{os.getpid()}:{time.monotonic_ns()}",
+        "outcome": "failed",
+    }
+    started = phase_started = time.perf_counter()
+    phase = "save"
+    try:
+        pb = NSPasteboard.generalPasteboard()
+        saved = _save_pasteboard(pb)
+        now = time.perf_counter()
+        timing["save_ms"] = (now - phase_started) * 1000
+        phase_started, phase = now, "write"
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
+        now = time.perf_counter()
+        timing["write_ms"] = (now - phase_started) * 1000
+        phase_started, phase = now, "post_cmd_v"
+        _post_cmd_v()
+        now = time.perf_counter()
+        timing["post_ms"] = (now - phase_started) * 1000
+        timing["outcome"] = "events_posted_destination_unverified"
+    finally:
+        if timing["outcome"] == "failed":
+            now = time.perf_counter()
+            timing["failed_phase_ms"] = (now - phase_started) * 1000
+        timing.update(phase=phase, total_ms=(now - started) * 1000)
+        logger.info("Paste timing %s", json.dumps(timing, sort_keys=True))
 
     logger.info("Injected %d chars", len(text))
 
