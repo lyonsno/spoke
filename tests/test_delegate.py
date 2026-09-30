@@ -138,6 +138,7 @@ class TestRecordingHistory:
             "switcher": ["routed_to_switcher"],
             "stale": ["delivery_skipped_stale"],
         }[outcome]
+        d._delivery_receipt_executor.shutdown(wait=True)
         attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
         assert [e["state"] for e in attempt["deliveries"]] == expected
         assert attempt["text"] == "Keep these words."
@@ -849,6 +850,98 @@ class TestHoldCallbacks:
 
 
 class TestImmediateInsertion:
+    def test_receipt_failure_is_logged_and_does_not_drop_later_receipts(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool.record_delivery.side_effect = [OSError("disk unavailable"), None]
+        history = {"capture_id": "capture", "attempt_id": "original"}
+        d._record_history_delivery(history, "insert_requested")
+        history["attempt_id"] = "next"
+        d._record_history_delivery(history, "clipboard_restored")
+        d._delivery_receipt_executor.shutdown(wait=True)
+        calls = d._audio_spool.record_delivery.call_args_list
+        assert [call.args for call in calls] == [("capture", "original"), ("capture", "next")]
+        assert "Could not record dictation delivery insert_requested" in caplog.text
+
+    @pytest.mark.parametrize("synchronous_successor", [False, True])
+    def test_failed_delivery_cannot_overwrite_successor_status(
+        self, main_module, monkeypatch, synchronous_successor
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = d._parallel_insert_token = 1
+        callbacks = []
+
+        def paste(text, *, on_restored):
+            if text == "B":
+                raise RuntimeError("paste rejected")
+            if text == "C" and synchronous_successor:
+                on_restored()
+            else:
+                callbacks.append(on_restored)
+
+        with patch.object(main_module, "inject_text", side_effect=paste) as inject:
+            d.transcriptionComplete_({"token": 1, "text": "A"})
+            d.parallelTranscriptionComplete_({"token": 1, "text": "B"})
+            d._transcription_token = 2
+            d.transcriptionComplete_({"token": 2, "text": "C"})
+            callbacks[0]()
+            if not synchronous_successor:
+                callbacks[1]()
+        assert [call.args[0] for call in inject.call_args_list] == ["A", "B", "C"]
+        assert d._dictation_delivery_records() == {}
+        assert d._menubar.set_status_text.call_args.args == ("Pasted!",)
+
+    @pytest.mark.parametrize("blocked_state", ["insert_requested", "clipboard_restored"])
+    def test_delivery_io_cannot_block_paste_or_queue_release(
+        self, main_module, monkeypatch, blocked_state
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = d._parallel_insert_token = 1
+        entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+        receipts, callbacks, pasted = [], [], []
+        history = {"capture_id": "capture", "attempt_id": "attempt"}
+
+        def write(capture_id, attempt_id, *, state, detail):
+            if state == blocked_state and not entered.is_set():
+                entered.set()
+                release.wait()
+            receipts.append((capture_id, attempt_id, state))
+
+        d._audio_spool.record_delivery.side_effect = write
+
+        def paste(text, *, on_restored):
+            pasted.append(text)
+            callbacks.append(on_restored)
+
+        def operation():
+            if blocked_state == "insert_requested":
+                d.transcriptionComplete_({"token": 1, "text": "first", "history": history})
+            else:
+                callbacks[0]()
+            completed.set()
+
+        with patch.object(main_module, "inject_text", side_effect=paste):
+            if blocked_state == "clipboard_restored":
+                d.transcriptionComplete_({"token": 1, "text": "first", "history": history})
+                d.parallelTranscriptionComplete_({"token": 1, "text": "second", "history": history})
+            worker = threading.Thread(target=operation)
+            worker.start()
+            try:
+                assert entered.wait(2), "receipt writer was not exercised"
+                assert completed.wait(1), "delivery is blocked on receipt I/O"
+                assert pasted == (["first"] if blocked_state == "insert_requested" else ["first", "second"])
+            finally:
+                release.set()
+                worker.join(2)
+                executor = getattr(d, "_delivery_receipt_executor", None)
+                if executor is not None:
+                    executor.shutdown(wait=True)
+        expected = ["insert_requested"] if blocked_state == "insert_requested" else ["insert_requested", "clipboard_restored", "insert_requested"]
+        assert receipts == [("capture", "attempt", state) for state in expected]
+
     def test_preview_failure_does_not_fail_successful_paste(
         self, main_module, monkeypatch
     ):
@@ -5450,6 +5543,7 @@ class TestCommandTranscribeWorker:
         assert "commandUtteranceReady:" in selectors
         assert "commandFailed:" in selectors
         assert "commandComplete:" not in selectors
+        d._delivery_receipt_executor.shutdown(wait=True)
         attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
         assert attempt["text"] == "do something"
         assert attempt["status"] == "success"

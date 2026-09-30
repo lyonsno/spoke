@@ -15,6 +15,7 @@ Configure via environment variables:
 from __future__ import annotations
 
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import faulthandler
@@ -43,6 +44,7 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
+_DELIVERY_RECEIPT_LOCK = threading.Lock()
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 _THROUGHGLASS_ASSISTANT_RESTORE_DELAY_S = 0.48
 _THROUGHGLASS_ASSISTANT_RESTORE_POLL_S = 0.08
@@ -3198,11 +3200,25 @@ class SpokeAppDelegate(NSObject):
         if not history:
             return
         try:
-            self._audio_spool.record_delivery(
-                history["capture_id"], history["attempt_id"], state=state, detail=detail,
-            )
+            spool = self._audio_spool
+            capture_id, attempt_id = history["capture_id"], history["attempt_id"]
+
+            def write_receipt():
+                try:
+                    spool.record_delivery(capture_id, attempt_id, state=state, detail=detail)
+                except Exception:
+                    logger.exception("Could not record dictation delivery %s", state)
+
+            # Terminal transcripts are already durable. Receipt I/O must not
+            # hold up paste or clipboard release; one worker preserves order.
+            with _DELIVERY_RECEIPT_LOCK:
+                executor = getattr(self, "_delivery_receipt_executor", None)
+                if executor is None:
+                    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spoke-delivery")
+                    self._delivery_receipt_executor = executor
+                executor.submit(write_receipt)
         except Exception:
-            logger.exception("Could not record dictation delivery %s", state)
+            logger.exception("Could not queue dictation delivery receipt %s", state)
 
     def _history_route_receipt(self, client, error=None) -> None:
         trace = getattr(getattr(self, "_history_trace", None), "routes", None)
@@ -8013,6 +8029,8 @@ class SpokeAppDelegate(NSObject):
         try:
             self._record_history_delivery(delivery.history, "insert_requested",
                                           "Synthetic paste requested; destination acceptance is unverified")
+            if self._menubar is not None:
+                self._menubar.set_status_text(delivery.status_text)
             inject_text(text, on_restored=_on_clipboard_restored)
         except Exception as exc:
             self._record_history_delivery(delivery.history, "paste_failed_saved_to_tray",
@@ -8023,9 +8041,9 @@ class SpokeAppDelegate(NSObject):
             )
             self._remove_dictation_delivery(delivery.delivery_id)
             self._dictation_paste_in_flight = False
-            self._drain_dictation_deliveries()
             if self._menubar is not None:
                 self._menubar.set_status_text("Paste failed — dictation saved to tray")
+            self._drain_dictation_deliveries()
             return
         finally:
             if self._overlay is not None:
@@ -8033,8 +8051,6 @@ class SpokeAppDelegate(NSObject):
                     self._overlay.hide(fade_duration=self._INSERT_OVERLAY_FADE_OUT_S)
                 except Exception:
                     logger.exception("Preview fade failed after paste request")
-        if self._menubar is not None:
-            self._menubar.set_status_text(delivery.status_text)
 
     def _enter_recovery_mode(self, text: str) -> None:
         """Paste verification failed — enter the tray automatically.
