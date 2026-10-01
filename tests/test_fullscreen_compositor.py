@@ -2216,9 +2216,17 @@ def test_fullscreen_compositor_renders_when_config_changes_without_new_frame():
 
 
 def test_fullscreen_compositor_observes_drawable_before_submission(monkeypatch):
+    import spoke.fullscreen_compositor as compositor_module
     from spoke.fullscreen_compositor import FullScreenCompositor
 
     monkeypatch.setenv("SPOKE_COMPOSITOR_PRESENTATION_TIMING", "1")
+    clock = [100.0]
+    records = []
+    monkeypatch.setattr(compositor_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        compositor_module, "enqueue_command_overlay_trace",
+        lambda event, **record: records.append(record) if event == "compositor.drawable.presentation" else None,
+    )
     class Drawable:
         callback = None
 
@@ -2226,7 +2234,7 @@ def test_fullscreen_compositor_observes_drawable_before_submission(monkeypatch):
             self.callback = callback
 
         def presentedTime(self):
-            return 10.025
+            return 100.06
 
     drawable = Drawable()
     compositor = FullScreenCompositor.__new__(FullScreenCompositor)
@@ -2235,8 +2243,8 @@ def test_fullscreen_compositor_observes_drawable_before_submission(monkeypatch):
     compositor._latest_iosurface = object()
     compositor._latest_width, compositor._latest_height = 100, 50
     compositor._latest_frame_generation = 4
-    compositor._latest_source_display_seconds = 10.0
-    compositor._last_capture_frame_at = 11.0
+    compositor._latest_source_display_seconds = 99.99
+    compositor._last_capture_frame_at = 99.995
     compositor._shell_configs = [{"content_width_points": 40, "center_x": 20}]
     compositor._config_generation = 2
     compositor._rendered_frame_generation = compositor._rendered_config_generation = -1
@@ -2248,6 +2256,7 @@ def test_fullscreen_compositor_observes_drawable_before_submission(monkeypatch):
     def submit(*args, **kwargs):
         assert drawable.callback is not None
         assert compositor.diagnostics_snapshot()["displayed_frames"] == 0
+        clock[0] += 0.05  # Controlled encoding delay before the fixture's commit boundary.
         return True
     compositor._pipeline = SimpleNamespace(warp_to_drawable=submit)
     compositor._on_display_link()
@@ -2255,7 +2264,10 @@ def test_fullscreen_compositor_observes_drawable_before_submission(monkeypatch):
     assert compositor.diagnostics_snapshot()["displayed_frames"] == 0
     drawable.callback(drawable)
     assert compositor.diagnostics_snapshot()["displayed_frames"] == 1
-    assert compositor.diagnostics_snapshot()["avg_source_age_ms"] == pytest.approx(25)
+    assert compositor.diagnostics_snapshot()["avg_source_age_ms"] == pytest.approx(70)
+    assert records[-1]["pre_encode_monotonic_seconds"] == 100.0
+    assert clock[0] == pytest.approx(100.05)
+    assert "submitted_monotonic_seconds" not in records[-1]
 
 
 def test_fullscreen_compositor_configures_bounded_sck_frame_interval():

@@ -1711,7 +1711,7 @@ class FullScreenCompositor:
                     "capture_attempt_generation": getattr(self, "_capture_attempt_generation", 0),
                     "source_display_seconds": source_display_seconds,
                     "capture_received_monotonic_seconds": capture_received_seconds,
-                    "submitted_monotonic_seconds": time.monotonic(),
+                    "pre_encode_monotonic_seconds": time.monotonic(),
                     "sck_requested_fps": _SCK_TARGET_FPS,
                 })
 
