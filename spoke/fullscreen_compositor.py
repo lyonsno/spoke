@@ -409,6 +409,7 @@ class FullScreenCompositor:
             self._config_generation += 1
             self._rendered_config_generation = -1
             self._presented_count = 0
+            self._presentation_timing.reset()
             self._create_fullscreen_window()
             self._start_display_link()
             self._running = True
@@ -579,7 +580,7 @@ class FullScreenCompositor:
 
     @property
     def presented_count(self) -> int:
-        """Number of frames the compositor has successfully presented."""
+        """Legacy count of submitted presentations, not observed display events."""
         return self._presented_count
 
     @property
@@ -655,6 +656,12 @@ class FullScreenCompositor:
                 pass
 
     def _ensure_diagnostics_fields(self) -> None:
+        if not hasattr(self, "_presentation_timing"):
+            from .presentation_timing import PresentationTiming
+
+            self._presentation_timing = PresentationTiming(
+                lambda record: enqueue_command_overlay_trace("compositor.drawable.presentation", **record)
+            )
         defaults = {
             "_config_generation": 0,
             "_rendered_config_generation": -1,
@@ -710,6 +717,10 @@ class FullScreenCompositor:
             duplicate_frames = int(self._duplicate_frames)
             skipped_frames = int(self._skipped_frames)
         diagnostics = {
+            "presentation_counter_authority": "submission_only",
+            "submitted_frames": presented_frames,
+            "presentation_timing_enabled": os.environ.get("SPOKE_COMPOSITOR_PRESENTATION_TIMING") == "1",
+            "sck_requested_fps": _SCK_TARGET_FPS,
             "capture_frames": capture_frames,
             "capture_fps": _fps_from_intervals(capture_frames, capture_interval_ms),
             "display_link_ticks": display_ticks,
@@ -758,6 +769,7 @@ class FullScreenCompositor:
             ),
         }
         pipeline = getattr(self, "_pipeline", None)
+        diagnostics.update(self._presentation_timing.snapshot())
         pipeline_diagnostics = getattr(pipeline, "diagnostics_snapshot", None)
         if callable(pipeline_diagnostics):
             try:
@@ -1567,7 +1579,7 @@ class FullScreenCompositor:
             with self._capture_start_lock:
                 self._schedule_capture_filter_refresh_locked()
 
-    def submit_iosurface(self, iosurface, *, width: int, height: int, pixel_buffer=None):
+    def submit_iosurface(self, iosurface, *, width: int, height: int, pixel_buffer=None, source_display_seconds=None):
         """Called from SCK handler queue — must never block.
 
         If pixel_buffer is provided, we hold a reference to it to prevent
@@ -1582,6 +1594,7 @@ class FullScreenCompositor:
             self._latest_width = width
             self._latest_height = height
             self._latest_frame_generation += 1
+            self._latest_source_display_seconds = source_display_seconds
             self._capture_frame_count += 1
             if self._last_capture_frame_at is not None:
                 self._total_capture_frame_interval_ms += max(
@@ -1633,6 +1646,8 @@ class FullScreenCompositor:
             configs = list(self._shell_configs)
             frame_generation = self._latest_frame_generation
             config_generation = self._config_generation
+            source_display_seconds = getattr(self, "_latest_source_display_seconds", None)
+            capture_received_seconds = self._last_capture_frame_at
             continuous_present = _wants_continuous_present(configs)
 
         try:
@@ -1688,6 +1703,17 @@ class FullScreenCompositor:
             drawable = self._metal_layer.nextDrawable()
             if drawable is None:
                 return
+
+            if os.environ.get("SPOKE_COMPOSITOR_PRESENTATION_TIMING") == "1":
+                self._presentation_timing.observe(drawable, {
+                    "capture_frame_generation": frame_generation,
+                    "config_generation": config_generation,
+                    "capture_attempt_generation": getattr(self, "_capture_attempt_generation", 0),
+                    "source_display_seconds": source_display_seconds,
+                    "capture_received_monotonic_seconds": capture_received_seconds,
+                    "submitted_monotonic_seconds": time.monotonic(),
+                    "sck_requested_fps": _SCK_TARGET_FPS,
+                })
 
             warp_start = time.monotonic()
             did_present = self._pipeline.warp_to_drawable(
@@ -1932,7 +1958,15 @@ class _CompositorRendererProxy:
             logger.info("Compositor frame[%d]: %dx%d IOSurface ptr=%s pb=%s fmt=%s(%d)", self._diag_n, w, h, hex(ios), hex(objc.pyobjc_id(pb)), pf_str, pf)
 
         if w > 0 and h > 0:
-            self._compositor.submit_iosurface(ios_obj, width=w, height=h, pixel_buffer=pb)
+            from .presentation_timing import capture_display_seconds
+
+            source_time = (
+                capture_display_seconds(sample_buffer, bridge)
+                if os.environ.get("SPOKE_COMPOSITOR_PRESENTATION_TIMING") == "1" else None
+            )
+            self._compositor.submit_iosurface(
+                ios_obj, width=w, height=h, pixel_buffer=pb, source_display_seconds=source_time
+            )
 
 
 def _display_id_from_registry_key(registry_key: tuple[str, int]) -> int | str:

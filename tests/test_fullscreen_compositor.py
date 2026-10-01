@@ -2215,6 +2215,49 @@ def test_fullscreen_compositor_renders_when_config_changes_without_new_frame():
     assert compositor._rendered_config_generation == 2
 
 
+def test_fullscreen_compositor_observes_drawable_before_submission(monkeypatch):
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    monkeypatch.setenv("SPOKE_COMPOSITOR_PRESENTATION_TIMING", "1")
+    class Drawable:
+        callback = None
+
+        def addPresentedHandler_(self, callback):
+            self.callback = callback
+
+        def presentedTime(self):
+            return 10.025
+
+    drawable = Drawable()
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._running = True
+    compositor._lock = threading.Lock()
+    compositor._latest_iosurface = object()
+    compositor._latest_width, compositor._latest_height = 100, 50
+    compositor._latest_frame_generation = 4
+    compositor._latest_source_display_seconds = 10.0
+    compositor._last_capture_frame_at = 11.0
+    compositor._shell_configs = [{"content_width_points": 40, "center_x": 20}]
+    compositor._config_generation = 2
+    compositor._rendered_frame_generation = compositor._rendered_config_generation = -1
+    compositor._frame_count = compositor._interval_frame_count = compositor._interval_presented = 0
+    compositor._last_report_time = time.monotonic()
+    compositor._last_drawable_size = (100, 50)
+    compositor._presented_count = 0
+    compositor._metal_layer = SimpleNamespace(nextDrawable=lambda: drawable)
+    def submit(*args, **kwargs):
+        assert drawable.callback is not None
+        assert compositor.diagnostics_snapshot()["displayed_frames"] == 0
+        return True
+    compositor._pipeline = SimpleNamespace(warp_to_drawable=submit)
+    compositor._on_display_link()
+    assert compositor.diagnostics_snapshot()["submitted_frames"] == 1
+    assert compositor.diagnostics_snapshot()["displayed_frames"] == 0
+    drawable.callback(drawable)
+    assert compositor.diagnostics_snapshot()["displayed_frames"] == 1
+    assert compositor.diagnostics_snapshot()["avg_source_age_ms"] == pytest.approx(25)
+
+
 def test_fullscreen_compositor_configures_bounded_sck_frame_interval():
     from spoke.fullscreen_compositor import _configure_stream_frame_interval
 
@@ -2366,6 +2409,20 @@ def test_fullscreen_compositor_keeps_residency_diagnostics_when_pipeline_snapsho
     assert diagnostics["presented_frames"] == 2
     assert diagnostics["capture_frames"] == 0
     assert "mip_generation_frames" not in diagnostics
+
+
+def test_submission_metrics_cannot_impersonate_displayed_frames():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._presented_count = 3
+    compositor._pipeline = None
+    diagnostics = compositor.diagnostics_snapshot()
+    assert diagnostics["presentation_counter_authority"] == "submission_only"
+    assert diagnostics["submitted_frames"] == 3
+    assert diagnostics["displayed_frames"] == 0
+    assert diagnostics["avg_source_age_ms"] is None
 
 
 def test_fullscreen_capture_accepts_shareable_content_after_five_seconds(monkeypatch):
