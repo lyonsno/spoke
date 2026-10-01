@@ -36,21 +36,25 @@ def _trace_writer() -> None:
             except queue.Empty:
                 break
         try:
-            with ExitStack() as files:
-                _TRACE_FILES.handles = {}
-                _TRACE_FILES.stack = files
-                for event, details in batch:
-                    try:
-                        _write_command_overlay_trace(event, dict(details))
-                    except Exception as exc:
-                        _receipt_failure(event, details, exc)
-        except Exception as exc:
-            # A buffered close/flush failure can affect every record in a batch.
+            _TRACE_FILES.handles = {}
+            _TRACE_FILES.stacks = {}
+            destinations = {}
             for event, details in batch:
-                _receipt_failure(event, details, exc)
+                try:
+                    destination = _trace_destination(details)
+                    destinations.setdefault(destination, []).append((event, details))
+                    _write_command_overlay_trace(event, dict(details))
+                except Exception as exc:
+                    _receipt_failure(event, details, exc)
+            for destination, files in _TRACE_FILES.stacks.items():
+                try:
+                    files.close()
+                except Exception as exc:
+                    for event, details in destinations[destination]:
+                        _receipt_failure(event, details, exc)
         finally:
             _TRACE_FILES.handles = None
-            _TRACE_FILES.stack = None
+            _TRACE_FILES.stacks = None
             for _ in batch:
                 _TRACE_QUEUE.task_done()
 
@@ -118,11 +122,17 @@ def _source_identity() -> dict[str, object]:
     return dict(_SOURCE_IDENTITY)
 
 
-def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None:
-    path_text = str(details.pop("trace_path", "") or "").strip()
+def _trace_destination(details):
+    path_text = str(details.get("trace_path", "") or "").strip()
     if not path_text:
         path_text = os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
-    if not path_text:
+    return Path(path_text).expanduser() if path_text else None
+
+
+def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None:
+    path = _trace_destination(details)
+    details.pop("trace_path", None)
+    if path is None:
         return
     event_time = details.pop("event_time_unix_seconds", None)
     timestamp = details.pop("timestamp", None)
@@ -144,7 +154,6 @@ def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None
         **_source_identity(),
     }
     payload.update({key: value for key, value in details.items() if value is not None})
-    path = Path(path_text).expanduser()
     line = json.dumps(payload, sort_keys=True) + "\n"
     handles = getattr(_TRACE_FILES, "handles", None)
     if handles is None:
@@ -154,7 +163,8 @@ def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None
     else:
         if path not in handles:
             path.parent.mkdir(parents=True, exist_ok=True)
-            handles[path] = _TRACE_FILES.stack.enter_context(path.open("a", encoding="utf-8"))
+            files = _TRACE_FILES.stacks.setdefault(path, ExitStack())
+            handles[path] = files.enter_context(path.open("a", encoding="utf-8"))
         handles[path].write(line)
 
 

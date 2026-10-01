@@ -213,3 +213,51 @@ def test_buffered_close_failure_is_receipted_before_queue_completion(monkeypatch
     failure = json.loads(Path(f"{path}.failures.jsonl").read_text())
     assert failure["trace_sequence"] == 9
     assert failure["error"] == "buffered flush failed"
+
+
+def test_close_failure_does_not_contaminate_another_destination(monkeypatch, tmp_path):
+    import spoke.command_overlay_trace as trace
+
+    failed, good = tmp_path / "failed.jsonl", tmp_path / "good.jsonl"
+    items = [("A", {"trace_path": str(failed), "trace_sequence": 1}),
+             ("B", {"trace_path": str(good), "trace_sequence": 2})]
+
+    class PendingQueue:
+        completed = 0
+
+        def get(self):
+            if not items:
+                raise StopIteration
+            return items.pop(0)
+
+        def get_nowait(self):
+            if not items:
+                raise queue.Empty
+            return items.pop(0)
+
+        def qsize(self):
+            return len(items)
+
+        def task_done(self):
+            self.completed += 1
+
+    class BrokenFile:
+        def __enter__(self):
+            return self
+
+        def write(self, line):
+            pass
+
+        def __exit__(self, *args):
+            raise OSError("destination A close failed")
+
+    pending = PendingQueue()
+    original = Path.open
+    monkeypatch.setattr(trace, "_TRACE_QUEUE", pending)
+    monkeypatch.setattr(Path, "open", lambda self, *a, **kw: BrokenFile() if self == failed else original(self, *a, **kw))
+    with pytest.raises(StopIteration):
+        trace._trace_writer()
+    assert pending.completed == 2
+    assert json.loads(good.read_text())["trace_sequence"] == 2
+    assert not Path(f"{good}.failures.jsonl").exists()
+    assert json.loads(Path(f"{failed}.failures.jsonl").read_text())["trace_sequence"] == 1
