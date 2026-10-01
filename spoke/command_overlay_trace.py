@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+from contextlib import ExitStack
 from datetime import datetime
 import hashlib
 import json
@@ -12,6 +13,7 @@ from pathlib import Path
 import queue
 import subprocess
 import threading
+import time
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 _SOURCE_IDENTITY = None
@@ -19,21 +21,45 @@ _SOURCE_IDENTITY_LOCK = threading.Lock()
 _TRACE_QUEUE: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
 _TRACE_SEQUENCE = 0
 _TRACE_SEQUENCE_LOCK = threading.Lock()
+_TRACE_FILES = threading.local()
 logger = logging.getLogger(__name__)
 
 
 def _trace_writer() -> None:
     while True:
-        event, details = _TRACE_QUEUE.get()
-        try:
-            _write_command_overlay_trace(event, dict(details))
-        except Exception as exc:
+        batch = [_TRACE_QUEUE.get()]
+        # Drain the backlog present at this boundary, without dropping records
+        # or letting continuously arriving producers postpone the first write.
+        for _ in range(_TRACE_QUEUE.qsize()):
             try:
-                _write_trace_failure(event, details, exc)
-            except Exception:
-                logger.exception("Trace event %s could not be written or receipted", event)
+                batch.append(_TRACE_QUEUE.get_nowait())
+            except queue.Empty:
+                break
+        try:
+            with ExitStack() as files:
+                _TRACE_FILES.handles = {}
+                _TRACE_FILES.stack = files
+                for event, details in batch:
+                    try:
+                        _write_command_overlay_trace(event, dict(details))
+                    except Exception as exc:
+                        _receipt_failure(event, details, exc)
+        except Exception as exc:
+            # A buffered close/flush failure can affect every record in a batch.
+            for event, details in batch:
+                _receipt_failure(event, details, exc)
         finally:
-            _TRACE_QUEUE.task_done()
+            _TRACE_FILES.handles = None
+            _TRACE_FILES.stack = None
+            for _ in batch:
+                _TRACE_QUEUE.task_done()
+
+
+def _receipt_failure(event, details, error):
+    try:
+        _write_trace_failure(event, details, error)
+    except Exception:
+        logger.exception("Trace event %s could not be written or receipted", event)
 
 
 _TRACE_WRITER = threading.Thread(
@@ -98,21 +124,38 @@ def _write_command_overlay_trace(event: str, details: dict[str, object]) -> None
         path_text = os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
     if not path_text:
         return
+    event_time = details.pop("event_time_unix_seconds", None)
+    timestamp = details.pop("timestamp", None)
+    if timestamp is None:
+        timestamp = datetime.fromtimestamp(event_time if event_time is not None else time.time()).astimezone().isoformat(timespec="milliseconds")
+    thread_id = details.pop("event_thread_id", None)
+    event_thread = details.pop("event_thread", None)
+    if event_thread is None:
+        event_thread = f"thread-{thread_id}" if thread_id is not None else threading.current_thread().name
     payload = {
-        "timestamp": details.pop("timestamp", datetime.now().astimezone().isoformat(timespec="milliseconds")),
+        "timestamp": timestamp,
         "write_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
         "event": event,
         "pid": details.pop("pid", os.getpid()),
-        "thread": details.pop("event_thread", threading.current_thread().name),
+        "thread": event_thread,
+        "event_thread_id": thread_id,
         "launch_id": details.pop("launch_id", os.environ.get("SPOKE_LAUNCH_ID")),
         "launch_target_id": details.pop("launch_target_id", os.environ.get("SPOKE_LAUNCH_TARGET_ID")),
         **_source_identity(),
     }
     payload.update({key: value for key, value in details.items() if value is not None})
     path = Path(path_text).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    line = json.dumps(payload, sort_keys=True) + "\n"
+    handles = getattr(_TRACE_FILES, "handles", None)
+    if handles is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    else:
+        if path not in handles:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handles[path] = _TRACE_FILES.stack.enter_context(path.open("a", encoding="utf-8"))
+        handles[path].write(line)
 
 
 def _write_trace_failure(event: str, details: dict[str, object], error: Exception) -> None:
@@ -125,6 +168,7 @@ def _write_trace_failure(event: str, details: dict[str, object], error: Exceptio
         "event": "trace.write.failed",
         "source_event": event,
         "timestamp": details.get("timestamp"),
+        "event_time_unix_seconds": details.get("event_time_unix_seconds"),
         "trace_sequence": details.get("trace_sequence"),
         "trace_path": path_text,
         "error_type": type(error).__name__,
@@ -140,8 +184,8 @@ def enqueue_command_overlay_trace(event: str, **details) -> None:
     path = os.environ.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
     if not path:
         return
-    details.setdefault("timestamp", datetime.now().astimezone().isoformat(timespec="milliseconds"))
-    details.setdefault("event_thread", threading.current_thread().name)
+    details.setdefault("event_time_unix_seconds", time.time())
+    details.setdefault("event_thread_id", threading.get_ident())
     details.setdefault("pid", os.getpid())
     details.setdefault("launch_id", os.environ.get("SPOKE_LAUNCH_ID"))
     details.setdefault("launch_target_id", os.environ.get("SPOKE_LAUNCH_TARGET_ID"))
