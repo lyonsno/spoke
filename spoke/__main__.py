@@ -335,11 +335,11 @@ def _default_cloud_model_for_provider(provider: str) -> str:
 
 
 def _ensure_edit_menu() -> None:
-    """Install a minimal Edit menu so Cmd+V/C/X/A work in NSAlert text fields.
+    """Install native Close and Edit shortcuts for Spoke windows/text fields.
 
     Agent-style apps (NSApplicationActivationPolicyAccessory) have no menu bar,
     so the standard key equivalents never reach NSTextField.  This installs an
-    Edit menu once; subsequent calls are no-ops.
+    File and Edit menus once; subsequent calls are no-ops.
     """
     from AppKit import NSApp, NSMenu, NSMenuItem
     app = NSApp()
@@ -349,6 +349,18 @@ def _ensure_edit_menu() -> None:
     if main_menu is None:
         main_menu = NSMenu.new()
         app.setMainMenu_(main_menu)
+    if not any(main_menu.itemAtIndex_(i).title() == "File"
+               for i in range(main_menu.numberOfItems())):
+        file_menu = NSMenu.alloc().initWithTitle_("File")
+        close_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Close", "performClose:", "w",
+        )
+        close_item.setTarget_(None)
+        file_menu.addItem_(close_item)
+        file_item = NSMenuItem.new()
+        file_item.setTitle_("File")
+        file_item.setSubmenu_(file_menu)
+        main_menu.addItem_(file_item)
     # Check if Edit menu already exists.
     for i in range(main_menu.numberOfItems()):
         if main_menu.itemAtIndex_(i).title() == "Edit":
