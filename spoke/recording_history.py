@@ -98,6 +98,7 @@ def delivery_label(attempt: dict) -> str:
         "saved_to_tray": "Saved to tray",
         "insert_requested": "Paste requested; acceptance unverified",
         "clipboard_restored": "Clipboard restored; paste acceptance unverified",
+        "clipboard_preserved_newer_copy": "Newer clipboard copy preserved; paste acceptance unverified",
         "paste_failed_saved_to_tray": "Paste failed; saved to tray",
         "delivery_skipped_stale": "Insertion skipped; retained in history",
         "command_requested": "Assistant request started; completion unverified",

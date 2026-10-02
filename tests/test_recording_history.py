@@ -178,6 +178,25 @@ def test_history_action_buttons_have_legible_symbols_and_click_targets():
         assert image.symbolConfiguration().pointSize() >= 44
 
 
+def test_history_copy_failure_does_not_publish_copied(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    import importlib
+    inject = importlib.import_module("spoke.inject")
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._filtered = [{"capture_id": "capture", "attempts": [
+        {"attempt_id": "attempt", "text": "retained transcript"}]}]
+    owner._selected_id, owner._attempt_id = "capture", "attempt"
+    owner._spool = SimpleNamespace(record_delivery=MagicMock())
+    owner._status = MagicMock()
+    monkeypatch.setattr(inject, "set_pasteboard_only", MagicMock(side_effect=RuntimeError("clipboard refused")))
+    owner.copyText_(None)
+    owner._spool.record_delivery.assert_not_called()
+    assert "Copy failed" in owner._status.setStringValue_.call_args.args[0]
+
+
 @pytest.mark.parametrize("content_width", [980, 860])
 def test_history_action_toolbar_fits_without_overlapping_adjacent_content(content_width):
     from types import SimpleNamespace

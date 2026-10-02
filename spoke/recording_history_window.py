@@ -391,7 +391,12 @@ class RecordingHistoryWindow(NSObject):
         if not attempt or not attempt.get("text"):
             return
         from .inject import set_pasteboard_only
-        set_pasteboard_only(attempt["text"])
+        try:
+            set_pasteboard_only(attempt["text"])
+        except Exception as exc:
+            logger.exception("Could not copy selected transcript")
+            self._status.setStringValue_(f"Copy failed: {exc}")
+            return
         self._spool.record_delivery(self._selected_id, self._attempt_id, state="copied")
         self._status.setStringValue_("Copied")
 

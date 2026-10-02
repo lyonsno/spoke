@@ -97,7 +97,7 @@ def _make_delegate(main_module, monkeypatch):
 
 class TestRecordingHistory:
     @pytest.mark.parametrize("parallel", [False, True])
-    @pytest.mark.parametrize("outcome", ["focus", "paste_error", "restored", "switcher", "stale"])
+    @pytest.mark.parametrize("outcome", ["focus", "paste_error", "restored", "preserved", "switcher", "stale"])
     def test_live_delivery_receipts_preserve_audio_and_original(
         self, main_module, monkeypatch, tmp_path, parallel, outcome,
     ):
@@ -123,10 +123,13 @@ class TestRecordingHistory:
         if outcome == "focus":
             d._recording_history = MagicMock()
             d._recording_history._window.isKeyWindow.return_value = True
-        def paste(text, *, on_restored):
+        def paste(text, *, on_restored, on_restore_skipped=None):
             if outcome == "paste_error":
                 raise RuntimeError("paste rejected")
-            on_restored()
+            if outcome == "preserved":
+                on_restore_skipped()
+            else:
+                on_restored()
         with patch.object(main_module, "inject_text", side_effect=paste) as inject:
             complete(payload)
             if outcome != "switcher":
@@ -135,6 +138,7 @@ class TestRecordingHistory:
             "focus": ["saved_to_tray_focus_changed"],
             "paste_error": ["insert_requested", "paste_failed_saved_to_tray"],
             "restored": ["insert_requested", "clipboard_restored"],
+            "preserved": ["insert_requested", "clipboard_preserved_newer_copy"],
             "switcher": ["routed_to_switcher"],
             "stale": ["delivery_skipped_stale"],
         }[outcome]
@@ -143,6 +147,9 @@ class TestRecordingHistory:
         assert [e["state"] for e in attempt["deliveries"]] == expected
         assert attempt["text"] == "Keep these words."
         assert attempt["status"] == "success"
+        if outcome == "preserved":
+            assert not d._dictation_paste_in_flight
+            assert not d._dictation_delivery_records()
         assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
         if outcome in {"focus", "switcher", "stale"}:
             inject.assert_not_called()
@@ -837,7 +844,7 @@ class TestHoldCallbacks:
         d = _make_delegate(main_module, monkeypatch)
         d._handsfree = MagicMock()
         d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
-        def fake_inject_text(text, on_restored=None):
+        def fake_inject_text(text, on_restored=None, on_restore_skipped=None):
             assert text == "hello"
             if on_restored is not None:
                 on_restored()
@@ -873,7 +880,7 @@ class TestImmediateInsertion:
         d._transcription_token = d._parallel_insert_token = 1
         callbacks = []
 
-        def paste(text, *, on_restored):
+        def paste(text, *, on_restored, on_restore_skipped=None):
             if text == "B":
                 raise RuntimeError("paste rejected")
             if text == "C" and synchronous_successor:
@@ -912,7 +919,7 @@ class TestImmediateInsertion:
 
         d._audio_spool.record_delivery.side_effect = write
 
-        def paste(text, *, on_restored):
+        def paste(text, *, on_restored, on_restore_skipped=None):
             pasted.append(text)
             callbacks.append(on_restored)
 
@@ -988,7 +995,7 @@ class TestImmediateInsertion:
         schedule.reset_mock()
         callbacks = []
 
-        def paste(text, *, on_restored):
+        def paste(text, *, on_restored, on_restore_skipped=None):
             callbacks.append(on_restored)
 
         with patch.object(main_module, "inject_text", side_effect=paste) as inject:
@@ -1320,7 +1327,7 @@ class TestTranscriptionToken:
 
         with patch.object(main_module, "inject_text") as mock_inject:
             mock_inject.side_effect = (
-                lambda text, *, on_restored: on_restored()
+                lambda text, *, on_restored, on_restore_skipped=None: on_restored()
             )
             d.transcriptionComplete_(
                 {

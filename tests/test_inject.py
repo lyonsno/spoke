@@ -146,6 +146,45 @@ class TestPasteboardRestore:
         # Timer was scheduled — the callback is wired through the restorer
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
 
+    @pytest.mark.parametrize("new_copy", [True, False])
+    def test_restore_only_owns_its_unchanged_clipboard(self, inject_module, monkeypatch, new_copy):
+        pb = MagicMock()
+        pb.pasteboardItems.return_value = []
+        pb.changeCount.return_value = 10
+        __import__("AppKit").NSPasteboard.generalPasteboard.return_value = pb
+        restore = MagicMock()
+        monkeypatch.setattr(inject_module, "_restore_pasteboard", restore)
+        callback = MagicMock()
+        inject_module.inject_text("dictation", on_restored=callback)
+        if new_copy:
+            inject_module.set_pasteboard_only("chosen history text")
+            pb.changeCount.return_value = 12
+        target = __import__("Foundation").NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args.args[1]
+        target.fire_(None)
+        assert restore.call_count == (0 if new_copy else 1)
+        callback.assert_called_once_with()
+
+    def test_skip_callback_reports_release_without_claiming_restore(self, inject_module):
+        pb = MagicMock()
+        pb.pasteboardItems.return_value = []
+        pb.changeCount.return_value = 10
+        __import__("AppKit").NSPasteboard.generalPasteboard.return_value = pb
+        restored, skipped = MagicMock(), MagicMock()
+        inject_module.inject_text("dictation", on_restored=restored, on_restore_skipped=skipped)
+        pb.changeCount.return_value = 12
+        target = __import__("Foundation").NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args.args[1]
+        target.fire_(None)
+        restored.assert_not_called()
+        skipped.assert_called_once_with()
+
+
+def test_manual_copy_rejected_write_is_not_success(inject_module):
+    pb = MagicMock()
+    pb.setString_forType_.return_value = False
+    __import__("AppKit").NSPasteboard.generalPasteboard.return_value = pb
+    with pytest.raises(RuntimeError, match="clipboard"):
+        inject_module.set_pasteboard_only("history transcript")
+
 
 class TestPostCmdV:
     """Test the synthetic keystroke generation."""

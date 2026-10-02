@@ -8040,8 +8040,8 @@ class SpokeAppDelegate(NSObject):
         self._dictation_paste_in_flight = True
         self._refresh_grace_cancel_callback()
 
-        def _on_clipboard_restored():
-            self._record_history_delivery(delivery.history, "clipboard_restored")
+        def _on_clipboard_released(state):
+            self._record_history_delivery(delivery.history, state)
             current = self._dictation_delivery_records().get(delivery.delivery_id)
             if current is delivery:
                 self._remove_dictation_delivery(delivery.delivery_id)
@@ -8053,7 +8053,11 @@ class SpokeAppDelegate(NSObject):
                                           "Synthetic paste requested; destination acceptance is unverified")
             if self._menubar is not None:
                 self._menubar.set_status_text(delivery.status_text)
-            inject_text(text, on_restored=_on_clipboard_restored)
+            inject_text(
+                text,
+                on_restored=lambda: _on_clipboard_released("clipboard_restored"),
+                on_restore_skipped=lambda: _on_clipboard_released("clipboard_preserved_newer_copy"),
+            )
         except Exception as exc:
             self._record_history_delivery(delivery.history, "paste_failed_saved_to_tray",
                                           f"{type(exc).__name__}: {exc}")
