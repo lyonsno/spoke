@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from .child_resources import run_measured
 import tempfile
 import time
 import wave
@@ -592,7 +593,7 @@ class NemotronCPUClient:
                 if phrases:
                     prompt_receipt["submission_attempted"] = True
                 try:
-                    result = subprocess.run(
+                    result = run_measured(
                         cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
@@ -627,6 +628,9 @@ class NemotronCPUClient:
                     )
 
                 wall_seconds = time.monotonic() - started
+                route["child_resources"] = getattr(
+                    result, "resource_receipt", {"resources": {"status": "unavailable"}},
+                )
                 phase_timing_lines = self._collect_phase_timing(
                     route,
                     stderr=result.stderr,

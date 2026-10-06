@@ -16,6 +16,31 @@ from spoke.transcribe_nemotron import NemotronCPUClient, NemotronCPUError
 from spoke.transcription_prompt import TranscriptionPromptProvider
 
 
+@pytest.mark.parametrize("malformed", [False, True])
+def test_real_resource_helper_cannot_leak_prompt_or_discard_success(tmp_path, monkeypatch, malformed):
+    helper = nemotron_module.run_measured.__globals__
+    binary, model = _seated_paths(tmp_path)
+    client = NemotronCPUClient(binary=binary, model_path=model, expected_model_sha256=_TEST_MODEL_SHA256,
+                              prompt_provider=TranscriptionPromptProvider(inline="PRIVATE-RESOURCE-SENTINEL", include_builtin=False),
+                              failure_dir=tmp_path / "failures")
+    fixture = (Path(__file__).parent / "fixtures/nemotron/darwin-time-true.txt").read_text()
+    def run(argv, **kwargs):
+        if argv[0] == "/usr/bin/pmset":
+            return subprocess.CompletedProcess(argv, 0, stdout="Battery Power", stderr="")
+        Path(argv[3]).write_text("1..2 real 0.00 user 0.00 sys" if malformed else fixture)
+        return subprocess.CompletedProcess(argv, 0 if malformed else 7, stdout=b'{"text":"valid result"}', stderr=b'')
+    monkeypatch.setattr(helper["subprocess"], "run", run)
+    monkeypatch.setitem(helper, "_time_available", lambda: True)
+    monkeypatch.setitem(helper, "power_snapshot", lambda: {"status": "unavailable"})
+    if malformed:
+        assert client.transcribe(_wav_bytes()) == "valid result"
+        assert client._last_receipt["child_resources"]["resources"]["status"] != "complete"
+    else:
+        with pytest.raises(NemotronCPUError):
+            client.transcribe(_wav_bytes())
+        assert "PRIVATE-RESOURCE-SENTINEL" not in next((tmp_path / "failures").glob("*.json")).read_text()
+
+
 def _wav_bytes(seconds: float = 0.1) -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as wav_file:
@@ -111,7 +136,7 @@ def test_transcribe_uses_cpu_full_buffer_automatic_runner_and_uncapped_decoder_p
         prompt_provider=prompt_provider,
         failure_dir=tmp_path / "failures",
     )
-    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+    with patch.object(nemotron_module, "run_measured", side_effect=fake_run):
         text = client.transcribe(wav_bytes)
 
     assert text == "hello from nemotron"
@@ -243,7 +268,7 @@ def test_transcribe_strips_inherited_nemo_configuration(tmp_path, monkeypatch):
         prompt_provider=TranscriptionPromptProvider(include_builtin=False),
         failure_dir=tmp_path / "failures",
     )
-    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+    with patch.object(nemotron_module, "run_measured", side_effect=fake_run):
         assert client.transcribe(_wav_bytes()) == "controlled route"
 
     assert seen["env"]["UNRELATED_PARENT_VALUE"] == "preserved"
@@ -289,7 +314,7 @@ def test_phase_timing_is_explicit_controlled_and_private_safe(
         failure_dir=tmp_path / "failures",
     )
     with caplog.at_level(logging.INFO, logger="spoke.transcribe_nemotron"):
-        with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+        with patch.object(nemotron_module, "run_measured", side_effect=fake_run):
             assert client.transcribe(_wav_bytes()) == (
                 "private transcript must not enter timing logs"
             )
@@ -343,7 +368,7 @@ def test_phase_timing_rejects_template_text_malformed_numbers_and_partial_output
     )
 
     with caplog.at_level(logging.WARNING, logger="spoke.transcribe_nemotron"):
-        with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+        with patch.object(nemotron_module, "run_measured", return_value=completed):
             assert client.transcribe(_wav_bytes()) == "valid transcript"
 
     timing = client._last_receipt["phase_timing"]
@@ -385,7 +410,7 @@ def test_phase_timing_rejects_malformed_session_detail_without_logging_body(
     )
 
     with caplog.at_level(logging.WARNING, logger="spoke.transcribe_nemotron"):
-        with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+        with patch.object(nemotron_module, "run_measured", return_value=completed):
             assert client.transcribe(_wav_bytes()) == "valid transcript"
 
     timing = client._last_receipt["phase_timing"]
@@ -441,7 +466,7 @@ def test_automatic_runner_receipt_identifies_both_effective_paths(
         prompt_provider=TranscriptionPromptProvider(include_builtin=False),
         failure_dir=tmp_path / "failures",
     )
-    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+    with patch.object(nemotron_module, "run_measured", side_effect=fake_run):
         client.transcribe(_wav_bytes())
 
     assert "--stream" not in seen["cmd"]
@@ -472,7 +497,7 @@ def test_phase_timing_timeout_preserves_admitted_partial_stderr(
         stderr=b"[timing] cache-chunk enc_frames=8 encode=4.20 decode=1.30 ms\n",
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=timeout):
+    with patch.object(nemotron_module, "run_measured", side_effect=timeout):
         with pytest.raises(NemotronCPUError):
             client.transcribe(_wav_bytes())
 
@@ -562,7 +587,7 @@ def test_phase_timing_marks_runner_family_contradiction(tmp_path, monkeypatch):
         failure_dir=tmp_path / "failures",
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+    with patch.object(nemotron_module, "run_measured", return_value=completed):
         client.transcribe(_wav_bytes())
 
     timing = client._last_receipt["phase_timing"]
@@ -591,7 +616,7 @@ def test_phase_timing_enabled_without_timing_output_is_absent(
     )
 
     with caplog.at_level(logging.WARNING, logger="spoke.transcribe_nemotron"):
-        with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+        with patch.object(nemotron_module, "run_measured", return_value=completed):
             client.transcribe(_wav_bytes())
 
     timing = client._last_receipt["phase_timing"]
@@ -617,7 +642,7 @@ def test_blank_runtime_output_is_durable_failure(tmp_path, runtime_text):
         [str(binary)], 0, stdout=json.dumps({"text": runtime_text}), stderr=""
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+    with patch.object(nemotron_module, "run_measured", return_value=completed):
         with pytest.raises(NemotronCPUError, match="blank transcript"):
             client.transcribe(_wav_bytes())
 
@@ -644,7 +669,7 @@ def test_nemotron_output_is_not_mutated_by_whisper_filters(tmp_path, runtime_tex
         [str(binary)], 0, stdout=json.dumps({"text": runtime_text}), stderr=""
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+    with patch.object(nemotron_module, "run_measured", return_value=completed):
         assert client.transcribe(_wav_bytes()) == runtime_text
 
 
@@ -670,7 +695,7 @@ def test_actual_adapter_passes_every_prompt_phrase_without_a_cap(tmp_path):
         prompt_provider=provider,
         failure_dir=tmp_path / "failures",
     )
-    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=fake_run):
+    with patch.object(nemotron_module, "run_measured", side_effect=fake_run):
         client.transcribe(_wav_bytes())
 
     submitted = [
@@ -699,7 +724,7 @@ def test_process_failure_writes_replayable_route_report(tmp_path):
         stderr="decoder failed before output",
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=failed):
+    with patch.object(nemotron_module, "run_measured", return_value=failed):
         with pytest.raises(NemotronCPUError, match="report="):
             client.transcribe(_wav_bytes())
 
@@ -735,7 +760,7 @@ def test_invalid_success_payload_fails_loud_and_preserves_report(tmp_path):
         stderr="",
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=malformed):
+    with patch.object(nemotron_module, "run_measured", return_value=malformed):
         with pytest.raises(NemotronCPUError, match="invalid JSON output"):
             client.transcribe(_wav_bytes())
 
@@ -776,12 +801,12 @@ def test_process_launch_failure_clears_stale_receipt_and_writes_report(tmp_path)
     success = subprocess.CompletedProcess(
         [str(binary)], 0, stdout=json.dumps({"text": "first success"}), stderr=""
     )
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=success):
+    with patch.object(nemotron_module, "run_measured", return_value=success):
         client.transcribe(_wav_bytes())
     assert client._last_receipt["status"] == "success"
 
-    with patch(
-        "spoke.transcribe_nemotron.subprocess.run",
+    with patch.object(
+        nemotron_module, "run_measured",
         side_effect=OSError("exec format error"),
     ):
         with pytest.raises(NemotronCPUError, match="process launch failed"):
@@ -827,7 +852,7 @@ def test_invalid_utf8_output_writes_decode_failure(tmp_path):
         [str(binary)], 0, stdout=b"\xff\xfe", stderr=b""
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=completed):
+    with patch.object(nemotron_module, "run_measured", return_value=completed):
         with pytest.raises(NemotronCPUError, match="output decoding failed"):
             client.transcribe(_wav_bytes())
 
@@ -863,7 +888,7 @@ def test_timeout_report_and_error_do_not_retain_private_phrases(tmp_path):
             stderr=private_stderr,
         )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", side_effect=time_out):
+    with patch.object(nemotron_module, "run_measured", side_effect=time_out):
         with pytest.raises(NemotronCPUError) as exc_info:
             client.transcribe(_wav_bytes())
 
@@ -903,7 +928,7 @@ def test_process_failure_report_hashes_diagnostics_without_private_bodies(tmp_pa
         [str(binary)], 7, stdout="", stderr=private_stderr
     )
 
-    with patch("spoke.transcribe_nemotron.subprocess.run", return_value=failed):
+    with patch.object(nemotron_module, "run_measured", return_value=failed):
         with pytest.raises(NemotronCPUError) as exc_info:
             client.transcribe(_wav_bytes())
 
