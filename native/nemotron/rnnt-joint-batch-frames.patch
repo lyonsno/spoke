@@ -1,0 +1,342 @@
+diff --git a/docs/asr/configuration.md b/docs/asr/configuration.md
+index f5eae25..854d040 100644
+--- a/docs/asr/configuration.md
++++ b/docs/asr/configuration.md
+@@ -51,6 +51,7 @@ column lists the short flag where one exists - the dotted form
+ | `asr.decoder.boosting_tree_alpha` | `--boosting-tree-alpha` | `1.0` | RNNT word-boosting weight (0 disables) |
+ | `asr.decoder.boosting_max_boost` | `--boosting-max-boost` | `5.0` | RNNT boost clamp (greedy-safe) |
+ | `asr.decoder.boosting_depth_scaling` | `--boosting-depth-scaling` | `2.0` | RNNT per-token depth scaling |
++| `asr.decoder.rnnt_joint_batch_frames` | `--rnnt-joint-batch-frames` | `0` | RNNT joint computation lookahead; `0` evaluates the remaining suffix |
+ | `asr.vad.model_path` | `--vad-model` | - | Silero VAD GGUF (empty = no VAD) |
+ | `asr.vad.masker.mask_enable` | `--vad-masking` | `false` | mask silence mel frames |
+ | `asr.vad.masker.onset` | `--vad-onset` | `0.5` | prob > onset → enter speech |
+@@ -81,6 +82,14 @@ column lists the short flag where one exists - the dotted form
+ The examples below use short aliases for brevity; each maps to the dotted key and
+ works identically in YAML.
+ 
++`rnnt_joint_batch_frames` changes the number of encoder frames evaluated by one
++speculative RNNT joint call, not the amount of audio decoded or the number of
++tokens emitted. Positive values reduce work discarded after an emission; a
++blank-only batch advances to the next batch with the predictor cache intact.
++Smaller batches can add graph-call overhead, so measure the tradeoff for the
++selected backend and workload. The default `0` retains unrestricted lookahead;
++negative values are invalid. CTC and TDT decoding do not use this setting.
++
+ Batching is off by default for direct library use to preserve single-request
+ latency.
+ `nemo-speech serve` enables it by default, while `nemo-speech transcribe` and
+diff --git a/src/asr/decoders/decoder.h b/src/asr/decoders/decoder.h
+index b7c377f..f306338 100644
+--- a/src/asr/decoders/decoder.h
++++ b/src/asr/decoders/decoder.h
+@@ -48,6 +48,9 @@ struct DecoderConfig {
+     // the boosted words insert spuriously / repeat. 5.0 keeps enough headroom
+     // for harder words while staying well below riva's beam-oriented 10.
+     double boosting_max_boost = 5.0;
++    // Computational joint lookahead, not an audio or token limit. Zero keeps
++    // the unrestricted suffix evaluation; positive values are opt-in.
++    int rnnt_joint_batch_frames = 0;
+     void Register(common::ParameterParser& p) {
+         p.Register(
+             "kind",
+@@ -94,6 +97,10 @@ struct DecoderConfig {
+             "boosting_max_boost", &boosting_max_boost,
+             "Upper clamp on the RNNT word-boosting alpha (greedy-safe default 5.0)",
+             {"--boosting-max-boost"});
++        p.Register(
++            "rnnt_joint_batch_frames", &rnnt_joint_batch_frames,
++            "RNNT joint computation batch frames (0 = unrestricted)",
++            {"--rnnt-joint-batch-frames"});
+     }
+ };
+ 
+diff --git a/src/asr/decoders/rnnt_greedy_decoder.cpp b/src/asr/decoders/rnnt_greedy_decoder.cpp
+index a3db361..9fadabe 100644
+--- a/src/asr/decoders/rnnt_greedy_decoder.cpp
++++ b/src/asr/decoders/rnnt_greedy_decoder.cpp
+@@ -48,9 +48,12 @@ is_class_hint(const std::string& s) {
+ // RnntGreedyDecoder
+ // ===========================================================================
+ RnntGreedyDecoder::RnntGreedyDecoder(RnntEngine* engine, const DecoderConfig& cfg)
+-    : engine_(engine), bias_alpha_cfg_(static_cast<float>(cfg.boosting_tree_alpha)),
++    : engine_(engine), joint_batch_frames_(cfg.rnnt_joint_batch_frames),
++      bias_alpha_cfg_(static_cast<float>(cfg.boosting_tree_alpha)),
+       bias_depth_scaling_(static_cast<float>(cfg.boosting_depth_scaling)),
+       bias_max_boost_(cfg.boosting_max_boost) {
++    if (joint_batch_frames_ < 0)
++        throw std::invalid_argument("rnnt_joint_batch_frames must be non-negative");
+     build_punct_bias();
+     reset();
+ }
+@@ -199,7 +202,7 @@ RnntGreedyDecoder::step_impl(
+     stats_.encoder_frames += static_cast<uint64_t>(T);
+ 
+     // With a fixed predictor output, joint evaluations for all remaining
+-    // encoder frames are independent. Evaluate them in one graph and consume
++    // encoder frames are independent. Evaluate a batch and consume
+     // the leading blank run. If a non-blank appears, later results are ignored:
+     // committing that token changes the predictor and requires a fresh round
+     // beginning at the same frame.
+@@ -208,6 +211,7 @@ RnntGreedyDecoder::step_impl(
+     int symbols_at_frame = 0;
+     while (t < T) {
+         const int remaining = T - t;
++        const int batch = joint_batch_frames_ > 0 ? std::min(remaining, joint_batch_frames_) : remaining;
+         const float* logit_bias = (finalizing_ && has_punct_bias_) ? punct_bias_.data() : nullptr;
+         const float* boost_bias = nullptr;
+         if (bias_on_) {
+@@ -235,11 +239,11 @@ RnntGreedyDecoder::step_impl(
+         bool joint_complete = false;
+         if (!predictor_valid_ && device_enc_out != nullptr && boost_bias == nullptr) {
+             engine_->predict_and_joint_rnnt_argmax_device(
+-                *stream_state_, prev_token_, active_bank_, *device_enc_out, t, d_model, remaining,
++                *stream_state_, prev_token_, active_bank_, *device_enc_out, t, d_model, batch,
+                 token_ids_.data(), logit_bias);
+             ++stats_.predictor_calls;
+             ++stats_.joint_calls;
+-            stats_.joint_frames += static_cast<uint64_t>(remaining);
++            stats_.joint_frames += static_cast<uint64_t>(batch);
+             predictor_valid_ = true;
+             joint_complete = true;
+         } else if (!predictor_valid_) {
+@@ -255,45 +259,47 @@ RnntGreedyDecoder::step_impl(
+         if (!joint_complete) {
+             if (device_enc_out != nullptr) {
+                 engine_->joint_argmax_device(
+-                    *stream_state_, *device_enc_out, t, d_model, remaining, token_ids_.data(),
++                    *stream_state_, *device_enc_out, t, d_model, batch, token_ids_.data(),
+                     logit_bias);
+             } else {
+                 engine_->joint_argmax(
+-                    *stream_state_, enc_out + static_cast<size_t>(t) * d_model, d_model, remaining,
++                    *stream_state_, enc_out + static_cast<size_t>(t) * d_model, d_model, batch,
+                     token_ids_.data(), logit_bias);
+             }
+             ++stats_.joint_calls;
+-            stats_.joint_frames += static_cast<uint64_t>(remaining);
++            stats_.joint_frames += static_cast<uint64_t>(batch);
+         }
+         if (boost_bias != nullptr) {
+-            boost_token_ids_.resize(static_cast<size_t>(remaining));
++            boost_token_ids_.resize(static_cast<size_t>(batch));
+             if (device_enc_out != nullptr) {
+                 engine_->joint_argmax_device(
+-                    *stream_state_, *device_enc_out, t, d_model, remaining, boost_token_ids_.data(),
++                    *stream_state_, *device_enc_out, t, d_model, batch, boost_token_ids_.data(),
+                     boost_bias);
+             } else {
+                 engine_->joint_argmax(
+-                    *stream_state_, enc_out + static_cast<size_t>(t) * d_model, d_model, remaining,
++                    *stream_state_, enc_out + static_cast<size_t>(t) * d_model, d_model, batch,
+                     boost_token_ids_.data(), boost_bias);
+             }
+             ++stats_.joint_calls;
+-            stats_.joint_frames += static_cast<uint64_t>(remaining);
+-            for (int i = 0; i < remaining; ++i) {
++            stats_.joint_frames += static_cast<uint64_t>(batch);
++            for (int i = 0; i < batch; ++i) {
+                 if (token_ids_[static_cast<size_t>(i)] != blank_id)
+                     token_ids_[static_cast<size_t>(i)] = boost_token_ids_[static_cast<size_t>(i)];
+             }
+         }
+ 
+         int first_emit = -1;
+-        for (int i = 0; i < remaining; ++i) {
++        for (int i = 0; i < batch; ++i) {
+             if (token_ids_[static_cast<size_t>(i)] != blank_id) {
+                 first_emit = i;
+                 break;
+             }
+         }
+         if (first_emit < 0) {
+-            // Every remaining frame is blank under this predictor state.
+-            break;
++            // A blank batch advances time without changing predictor state.
++            t += batch;
++            symbols_at_frame = 0;
++            continue;
+         }
+ 
+         // A blank advances the encoder clock and ends any symbol run at the
+diff --git a/src/asr/decoders/rnnt_greedy_decoder.h b/src/asr/decoders/rnnt_greedy_decoder.h
+index 83d13e7..90213de 100644
+--- a/src/asr/decoders/rnnt_greedy_decoder.h
++++ b/src/asr/decoders/rnnt_greedy_decoder.h
+@@ -179,6 +179,7 @@ class RnntGreedyDecoder : public Decoder {
+     void build_punct_bias();
+ 
+     RnntEngine* engine_;
++    int joint_batch_frames_ = 0;
+     std::unique_ptr<RnntStreamState> stream_state_;
+     int prev_token_ = -1;
+     int active_bank_ = 0;
+diff --git a/tests/cpp/asr/test_decoders.cpp b/tests/cpp/asr/test_decoders.cpp
+index 621c84d..13bd27c 100644
+--- a/tests/cpp/asr/test_decoders.cpp
++++ b/tests/cpp/asr/test_decoders.cpp
+@@ -11,6 +11,7 @@
+ //                      prev_token preserved across reset_utterance (riva EOU).
+ //
+ // Usage: ./test_decoders   (no model files, no GPU)
++#include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstring>
+@@ -381,6 +382,149 @@ test_rnnt_max_symbols_cap() {
+     check(static_cast<int>(ids.size()) == 3, "rnnt: max_symbols_per_step caps the inner loop");
+ }
+ 
++class FrameRnntEngine : public MockRnntEngine {
++   public:
++    bool silence = false;
++    bool dense = false;
++    std::vector<int> widths;
++    std::vector<int> encode_phrase(const std::string&) const override { return {1}; }
++
++    void joint_argmax(
++        RnntStreamState&, const float* enc, int dim, int T, int32_t* ids,
++        const float* bias = nullptr) override {
++        widths.push_back(T);
++        ++joint_calls;
++        for (int i = 0; i < T; ++i) {
++            const int frame = static_cast<int>(enc[i * dim]);
++            int token = rnnt_config().blank_id;
++            if (dense) {
++                token = 0;
++            } else if (!silence) {
++                if (predictor_calls == 1 && frame == 2)
++                    token = 0;
++                else if (predictor_calls == 2 && frame == 2)
++                    token = 1;
++                else if (predictor_calls == 3 && frame == 5)
++                    token = 2;
++            }
++            ids[i] = bias != nullptr && token == 0 ? 1 : token;
++        }
++    }
++
++    void joint_argmax_device(
++        RnntStreamState& state, const ggml_runtime::DeviceTensor& enc, int offset, int dim, int T,
++        int32_t* ids, const float* bias = nullptr) override {
++        joint_argmax(
++            state, static_cast<const float*>(enc.tensor->data) + offset * dim, dim, T, ids, bias);
++    }
++};
++
++void
++test_rnnt_joint_batches_preserve_state_and_complete_audio() {
++    for (const bool boosted : {false, true}) {
++        std::vector<float> enc(8 * 4, 0.0f);
++        for (int i = 0; i < 8; ++i) enc[i * 4] = static_cast<float>(i);
++        FrameRnntEngine reference;
++        RnntGreedyDecoder full(&reference);
++        AsrRequestOptions opts;
++        opts.enable_word_time_offsets = true;
++        if (boosted) {
++            AsrRequestOptions::Boost context;
++            context.phrases = {"b"};
++            context.boost = 1.0f;
++            opts.speech_contexts.push_back(context);
++        }
++        full.set_request_options(opts);
++        const auto expected = full.step(enc.data(), 4, 8, 10);
++        full.finalize();
++        for (const int width : {1, 2, 3, 8, 32}) {
++            FrameRnntEngine engine;
++            DecoderConfig config;
++            config.rnnt_joint_batch_frames = width;
++            RnntGreedyDecoder tiled(&engine, config);
++            tiled.set_request_options(opts);
++            check(tiled.step(enc.data(), 4, 8, 10) == expected, "rnnt batch: identical tokens");
++            tiled.finalize();
++            check(tiled.last_emit_frame() == full.last_emit_frame(), "rnnt batch: identical clock");
++            check(
++                engine.predictor_calls == reference.predictor_calls, "rnnt batch: predictor cache");
++            check(
++                *std::max_element(engine.widths.begin(), engine.widths.end()) <= width,
++                "rnnt batch: computation width honored");
++            const auto& actual_words = tiled.word_timings();
++            const auto& expected_words = full.word_timings();
++            bool same = actual_words.size() == expected_words.size();
++            for (size_t i = 0; same && i < actual_words.size(); ++i) {
++                same = actual_words[i].word == expected_words[i].word &&
++                       actual_words[i].start_frame == expected_words[i].start_frame &&
++                       actual_words[i].end_frame == expected_words[i].end_frame;
++            }
++            check(same, "rnnt batch: identical word timing");
++            FrameRnntEngine split_engine;
++            RnntGreedyDecoder split(&split_engine, config);
++            split.set_request_options(opts);
++            auto split_ids = split.step(enc.data(), 4, 3, 10);
++            const auto tail_ids = split.step(enc.data() + 3 * 4, 4, 5, 13);
++            split_ids.insert(split_ids.end(), tail_ids.begin(), tail_ids.end());
++            check(
++                split_ids == expected && split.last_emit_frame() == full.last_emit_frame() &&
++                    split_engine.predictor_calls == reference.predictor_calls,
++                "rnnt batch: split-step predictor and token parity");
++
++            // Only the mock reads this carrier; no device backend is created.
++            ggml_tensor tensor{};
++            tensor.buffer = reinterpret_cast<ggml_backend_buffer_t>(1);
++            tensor.data = enc.data();
++            ggml_runtime::DeviceTensor device{
++                &tensor, reinterpret_cast<ggml_backend_buffer_type_t>(1), 0};
++            FrameRnntEngine device_engine;
++            RnntGreedyDecoder device_decoder(&device_engine, config);
++            device_decoder.set_request_options(opts);
++            check(
++                device_decoder.step_device(device, 4, 8, 10) == expected &&
++                    device_engine.predictor_calls == reference.predictor_calls &&
++                    *std::max_element(device_engine.widths.begin(), device_engine.widths.end()) <=
++                        width,
++                "rnnt batch: device/fused host routing parity");
++            if (width == 2) {
++                check(
++                    tiled.stats().joint_frames == (boosted ? 26 : 13),
++                    "rnnt batch: less discarded work");
++            }
++        }
++    }
++
++    FrameRnntEngine silence;
++    silence.silence = true;
++    DecoderConfig config;
++    config.rnnt_joint_batch_frames = 2;
++    RnntGreedyDecoder tiled(&silence, config);
++    std::vector<float> blank(8 * 4, 0.0f);
++    check(tiled.step(blank.data(), 4, 8, 0).empty(), "rnnt batch: full blank tail");
++    check(
++        silence.predictor_calls == 1 && tiled.stats().joint_frames == 8 &&
++            tiled.stats().joint_calls == 4,
++        "rnnt batch: blank tiles advance without recomputing predictor");
++
++    FrameRnntEngine dense;
++    dense.dense = true;
++    config.rnnt_joint_batch_frames = 1;
++    RnntGreedyDecoder dense_decoder(&dense, config);
++    check(
++        dense_decoder.step(blank.data(), 4, 8, 0).size() == 24 &&
++            dense_decoder.stats().encoder_frames == 8,
++        "rnnt batch: max symbols applies independently to every frame");
++    config.rnnt_joint_batch_frames = -1;
++    bool rejected = false;
++    try {
++        RnntGreedyDecoder invalid(&dense, config);
++    }
++    catch (const std::invalid_argument&) {
++        rejected = true;
++    }
++    check(rejected, "rnnt batch: negative computation width rejected");
++}
++
+ void
+ test_rnnt_eou_punctuation_bias() {
+     MockRnntEngine eng;
+@@ -614,6 +758,7 @@ main() {
+     test_greedy_open_word_needs_finalize();
+     test_rnnt_emission_and_blank();
+     test_rnnt_max_symbols_cap();
++    test_rnnt_joint_batches_preserve_state_and_complete_audio();
+     test_rnnt_eou_punctuation_bias();
+     test_rnnt_state_threading_and_reset_utterance();
+     test_rnnt_word_timings();

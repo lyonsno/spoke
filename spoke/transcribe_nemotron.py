@@ -181,6 +181,19 @@ def _resolve_boost(boost: float | None = None) -> float:
         ) from exc
 
 
+def _resolve_joint_batch_frames(value: int | None) -> int:
+    name = "SPOKE_NEMOTRON_JOINT_BATCH_FRAMES"
+    if value is None:
+        raw = os.environ.get(name, "").strip() or "0"
+        try:
+            value = int(raw)
+        except ValueError:
+            raise NemotronCPUError(f"{name} must be a non-negative integer, got {raw!r}") from None
+    if type(value) is not int or value < 0:
+        raise NemotronCPUError(f"{name} must be a non-negative integer, got {value!r}")
+    return value
+
+
 def _phase_timing_enabled() -> bool:
     value = os.environ.get("SPOKE_NEMOTRON_PHASE_TIMING", "").strip().lower()
     if not value:
@@ -395,6 +408,7 @@ class NemotronCPUClient:
         model_path: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
         speech_context_boost: float | None = None,
+        joint_batch_frames: int | None = None,
         expected_model_sha256: str = _NEMOTRON_EXPECTED_SHA256,
         prompt_provider: TranscriptionPromptProvider | None = None,
         failure_dir: str | os.PathLike[str] | None = None,
@@ -411,6 +425,7 @@ class NemotronCPUClient:
         )
         self._timeout = _resolve_timeout(timeout)
         self._speech_context_boost = _resolve_boost(speech_context_boost)
+        self._joint_batch_frames = _resolve_joint_batch_frames(joint_batch_frames)
         self._expected_model_sha256 = expected_model_sha256.lower()
         self._model_sha256_actual: str | None = None
         self._verified_model_stat: tuple[int, int, int, int] | None = None
@@ -564,6 +579,7 @@ class NemotronCPUClient:
             "runner_selection": "automatic",
             "streaming_cli_requested": False,
             "warmup_cli_requested": False,
+            "rnnt_joint_batch_frames": self._joint_batch_frames,
             "endpointing": False,
             "vad": False,
         }
@@ -792,6 +808,8 @@ class NemotronCPUClient:
             "--no-batching",
             "--no-warmup",
         ]
+        if self._joint_batch_frames:
+            cmd.extend(("--rnnt-joint-batch-frames", str(self._joint_batch_frames)))
         for phrase in phrases:
             cmd.extend(("--speech-context", phrase))
         if phrases:

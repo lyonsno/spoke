@@ -1,4 +1,4 @@
-# Nemotron Offline Timing Patch
+# Nemotron Native Runtime Patches
 
 `offline-phase-costs.patch` adds measurements only to NVIDIA NeMo-Speech.cpp
 v0.1.0, commit `4f9676226f667d14608487df744f375db87127f8`. It does not change
@@ -46,9 +46,40 @@ ordinary replay continues to support legacy timing. Every successful replay
 requires an explicit false `warmup_cli_requested` receipt. These checks do not
 turn missing telemetry into a production transcription failure.
 
-The local timing-only composition retains the official CLI and all official
+The earlier timing-only composition retains the official CLI and all official
 runtime libraries except `libnemo_speech_asr.dylib`. Replace that library only
 in the new prefix, relocate its build-directory RPATH to `@loader_path`, and
 ad-hoc sign it. Verify the remaining artifacts match the official prefix and
 the loader resolves ggml from the new prefix, not the build tree. This keeps
 the original CPU kernels in the comparison.
+
+## RNNT joint batch width
+
+`rnnt-joint-batch-frames.patch` backports configurable speculative joint
+batching to the same v0.1.0 source, preserving its punctuation and word-timing
+behavior. It limits work per joint evaluation, not audio, transcript length,
+predictor context, or tokens. Every encoder frame is still consumed.
+
+Spoke exposes `SPOKE_NEMOTRON_JOINT_BATCH_FRAMES` (non-negative integer).
+The RNNT64 launcher profile selects `64`; `128` is also supported. Unset or
+`0` omits the new CLI flag and keeps legacy binaries compatible. A positive
+value requires the patched binary selected by `SPOKE_NEMO_SPEECH_BINARY`.
+Transcription receipts record `recognizer_configuration.rnnt_joint_batch_frames`.
+
+Build this patch and `offline-phase-costs.patch` together in a new complete
+runtime prefix; do not swap a decoder library across changed C++ configuration
+layouts. Apply the timing patch with `git apply --recount` (its historical hunk
+counts need recounting), then apply the RNNT patch normally. For the pinned
+macOS CPU build, build SentencePiece using the pinned script, configure with
+`cmake --preset cpu-asr -DNEMO_SPEECH_BUILD_TESTS=ON
+-DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF -DCMAKE_PREFIX_PATH="$PWD/.deps/sentencepiece"
+-DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF
+-DCMAKE_INSTALL_RPATH='@loader_path;@loader_path/../lib'`, then build, run
+`build/cpu-asr/bin/test_decoders` explicitly (the pinned CTest list omits it),
+run CTest, and install the whole package. Spoke owns microphone capture. The direct CMake
+invocation avoids the pinned wrapper's unconditional miniaudio prerequisite.
+
+Retained-audio comparisons must check the old production runtime against both
+the rebuilt unrestricted runtime and width64, including complete text and word
+timings. Width-dependent floating-point differences remain possible; model-free
+decoder tests do not establish real-model numerical parity.

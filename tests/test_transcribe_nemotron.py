@@ -95,6 +95,46 @@ def test_available_requires_executable_and_model(tmp_path):
     assert not NemotronCPUClient.available(binary=binary, model_path=model)
 
 
+@pytest.mark.parametrize("width", [0, 64, 128])
+def test_joint_batch_configuration_reaches_cli_and_receipt(tmp_path, monkeypatch, width):
+    binary, model = _seated_paths(tmp_path)
+    monkeypatch.setenv("SPOKE_NEMOTRON_JOINT_BATCH_FRAMES", str(width))
+    monkeypatch.setenv("NEMO_SPEECH_ASR_DECODER_RNNT_JOINT_BATCH_FRAMES", "16")
+    client = NemotronCPUClient(
+        binary=binary, model_path=model, expected_model_sha256=_TEST_MODEL_SHA256,
+        prompt_provider=TranscriptionPromptProvider(include_builtin=False),
+    )
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen.update(cmd=cmd, env=kwargs["env"])
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"text":"same words"}', stderr="")
+
+    with patch.object(nemotron_module, "run_measured", side_effect=run):
+        assert client.transcribe(_wav_bytes()) == "same words"
+    if width:
+        assert seen["cmd"][seen["cmd"].index("--rnnt-joint-batch-frames") + 1] == str(width)
+    else:
+        assert "--rnnt-joint-batch-frames" not in seen["cmd"]
+    assert "NEMO_SPEECH_ASR_DECODER_RNNT_JOINT_BATCH_FRAMES" not in seen["env"]
+    assert client._last_receipt["recognizer_configuration"]["rnnt_joint_batch_frames"] == width
+
+
+def test_joint_batch_argument_overrides_environment_and_default_is_legacy(monkeypatch):
+    monkeypatch.delenv("SPOKE_NEMOTRON_JOINT_BATCH_FRAMES", raising=False)
+    assert "--rnnt-joint-batch-frames" not in NemotronCPUClient()._command(Path("audio.wav"), [])
+    monkeypatch.setenv("SPOKE_NEMOTRON_JOINT_BATCH_FRAMES", "64")
+    command = NemotronCPUClient(joint_batch_frames=128)._command(Path("audio.wav"), [])
+    assert command[command.index("--rnnt-joint-batch-frames") + 1] == "128"
+
+
+@pytest.mark.parametrize("value", ["-1", "64.5", "nan", "auto"])
+def test_invalid_joint_batch_configuration_is_not_silently_replaced(monkeypatch, value):
+    monkeypatch.setenv("SPOKE_NEMOTRON_JOINT_BATCH_FRAMES", value)
+    with pytest.raises(NemotronCPUError, match="SPOKE_NEMOTRON_JOINT_BATCH_FRAMES"):
+        NemotronCPUClient()
+
+
 def test_transcribe_uses_cpu_full_buffer_automatic_runner_and_uncapped_decoder_phrases(
     tmp_path,
 ):
@@ -170,6 +210,7 @@ def test_transcribe_uses_cpu_full_buffer_automatic_runner_and_uncapped_decoder_p
         "runner_selection": "automatic",
         "streaming_cli_requested": False,
         "warmup_cli_requested": False,
+        "rnnt_joint_batch_frames": 0,
         "endpointing": False,
         "vad": False,
     }
