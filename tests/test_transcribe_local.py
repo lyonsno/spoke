@@ -563,6 +563,128 @@ def _make_wav_bytes(n_samples=1000, *, samples=None):
     return buf.getvalue()
 
 
+class TestLocalTimingReceipt:
+    def test_phase_clocks_measure_nonoverlapping_intervals(self):
+        from spoke.transcribe_local import _LocalTiming
+
+        receipt = {"timing_status": "complete", "phases": {}}
+        with patch("time.perf_counter", side_effect=[10.0, 12.0, 17.0]), \
+             patch("time.thread_time", side_effect=[1.0, 1.5, 2.0]), \
+             patch("time.process_time", side_effect=[3.0, 5.0, 8.0]):
+            timing = _LocalTiming(receipt, "model_prepare")
+            timing.advance("mlx_inference")
+            timing.finish()
+        assert receipt["phases"]["model_prepare"]["wall_seconds"] == 2.0
+        assert receipt["phases"]["mlx_inference"]["wall_seconds"] == 5.0
+        assert receipt["phases"]["mlx_inference"]["caller_thread_cpu_seconds"] == 0.5
+        assert receipt["phases"]["mlx_inference"]["process_cpu_seconds"] == 3.0
+        assert receipt["total"]["wall_seconds"] == 7.0
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_records_all_phases_without_changing_runtime_call(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.recording_history import client_receipt
+
+        runtime.transcribe.return_value = {"text": "Ordinary dictation."}
+        client = LocalTranscriptionClient(model="test/model")
+        wav = _make_wav_bytes(n_samples=16000)
+        assert client.transcribe(wav) == "Ordinary dictation."
+        receipt = client_receipt(client)["last_receipt"]
+        assert receipt["status"] == "success"
+        assert receipt["model"] == "test/model"
+        assert receipt["audio_bytes"] == len(wav)
+        assert receipt["audio_duration_seconds"] == 1.0
+        assert receipt["timing_status"] == "complete"
+        assert list(receipt["phases"]) == [
+            "model_prepare", "audio_decode", "prompt_setup",
+            "mlx_inference", "result_processing",
+        ]
+        for phase in receipt["phases"].values():
+            assert phase["wall_seconds"] >= 0
+            assert phase["caller_thread_cpu_seconds"] >= 0
+            assert phase["process_cpu_seconds"] >= 0
+        assert sum(p["wall_seconds"] for p in receipt["phases"].values()) == pytest.approx(
+            receipt["total"]["wall_seconds"]
+        )
+        assert receipt["cpu_scope"] == "caller_thread_and_whole_spoke_process_not_gpu"
+        assert not any("timing" in key for key in runtime.transcribe.call_args.kwargs)
+        assert "initial_prompt" not in receipt
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_failure_keeps_phase_and_replaces_previous_receipt(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        runtime.transcribe.return_value = {"text": "First dictation."}
+        client = LocalTranscriptionClient(model="test/model")
+        wav = _make_wav_bytes()
+        client.transcribe(wav)
+        previous = client._last_receipt
+        runtime.transcribe.side_effect = RuntimeError("backend failed")
+        with pytest.raises(RuntimeError, match="backend failed"):
+            client.transcribe(wav)
+        receipt = client._last_receipt
+        assert receipt is not previous
+        assert previous["status"] == "success"
+        assert receipt["status"] == "failed"
+        assert receipt["failed_phase"] == "mlx_inference"
+        assert receipt["error_type"] == "RuntimeError"
+        assert "result_processing" not in receipt["phases"]
+        assert receipt["phases"]["mlx_inference"]["wall_seconds"] >= 0
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_invalid_audio_has_no_inference_or_stale_prompt_receipt(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        client = LocalTranscriptionClient(model="test/model")
+        client._last_prompt_receipt = {"runtime_accepted": True}
+        with pytest.raises(Exception):
+            client.transcribe(b"not a WAV")
+        assert client._last_receipt["failed_phase"] == "audio_decode"
+        assert "mlx_inference" not in client._last_receipt["phases"]
+        assert client._last_prompt_receipt is None
+        runtime.transcribe.assert_not_called()
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_blank_and_empty_do_not_pretend_to_be_success(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        runtime.transcribe.return_value = {"text": "Thank you."}
+        client = LocalTranscriptionClient(model="test/model")
+        assert client.transcribe(_make_wav_bytes()) == ""
+        assert client._last_receipt["status"] == "blank"
+        assert client.transcribe(b"") == ""
+        assert client._last_receipt["status"] == "blank"
+        assert client._last_receipt["phases"] == {}
+        assert client._last_receipt["audio_bytes"] == 0
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_broken_timing_does_not_lose_transcript(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        runtime.transcribe.return_value = {"text": "Keep this dictation."}
+        client = LocalTranscriptionClient(model="test/model")
+        with patch("time.thread_time", side_effect=OSError("clock unavailable")):
+            assert client.transcribe(_make_wav_bytes()) == "Keep this dictation."
+        assert client._last_receipt["status"] == "success"
+        assert client._last_receipt["timing_status"] == "unavailable"
+        assert "total" not in client._last_receipt
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_partial_output_failure_is_processing_not_inference(self, runtime):
+        from spoke.transcribe_local import IncompleteLocalTranscriptionError, LocalTranscriptionClient
+
+        runtime.transcribe.return_value = {
+            "text": "Just the beginning.", "segments": [{"end": 2.0}],
+        }
+        client = LocalTranscriptionClient(model="test/model")
+        with pytest.raises(IncompleteLocalTranscriptionError):
+            client.transcribe(_make_wav_bytes(samples=np.full(16000 * 20, 0.1)))
+        assert client._last_receipt["status"] == "failed"
+        assert client._last_receipt["failed_phase"] == "result_processing"
+        assert "mlx_inference" in client._last_receipt["phases"]
+        assert client._last_receipt["audio_duration_seconds"] == 20.0
+
+
 class TestLocalTranscriptionFiltering:
     """Test that local client applies dedup filtering."""
 

@@ -13,6 +13,7 @@ import io
 import logging
 import os
 from pathlib import Path
+import time
 import wave
 
 import numpy as np
@@ -35,6 +36,41 @@ _TAIL_ENERGY_FRAME_SECONDS = 0.5
 mx = None
 mlx_whisper = None
 load_model = None
+
+
+class _LocalTiming:
+    """Caller-side clocks only; never synchronize MLX or inspect host state."""
+
+    def __init__(self, receipt: dict, phase: str | None):
+        self.receipt = receipt
+        self.phase = phase
+        self.start = self.previous = self._sample()
+
+    def _sample(self):
+        try:
+            return (time.perf_counter(), time.thread_time(), time.process_time())
+        except Exception:
+            self.receipt["timing_status"] = "unavailable"
+            return None
+
+    @staticmethod
+    def _delta(start, end):
+        return dict(zip(
+            ("wall_seconds", "caller_thread_cpu_seconds", "process_cpu_seconds"),
+            (max(0.0, b - a) for a, b in zip(start, end)),
+        ))
+
+    def advance(self, phase: str | None):
+        now = self._sample()
+        if self.phase is not None and self.previous is not None and now is not None:
+            self.receipt["phases"][self.phase] = self._delta(self.previous, now)
+        self.phase, self.previous = phase, now
+        return now
+
+    def finish(self):
+        end = self.advance(None)
+        if self.receipt["timing_status"] == "complete" and self.start is not None and end is not None:
+            self.receipt["total"] = self._delta(self.start, end)
 
 
 class IncompleteLocalTranscriptionError(RuntimeError):
@@ -232,6 +268,7 @@ class LocalTranscriptionClient:
             prompt_provider or TranscriptionPromptProvider.from_environment()
         )
         self._last_prompt_receipt: dict | None = None
+        self._last_receipt: dict | None = None
         self._loaded = False
         self._model_instance = None
         self._warned_eager_eval_unsupported = False
@@ -274,16 +311,46 @@ class LocalTranscriptionClient:
         Decodes WAV to numpy float32 array in-process (no ffmpeg needed),
         then passes directly to mlx_whisper.transcribe().
         """
+        self._last_prompt_receipt = None
+        receipt = self._last_receipt = {
+            "schema": "spoke.local_whisper_timing.v1",
+            "model": self._model,
+            "audio_bytes": len(wav_bytes),
+            "model_prepared_at_entry": self._loaded,
+            "status": "running",
+            "timing_status": "complete",
+            "cpu_scope": "caller_thread_and_whole_spoke_process_not_gpu",
+            "phases": {},
+        }
+        timing = _LocalTiming(receipt, "model_prepare" if wav_bytes else None)
+        try:
+            text = self._transcribe(wav_bytes, timing)
+            receipt["status"] = "success" if text.strip() else "blank"
+            return text
+        except Exception as exc:
+            receipt.update(status="failed", failed_phase=timing.phase,
+                           error_type=type(exc).__name__)
+            raise
+        finally:
+            timing.finish()
+
+    def _transcribe(self, wav_bytes: bytes, timing: _LocalTiming) -> str:
         if not wav_bytes:
             return ""
 
         self._ensure_model()
         self._install_model_holder()
         _, runtime_whisper, _ = _ensure_mlx_whisper_runtime()
+        runtime_path = getattr(runtime_whisper, "__file__", None)
+        if isinstance(runtime_path, str):
+            timing.receipt["runtime_path"] = runtime_path
 
         # Decode WAV bytes to float32 numpy array — bypass ffmpeg entirely
+        timing.advance("audio_decode")
         audio = self._decode_wav(wav_bytes)
+        timing.receipt["audio_duration_seconds"] = float(len(audio)) / _WHISPER_SAMPLE_RATE
 
+        timing.advance("prompt_setup")
         kwargs = {
             "path_or_hf_repo": self._model,
             "language": "en",
@@ -328,7 +395,12 @@ class LocalTranscriptionClient:
 
         if prompt_effective:
             self._last_prompt_receipt["submission_attempted"] = True
+        timing.receipt["effective_decode_controls"] = {
+            key: kwargs[key] for key in ("decode_timeout", "eager_eval") if key in kwargs
+        }
+        timing.advance("mlx_inference")
         result = runtime_whisper.transcribe(audio, **kwargs)
+        timing.advance("result_processing")
         if prompt_effective:
             self._last_prompt_receipt["runtime_accepted"] = True
 
