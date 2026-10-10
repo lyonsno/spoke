@@ -1200,7 +1200,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
-        self._detector._on_throughglass_crown_key = self._toggle_perceptasia_throughglass
+        self._detector._on_recording_history_toggle = self._toggle_recording_history
         self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
         self._detector._on_approval_delete_pressed = self._on_approval_delete_pressed
         self._detector._on_double_tap_shift = None
@@ -3144,6 +3144,14 @@ class SpokeAppDelegate(NSObject):
         if getattr(self, "_recording_history", None) is None:
             self._recording_history = RecordingHistoryWindow.alloc().initWithDelegate_(self)
         self._recording_history.show()
+
+    def _toggle_recording_history(self) -> None:
+        history = getattr(self, "_recording_history", None)
+        window = getattr(history, "_window", None)
+        if window is not None and window.isVisible():
+            window.close()
+        else:
+            self._show_recording_history()
 
     def _recording_history_is_key(self) -> bool:
         history = getattr(self, "_recording_history", None)

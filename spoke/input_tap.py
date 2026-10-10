@@ -208,6 +208,7 @@ class SpacebarHoldDetector(NSObject):
         self._on_tray_deck_switch: Callable[[], None] | None = None
         self._on_diaulos_switcher_toggle: Callable[[], None] | None = None
         self._suppress_semicolon_keyup = False
+        self._suppress_quote_keyup = False
         self._on_approval_enter_pressed: Callable[[bool], None] | None = None
         self._on_approval_delete_pressed: Callable[[], None] | None = None
         self._tray_shift_down = False
@@ -226,7 +227,7 @@ class SpacebarHoldDetector(NSObject):
 
         # Enter during WAITING = toggle command overlay (before hold threshold fires)
         self._on_enter_during_waiting: Callable[[], None] | None = None
-        self._on_throughglass_crown_key: Callable[[], None] | None = None
+        self._on_recording_history_toggle: Callable[[], None] | None = None
 
         return self
 
@@ -319,6 +320,7 @@ class SpacebarHoldDetector(NSObject):
         self._suppress_enter_keyup = False
         self._suppress_delete_keyup = False
         self._awaiting_space_release = False
+        self._suppress_quote_keyup = False
         self._latched_space_down = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
@@ -362,17 +364,21 @@ class SpacebarHoldDetector(NSObject):
                 cb()
             return True
 
+        if keycode == QUOTE_KEYCODE and getattr(self, "_suppress_quote_keyup", False):
+            return True
+
         if keycode == QUOTE_KEYCODE and self._state == _State.WAITING:
             self._cancel_hold_timer()
             self._state = _State.IDLE
             self._awaiting_space_release = True
             record_command_overlay_trace(
-                "input.throughglass_crown_key",
+                "input.recording_history_key",
                 command_overlay_active=bool(
                     getattr(self, "command_overlay_active", False)
                 ),
             )
-            cb = getattr(self, "_on_throughglass_crown_key", None)
+            self._suppress_quote_keyup = True
+            cb = getattr(self, "_on_recording_history_toggle", None)
             if cb is not None:
                 cb()
             return True
@@ -434,6 +440,9 @@ class SpacebarHoldDetector(NSObject):
             Modifier flags at the moment of release. Used to detect
             shift-release for command routing.
         """
+        if keycode == QUOTE_KEYCODE and getattr(self, "_suppress_quote_keyup", False):
+            self._suppress_quote_keyup = False
+            return True
         if keycode == SEMICOLON_KEYCODE and getattr(
             self, "_suppress_semicolon_keyup", False
         ):

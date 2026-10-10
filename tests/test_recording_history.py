@@ -227,3 +227,69 @@ def test_history_action_toolbar_fits_without_overlapping_adjacent_content(conten
     assert transcript.origin.y + transcript.size.height <= frames[0].origin.y
     for left, right in zip(frames, frames[1:]):
         assert right.origin.x - (left.origin.x + left.size.width) >= 4
+
+
+def test_history_partial_publication_does_not_finish_or_spawn_another_refresh():
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._refreshing, owner._records = True, []
+    owner._status, owner._count = MagicMock(), MagicMock()
+    owner._filter = MagicMock()
+    owner._update_controls = MagicMock()
+    rows = [{"capture_id": "newest", "attempts": []}]
+    owner.loaded_({"records": rows, "complete": False})
+    assert owner._records == rows
+    owner._filter.assert_called_once_with()
+    assert owner._refreshing is True
+    assert "Loading" in owner._count.setStringValue_.call_args.args[0]
+    owner.loaded_({"records": rows, "complete": True})
+    assert owner._refreshing is False
+
+
+def test_history_loader_publishes_first_row_before_traversal_finishes(monkeypatch):
+    from types import SimpleNamespace
+    import spoke.recording_history_window as mod
+    owner = mod.RecordingHistoryWindow.alloc().init()
+    owner._records, owner._refreshing = [], False
+    emitted = []
+    def iterate():
+        yield {"capture_id": "newest", "attempts": []}
+        assert len(emitted) == 1
+        assert emitted[0]["records"][0]["capture_id"] == "newest"
+        assert emitted[0]["complete"] is False
+        yield {"capture_id": "oldest", "attempts": []}
+    owner._spool = SimpleNamespace(iter_recordings=iterate)
+    owner.performSelectorOnMainThread_withObject_waitUntilDone_ = lambda selector, payload, wait: emitted.append(payload)
+    monkeypatch.setattr(mod.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
+    owner.refresh_(None)
+    assert [r["capture_id"] for r in emitted[-1]["records"]] == ["newest", "oldest"]
+    assert emitted[-1]["complete"] is True
+
+
+def test_history_partial_load_error_keeps_loaded_rows_and_marks_unavailable():
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._refreshing = True
+    owner._records = [{"capture_id": "retained", "attempts": []}]
+    owner._status, owner._count = MagicMock(), MagicMock()
+    owner.loaded_({"error": "older directory unreadable"})
+    assert owner._refreshing is False
+    assert len(owner._records) == 1
+    assert "unavailable" in owner._status.setStringValue_.call_args.args[0]
+
+
+def test_history_recovers_count_after_error_even_when_rows_are_unchanged():
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._refreshing = True
+    rows = [{"capture_id": "retained", "attempts": []}]
+    owner._records = rows
+    owner._status, owner._count = MagicMock(), MagicMock()
+    owner._filter, owner._update_controls = MagicMock(), MagicMock()
+    owner.loaded_({"error": "unreadable"})
+    owner.loaded_({"records": rows, "complete": True})
+    owner._filter.assert_called_once_with()

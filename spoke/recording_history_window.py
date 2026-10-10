@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 import logging
 import threading
+import time
 
 import objc
 import AppKit as AK
@@ -47,6 +48,8 @@ class RecordingHistoryWindow(NSObject):
         self._selected_id = None
         self._attempt_id = None
         self._refreshing = False
+        self._loading_partial = False
+        self._load_failed = False
         self._timer = None
         self._sound = None
         self._previous_app = None
@@ -216,22 +219,47 @@ class RecordingHistoryWindow(NSObject):
         if self._refreshing:
             return
         self._refreshing = True
+        first_load = not self._records
         def load():
             try:
-                payload = {"records": self._spool.list_recordings()}
+                records = []
+                last_publication = time.monotonic()
+                for record in self._spool.iter_recordings():
+                    records.append(record)
+                    now = time.monotonic()
+                    if first_load and (len(records) == 1 or now - last_publication >= 0.1):
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "loaded:", {"records": list(records), "complete": False}, False,
+                        )
+                        last_publication = now
+                payload = {"records": records, "complete": True}
             except Exception as exc:
                 payload = {"error": str(exc)}
             self.performSelectorOnMainThread_withObject_waitUntilDone_("loaded:", payload, False)
         threading.Thread(target=load, name="spoke-history-list", daemon=True).start()
 
     def loaded_(self, payload):
-        self._refreshing = False
+        complete = payload.get("complete", True)
+        self._refreshing = not complete
         if payload.get("error"):
             self._status.setStringValue_(f"History unavailable: {payload['error']}")
+            self._count.setStringValue_(f"History unavailable | {len(self._records)} loaded")
+            self._loading_partial = False
+            self._load_failed = True
             return
         if payload["records"] != self._records:
             self._records = payload["records"]
             self._filter()
+        elif complete and (getattr(self, "_loading_partial", False)
+                           or getattr(self, "_load_failed", False)):
+            self._filter()
+        self._loading_partial = not complete
+        if not complete:
+            self._count.setStringValue_(f"Loading recordings | {len(self._records)} loaded")
+        elif str(self._status.stringValue()).startswith("History unavailable:"):
+            self._status.setStringValue_("Retention: manual")
+        if complete:
+            self._load_failed = False
         self._update_controls()
 
     def controlTextDidChange_(self, notification):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -60,6 +61,7 @@ class AudioSpool:
     def __init__(self, config: AudioSpoolConfig | None = None) -> None:
         self.config = config or AudioSpoolConfig.from_env()
         self._history_lock = threading.RLock()
+        self._record_cache = {}
 
     @classmethod
     def from_env(cls) -> "AudioSpool":
@@ -177,60 +179,92 @@ class AudioSpool:
 
     def list_recordings(self) -> list[dict]:
         """Read metadata only; opening history never decodes or loads audio."""
-        records = []
+        return list(self.iter_recordings())
+
+    def iter_recordings(self):
+        """Yield newest first, reusing rows only while their files are unchanged."""
         root = self.config.root
         capture_ids = {p.stem for pattern in ("*.json", "*.wav") for p in root.glob(pattern)}
+        self._record_cache = {key: value for key, value in self._record_cache.items() if key in capture_ids}
         for capture_id in sorted(capture_ids, reverse=True):
             base = self._capture_path(capture_id)
+            signature = self._recording_signature(base)
+            cached = self._record_cache.get(capture_id)
+            if signature is not None and cached is not None and cached[0] == signature:
+                yield copy.deepcopy(cached[1])
+                continue
+            item = self._read_recording(capture_id, base)
+            if signature is not None:
+                self._record_cache[capture_id] = (signature, item)
+            else:
+                self._record_cache.pop(capture_id, None)
+            yield copy.deepcopy(item)
+
+    def _recording_signature(self, base):
+        directory = self.config.root / "attempts" / base.name
+        paths = [base.with_suffix(".json"), base.with_suffix(".wav"), directory]
+        paths.extend(sorted(directory.glob("*.json")))
+        signature = []
+        for path in paths:
             try:
-                payload = _read_json_object(base.with_suffix(".json"))
-                if payload.get("schema") != "spoke.audio_spool.capture.v1" or payload.get("capture_id") != capture_id:
-                    raise ValueError("Unverified capture metadata")
-                item = dict(payload)
-            except (OSError, ValueError) as exc:
-                item = {"capture_id": capture_id, "error": str(exc), "status": "unverified"}
-            item["wav_path"] = str(base.with_suffix(".wav"))
-            item["audio_available"] = base.with_suffix(".wav").is_file()
-            attempts = []
-            directory = root / "attempts" / capture_id
-            for path in sorted(directory.glob("*.request.json")):
-                try:
-                    attempt = _read_json_object(path)
-                    attempt_id = attempt["attempt_id"]
-                    if (path.name != f"{attempt_id}.request.json" or attempt.get("capture_id") != capture_id
-                            or attempt.get("schema") != "spoke.recording_attempt.request.v1"
-                            or not isinstance(attempt.get("requested"), dict)):
-                        raise ValueError("Attempt identity mismatch")
-                    attempt["status"] = "pending"
-                    result_path = directory / f"{attempt_id}.result.json"
-                    if result_path.exists():
-                        result = _read_json_object(result_path)
-                        if (result.get("attempt_id") != attempt_id or result.get("capture_id") != capture_id
-                                or result.get("schema") != "spoke.recording_attempt.result.v1"
-                                or result.get("status") not in {"success", "blank", "failed"}
-                                or not isinstance(result.get("effective"), dict)
-                                or (result.get("text") is not None and not isinstance(result.get("text"), str))
-                                or (result.get("status") == "success" and not str(result.get("text") or "").strip())):
-                            raise ValueError("Result identity mismatch")
-                        attempt.update(result)
-                    deliveries = [_read_json_object(p) for p in directory.glob(f"{attempt_id}.delivery-*.json")]
-                    for event in deliveries:
-                        if (event.get("schema") != "spoke.recording_delivery.v1"
-                                or event.get("attempt_id") != attempt_id
-                                or not isinstance(event.get("state"), str)
-                                or not isinstance(event.get("created_at"), str)):
-                            raise ValueError("Unverified delivery event")
-                    attempt["deliveries"] = sorted(deliveries, key=lambda event: event["created_at"])
-                except (OSError, ValueError, KeyError) as exc:
-                    attempt = {"attempt_id": path.name.removesuffix(".request.json"),
-                               "status": "unverified", "error": str(exc)}
-                attempts.append(attempt)
-            item["attempts"] = attempts
-            item.setdefault("status", attempts[-1]["status"] if attempts else "not_transcribed")
-            if not item["audio_available"]:
-                item["audio_error"] = "Recording audio is missing"
-            records.append(item)
-        return records
+                stat = path.stat()
+                signature.append((path.name, stat.st_ino, stat.st_mode, stat.st_size,
+                                  stat.st_mtime_ns, stat.st_ctime_ns))
+            except FileNotFoundError:
+                signature.append((path.name, None))
+            except OSError:
+                return None
+        return tuple(signature)
+
+    def _read_recording(self, capture_id, base):
+        try:
+            payload = _read_json_object(base.with_suffix(".json"))
+            if payload.get("schema") != "spoke.audio_spool.capture.v1" or payload.get("capture_id") != capture_id:
+                raise ValueError("Unverified capture metadata")
+            item = dict(payload)
+        except (OSError, ValueError) as exc:
+            item = {"capture_id": capture_id, "error": str(exc), "status": "unverified"}
+        item["wav_path"] = str(base.with_suffix(".wav"))
+        item["audio_available"] = base.with_suffix(".wav").is_file()
+        attempts = []
+        directory = self.config.root / "attempts" / capture_id
+        for path in sorted(directory.glob("*.request.json")):
+            try:
+                attempt = _read_json_object(path)
+                attempt_id = attempt["attempt_id"]
+                if (path.name != f"{attempt_id}.request.json" or attempt.get("capture_id") != capture_id
+                        or attempt.get("schema") != "spoke.recording_attempt.request.v1"
+                        or not isinstance(attempt.get("requested"), dict)):
+                    raise ValueError("Attempt identity mismatch")
+                attempt["status"] = "pending"
+                result_path = directory / f"{attempt_id}.result.json"
+                if result_path.exists():
+                    result = _read_json_object(result_path)
+                    if (result.get("attempt_id") != attempt_id or result.get("capture_id") != capture_id
+                            or result.get("schema") != "spoke.recording_attempt.result.v1"
+                            or result.get("status") not in {"success", "blank", "failed"}
+                            or not isinstance(result.get("effective"), dict)
+                            or (result.get("text") is not None and not isinstance(result.get("text"), str))
+                            or (result.get("status") == "success" and not str(result.get("text") or "").strip())):
+                        raise ValueError("Result identity mismatch")
+                    attempt.update(result)
+                deliveries = [_read_json_object(p) for p in directory.glob(f"{attempt_id}.delivery-*.json")]
+                for event in deliveries:
+                    if (event.get("schema") != "spoke.recording_delivery.v1"
+                            or event.get("attempt_id") != attempt_id
+                            or not isinstance(event.get("state"), str)
+                            or not isinstance(event.get("created_at"), str)):
+                        raise ValueError("Unverified delivery event")
+                attempt["deliveries"] = sorted(deliveries, key=lambda event: event["created_at"])
+            except (OSError, ValueError, KeyError) as exc:
+                attempt = {"attempt_id": path.name.removesuffix(".request.json"),
+                           "status": "unverified", "error": str(exc)}
+            attempts.append(attempt)
+        item["attempts"] = attempts
+        item.setdefault("status", attempts[-1]["status"] if attempts else "not_transcribed")
+        if not item["audio_available"]:
+            item["audio_error"] = "Recording audio is missing"
+        return item
 
     def _prune(self) -> None:
         root = self.config.root

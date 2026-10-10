@@ -201,3 +201,77 @@ def test_malformed_terminal_result_is_not_presented_as_success(tmp_path):
     attempt = spool.start_attempt(capture.capture_id, requested={"model": "test"})
     spool.finish_attempt(capture.capture_id, attempt, text=" ", effective=[], wall_seconds=1)
     assert spool.list_recordings()[0]["attempts"][0]["status"] == "unverified"
+
+
+def test_history_refresh_reuses_unchanged_metadata_and_isolates_returned_rows(tmp_path, monkeypatch):
+    from spoke import audio_spool as mod
+    spool = mod.AudioSpool(mod.AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    attempt = spool.start_attempt(capture.capture_id, requested={"model": "test"})
+    spool.finish_attempt(capture.capture_id, attempt, text="Keep this", effective={}, wall_seconds=1)
+    spool.record_delivery(capture.capture_id, attempt, state="copied")
+    expected = spool.list_recordings()
+    reader = mod._read_json_object
+    reads = []
+    def counted(path):
+        reads.append(path)
+        return reader(path)
+    monkeypatch.setattr(mod, "_read_json_object", counted)
+    returned = spool.list_recordings()
+    assert reads == []
+    returned[0]["attempts"][0]["text"] = "Not source truth"
+    returned[0]["attempts"][0]["deliveries"].clear()
+    assert spool.list_recordings() == expected
+
+
+def test_history_iterator_publishes_newest_before_reading_older_records(tmp_path, monkeypatch):
+    from spoke import audio_spool as mod
+    spool = mod.AudioSpool(mod.AudioSpoolConfig(root=tmp_path))
+    captures = [spool.spool_capture(_wav_bytes()) for _ in range(3)]
+    reader = mod._read_json_object
+    reads = []
+    def counted(path):
+        reads.append(path)
+        return reader(path)
+    monkeypatch.setattr(mod, "_read_json_object", counted)
+    assert callable(getattr(spool, "iter_recordings", None)), "History has no incremental read route"
+    ordered = sorted(captures, key=lambda c: c.capture_id, reverse=True)
+    iterator = spool.iter_recordings()
+    assert next(iterator)["capture_id"] == ordered[0].capture_id
+    assert reads == [ordered[0].metadata_path]
+    assert [r["capture_id"] for r in iterator] == [c.capture_id for c in ordered[1:]]
+
+
+def test_history_cached_row_tracks_external_writes_corruption_and_missing_audio(tmp_path):
+    from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    writer = AudioSpool(spool.config)
+    capture = writer.spool_capture(_wav_bytes())
+    assert spool.list_recordings()[0]["status"] == "not_transcribed"
+    attempt = writer.start_attempt(capture.capture_id, requested={"model": "test"})
+    assert spool.list_recordings()[0]["attempts"][0]["status"] == "pending"
+    writer.finish_attempt(capture.capture_id, attempt, text="Complete", effective={}, wall_seconds=1)
+    assert spool.list_recordings()[0]["attempts"][0]["text"] == "Complete"
+    writer.record_delivery(capture.capture_id, attempt, state="copied")
+    assert spool.list_recordings()[0]["attempts"][0]["deliveries"][-1]["state"] == "copied"
+    result = tmp_path / "attempts" / capture.capture_id / f"{attempt}.result.json"
+    result.write_text("{}")
+    assert spool.list_recordings()[0]["attempts"][0]["status"] == "unverified"
+    result.unlink()
+    assert spool.list_recordings()[0]["attempts"][0]["status"] == "pending"
+    capture.wav_path.unlink()
+    assert spool.list_recordings()[0]["audio_available"] is False
+    capture.metadata_path.write_text("[]")
+    assert spool.list_recordings()[0]["status"] == "unverified"
+
+
+def test_history_cached_rows_do_not_hide_new_captures_or_keep_removed_ones(tmp_path):
+    from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    first = spool.spool_capture(_wav_bytes())
+    assert len(spool.list_recordings()) == 1
+    second = spool.spool_capture(_wav_bytes())
+    assert {r["capture_id"] for r in spool.list_recordings()} == {second.capture_id, first.capture_id}
+    first.wav_path.unlink()
+    first.metadata_path.unlink()
+    assert [r["capture_id"] for r in spool.list_recordings()] == [second.capture_id]

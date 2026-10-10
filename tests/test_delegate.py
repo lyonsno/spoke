@@ -5296,8 +5296,8 @@ class TestEnvValidation:
         assert result is not None
         assert getattr(detector_instance, "_on_double_tap_shift", None) is None
 
-    def test_init_binds_throughglass_crown_key(self, main_module, monkeypatch):
-        """Space+quote should route to the independent Throughglass toggle."""
+    def test_init_binds_recording_history_chord(self, main_module, monkeypatch):
+        """Space+quote routes to Transcriptions, not the retired viewer chord."""
         monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
 
         class Detector:
@@ -5313,7 +5313,19 @@ class TestEnvValidation:
             result = d.init()
 
         assert result is not None
-        assert detector_instance._on_throughglass_crown_key == d._toggle_perceptasia_throughglass
+        assert detector_instance._on_recording_history_toggle == d._toggle_recording_history
+
+    def test_recording_history_chord_closes_visible_window_and_reopens(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._recording_history = MagicMock()
+        d._show_recording_history = MagicMock()
+        d._recording_history._window.isVisible.return_value = True
+        d._toggle_recording_history()
+        d._recording_history._window.close.assert_called_once_with()
+        d._show_recording_history.assert_not_called()
+        d._recording_history._window.isVisible.return_value = False
+        d._toggle_recording_history()
+        d._show_recording_history.assert_called_once_with()
 
     def test_init_binds_diaulos_switcher_chord(self, main_module, monkeypatch):
         monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")

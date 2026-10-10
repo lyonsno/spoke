@@ -2147,14 +2147,14 @@ class TestShiftReleaseRouting:
         assert result is True  # suppressed — recording starts
         assert det._state == mod._State.WAITING
 
-    def test_quote_during_waiting_toggles_throughglass_and_swallows_space_release(
+    def test_quote_during_waiting_toggles_history_and_swallows_releases(
         self, input_tap_module
     ):
-        """Space+quote should be an independent Throughglass crown chord."""
+        """Space+quote opens History without starting a recording."""
         mod = input_tap_module
         det, on_start, on_end = self._make_detector(input_tap_module)
         crown_key = MagicMock()
-        det._on_throughglass_crown_key = crown_key
+        det._on_recording_history_toggle = crown_key
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
         assert det._state == mod._State.WAITING
@@ -2167,7 +2167,23 @@ class TestShiftReleaseRouting:
         crown_key.assert_called_once_with()
         on_start.assert_not_called()
         on_end.assert_not_called()
+        assert det.handle_key_down(mod.QUOTE_KEYCODE, 0) is True
+        crown_key.assert_called_once_with()
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        assert det.handle_key_up(mod.QUOTE_KEYCODE, flags=0) is True
+        assert det.handle_key_down(mod.QUOTE_KEYCODE, 0) is False
+
+    def test_quote_during_recording_does_not_toggle_history(self, input_tap_module):
+        mod = input_tap_module
+        det, on_start, on_end = self._make_detector(mod)
+        det._on_recording_history_toggle = MagicMock()
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det.handle_key_down(mod.QUOTE_KEYCODE, 0) is False
+        assert det._state == mod._State.RECORDING
+        det._on_recording_history_toggle.assert_not_called()
+        on_start.assert_called_once()
+        on_end.assert_not_called()
 
 
 class TestCommandThinking:
