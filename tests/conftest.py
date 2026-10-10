@@ -2,9 +2,9 @@
 
 Stubs out PyObjC/Quartz/AppKit so tests run without macOS GUI runtime.
 
-SAFETY: Tests must never touch the production lock file or heartbeat file.
-The env vars below redirect spoke to temp paths so that running pytest
-cannot kill a live spoke instance via the single-instance guard.
+SAFETY: Tests must never touch production locks, heartbeats or preferences.
+The env vars below redirect spoke to temp paths so running pytest cannot
+kill a live instance or change the operator's next-launch model selection.
 """
 
 import importlib
@@ -22,6 +22,17 @@ import pytest
 _test_runtime_dir = tempfile.mkdtemp(prefix="spoke-test-")
 os.environ["SPOKE_LOCK_PATH"] = os.path.join(_test_runtime_dir, ".spoke.lock")
 os.environ["SPOKE_HEARTBEAT_PATH"] = os.path.join(_test_runtime_dir, ".spoke-heartbeat.json")
+os.environ["SPOKE_MODEL_PREFERENCES_PATH"] = os.path.join(
+    _test_runtime_dir, "model_preferences.json"
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_model_preferences(tmp_path, monkeypatch):
+    # Separate each test as well as the suite from persistent operator state.
+    monkeypatch.setenv(
+        "SPOKE_MODEL_PREFERENCES_PATH", str(tmp_path / "model_preferences.json")
+    )
 
 
 def _make_fake_quartz():
