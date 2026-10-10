@@ -1,0 +1,68 @@
+diff --git a/src/asr/model.cpp b/src/asr/model.cpp
+index a82c06c..f0425c3 100644
+--- a/src/asr/model.cpp
++++ b/src/asr/model.cpp
+@@ -1760,6 +1760,7 @@ void
+ RnntModel::infer_offline(
+     const float* audio, size_t n_samples, std::vector<float>& enc_out, int& T_enc,
+     int prompt_index) {
++    const auto setup_begin = std::chrono::steady_clock::now();
+     ensure_offline_path();
+     const auto t0 = std::chrono::steady_clock::now();
+     std::vector<float> features;
+@@ -1772,6 +1773,9 @@ RnntModel::infer_offline(
+         const auto elapsed_ms = [](auto a, auto b) {
+             return std::chrono::duration<double, std::milli>(b - a).count();
+         };
++        std::fprintf(
++            stderr, "[timing] offline-transducer setup = %.2f ms\n",
++            elapsed_ms(setup_begin, t0));
+         std::fprintf(
+             stderr,
+             "[timing] offline-transducer frames=%d enc_frames=%d fe=%.2f "
+diff --git a/src/asr/runner.cpp b/src/asr/runner.cpp
+index 477585c..66713a6 100644
+--- a/src/asr/runner.cpp
++++ b/src/asr/runner.cpp
+@@ -745,13 +745,18 @@ OfflineRunner::finalize() {
+         // some cases truncating the hypothesis. HF/NeMo offline greedy decode
+         // applies no such bias, and this model already self-punctuates.
+         const auto decode_begin = std::chrono::steady_clock::now();
++        double decoder_step_ms = 0.0;
+         int64_t frame_offset = 0;
+         for (const auto& [off, len] : segments) {
+             std::vector<float> enc;
+             int T = 0;
+             transducer->infer_offline(audio_.data() + off, len, enc, T, prompt_index_);
++            const auto step_begin = std::chrono::steady_clock::now();
+             auto seg_tokens =
+                 decoder->step(enc.data(), transducer->rnnt_config().joint_dim, T, frame_offset);
++            decoder_step_ms += std::chrono::duration<double, std::milli>(
++                                   std::chrono::steady_clock::now() - step_begin)
++                                   .count();
+             frame_offset += T;
+             tokens.insert(tokens.end(), seg_tokens.begin(), seg_tokens.end());
+         }
+@@ -762,6 +767,23 @@ OfflineRunner::finalize() {
+                 std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - decode_begin)
+                     .count());
++            std::fprintf(
++                stderr,
++                "[timing] offline-transducer decoder-step frames=%lld segments=%zu = %.2f ms\n",
++                static_cast<long long>(frame_offset), segments.size(), decoder_step_ms);
++            const auto* rnnt = dynamic_cast<const RnntGreedyDecoder*>(decoder);
++            if (rnnt != nullptr) {
++                const auto& stats = rnnt->stats();
++                std::fprintf(
++                    stderr,
++                    "[timing] offline-transducer rnnt-work encoder_frames=%llu "
++                    "predictor_calls=%llu joint_calls=%llu joint_frames=%llu emitted_tokens=%llu\n",
++                    static_cast<unsigned long long>(stats.encoder_frames),
++                    static_cast<unsigned long long>(stats.predictor_calls),
++                    static_cast<unsigned long long>(stats.joint_calls),
++                    static_cast<unsigned long long>(stats.joint_frames),
++                    static_cast<unsigned long long>(stats.emitted_tokens));
++            }
+         }
+     }

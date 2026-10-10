@@ -5,15 +5,30 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import MutableMapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LAUNCH_TARGETS_PATH = Path.home() / ".config" / "spoke" / "launch_targets.json"
+_PROTECTED_LAUNCH_ENV_KEYS = frozenset(
+    {
+        "SPOKE_EXPECTED_LAUNCH_TARGET_ID",
+        "SPOKE_EXPECTED_LAUNCH_TARGET_PATH",
+        "SPOKE_LAUNCH_ADMISSION_PATH",
+        "SPOKE_LAUNCH_ADMISSION_TOKEN",
+        "SPOKE_LAUNCH_TARGET_ID",
+        "SPOKE_LAUNCH_TARGETS_PATH",
+    }
+)
 
 
 class LaunchTargetUnavailable(RuntimeError):
     """The launcher's selected target cannot be started as configured."""
+
+    def __init__(self, message: str, *, selected_target_id: str | None = None):
+        super().__init__(message)
+        self.selected_target_id = selected_target_id
 
 
 def launch_targets_path() -> Path:
@@ -108,7 +123,10 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
 
     raw_targets = payload.get("targets")
     if not isinstance(raw_targets, list):
-        raise LaunchTargetUnavailable("Spoke launch target registry targets must be a list")
+        raise LaunchTargetUnavailable(
+            "Spoke launch target registry targets must be a list",
+            selected_target_id=selected,
+        )
 
     matches = [
         target
@@ -117,24 +135,48 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
     ]
     if not matches:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} is absent from the registry"
+            f"Selected Spoke launch target {selected!r} is absent from the registry",
+            selected_target_id=selected,
         )
     if len(matches) != 1:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} is duplicated in the registry"
+            f"Selected Spoke launch target {selected!r} is duplicated in the registry",
+            selected_target_id=selected,
         )
 
     raw_target = matches[0]
     raw_path = raw_target.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} path must be a nonblank string"
+            f"Selected Spoke launch target {selected!r} path must be a nonblank string",
+            selected_target_id=selected,
         )
-    target_path = Path(raw_path).expanduser()
+    try:
+        target_path = Path(raw_path).expanduser()
+    except (OSError, RuntimeError) as exc:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} path could not be resolved: "
+            f"{raw_path} ({exc})",
+            selected_target_id=selected,
+        ) from exc
     if not target_path.is_absolute():
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} path must be absolute: {raw_path}"
+            f"Selected Spoke launch target {selected!r} path must be absolute: {raw_path}",
+            selected_target_id=selected,
         )
+    try:
+        target_path = target_path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}",
+            selected_target_id=selected,
+        ) from exc
+    except (OSError, RuntimeError) as exc:
+        raise LaunchTargetUnavailable(
+            f"Selected Spoke launch target {selected!r} path could not be resolved: "
+            f"{raw_path} ({exc})",
+            selected_target_id=selected,
+        ) from exc
 
     raw_label = raw_target.get("label", selected)
     if (
@@ -145,7 +187,8 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
     ):
         raise LaunchTargetUnavailable(
             f"Selected Spoke launch target {selected!r} label must be a nonblank "
-            "printable string without surrounding whitespace"
+            "printable string without surrounding whitespace",
+            selected_target_id=selected,
         )
 
     target = {
@@ -158,7 +201,8 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
         raw_env = raw_target["env"]
         if not isinstance(raw_env, dict):
             raise LaunchTargetUnavailable(
-                f"Selected Spoke launch target {selected!r} env must be an object"
+                f"Selected Spoke launch target {selected!r} env must be an object",
+                selected_target_id=selected,
             )
         if any(
             not isinstance(key, str)
@@ -172,7 +216,15 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
         ):
             raise LaunchTargetUnavailable(
                 f"Selected Spoke launch target {selected!r} env must contain only "
-                "nonblank string keys and string values"
+                "nonblank string keys and string values",
+                selected_target_id=selected,
+            )
+        protected_keys = sorted(_PROTECTED_LAUNCH_ENV_KEYS.intersection(raw_env))
+        if protected_keys:
+            raise LaunchTargetUnavailable(
+                f"Selected Spoke launch target {selected!r} env cannot override "
+                f"protected launch authority keys: {protected_keys}",
+                selected_target_id=selected,
             )
         if raw_env:
             target["env"] = {
@@ -182,9 +234,109 @@ def require_selected_launch_target(path: Path | None = None) -> dict:
 
     if not target["enabled"]:
         raise LaunchTargetUnavailable(
-            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}"
+            f"Selected Spoke launch target {selected!r} is unavailable: {target_path}",
+            selected_target_id=selected,
         )
     return target
+
+
+def apply_selected_launch_target_env(
+    current_checkout: Path,
+    path: Path | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> dict:
+    """Make a managed process conform to its selected target environment."""
+    process_env = os.environ if environ is None else environ
+    process_target_id = process_env.get("SPOKE_LAUNCH_TARGET_ID", "").strip()
+    receipt = {
+        "status": "unmanaged",
+        "launch_target_id": process_target_id or None,
+        "registry_path": None,
+        "target_env_keys": [],
+        "repaired_env_keys": [],
+    }
+    if not process_target_id:
+        return receipt
+
+    registry_path = (path or launch_targets_path()).expanduser().resolve()
+    target = require_selected_launch_target(registry_path)
+    if process_target_id != target["id"]:
+        raise LaunchTargetUnavailable(
+            f"Spoke process target {process_target_id!r} does not match selected "
+            f"target {target['id']!r}"
+        )
+
+    process_checkout = current_checkout.expanduser().resolve()
+    target_checkout = target["path"].resolve()
+    if process_checkout != target_checkout:
+        raise LaunchTargetUnavailable(
+            f"Spoke process checkout {process_checkout} does not match selected "
+            f"target {target['id']!r} at {target_checkout}"
+        )
+
+    target_env = target.get("env", {})
+    target_env_keys = sorted(target_env)
+    repaired_env_keys = sorted(
+        key for key, value in target_env.items() if process_env.get(key) != value
+    )
+    registry_env_key = "SPOKE_LAUNCH_TARGETS_PATH"
+    if process_env.get(registry_env_key) != str(registry_path):
+        repaired_env_keys.append(registry_env_key)
+        repaired_env_keys.sort()
+    process_env.update(target_env)
+    process_env[registry_env_key] = str(registry_path)
+    return {
+        "status": "repaired" if repaired_env_keys else "conformant",
+        "launch_target_id": target["id"],
+        "registry_path": str(registry_path),
+        "target_env_keys": target_env_keys,
+        "repaired_env_keys": repaired_env_keys,
+    }
+
+
+def publish_launch_admission(
+    status: str,
+    *,
+    receipt: dict | None = None,
+    error: BaseException | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> Path | None:
+    """Atomically publish pre-capture launch admission when a launcher requests it."""
+    process_env = os.environ if environ is None else environ
+    raw_path = process_env.get("SPOKE_LAUNCH_ADMISSION_PATH", "").strip()
+    token = process_env.get("SPOKE_LAUNCH_ADMISSION_TOKEN", "").strip()
+    if not raw_path and not token:
+        return None
+    if not raw_path or not token:
+        raise LaunchTargetUnavailable(
+            "Launch admission requires both SPOKE_LAUNCH_ADMISSION_PATH and token"
+        )
+    if status not in {"admitted", "refused"}:
+        raise ValueError(f"Unsupported launch admission status: {status!r}")
+
+    admission_path = Path(raw_path).expanduser()
+    admission_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "status": status,
+        "token": token,
+        "pid": os.getpid(),
+        "launch_target_id": process_env.get("SPOKE_LAUNCH_TARGET_ID"),
+        "registry_path": (receipt or {}).get("registry_path"),
+    }
+    if receipt is not None:
+        payload["launch_env_status"] = receipt.get("status")
+        payload["repaired_env_keys"] = receipt.get("repaired_env_keys", [])
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["reason"] = str(error)
+
+    tmp_path = admission_path.with_name(
+        f".{admission_path.name}.{os.getpid()}.tmp"
+    )
+    tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, admission_path)
+    return admission_path
 
 
 def current_launch_target(

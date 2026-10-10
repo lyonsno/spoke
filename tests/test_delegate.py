@@ -89,9 +89,134 @@ def _make_delegate(main_module, monkeypatch):
     delegate._segment_accumulator = main_module.SegmentAccumulator()
     delegate._audio_spool = MagicMock()
     delegate._asr_recovery_client = MagicMock()
+    delegate._prepare_diaulos_switcher = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
+
+
+class TestRecordingHistory:
+    @pytest.mark.parametrize("parallel", [False, True])
+    @pytest.mark.parametrize("outcome", ["focus", "paste_error", "restored", "preserved", "switcher", "stale"])
+    def test_live_delivery_receipts_preserve_audio_and_original(
+        self, main_module, monkeypatch, tmp_path, parallel, outcome,
+    ):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav, metadata={"pathway": "parallel" if parallel else "text"})
+        d._vad_active_for_hold = False
+        d._client.transcribe.return_value = "Keep these words."
+        d._transcription_token = d._parallel_insert_token = 1
+        d._add_tray_entry = MagicMock()
+        worker = d._parallel_insert_worker if parallel else d._transcribe_worker
+        worker(wav, 1, capture_id=capture.capture_id, switcher_intent=outcome == "switcher")
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args.args[1]
+        if outcome == "stale":
+            d._transcription_token = d._parallel_insert_token = 2
+        elif outcome == "switcher":
+            d._diaulos_switcher = MagicMock(visible=True)
+            d._diaulos_switcher.set_dictation_filter.return_value = 1
+        complete = d.parallelTranscriptionComplete_ if parallel else d.transcriptionComplete_
+        if outcome == "focus":
+            d._recording_history = MagicMock()
+            d._recording_history._window.isKeyWindow.return_value = True
+        def paste(text, *, on_restored, on_restore_skipped=None):
+            if outcome == "paste_error":
+                raise RuntimeError("paste rejected")
+            if outcome == "preserved":
+                on_restore_skipped()
+            else:
+                on_restored()
+        with patch.object(main_module, "inject_text", side_effect=paste) as inject:
+            complete(payload)
+            if outcome != "switcher":
+                d.graceTimerFired_(None)
+        expected = {
+            "focus": ["saved_to_tray_focus_changed"],
+            "paste_error": ["insert_requested", "paste_failed_saved_to_tray"],
+            "restored": ["insert_requested", "clipboard_restored"],
+            "preserved": ["insert_requested", "clipboard_preserved_newer_copy"],
+            "switcher": ["routed_to_switcher"],
+            "stale": ["delivery_skipped_stale"],
+        }[outcome]
+        d._delivery_receipt_executor.shutdown(wait=True)
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert [e["state"] for e in attempt["deliveries"]] == expected
+        assert attempt["text"] == "Keep these words."
+        assert attempt["status"] == "success"
+        if outcome == "preserved":
+            assert not d._dictation_paste_in_flight
+            assert not d._dictation_delivery_records()
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
+        if outcome in {"focus", "switcher", "stale"}:
+            inject.assert_not_called()
+
+    def test_empty_message_live_exception_is_failed(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        d._client.transcribe.side_effect = RuntimeError()
+        d._transcribe_worker(wav, 1, capture_id=capture.capture_id)
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["status"] == "failed"
+        assert attempt["error"].startswith("RuntimeError:")
+        assert attempt["text"] is None
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
+
+    def test_original_text_survives_ui_delivery_failure(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        d._client.transcribe.return_value = "Keep the original words."
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = RuntimeError("UI unavailable")
+
+        with pytest.raises(RuntimeError, match="UI unavailable"):
+            d._transcribe_worker(wav, 1, capture_id=capture.capture_id)
+
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["text"] == "Keep the original words."
+        assert attempt["status"] == "success"
+        assert attempt["requested"]["model"] == "transcription-model"
+
+    def test_failed_original_remains_visible(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        d._client.transcribe.side_effect = RuntimeError("native decode failed")
+
+        d._transcribe_worker(wav, 1, capture_id=capture.capture_id)
+
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["status"] == "failed"
+        assert "native decode failed" in attempt["error"]
+        assert capture.wav_path.exists()
+
+    def test_recovery_selection_does_not_replace_live_client(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        client = d._client
+        d._save_preference = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+        assert callable(getattr(d, "_set_history_model", None)), "Separate history model selection is absent"
+        d._set_history_model("local", "mlx-community/whisper-tiny.en-mlx")
+        assert d._client is client
+        assert d._transcription_model_id == "transcription-model"
+        d._relaunch.assert_not_called()
+        d._save_preference.assert_called_once_with(
+            "retranscription_route", {"backend": "local", "model": "mlx-community/whisper-tiny.en-mlx"})
 
 
 class TestPerceptasiaThroughglassHook:
@@ -517,6 +642,18 @@ class TestHoldCallbacks:
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
 
+    def test_duplicate_hold_start_preserves_active_recording(
+        self, main_module, monkeypatch
+    ):
+        """A repeated hold event must not replace the active capture buffer."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._manual_hold_active = True
+
+        d._on_hold_start()
+
+        d._capture.start.assert_not_called()
+        d._menubar.set_recording.assert_not_called()
+
     def test_hold_start_shows_preview_before_starting_capture(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         call_order: list[str] = []
@@ -690,6 +827,49 @@ class TestHoldCallbacks:
         assert call_order.index("glow.hide") < call_order.index("capture.stop")
         assert call_order.index("recording.False") < call_order.index("capture.stop")
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_plain_final_asr_preview_suspension_is_opt_in(
+        self, main_module, monkeypatch, enabled
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"complete-wav"
+        if enabled:
+            monkeypatch.setenv("SPOKE_SUSPEND_PREVIEW_DURING_ASR", "1")
+        else:
+            monkeypatch.delenv("SPOKE_SUSPEND_PREVIEW_DURING_ASR", raising=False)
+        events = []
+        d._overlay.suspend_compositor_for_asr.side_effect = lambda: events.append("suspend") or True
+        with patch.object(main_module.threading, "Thread") as thread:
+            thread.return_value.start.side_effect = lambda: events.append("start")
+            d._on_hold_end()
+        assert events == (["suspend", "start"] if enabled else ["start"])
+        assert thread.call_args.args == ()
+        assert thread.call_args.kwargs["args"][0] == b"complete-wav"
+
+    def test_tray_final_asr_does_not_use_plain_preview_experiment(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_SUSPEND_PREVIEW_DURING_ASR", "1")
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"complete-wav"
+        d._record_start_time = time.monotonic() - 2
+        with patch.object(main_module.threading, "Thread"):
+            d._on_hold_end(shift_held=True)
+        d._overlay.suspend_compositor_for_asr.assert_not_called()
+
+    def test_final_asr_continues_after_optional_preview_release_error(
+        self, main_module, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("SPOKE_SUSPEND_PREVIEW_DURING_ASR", "1")
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"complete-wav"
+        d._overlay.suspend_compositor_for_asr.side_effect = RuntimeError("native stop failed")
+        with patch.object(main_module.threading, "Thread") as thread:
+            d._on_hold_end()
+        thread.return_value.start.assert_called_once()
+        assert thread.call_args.kwargs["args"][0] == b"complete-wav"
+        assert "suspension failed" in caplog.text
+
     def test_hold_end_with_empty_audio_skips_transcription(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
@@ -701,24 +881,179 @@ class TestHoldCallbacks:
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
-    def test_result_inject_delayed_restores_wakeword_listener_after_hold(
+    def test_paste_restoration_resumes_wakeword_listener_after_hold(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._handsfree = MagicMock()
         d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
-        d._inject_result_text("hello", "Pasted!")
-
-        def fake_inject_text(text, on_restored=None):
+        def fake_inject_text(text, on_restored=None, on_restore_skipped=None):
             assert text == "hello"
             if on_restored is not None:
                 on_restored()
 
         with patch.object(main_module, "inject_text", side_effect=fake_inject_text):
-            d.resultInjectDelayed_(None)
+            d._inject_result_text("hello", "Pasted!")
 
         d._handsfree.enable.assert_called_once_with()
         assert d._handsfree_resume_state_for_hold is None
+
+
+class TestImmediateInsertion:
+    def test_receipt_failure_is_logged_and_does_not_drop_later_receipts(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool.record_delivery.side_effect = [OSError("disk unavailable"), None]
+        history = {"capture_id": "capture", "attempt_id": "original"}
+        d._record_history_delivery(history, "insert_requested")
+        history["attempt_id"] = "next"
+        d._record_history_delivery(history, "clipboard_restored")
+        d._delivery_receipt_executor.shutdown(wait=True)
+        calls = d._audio_spool.record_delivery.call_args_list
+        assert [call.args for call in calls] == [("capture", "original"), ("capture", "next")]
+        assert "Could not record dictation delivery insert_requested" in caplog.text
+
+    @pytest.mark.parametrize("synchronous_successor", [False, True])
+    def test_failed_delivery_cannot_overwrite_successor_status(
+        self, main_module, monkeypatch, synchronous_successor
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = d._parallel_insert_token = 1
+        callbacks = []
+
+        def paste(text, *, on_restored, on_restore_skipped=None):
+            if text == "B":
+                raise RuntimeError("paste rejected")
+            if text == "C" and synchronous_successor:
+                on_restored()
+            else:
+                callbacks.append(on_restored)
+
+        with patch.object(main_module, "inject_text", side_effect=paste) as inject:
+            d.transcriptionComplete_({"token": 1, "text": "A"})
+            d.parallelTranscriptionComplete_({"token": 1, "text": "B"})
+            d._transcription_token = 2
+            d.transcriptionComplete_({"token": 2, "text": "C"})
+            callbacks[0]()
+            if not synchronous_successor:
+                callbacks[1]()
+        assert [call.args[0] for call in inject.call_args_list] == ["A", "B", "C"]
+        assert d._dictation_delivery_records() == {}
+        assert d._menubar.set_status_text.call_args.args == ("Pasted!",)
+
+    @pytest.mark.parametrize("blocked_state", ["insert_requested", "clipboard_restored"])
+    def test_delivery_io_cannot_block_paste_or_queue_release(
+        self, main_module, monkeypatch, blocked_state
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = d._parallel_insert_token = 1
+        entered, release, completed = threading.Event(), threading.Event(), threading.Event()
+        receipts, callbacks, pasted = [], [], []
+        history = {"capture_id": "capture", "attempt_id": "attempt"}
+
+        def write(capture_id, attempt_id, *, state, detail):
+            if state == blocked_state and not entered.is_set():
+                entered.set()
+                release.wait()
+            receipts.append((capture_id, attempt_id, state))
+
+        d._audio_spool.record_delivery.side_effect = write
+
+        def paste(text, *, on_restored, on_restore_skipped=None):
+            pasted.append(text)
+            callbacks.append(on_restored)
+
+        def operation():
+            if blocked_state == "insert_requested":
+                d.transcriptionComplete_({"token": 1, "text": "first", "history": history})
+            else:
+                callbacks[0]()
+            completed.set()
+
+        with patch.object(main_module, "inject_text", side_effect=paste):
+            if blocked_state == "clipboard_restored":
+                d.transcriptionComplete_({"token": 1, "text": "first", "history": history})
+                d.parallelTranscriptionComplete_({"token": 1, "text": "second", "history": history})
+            worker = threading.Thread(target=operation)
+            worker.start()
+            try:
+                assert entered.wait(2), "receipt writer was not exercised"
+                assert completed.wait(1), "delivery is blocked on receipt I/O"
+                assert pasted == (["first"] if blocked_state == "insert_requested" else ["first", "second"])
+            finally:
+                release.set()
+                worker.join(2)
+                executor = getattr(d, "_delivery_receipt_executor", None)
+                if executor is not None:
+                    executor.shutdown(wait=True)
+        expected = ["insert_requested"] if blocked_state == "insert_requested" else ["insert_requested", "clipboard_restored", "insert_requested"]
+        assert receipts == [("capture", "attempt", state) for state in expected]
+
+    def test_preview_failure_does_not_fail_successful_paste(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 1
+        d._overlay.hide.side_effect = RuntimeError("preview unavailable")
+        with patch.object(main_module, "inject_text") as inject:
+            d.transcriptionComplete_({"token": 1, "text": "keep the paste"})
+        inject.assert_called_once()
+        assert d._dictation_paste_in_flight is True
+
+    @pytest.mark.parametrize("parallel", [False, True])
+    def test_dictation_only_pastes_before_fade_without_timers(
+        self, main_module, monkeypatch, parallel
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", False, raising=False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = d._parallel_insert_token = 1
+        d._add_tray_entry = MagicMock()
+        events = []
+        d._overlay.hide.side_effect = lambda **kwargs: events.append("fade")
+        schedule = __import__("Foundation").NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        schedule.reset_mock()
+        complete = d.parallelTranscriptionComplete_ if parallel else d.transcriptionComplete_
+
+        with patch.object(main_module, "inject_text", side_effect=lambda *args, **kwargs: events.append("paste")):
+            complete({"token": 1, "text": "first"})
+
+        assert events == ["paste", "fade"]
+        schedule.assert_not_called()
+        d._overlay.start_insert_windup.assert_not_called()
+        d._add_tray_entry.assert_called_once_with("first", owner="user", activate=False)
+        assert d._dictation_paste_in_flight is True
+        assert d._detector._on_enter_cancel_grace is None
+
+    def test_command_grace_has_no_fade_wait_and_serializes_clipboard(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "ENTER_COMMANDS_ENABLED", True, raising=False)
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = d._parallel_insert_token = 1
+        schedule = __import__("Foundation").NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
+        schedule.reset_mock()
+        callbacks = []
+
+        def paste(text, *, on_restored, on_restore_skipped=None):
+            callbacks.append(on_restored)
+
+        with patch.object(main_module, "inject_text", side_effect=paste) as inject:
+            d.transcriptionComplete_({"token": 1, "text": "first"})
+            d.parallelTranscriptionComplete_({"token": 1, "text": "second"})
+            inject.assert_not_called()
+            d.graceTimerFired_(None)
+            d.graceTimerFired_(None)
+            assert [item.args[0] for item in inject.call_args_list] == ["first"]
+            callbacks[0]()
+            assert [item.args[0] for item in inject.call_args_list] == ["first", "second"]
+            callbacks[1]()
+
+        assert [item.args[0] for item in schedule.call_args_list] == [0.35, 0.35]
+        assert d._dictation_delivery_records() == {}
 
 
 class TestTranscriptionToken:
@@ -762,7 +1097,6 @@ class TestTranscriptionToken:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
             # Fire the grace window timer, then the deferred inject timer
             d.graceTimerFired_(None)
-            d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "hello world"
@@ -780,7 +1114,7 @@ class TestTranscriptionToken:
         d._add_tray_entry = MagicMock()
 
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionComplete_({"token": 5, "text": "kynormous bastard"})
+            d.transcriptionComplete_({"token": 5, "text": "kynormous bastard", "switcher_intent": True})
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
             "kynormous bastard"
@@ -808,7 +1142,7 @@ class TestTranscriptionToken:
 
         text = "do not retarget the committed focus"
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionComplete_({"token": 5, "text": text})
+            d.transcriptionComplete_({"token": 5, "text": text, "switcher_intent": True})
 
         d._add_tray_entry.assert_called_once_with(
             text,
@@ -833,7 +1167,7 @@ class TestTranscriptionToken:
 
         text = "the teleporter failed and this is an ordinary dictation"
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.transcriptionComplete_({"token": 5, "text": text})
+            d.transcriptionComplete_({"token": 5, "text": text, "switcher_intent": True})
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
         d._add_tray_entry.assert_called_once_with(
@@ -845,6 +1179,87 @@ class TestTranscriptionToken:
             "No live Diaulos matches — dictation saved to tray"
         )
         mock_inject.assert_not_called()
+
+    def test_inactive_switcher_does_not_capture_ordinary_dictation(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.accepts_dictation.return_value = False
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({"token": 5, "text": "ordinary dictation"})
+            d.graceTimerFired_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == "ordinary dictation"
+
+    def test_inactive_switcher_does_not_receive_failed_dictation_preview(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.accepts_dictation.return_value = False
+        d._last_preview_text = "partial"
+
+        d.transcriptionFailed_({"token": 5, "error": "ASR failed"})
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        d._diaulos_switcher.show_error.assert_not_called()
+
+    def test_switcher_opened_after_hold_preserves_ordinary_dictation(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.presentation_generation = 1
+        d._diaulos_switcher.accepts_dictation.return_value = True
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({
+                "token": 5, "text": "ordinary dictation",
+                "switcher_generation": 0, "switcher_intent": False,
+            })
+            d.graceTimerFired_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        mock_inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(
+            "ordinary dictation", owner="user", activate=False
+        )
+
+    def test_switcher_dictation_preserved_when_panel_loses_focus(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._diaulos_switcher = MagicMock()
+        d._diaulos_switcher.visible = True
+        d._diaulos_switcher.presentation_generation = 1
+        d._diaulos_switcher.accepts_dictation.return_value = False
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module, "inject_text") as mock_inject:
+            d.transcriptionComplete_({
+                "token": 5, "text": "search words",
+                "switcher_generation": 1, "switcher_intent": True,
+            })
+            d.graceTimerFired_(None)
+
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
+        mock_inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(
+            "search words", owner="user", activate=False
+        )
 
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):
         """Failed transcription with old token should be silently ignored."""
@@ -879,7 +1294,7 @@ class TestTranscriptionToken:
         d._diaulos_switcher.visible = True
         d._inject_result_text = MagicMock()
 
-        d.transcriptionFailed_({"token": 3, "error": "final decode failed"})
+        d.transcriptionFailed_({"token": 3, "error": "final decode failed", "switcher_intent": True, "switcher_generation": 0})
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with(
             "handy fucker man"
@@ -926,7 +1341,6 @@ class TestTranscriptionToken:
         with patch.object(main_module, "inject_text") as mock_inject:
             d.parallelTranscriptionComplete_({"token": 2, "text": "hello world"})
             d.graceTimerFired_(None)
-            d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "hello world"
@@ -947,20 +1361,16 @@ class TestTranscriptionToken:
         timer_a.userInfo.return_value = "primary:5"
         timer_b = MagicMock()
         timer_b.userInfo.return_value = "parallel:2"
-        inject_timer_a = MagicMock()
-        inject_timer_a.userInfo.return_value = "primary:5"
-        inject_timer_b = MagicMock()
-        inject_timer_b.userInfo.return_value = "parallel:2"
         Foundation = __import__("Foundation")
         schedule = (
             Foundation.NSTimer
             .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
         )
-        schedule.side_effect = [timer_a, timer_b, inject_timer_a, inject_timer_b]
+        schedule.side_effect = [timer_a, timer_b]
 
         with patch.object(main_module, "inject_text") as mock_inject:
             mock_inject.side_effect = (
-                lambda text, *, on_restored: on_restored()
+                lambda text, *, on_restored, on_restore_skipped=None: on_restored()
             )
             d.transcriptionComplete_(
                 {
@@ -979,13 +1389,7 @@ class TestTranscriptionToken:
             d.graceTimerFired_(timer_a)
             d.graceTimerFired_(timer_b)
 
-            records = d._dictation_delivery_records()
-            assert list(records) == ["primary:5", "parallel:2"]
-            assert records["primary:5"].state == "inject_wait"
-            assert records["parallel:2"].state == "ready"
-
-            d.resultInjectDelayed_(inject_timer_a)
-            d.resultInjectDelayed_(inject_timer_b)
+            assert d._dictation_delivery_records() == {}
 
         assert [item.args[0] for item in mock_inject.call_args_list] == [
             "primary delivery",
@@ -1045,16 +1449,14 @@ class TestTranscriptionToken:
         d._diaulos_switcher.presentation_generation = 1
         d.graceTimerFired_(timer_a)
         d.graceTimerFired_(timer_b)
+        d._cancel_grace_insert()
 
-        assert d._diaulos_switcher.set_dictation_filter.call_args_list == [
-            call("primary delivery"),
-            call("parallel delivery"),
-        ]
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
         assert d._add_tray_entry.call_args_list == [
             call("primary delivery", owner="user", activate=False),
             call("parallel delivery", owner="user", activate=False),
         ]
-        d._inject_result_text.assert_not_called()
+        d._inject_result_text.assert_called()
 
     def test_visible_switcher_completion_queues_behind_older_delivery(
         self, main_module, monkeypatch
@@ -1087,7 +1489,7 @@ class TestTranscriptionToken:
             Foundation.NSTimer
             .scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_
         )
-        schedule.side_effect = [timer_a, timer_b]
+        schedule.side_effect = [timer_a, timer_b, MagicMock()]
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_(
@@ -1112,9 +1514,10 @@ class TestTranscriptionToken:
             d.graceTimerFired_(timer_a)
             d._handsfree.enable.assert_not_called()
             d.graceTimerFired_(timer_b)
+            d._cancel_grace_insert()
 
-        assert applied_filters == ["primary delivery", "parallel delivery"]
-        assert d._diaulos_switcher.query == "parallel delivery"
+        assert applied_filters == []
+        assert d._diaulos_switcher.query == ""
         assert d._add_tray_entry.call_args_list == [
             call("primary delivery", owner="user", activate=False),
             call("parallel delivery", owner="user", activate=False),
@@ -1135,10 +1538,10 @@ class TestTranscriptionToken:
         d._add_tray_entry = MagicMock()
         d._handsfree = MagicMock()
         d._handsfree_resume_state_for_hold = main_module.HandsFreeState.LISTENING
-        timers = [MagicMock() for _ in range(4)]
+        timers = [MagicMock() for _ in range(2)]
         for timer, delivery_id in zip(
             timers,
-            ["primary:5", "parallel:2", "primary:5", "parallel:2"],
+            ["primary:5", "parallel:2"],
             strict=True,
         ):
             timer.userInfo.return_value = delivery_id
@@ -1164,11 +1567,9 @@ class TestTranscriptionToken:
                     "switcher_generation": 20,
                 }
             )
+            d._diaulos_switcher.presentation_generation = 30
             d.graceTimerFired_(timers[0])
             d.graceTimerFired_(timers[1])
-            d._diaulos_switcher.presentation_generation = 30
-            d.resultInjectDelayed_(timers[2])
-            d.resultInjectDelayed_(timers[3])
 
         assert d._add_tray_entry.call_args_list == [
             call("primary delivery", owner="user", activate=False),
@@ -1191,9 +1592,8 @@ class TestTranscriptionToken:
         d._add_tray_entry = MagicMock()
 
         with patch.object(main_module, "inject_text") as mock_inject:
-            d.parallelTranscriptionComplete_({"token": 2, "text": "warpstorm"})
+            d.parallelTranscriptionComplete_({"token": 2, "text": "warpstorm", "switcher_intent": True})
             d.graceTimerFired_(None)
-            d.resultInjectDelayed_(None)
 
         d._diaulos_switcher.set_dictation_filter.assert_called_once_with("warpstorm")
         d._add_tray_entry.assert_called_once_with(
@@ -1223,9 +1623,8 @@ class TestTranscriptionToken:
             d._diaulos_switcher.visible = True
             d._diaulos_switcher.presentation_generation = 1
             d.graceTimerFired_(None)
-            d.resultInjectDelayed_(None)
 
-        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
         d._add_tray_entry.assert_called_once_with(
             text,
             owner="user",
@@ -1233,7 +1632,7 @@ class TestTranscriptionToken:
         )
         mock_inject.assert_not_called()
 
-    def test_switcher_opened_during_delayed_inject_receives_filter_without_paste(
+    def test_switcher_opened_while_clipboard_busy_preserves_without_paste(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -1246,14 +1645,16 @@ class TestTranscriptionToken:
         d._add_tray_entry = MagicMock()
 
         text = "do not paste into the switcher"
+        d._dictation_paste_in_flight = True
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": text})
             d.graceTimerFired_(None)
             d._diaulos_switcher.visible = True
             d._diaulos_switcher.presentation_generation = 1
-            d.resultInjectDelayed_(None)
+            d._dictation_paste_in_flight = False
+            d._drain_dictation_deliveries()
 
-        d._diaulos_switcher.set_dictation_filter.assert_called_once_with(text)
+        d._diaulos_switcher.set_dictation_filter.assert_not_called()
         d._add_tray_entry.assert_called_once_with(
             text,
             owner="user",
@@ -1261,7 +1662,21 @@ class TestTranscriptionToken:
         )
         mock_inject.assert_not_called()
 
-    def test_switcher_focus_completed_before_delayed_inject_suppresses_paste(
+    def test_history_window_receives_no_automatic_dictation_paste(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        d._recording_history = MagicMock()
+        d._recording_history._window.isKeyWindow.return_value = True
+        d._add_tray_entry = MagicMock()
+        text = "Preserve this while I browse recordings"
+        with patch.object(main_module, "inject_text") as inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+            d.graceTimerFired_(None)
+        inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(text, owner="user", activate=False)
+
+    def test_switcher_focus_completed_before_delivery_suppresses_paste(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -1275,9 +1690,8 @@ class TestTranscriptionToken:
         text = "do not paste into the newly focused pane"
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": text})
-            d.graceTimerFired_(None)
             d._diaulos_switcher.presentation_generation = 2
-            d.resultInjectDelayed_(None)
+            d.graceTimerFired_(None)
 
         d._add_tray_entry.assert_called_once_with(
             text,
@@ -1310,7 +1724,6 @@ class TestTranscriptionToken:
                 }
             )
             d.graceTimerFired_(None)
-            d.resultInjectDelayed_(None)
 
         d._add_tray_entry.assert_called_once_with(
             text,
@@ -2006,6 +2419,132 @@ class TestModelPicker:
         ):
             assert d._model_allowed(main_module._WHISPER_CPP_COREML_MODEL_ID) is True
 
+    def test_model_allowed_requires_seated_nemotron_cpu(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=False
+        ) as available:
+            assert d._model_allowed(main_module._NEMOTRON_CPU_MODEL_ID) is False
+
+        available.assert_called_once_with()
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            assert d._model_allowed(main_module._NEMOTRON_CPU_MODEL_ID) is True
+
+    def test_nemotron_cpu_is_final_only(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            preview, transcription = d._sanitize_model_ids(
+                main_module._NEMOTRON_CPU_MODEL_ID,
+                main_module._NEMOTRON_CPU_MODEL_ID,
+            )
+
+        assert preview == main_module._DEFAULT_PREVIEW_MODEL
+        assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
+
+    def test_apply_model_selection_sanitizes_final_only_preview(
+        self, main_module, monkeypatch
+    ):
+        # Register even absent keys before production writes/deletes them.
+        for key in (
+            "SPOKE_PREVIEW_MODEL",
+            "SPOKE_TRANSCRIPTION_MODEL",
+            "SPOKE_WHISPER_MODEL",
+        ):
+            monkeypatch.setenv(key, os.environ.get(key, ""))
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_model_id = "mlx-community/whisper-small.en-mlx"
+        d._transcription_model_id = "mlx-community/whisper-medium.en-mlx"
+        d._save_model_preferences = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            d._apply_model_selection(
+                main_module._NEMOTRON_CPU_MODEL_ID,
+                main_module._NEMOTRON_CPU_MODEL_ID,
+            )
+
+        d._save_model_preferences.assert_called_once_with(
+            main_module._DEFAULT_PREVIEW_MODEL,
+            main_module._NEMOTRON_CPU_MODEL_ID,
+        )
+
+    def test_explicit_role_env_models_override_saved_preferences(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": "mlx-community/whisper-medium.en-mlx",
+        }
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", main_module._NEMOTRON_CPU_MODEL_ID
+        )
+
+        with patch.object(
+            main_module.NemotronCPUClient, "available", return_value=True
+        ):
+            preview, transcription = d._resolve_model_ids()
+
+        assert preview == "mlx-community/whisper-base.en-mlx-8bit"
+        assert transcription == main_module._NEMOTRON_CPU_MODEL_ID
+
+    def test_unavailable_explicit_nemotron_route_fails_loud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": "mlx-community/whisper-medium.en-mlx",
+        }
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", main_module._NEMOTRON_CPU_MODEL_ID
+        )
+
+        with patch.object(
+            main_module.NemotronCPUClient,
+            "availability_error",
+            return_value="missing CPU executable and pinned GGUF",
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="explicit transcription model.*missing CPU executable and pinned GGUF",
+            ):
+                d._resolve_model_ids()
+
+    def test_unavailable_saved_nemotron_preference_is_repaired(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_model_preferences = lambda: {
+            "preview_model": "mlx-community/whisper-small.en-mlx",
+            "transcription_model": main_module._NEMOTRON_CPU_MODEL_ID,
+        }
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+
+        with patch.object(
+            main_module.NemotronCPUClient,
+            "availability_error",
+            return_value="missing pinned GGUF",
+        ):
+            _preview, transcription = d._resolve_model_ids()
+
+        assert transcription != main_module._NEMOTRON_CPU_MODEL_ID
+
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
@@ -2045,6 +2584,41 @@ class TestModelPicker:
 
 class TestDualModelConfiguration:
     """Test separate preview/final model selection and persistence hooks."""
+
+    def test_explicit_role_backend_env_overrides_saved_sidecar_preferences(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.setenv("SPOKE_TRANSCRIPTION_BACKEND", "local")
+        monkeypatch.setenv("SPOKE_PREVIEW_BACKEND", "local")
+        monkeypatch.setenv(
+            "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-base.en-mlx-8bit"
+        )
+        monkeypatch.setenv(
+            "SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-medium.en-mlx"
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {
+                "whisper_backend": "sidecar",
+                "preview_backend": "sidecar",
+                "whisper_sidecar_url": "http://stale-sidecar:8000",
+            },
+            raising=False,
+        )
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            MockLocal.side_effect = [MagicMock(), MagicMock()]
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._whisper_backend == "local"
+        assert d._preview_backend == "local"
+        assert d._whisper_url == ""
+        assert d._preview_url == ""
+        assert MockLocal.call_count == 2
 
     def test_init_uses_separate_preview_and_transcription_model_env_vars(
         self, main_module, monkeypatch
@@ -2644,6 +3218,22 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
+
+    def test_launch_target_helper_returns_child_admission_result(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        completed = MagicMock(returncode=1)
+
+        with patch("subprocess.run", return_value=completed) as run, patch(
+            "subprocess.Popen"
+        ) as popen:
+            outcome = d._invoke_launch_target_helper("superseded")
+
+        assert outcome is False
+        run.assert_called_once()
+        popen.assert_not_called()
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -4341,6 +4931,11 @@ class TestRuntimePhaseLogging:
         d._refresh_command_model_options_async = MagicMock()
         d._request_mic_permission = MagicMock()
         d._setup_event_tap = MagicMock()
+        startup_events: list[str] = []
+        d._setup_event_tap.side_effect = lambda: startup_events.append("event-tap")
+        d._prepare_diaulos_switcher.side_effect = lambda: startup_events.append(
+            "teleporter-prewarm"
+        )
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
@@ -4367,6 +4962,8 @@ class TestRuntimePhaseLogging:
 
         d._refresh_command_model_options_async.assert_called_once_with()
         d._setup_event_tap.assert_called_once_with()
+        d._prepare_diaulos_switcher.assert_called_once_with()
+        assert startup_events == ["event-tap", "teleporter-prewarm"]
         overlay.set_compositor_registry.assert_called_once()
         command_overlay.set_compositor_registry.assert_called_once()
         assert (
@@ -4977,26 +5574,43 @@ class TestCommandTranscribeWorker:
         # Should NOT have tried to stream
         d._command_client.stream_command_events.assert_not_called()
 
-    def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
-        """Streaming exception → commandFailed after utterance dispatched."""
+    def test_stream_failure_records_failed_delivery(self, main_module, monkeypatch, tmp_path):
+        """A command stream failure remains recoverable, not a successful send."""
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
         d = self._make_command_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav, metadata={"pathway": "command"})
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
         d._command_client.stream_command_events.side_effect = ConnectionError("OMLX down")
 
-        d._command_transcribe_worker(b"wav-data", 1)
+        d._command_transcribe_worker(wav, 1, capture_id=capture.capture_id)
 
         calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         selectors = [c[0][0] for c in calls]
         assert "commandUtteranceReady:" in selectors
         assert "commandFailed:" in selectors
         assert "commandComplete:" not in selectors
+        d._delivery_receipt_executor.shutdown(wait=True)
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["text"] == "do something"
+        assert attempt["status"] == "success"
+        assert [event["state"] for event in attempt["deliveries"]] == ["command_failed"]
+        assert "OMLX down" in attempt["deliveries"][-1]["detail"]
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
 
-    def test_stream_http_error_dispatches_provider_status_detail(
-        self, main_module, monkeypatch
+    def test_stream_http_error_records_failed_delivery(
+        self, main_module, monkeypatch, tmp_path
     ):
-        """HTTP failures should preserve provider status/body detail for the UI."""
+        """HTTP stream failures keep exact provider detail in recovery history."""
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
         d = self._make_command_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav, metadata={"pathway": "command"})
         d._client.transcribe.return_value = "do something"
         d._client.supports_streaming = False
         error_body = json.dumps(
@@ -5010,7 +5624,7 @@ class TestCommandTranscribeWorker:
             fp=io.BytesIO(error_body),
         )
 
-        d._command_transcribe_worker(b"wav-data", 1)
+        d._command_transcribe_worker(wav, 1, capture_id=capture.capture_id)
 
         failure_call = next(
             c
@@ -5021,6 +5635,13 @@ class TestCommandTranscribeWorker:
             failure_call[0][1]["error"]
             == "HTTP 429 Too Many Requests — This model is temporarily rate-limited."
         )
+        d._delivery_receipt_executor.shutdown(wait=True)
+        attempt = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert attempt["text"] == "do something"
+        assert attempt["status"] == "success"
+        assert [event["state"] for event in attempt["deliveries"]] == ["command_failed"]
+        assert attempt["deliveries"][-1]["detail"] == failure_call[0][1]["error"]
+        assert d._audio_spool.read_recording_audio(capture.capture_id) == wav
 
     def test_stale_token_breaks_stream(self, main_module, monkeypatch):
         """If transcription_token changes mid-stream, stop dispatching tokens."""
@@ -5745,10 +6366,10 @@ class TestCommandCallbacks:
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
-    def test_inject_result_text_fades_overlay_before_delayed_inject(
+    def test_inject_result_text_fades_overlay_without_waiting(
         self, main_module, monkeypatch
     ):
-        """Overlay should fade first and order out from the delayed paste path."""
+        """Paste requests start a fade without an immediate order-out."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch.object(main_module, "inject_text"):
@@ -5758,12 +6379,6 @@ class TestResultInjection:
             fade_duration=d._INSERT_OVERLAY_FADE_OUT_S
         )
         d._overlay.order_out.assert_not_called()
-
-        d.resultInjectDelayed_(None)
-
-        d._overlay.order_out.assert_called_once()
-
-
 class TestCommandOverlayToggle:
     def test_toggle_command_overlay_resumes_in_progress_timer_without_reset(
         self, main_module, monkeypatch
@@ -6948,6 +7563,17 @@ class TestBuildClientRouting:
         MockClient.assert_called_once_with()
         assert client is MockClient.return_value
 
+    def test_nemotron_cpu_model_returns_nemotron_client(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module, "NemotronCPUClient") as MockClient:
+            client = d._build_client("", main_module._NEMOTRON_CPU_MODEL_ID)
+
+        MockClient.assert_called_once_with()
+        assert client is MockClient.return_value
+
     def test_sidecar_takes_precedence_over_qwen_prefix(self, main_module, monkeypatch):
         """When URL is set, sidecar wins even if model starts with Qwen/."""
         d = _make_delegate(main_module, monkeypatch)
@@ -7186,6 +7812,31 @@ class TestSegmentAcceleratedTranscription:
         d._whisper_backend = "sidecar"
         d._transcribe_start = time.monotonic()
         monkeypatch.setenv("SPOKE_AUDIO_CONTENTION_MODE", "raw")
+
+        acc = main_module.SegmentAccumulator()
+        segment_client = MagicMock()
+        segment_client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", segment_client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+        d._pre_stop_tail_wav = b"tail_wav"
+        d._pre_stop_segment_count = acc.count
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+        payload = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args[0][1]
+        assert payload["text"] == "full buffer text"
+
+    def test_vad_disabled_uses_full_buffer_even_with_cached_segments(
+        self, main_module, monkeypatch
+    ):
+        """VAD-off finalization must decode the stopped raw buffer exactly once."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        d._transcribe_start = time.monotonic()
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
 
         acc = main_module.SegmentAccumulator()
         segment_client = MagicMock()
@@ -7516,6 +8167,20 @@ class TestSegmentAcceleratedTranscription:
         """_on_hold_start should keep local capture raw-first and VAD-free."""
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is None
+        assert call_kwargs.get("vad_state_callback") is None
+
+    def test_hold_start_no_segment_callback_when_vad_disabled(
+        self, main_module, monkeypatch
+    ):
+        """Remote transcription must stay raw-first when VAD is explicitly off."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
 
         d._on_hold_start()
 

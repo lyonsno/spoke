@@ -129,6 +129,7 @@ def _write_index(index_path: Path, payload: dict) -> None:
 
 
 def _runtime_log_contract(log_paths: list[Path]) -> dict:
+    identity_pattern = re.compile(r"\bpid=(\d+)\s+launch_id=([^\s]+)")
     for path in log_paths:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -137,12 +138,19 @@ def _runtime_log_contract(log_paths: list[Path]) -> dict:
         latest_setup = -1
         latest_url = None
         latest_panel_rect = None
+        setup_identity = None
         for index, line in enumerate(lines):
             match = re.search(r"Perceptasia Throughglass: setup begin url=([^\s]+)", line)
             if match:
                 latest_setup = index
                 latest_url = match.group(1)
                 latest_panel_rect = None
+                identity_match = identity_pattern.search(line)
+                setup_identity = (
+                    {"pid": int(identity_match.group(1)), "launch_id": identity_match.group(2)}
+                    if identity_match
+                    else None
+                )
             rect_match = re.search(
                 r"Perceptasia Throughglass: setup complete x=([0-9.]+) y=([0-9.]+) w=([0-9.]+) h=([0-9.]+)",
                 line,
@@ -157,8 +165,27 @@ def _runtime_log_contract(log_paths: list[Path]) -> dict:
         if latest_setup < 0:
             continue
         scoped = lines[latest_setup:]
-        content_verified = any("Perceptasia Throughglass: content verified" in line for line in scoped)
-        webview_loaded = any("Perceptasia Throughglass: WKWebView request loaded" in line for line in scoped)
+        identity_match = bool(setup_identity)
+        content_verified = False
+        webview_loaded = False
+        for line in scoped:
+            if (
+                "Perceptasia Throughglass: content verified" not in line
+                and "Perceptasia Throughglass: WKWebView request loaded" not in line
+            ):
+                continue
+            identity = identity_pattern.search(line)
+            same_process = bool(
+                identity
+                and setup_identity
+                and int(identity.group(1)) == setup_identity["pid"]
+                and identity.group(2) == setup_identity["launch_id"]
+            )
+            identity_match = identity_match and same_process
+            if "Perceptasia Throughglass: content verified" in line:
+                content_verified = content_verified or same_process
+            if "Perceptasia Throughglass: WKWebView request loaded" in line:
+                webview_loaded = webview_loaded or same_process
         fallback_seen = any(
             marker in line
             for line in scoped
@@ -175,8 +202,12 @@ def _runtime_log_contract(log_paths: list[Path]) -> dict:
             "panel_rect_points": latest_panel_rect,
             "webview_loaded": webview_loaded,
             "content_verified": content_verified,
+            "runtime_identity": setup_identity,
+            "identity_match": identity_match,
             "fallback_seen": fallback_seen,
-            "passed": bool(content_verified and webview_loaded and not fallback_seen),
+            "passed": bool(
+                content_verified and webview_loaded and identity_match and not fallback_seen
+            ),
         }
     return {
         "latest_setup_seen": False,
@@ -184,6 +215,8 @@ def _runtime_log_contract(log_paths: list[Path]) -> dict:
         "panel_rect_points": None,
         "webview_loaded": False,
         "content_verified": False,
+        "runtime_identity": None,
+        "identity_match": False,
         "fallback_seen": False,
         "passed": False,
     }
@@ -463,6 +496,7 @@ def _visual_content_contract(index_path: Path, payload: dict, *, panel_rect_poin
         failure_reason = "captured_pixels_do_not_show_throughglass_content"
     return {
         "classifier_version": VISUAL_CONTENT_CLASSIFIER_VERSION,
+        "claim_scope": "throughglass_content_presence_only_not_optical_warp",
         "passed": passed,
         "failure_reason": failure_reason,
         "frame_count": len(frame_paths),

@@ -7,6 +7,21 @@ import pytest
 from spoke import metal_warp
 
 
+def test_metal_warp_dispatch_receipts_are_attributed_by_client():
+    pipeline = metal_warp.MetalWarpPipeline.__new__(metal_warp.MetalWarpPipeline)
+    pipeline._last_warp_dispatches_by_client = {
+        "spoke.teleporter": {"dispatch_count": 0, "skip_reason": "no_dispatch_recorded"}
+    }
+
+    pipeline._record_client_warp_dispatch(
+        {"client_id": "spoke.teleporter"}, width=24, height=12
+    )
+
+    assert pipeline.warp_dispatches_by_client_snapshot() == {
+        "spoke.teleporter": {"dispatch_count": 1, "skip_reason": None}
+    }
+
+
 def test_metal_warp_owns_visual_tuning_constants_while_backdrop_is_fallback():
     from spoke import backdrop_stream
 
@@ -605,6 +620,7 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
                 "content_width_points": 20.0,
                 "content_height_points": 10.0,
                 "mip_blur_strength": 1.0,
+                "client_id": "client-a",
             },
             {
                 "center_x": 75.0,
@@ -612,6 +628,15 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
                 "content_width_points": 20.0,
                 "content_height_points": 10.0,
                 "mip_blur_strength": 0.0,
+                "client_id": "client-b",
+            },
+            {
+                "center_x": 500.0,
+                "center_y": 20.0,
+                "content_width_points": 20.0,
+                "content_height_points": 10.0,
+                "mip_blur_strength": 0.0,
+                "client_id": "client-c",
             },
         ],
     )
@@ -623,7 +648,17 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     assert len({id(buffer) for buffer in params_buffers}) == 2
     assert encoders[1].source_texture is encoders[0].dest_texture
     assert encoders[1].source_texture.label != "input"
-    assert encoders[-1].dest_texture.label == "drawable"
+    assert encoders[-1].dest_texture.label.startswith("scratch-")
+    blit_copies = [
+        pair
+        for encoder in pipeline._command_queue.command_buffers[-1].blit_encoders
+        for pair in encoder.copies
+    ]
+    assert blit_copies[-1] == (encoders[-1].dest_texture.label, "drawable")
+    outcomes = pipeline.warp_dispatches_by_client_snapshot()
+    assert outcomes["client-a"]["composited_to_drawable_texture"] is True
+    assert outcomes["client-b"]["composited_to_drawable_texture"] is True
+    assert outcomes["client-c"]["skip_reason"] == "empty_dispatch_box"
     assert [
         metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, buffer.payload())[10]
         for buffer in params_buffers

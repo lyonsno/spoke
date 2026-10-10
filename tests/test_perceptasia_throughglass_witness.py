@@ -99,9 +99,9 @@ def _good_throughglass_log(path: Path) -> None:
     path.write_text(
         "\n".join(
             [
-                "Perceptasia Throughglass: setup begin url=http://localhost:8753",
-                "Perceptasia Throughglass: WKWebView request loaded",
-                "Perceptasia Throughglass: content verified",
+                "Perceptasia Throughglass: setup begin url=http://localhost:8753 pid=101 launch_id=run-a",
+                "Perceptasia Throughglass: WKWebView request loaded pid=101 launch_id=run-a",
+                "Perceptasia Throughglass: content verified pid=101 launch_id=run-a",
             ]
         )
         + "\n",
@@ -241,6 +241,26 @@ def test_throughglass_witness_fails_when_capture_lacks_content_proof(tmp_path, m
     )
 
 
+def test_runtime_log_contract_rejects_content_from_another_process(tmp_path):
+    path = tmp_path / "spoke.log"
+    path.write_text(
+        "\n".join(
+            [
+                "Perceptasia Throughglass: setup begin url=http://localhost:8753 pid=101 launch_id=old",
+                "Perceptasia Throughglass: WKWebView request loaded pid=202 launch_id=new",
+                "Perceptasia Throughglass: content verified pid=202 launch_id=new",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    contract = witness._runtime_log_contract([path])
+
+    assert contract["passed"] is False
+    assert contract["identity_match"] is False
+
+
 def test_throughglass_contract_rejects_blank_frosted_pixels_even_when_logs_pass(tmp_path):
     index = tmp_path / "witness-index.json"
     frame = tmp_path / "screen-capture-000.png"
@@ -253,6 +273,7 @@ def test_throughglass_contract_rejects_blank_frosted_pixels_even_when_logs_pass(
 
     assert contract["webview_loaded"] is True
     assert contract["content_verified"] is True
+    assert contract["visual_content"]["claim_scope"] == "throughglass_content_presence_only_not_optical_warp"
     assert contract["visual_content"]["passed"] is False
     assert contract["passed"] is False
     assert contract["visual_content"]["failure_reason"] == "captured_pixels_do_not_show_throughglass_content"
@@ -269,6 +290,7 @@ def test_throughglass_contract_accepts_visible_perceptasia_like_pixels(tmp_path)
     contract = witness.annotate_throughglass_contract(index, log_paths=[log])
 
     assert contract["visual_content"]["passed"] is True
+    assert contract["visual_content"]["claim_scope"] == "throughglass_content_presence_only_not_optical_warp"
     assert contract["passed"] is True
 
 

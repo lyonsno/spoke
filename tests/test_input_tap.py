@@ -1137,6 +1137,52 @@ class TestTrayAwareness:
         det._tray_last_shift_space_up = 0.0
         return det, on_start, on_end, on_shift_tap, on_enter_pressed, on_tray_delete
 
+    def test_disabled_enter_commands_pass_through_all_capture_states(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        monkeypatch.setattr(mod, "ENTER_COMMANDS_ENABLED", False, raising=False)
+        Quartz = __import__("Quartz")
+        for state in mod._State:
+            for keycode, approval_active in (
+                (keycode, approval_active)
+                for keycode in mod.ENTER_KEYCODES
+                for approval_active in (False, True)
+            ):
+                det, _, on_end, _, _, _ = self._make_detector(mod)
+                det._state = state
+                cancel = MagicMock()
+                toggle = MagicMock()
+                det._on_enter_cancel_grace = cancel
+                det._on_enter_during_waiting = toggle
+                det.approval_active = approval_active
+                det._on_approval_enter_pressed = MagicMock()
+                mod._active_detector = det
+                event = MagicMock()
+                Quartz.CGEventGetIntegerValueField.return_value = keycode
+                Quartz.CGEventGetFlags.return_value = 0
+                for event_type in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+                    assert mod._event_tap_callback(None, event_type, event, None) is event
+                assert det._state == state
+                assert det._enter_held is False
+                cancel.assert_not_called()
+                toggle.assert_not_called()
+                on_end.assert_not_called()
+                det._on_approval_enter_pressed.assert_not_called()
+
+    def test_disabled_enter_commands_ignore_physical_enter(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        monkeypatch.setattr(mod, "ENTER_COMMANDS_ENABLED", False, raising=False)
+        Quartz = __import__("Quartz")
+        Quartz.CGEventSourceKeyState.return_value = True
+        assert mod._current_enter_key_state() is False
+
+    def test_disabled_enter_commands_finish_release_without_enter_wait(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        monkeypatch.setattr(mod, "ENTER_COMMANDS_ENABLED", False, raising=False)
+        det, _, on_end, _, _, _ = self._make_detector(mod)
+        det._start_release_decision_timer(shift_held=True)
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
+        assert det._pending_release_active is False
+
     def test_tray_spacebar_tap_calls_hold_end_not_forward(self, input_tap_module):
         """During tray, quick spacebar tap should call on_hold_end, not forward space."""
         mod = input_tap_module

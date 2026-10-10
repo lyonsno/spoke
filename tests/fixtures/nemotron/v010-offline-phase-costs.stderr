@@ -1,0 +1,8 @@
+[timing] fe path=cpu n_samples=79872 n_frames=500 = 9.39 ms
+[timing] offline-transducer setup = 86.38 ms
+[timing] offline-transducer frames=500 enc_frames=64 fe=9.45 encoder+encproj=184.57 ms
+[timing] offline-transducer decode frames=64 segments=1 = 350.77 ms
+[timing] offline-transducer decoder-step frames=64 segments=1 = 70.33 ms
+[timing] offline-transducer rnnt-work encoder_frames=64 predictor_calls=45 joint_calls=45 joint_frames=970 emitted_tokens=44
+[timing] postproc-cpu chars=104 profanity=0.00 itn=0.00 ms
+[timing] postproc-dispatch queue=0.01 pnc=0.00 total=0.02 ms

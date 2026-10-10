@@ -301,6 +301,43 @@ def compile_house_optical_shell_config(
     }
 
 
+def compile_external_carrier_config(
+    request, *, carrier: str, content_proof_required: bool = False,
+    materialization_progress: float | None = None,
+) -> dict:
+    """House envelope around a live sibling carrier, independent of its toolkit."""
+    from .optical_field import compile_placeholder_shell_config
+
+    config = compile_placeholder_shell_config(request)
+    config.update(compile_house_optical_shell_config(request.bounds.width, request.bounds.height))
+    config.pop("bleed_zone_frac", None)
+    config.pop("exterior_mix_width_points", None)
+    state = request.state
+    config.update({
+        "visible": bool(request.visible and state != "hidden"),
+        "gpu_material_enabled": 1.0,
+        "gpu_material_opacity": {"materialize": 0.34, "rest": 0.0, "dismiss": 0.30, "hidden": 0.0}.get(state, 0.22),
+        "gpu_material_feather_points": OPTICAL_SHELL_FEATHER,
+        "gpu_material_fill_overscan_points": material_fill_overscan_points(),
+        "gpu_material_height_frac": 1.0,
+        "gpu_material_text_contrast_bias": 0.55,
+        "gpu_material_ridge_emphasis": {"materialize": 0.68, "rest": 0.54, "dismiss": 0.62, "hidden": 0.0}.get(state, 0.54),
+        "mip_blur_strength": 0.0,
+        "throughglass_content_carrier": carrier if request.visible and state == "rest" else "shell_transition_only",
+        "include_carrier_window_in_capture": False,
+        "clip_captured_carrier_to_shell": False,
+        "content_proof_required": bool(content_proof_required),
+    })
+    with_gpu_material_basis(config, width=float(config["content_width_points"]),
+                            height=float(config["content_height_points"]),
+                            corner_radius=float(config["corner_radius_points"]))
+    if materialization_progress is not None:
+        config = materialized_house_optical_shell_config(config, materialization_progress)
+    config["cut_radius_points"] = float(config["corner_radius_points"])
+    config["optical_field"]["cut_radius_points"] = config["cut_radius_points"]
+    return config
+
+
 def materialized_house_optical_shell_config(shell_config: dict, progress: float) -> dict:
     config = dict(shell_config)
     p = clamp01(progress)

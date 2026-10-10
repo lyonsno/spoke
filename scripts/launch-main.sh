@@ -9,7 +9,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HELPER_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TARGETS_FILE="${HOME}/.config/spoke/launch_targets.json"
+TARGETS_FILE="${SPOKE_LAUNCH_TARGETS_PATH:-${HOME}/.config/spoke/launch_targets.json}"
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-main-launch.log"
 
@@ -18,12 +18,15 @@ mkdir -p "$LOG_DIR"
 export HELPER_REPO_ROOT TARGETS_FILE LOG_FILE
 
 /usr/bin/python3 - <<'PY'
+import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +101,77 @@ def _report_launch_refusal(error: LaunchTargetUnavailable, log_file: Path) -> No
             log.write(f"Launch refused: {error}\n")
     except Exception:
         pass
+
+
+def _write_launch_admission(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, path)
+
+
+def _wait_for_launch_admission(
+    process,
+    *,
+    path: Path,
+    token: str,
+    timeout_seconds: float,
+) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("token") == token:
+            if payload.get("status") == "admitted":
+                return payload
+            reason = payload.get("reason") or "child refused before capture admission"
+            raise LaunchTargetUnavailable(str(reason))
+
+        returncode = process.poll()
+        if returncode is not None:
+            payload = {
+                "status": "refused",
+                "token": token,
+                "child_pid": process.pid,
+                "phase": "child_exit_before_admission",
+                "returncode": returncode,
+                "reason": f"Spoke child exited with status {returncode} before admission",
+            }
+            _write_launch_admission(path, payload)
+            raise LaunchTargetUnavailable(payload["reason"])
+        time.sleep(0.02)
+
+    process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+    payload = {
+        "status": "refused",
+        "token": token,
+        "child_pid": process.pid,
+        "phase": "admission_timeout",
+        "reason": f"Spoke child did not publish admission within {timeout_seconds:.1f}s",
+    }
+    _write_launch_admission(path, payload)
+    raise LaunchTargetUnavailable(payload["reason"])
+
+
+def _launch_admission_timeout(child_env: dict[str, str]) -> float:
+    default_timeout = 60.0
+    try:
+        timeout = float(
+            child_env.get("SPOKE_LAUNCH_ADMISSION_TIMEOUT_SECONDS", str(default_timeout))
+        )
+    except ValueError:
+        return default_timeout
+    if not math.isfinite(timeout) or timeout <= 0:
+        return default_timeout
+    return timeout
 
 
 def _env_flag(child_env: dict[str, str], name: str) -> bool:
@@ -330,11 +404,26 @@ def _start_retina_lasso_witness(
     )
 
 
-targets_file = Path(os.environ["TARGETS_FILE"])
+targets_file = Path(os.environ["TARGETS_FILE"]).expanduser().resolve()
 log_file = Path(os.environ["LOG_FILE"])
 
 try:
     target = require_selected_launch_target(targets_file)
+    expected_target_id = os.environ.get("SPOKE_EXPECTED_LAUNCH_TARGET_ID", "").strip()
+    expected_target_path = os.environ.get("SPOKE_EXPECTED_LAUNCH_TARGET_PATH", "").strip()
+    if bool(expected_target_id) != bool(expected_target_path):
+        raise LaunchTargetUnavailable(
+            "Stable launcher handoff must provide both expected target id and path"
+        )
+    if expected_target_id and (
+        target["id"] != expected_target_id
+        or target["path"].resolve() != Path(expected_target_path).expanduser().resolve()
+    ):
+        raise LaunchTargetUnavailable(
+            "Selected Spoke launch target changed during stable launcher handoff: "
+            f"expected {expected_target_id!r} at {expected_target_path}, got "
+            f"{target['id']!r} at {target['path']}"
+        )
 except LaunchTargetUnavailable as exc:
     _report_launch_refusal(exc, log_file)
     raise SystemExit(1)
@@ -405,6 +494,12 @@ if isinstance(target_env, dict):
     child_env.update(effective_target_env)
 if effective_target is not None:
     child_env["SPOKE_LAUNCH_TARGET_ID"] = effective_target.get("id", "")
+child_env["SPOKE_LAUNCH_TARGETS_PATH"] = str(targets_file)
+
+admission_token = uuid.uuid4().hex
+admission_path = log_file.parent / f"spoke-launch-admission-{admission_token}.json"
+child_env["SPOKE_LAUNCH_ADMISSION_PATH"] = str(admission_path)
+child_env["SPOKE_LAUNCH_ADMISSION_TOKEN"] = admission_token
 
 uv_bin = _resolve_uv_bin(repo_root)
 
@@ -433,7 +528,7 @@ with log_file.open("a", encoding="utf-8") as log:
         log.write(f"Launcher child command: {command!r}\n")
         log.flush()
 
-        subprocess.Popen(
+        process = subprocess.Popen(
             command,
             cwd=repo_root,
             env=child_env,
@@ -443,6 +538,19 @@ with log_file.open("a", encoding="utf-8") as log:
             start_new_session=True,
             close_fds=True,
         )
+        admission_timeout = _launch_admission_timeout(child_env)
+        admission = _wait_for_launch_admission(
+            process,
+            path=admission_path,
+            token=admission_token,
+            timeout_seconds=admission_timeout,
+        )
+        log.write(
+            "Launch admission: "
+            f"status={admission.get('status')} child_pid={admission.get('pid')} "
+            f"registry={admission.get('registry_path')}\n"
+        )
+        log.flush()
         _start_retina_lasso_witness(
             repo_root=repo_root,
             target_id=effective_target.get("id", "selected"),
@@ -451,6 +559,14 @@ with log_file.open("a", encoding="utf-8") as log:
             child_env=child_env,
             log=log,
         )
+    except LaunchTargetUnavailable as exc:
+        log.write(f"Launch refused before capture admission: {exc}\n")
+        log.flush()
+        try:
+            _flash_notification("Spoke Launch Failed", str(exc), "Sosumi")
+        except Exception:
+            pass
+        raise SystemExit(1)
     except Exception:
         traceback.print_exc(file=log)
         log.flush()

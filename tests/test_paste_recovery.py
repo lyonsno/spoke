@@ -54,10 +54,10 @@ def _make_delegate(main_module, monkeypatch):
 
 
 class TestRecoveryFlowBranching:
-    """_inject_result_text should branch on has_focused_text_input."""
+    """Normal delivery preserves recovery without delaying paste for UI work."""
 
     def test_normal_paste_when_text_field_focused(self, main_module, monkeypatch):
-        """When a text field is focused, stage the normal inject after preview fade."""
+        """Request paste immediately and fade the non-activating preview."""
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
@@ -66,25 +66,21 @@ class TestRecoveryFlowBranching:
              patch("spoke.__main__.inject_text") as mock_inject:
             d._inject_result_text("hello world", "Pasted!")
 
-        mock_inject.assert_not_called()
+        mock_inject.assert_called_once()
         pending = list(d._dictation_delivery_records().values())
         assert len(pending) == 1
         assert pending[0].text == "hello world"
         assert pending[0].status_text == "Pasted!"
         assert pending[0].switcher_generation == 0
-        assert pending[0].state == "inject_wait"
-        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-        assert call_args[0][0] == (
-            d._INSERT_OVERLAY_FADE_OUT_S + d._POST_OVERLAY_REFOCUS_DELAY_S
-        )
-        assert call_args[0][2] == "resultInjectDelayed:"
+        assert pending[0].state == "injecting"
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_not_called()
         d._overlay.hide.assert_called_once_with(
             fade_duration=d._INSERT_OVERLAY_FADE_OUT_S
         )
         d._overlay.order_out.assert_not_called()
 
     def test_always_attempts_paste(self, main_module, monkeypatch):
-        """Normal paste should wait briefly for focus to settle after order_out."""
+        """Normal paste has no fixed focus-settling delay."""
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
@@ -93,32 +89,24 @@ class TestRecoveryFlowBranching:
              patch("spoke.__main__.save_pasteboard", return_value=None):
             d._inject_result_text("hello world", "Pasted!")
 
-        mock_inject.assert_not_called()
+        mock_inject.assert_called_once()
         pending = list(d._dictation_delivery_records().values())
         assert len(pending) == 1
         assert pending[0].text == "hello world"
         assert pending[0].status_text == "Pasted!"
         assert pending[0].switcher_generation == 0
-        assert pending[0].state == "inject_wait"
-        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
-        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-        assert call_args[0][0] == (
-            d._INSERT_OVERLAY_FADE_OUT_S + d._POST_OVERLAY_REFOCUS_DELAY_S
-        )
-        assert call_args[0][2] == "resultInjectDelayed:"
+        assert pending[0].state == "injecting"
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_not_called()
 
-    def test_delayed_insert_saves_to_tray_and_skips_ocr_verification(
+    def test_insert_saves_to_tray_and_skips_ocr_verification(
         self, main_module, monkeypatch
     ):
-        """Delayed normal paste should preserve text in tray without OCR verification."""
+        """Normal paste preserves text in tray without OCR verification."""
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
-        d._inject_result_text("hello world", "Pasted!")
-        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
-
         with patch("spoke.__main__.inject_text") as mock_inject:
-            d.resultInjectDelayed_(None)
+            d._inject_result_text("hello world", "Pasted!")
 
         mock_inject.assert_called_once()
         assert Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args is None
@@ -126,24 +114,23 @@ class TestRecoveryFlowBranching:
         assert [entry.text for entry in d._tray_stack] == ["hello world"]
         assert d._tray_active is False
 
-    def test_delayed_insert_does_not_collect_pre_paste_evidence(
+    def test_insert_does_not_collect_pre_paste_evidence(
         self, main_module, monkeypatch
     ):
-        """Delayed insert should not start AX/snapshot paste verification work."""
+        """Insertion does not start AX/snapshot paste verification work."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch("spoke.__main__.threading.Thread") as mock_thread, \
              patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot") as mock_capture, \
              patch("spoke.__main__.inject_text"):
             d._inject_result_text("hello world", "Pasted!")
-            d.resultInjectDelayed_(None)
 
         mock_thread.assert_not_called()
         mock_capture.assert_not_called()
         assert not hasattr(d, "_verify_paste_preexisting_match")
         assert not hasattr(d, "_verify_paste_preexisting_snapshot")
 
-    def test_normal_insert_fades_overlay_before_instant_order_out(
+    def test_normal_insert_fades_overlay_without_instant_order_out(
         self, main_module, monkeypatch
     ):
         """Normal insert should not yank the preview overlay offscreen before the fade."""
@@ -157,8 +144,8 @@ class TestRecoveryFlowBranching:
         )
         d._overlay.order_out.assert_not_called()
 
-    def test_does_not_start_snapshot_capture_after_preview_fade(self, main_module, monkeypatch):
-        """Normal insert should paste after fade without starting OCR snapshot capture."""
+    def test_does_not_start_snapshot_capture_during_delivery(self, main_module, monkeypatch):
+        """Normal insertion requests paste without starting OCR snapshot capture."""
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
@@ -169,10 +156,7 @@ class TestRecoveryFlowBranching:
             d._inject_result_text("hello world", "Pasted!")
 
             assert mock_capture.call_count == 0
-            mock_inject.assert_not_called()
-
-            d.resultInjectDelayed_(None)
-
+            mock_inject.assert_called_once()
         mock_inject.assert_called_once()
         mock_thread.assert_not_called()
         assert mock_capture.call_count == 0
@@ -496,7 +480,6 @@ class TestInsertPathNoOCR:
             d._inject_result_text("hello world", "Pasted!")
 
             assert capture_started == []
-            d.resultInjectDelayed_(None)
 
             assert capture_started == []
             mock_inject.assert_called_once()

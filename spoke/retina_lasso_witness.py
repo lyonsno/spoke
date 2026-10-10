@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -533,20 +534,29 @@ def write_witness_index(
     manifest_name: str = "manifest.json",
     stimulus: dict[str, Any] | None = None,
     capture_profile: str = DEFAULT_PASSIVE_CAPTURE_PROFILE,
+    source_app: str | None = None,
+    source_window: str | None = None,
 ) -> Path:
-    output = Path(output_dir).expanduser()
-    manifest_path = output / manifest_name
+    output = Path(output_dir).expanduser().resolve()
+    manifest_path = (output / manifest_name).resolve()
     manifest: dict[str, Any] | None = None
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest_loaded = manifest is not None
     frame_count = len((manifest or {}).get("frames", []))
     trace_event_count = len(trace_events)
+    trace_file = Path(trace_path).expanduser().resolve()
+    try:
+        trace_sha256 = hashlib.sha256(trace_file.read_bytes()).hexdigest()
+    except OSError:
+        trace_sha256 = None
     payload = {
         "schema": "spoke.retina_lasso_trace_witness.v1",
         "started_at": _format_instant(started_at),
         "ended_at": _format_instant(ended_at),
-        "trace_path": str(Path(trace_path).expanduser()),
+        "trace_path": str(trace_file),
+        "trace_sha256": trace_sha256,
+        "trace_write_failures_path": f"{trace_file}.failures.jsonl",
         "retina_lasso_manifest": str(manifest_path),
         "retina_lasso_manifest_loaded": manifest_loaded,
         "frame_count": frame_count,
@@ -559,6 +569,8 @@ def write_witness_index(
             capture_profile=capture_profile,
         ),
         "command": list(command),
+        "source_app": source_app,
+        "source_window": source_window,
         "stimulus": stimulus or {},
         "capture_profile": capture_profile,
         "uncertainty": [
@@ -693,6 +705,8 @@ def run_autonomous_hammer_witness(
         trace_events=trace_events,
         stimulus=stimulus,
         capture_profile=capture_profile,
+        source_app=source_app,
+        source_window=source_window,
     )
 
 
@@ -751,6 +765,8 @@ def run_witness_window(
         trace_events=trace_events,
         stimulus=stimulus,
         capture_profile=capture_profile,
+        source_app=source_app,
+        source_window=source_window,
     )
 
 

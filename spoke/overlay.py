@@ -463,6 +463,7 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_client = None
         self._preview_compositor_identity = None
         self._preview_compositor_generation = 0
+        self._preview_compositor_suspended_for_asr = False
         self._last_preview_visible_geometry = None
         self._preview_warp_tuning_overrides: dict[str, float] = {}
 
@@ -771,6 +772,8 @@ class TranscriptionOverlay(NSObject):
             return ()
 
     def _ensure_preview_compositor_client(self):
+        if getattr(self, "_preview_compositor_suspended_for_asr", False):
+            return None
         registry = getattr(self, "_compositor_registry", None)
         if registry is None or self._screen is None or self._window is None:
             return None
@@ -856,10 +859,18 @@ class TranscriptionOverlay(NSObject):
             self._publish_preview_compositor_snapshot(visible=False)
         self._release_preview_compositor_client()
 
+    def suspend_compositor_for_asr(self) -> bool:
+        """Release only preview optics, retaining the native text window."""
+        self._preview_compositor_suspended_for_asr = True
+        had_client = self._preview_compositor_client is not None
+        self._release_preview_compositor_client()
+        return had_client
+
     def show(self) -> None:
         """Fade the overlay in."""
         if self._window is None:
             return
+        self._preview_compositor_suspended_for_asr = False
         self._cancel_tray_capture_flash()
         # If recovery mode is active, clean it up first
         if self._recovery_mode:
@@ -1698,6 +1709,7 @@ class TranscriptionOverlay(NSObject):
         """Show an empty visual Stack body for source tokens without app stack rows."""
         if self._window is None:
             return
+        self._preview_compositor_suspended_for_asr = False
         self._cancel_tray_capture_flash()
         if self._recovery_mode:
             self._recovery_mode = False

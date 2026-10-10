@@ -7,8 +7,10 @@ after a configurable delay.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 
 import objc as _objc
 from AppKit import NSPasteboard, NSPasteboardTypeString
@@ -66,7 +68,8 @@ def set_pasteboard_only(text: str) -> None:
         return
     pb = NSPasteboard.generalPasteboard()
     pb.clearContents()
-    pb.setString_forType_(text, NSPasteboardTypeString)
+    if not pb.setString_forType_(text, NSPasteboardTypeString):
+        raise RuntimeError("Could not write transcript to clipboard")
     logger.info("Pasteboard set (no paste) — %d chars for manual recovery", len(text))
 
 
@@ -101,7 +104,7 @@ def _restore_pasteboard(pb: NSPasteboard, saved: list[tuple[str, bytes]] | None)
     pb.writeObjects_([item])
 
 
-def inject_text(text: str, on_restored: object = None) -> None:
+def inject_text(text: str, on_restored: object = None, on_restore_skipped: object = None) -> None:
     """Paste *text* at the current cursor position.
 
     1. Save current pasteboard (all types)
@@ -112,22 +115,43 @@ def inject_text(text: str, on_restored: object = None) -> None:
     Parameters
     ----------
     on_restored : callable, optional
-        Called (on main thread) after the pasteboard has been restored.
+        Called (on main thread) after clipboard release. Used for skipped
+        restoration too unless on_restore_skipped is provided.
+    on_restore_skipped : callable, optional
+        Called instead when a newer clipboard write supersedes this paste.
     """
     if not text:
         return
 
-    pb = NSPasteboard.generalPasteboard()
-
-    # Save all pasteboard contents (not just strings)
-    saved = _save_pasteboard(pb)
-
-    # Set our text
-    pb.clearContents()
-    pb.setString_forType_(text, NSPasteboardTypeString)
-
-    # Synthesize Cmd+V
-    _post_cmd_v()
+    timing = {
+        "pid": os.getpid(),
+        "injection_id": f"{os.getpid()}:{time.monotonic_ns()}",
+        "outcome": "failed",
+    }
+    started = phase_started = time.perf_counter()
+    phase = "save"
+    try:
+        pb = NSPasteboard.generalPasteboard()
+        saved = _save_pasteboard(pb)
+        now = time.perf_counter()
+        timing["save_ms"] = (now - phase_started) * 1000
+        phase_started, phase = now, "write"
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
+        paste_change_count = pb.changeCount()
+        now = time.perf_counter()
+        timing["write_ms"] = (now - phase_started) * 1000
+        phase_started, phase = now, "post_cmd_v"
+        _post_cmd_v()
+        now = time.perf_counter()
+        timing["post_ms"] = (now - phase_started) * 1000
+        timing["outcome"] = "events_posted_destination_unverified"
+    finally:
+        if timing["outcome"] == "failed":
+            now = time.perf_counter()
+            timing["failed_phase_ms"] = (now - phase_started) * 1000
+        timing.update(phase=phase, total_ms=(now - started) * 1000)
+        logger.info("Paste timing %s", json.dumps(timing, sort_keys=True))
 
     logger.info("Injected %d chars", len(text))
 
@@ -135,10 +159,16 @@ def inject_text(text: str, on_restored: object = None) -> None:
 
     # Restore pasteboard after a delay (must run on main thread via NSTimer)
     def _do_restore(timer: NSTimer) -> None:
-        _restore_pasteboard(pb, saved)
-        logger.debug("Pasteboard restored")
-        if on_restored is not None:
-            on_restored()
+        # Never replace a later Copy (including one from another application).
+        unchanged = pb.changeCount() == paste_change_count
+        if unchanged:
+            _restore_pasteboard(pb, saved)
+            logger.debug("Pasteboard restored")
+        else:
+            logger.info("Pasteboard restore skipped: newer clipboard owner")
+        callback = on_restored if unchanged or on_restore_skipped is None else on_restore_skipped
+        if callback is not None:
+            callback()
 
     NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
         restore_delay,

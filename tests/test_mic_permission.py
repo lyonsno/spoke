@@ -240,7 +240,12 @@ class TestSigtermMenuBarCleanup:
             "main() did not install a SIGTERM handler"
         )
 
-        captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
+        with patch("PyObjCTools.AppHelper.callAfter") as enqueue:
+            captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
+        delegate._menubar.cleanup.assert_not_called()
+        callback, *args = enqueue.call_args.args
+        with patch.object(main_module, "NSApp", MagicMock()):
+            callback(*args)
 
         delegate._menubar.cleanup.assert_called_once()
         delegate._diaulos_switcher.cleanup.assert_called_once()
@@ -277,9 +282,12 @@ class TestSigtermMenuBarCleanup:
                                             with patch("PyObjCTools.AppHelper.runEventLoop"):
                                                 main_module.main()
 
-                                        captured_handlers[signal_mod.SIGTERM](
-                                            signal_mod.SIGTERM, None
-                                        )
+                                        with patch("PyObjCTools.AppHelper.callAfter") as enqueue:
+                                            captured_handlers[signal_mod.SIGTERM](
+                                                signal_mod.SIGTERM, None
+                                            )
+                                        callback, *args = enqueue.call_args.args
+                                        callback(*args)
 
         sigterm_calls = [
             c

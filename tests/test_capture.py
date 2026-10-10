@@ -1067,7 +1067,7 @@ class TestTailBuffer:
 
 
 class TestVADDisableSwitch:
-    """SPOKE_VAD_ENABLED=0 must take Silero off the realtime audio callback.
+    """SPOKE_VAD_ENABLED=0 must take all VAD off the realtime callback.
 
     VAD segmentation desynchronizes under box contention: the state machine
     counts chunks, but inline torch inference on the PortAudio callback can
@@ -1112,3 +1112,20 @@ class TestVADDisableSwitch:
         chunk = np.zeros((real.SILERO_CHUNK * 2, 1), dtype=np.float32)
         cap._audio_callback(chunk, len(chunk), None, None)
         assert cap._torch is None
+
+    def test_disabled_vad_never_makes_rms_vad_decisions(self, monkeypatch):
+        """Disabling Silero must not silently substitute RMS threshold VAD."""
+        monkeypatch.setenv("SPOKE_VAD_ENABLED", "0")
+        real = self._real_capture(monkeypatch)
+        cap = real.AudioCapture()
+        cap._segment_cb = lambda *a, **k: None
+        cap._vad_cb = lambda *a, **k: None
+        cap._stream = object()
+        cap._stream_closing = False
+        cap._frames = []
+        cap._process_vad_decision = MagicMock()
+
+        chunk = np.full((real.BLOCKSIZE, 1), 0.5, dtype=np.float32)
+        cap._audio_callback(chunk, len(chunk), None, None)
+
+        cap._process_vad_decision.assert_not_called()

@@ -1492,6 +1492,7 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "SCStreamOutputTypeScreen": SCStreamOutputTypeScreen,
                 "SCFrameStatusComplete": SCFrameStatusComplete,
                 "SCStreamFrameInfoStatus": SCStreamFrameInfoStatus,
+                "SCStreamFrameInfoDisplayTime": globals().get("SCStreamFrameInfoDisplayTime"),
                 "CMSampleBufferGetImageBuffer": CMSampleBufferGetImageBuffer,
                 "_CIImage_from_sample_buffer": _CIImage_from_sample_buffer,
                 "CMSampleBufferGetPresentationTimeStamp": CMSampleBufferGetPresentationTimeStamp,

@@ -495,6 +495,65 @@ def test_preview_adapter_hide_releases_only_preview_client_and_leaves_assistant_
     assert assistant_client.release_calls == 0
 
 
+def test_final_asr_suspension_keeps_native_preview_and_blocks_republication(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _ = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    overlay.set_compositor_registry(registry)
+    overlay.show()
+    window = overlay._window
+    alpha = window.alpha
+    client = host.clients["preview.transcription"]
+
+    assert overlay.suspend_compositor_for_asr() is True
+    assert client.release_calls == 1
+    assert overlay._visible is True
+    assert overlay._window is window
+    assert window.alpha == alpha
+    assert overlay._preview_compositor_client is None
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is False
+    overlay.update_preview_warp_tuning(x_squeeze=3.25)
+    assert len(host.registered) == 1
+    assert overlay.suspend_compositor_for_asr() is False
+    assert client.release_calls == 1
+
+    overlay.show()
+    assert len(host.registered) == 2
+    assert overlay._preview_compositor_client is not None
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+
+
+def test_final_asr_suspension_does_not_release_other_consumer(mock_pyobjc, monkeypatch):
+    overlay_module, compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    other = host.register_client(
+        compositor_module.OverlayClientIdentity("teleporter", host.display_id, "assistant"),
+        window=object(), content_view=object(),
+    )
+    other.publish("live-teleporter")
+    overlay.set_compositor_registry(_FakeRegistry(host))
+    overlay.show()
+    overlay.suspend_compositor_for_asr()
+    assert other.release_calls == 0
+    assert other.published == ["live-teleporter"]
+
+
+def test_stack_shell_is_not_left_suspended_after_final_asr(mock_pyobjc, monkeypatch):
+    overlay_module, _ = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    overlay.set_compositor_registry(_FakeRegistry(host))
+    overlay.show()
+    overlay.suspend_compositor_for_asr()
+    overlay.show_stack_body_shell()
+    assert overlay._preview_compositor_client is not None
+    assert len(host.registered) == 2
+
+
 def test_tray_mode_stays_overlay_local_and_does_not_register_preview_client(
     mock_pyobjc, monkeypatch
 ):

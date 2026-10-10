@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.native-build/
 
 # macOS
 .DS_Store

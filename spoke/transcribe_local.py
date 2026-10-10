@@ -8,15 +8,18 @@ avoid requiring ffmpeg.
 from __future__ import annotations
 
 import importlib
+import inspect
 import io
 import logging
 import os
 from pathlib import Path
+import time
 import wave
 
 import numpy as np
 
 from .dedup import truncate_repetition, is_hallucination, repair_ontology_terms
+from .transcription_prompt import TranscriptionPromptProvider
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,41 @@ _TAIL_ENERGY_FRAME_SECONDS = 0.5
 mx = None
 mlx_whisper = None
 load_model = None
+
+
+class _LocalTiming:
+    """Caller-side clocks only; never synchronize MLX or inspect host state."""
+
+    def __init__(self, receipt: dict, phase: str | None):
+        self.receipt = receipt
+        self.phase = phase
+        self.start = self.previous = self._sample()
+
+    def _sample(self):
+        try:
+            return (time.perf_counter(), time.thread_time(), time.process_time())
+        except Exception:
+            self.receipt["timing_status"] = "unavailable"
+            return None
+
+    @staticmethod
+    def _delta(start, end):
+        return dict(zip(
+            ("wall_seconds", "caller_thread_cpu_seconds", "process_cpu_seconds"),
+            (max(0.0, b - a) for a, b in zip(start, end)),
+        ))
+
+    def advance(self, phase: str | None):
+        now = self._sample()
+        if self.phase is not None and self.previous is not None and now is not None:
+            self.receipt["phases"][self.phase] = self._delta(self.previous, now)
+        self.phase, self.previous = phase, now
+        return now
+
+    def finish(self):
+        end = self.advance(None)
+        if self.receipt["timing_status"] == "complete" and self.start is not None and end is not None:
+            self.receipt["total"] = self._delta(self.start, end)
 
 
 class IncompleteLocalTranscriptionError(RuntimeError):
@@ -139,6 +177,21 @@ def supports_eager_eval() -> bool:
     return _supports_decode_option("eager_eval")
 
 
+def supports_initial_prompt() -> bool:
+    """Whether the installed mlx-whisper transcribe entry accepts a prompt."""
+    runtime_whisper = mlx_whisper
+    if runtime_whisper is None:
+        _, runtime_whisper, _ = _ensure_mlx_whisper_runtime()
+    try:
+        signature = inspect.signature(runtime_whisper.transcribe)
+    except (TypeError, ValueError):
+        return False
+    return "initial_prompt" in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
 def _segment_coverage_end_seconds(result: dict) -> float | None:
     segments = result.get("segments")
     if not isinstance(segments, list):
@@ -206,10 +259,16 @@ class LocalTranscriptionClient:
         *,
         decode_timeout: float | None = _DEFAULT_DECODE_TIMEOUT,
         eager_eval: bool = _DEFAULT_EAGER_EVAL,
+        prompt_provider: TranscriptionPromptProvider | None = None,
     ) -> None:
         self._model = model
         self._decode_timeout = decode_timeout
         self._eager_eval = eager_eval
+        self._prompt_provider = (
+            prompt_provider or TranscriptionPromptProvider.from_environment()
+        )
+        self._last_prompt_receipt: dict | None = None
+        self._last_receipt: dict | None = None
         self._loaded = False
         self._model_instance = None
         self._warned_eager_eval_unsupported = False
@@ -252,20 +311,71 @@ class LocalTranscriptionClient:
         Decodes WAV to numpy float32 array in-process (no ffmpeg needed),
         then passes directly to mlx_whisper.transcribe().
         """
+        self._last_prompt_receipt = None
+        receipt = self._last_receipt = {
+            "schema": "spoke.local_whisper_timing.v1",
+            "model": self._model,
+            "audio_bytes": len(wav_bytes),
+            "model_prepared_at_entry": self._loaded,
+            "status": "running",
+            "timing_status": "complete",
+            "cpu_scope": "caller_thread_and_whole_spoke_process_not_gpu",
+            "phases": {},
+        }
+        timing = _LocalTiming(receipt, "model_prepare" if wav_bytes else None)
+        try:
+            text = self._transcribe(wav_bytes, timing)
+            receipt["status"] = "success" if text.strip() else "blank"
+            return text
+        except Exception as exc:
+            receipt.update(status="failed", failed_phase=timing.phase,
+                           error_type=type(exc).__name__)
+            raise
+        finally:
+            timing.finish()
+
+    def _transcribe(self, wav_bytes: bytes, timing: _LocalTiming) -> str:
         if not wav_bytes:
             return ""
 
         self._ensure_model()
         self._install_model_holder()
         _, runtime_whisper, _ = _ensure_mlx_whisper_runtime()
+        runtime_path = getattr(runtime_whisper, "__file__", None)
+        if isinstance(runtime_path, str):
+            timing.receipt["runtime_path"] = runtime_path
 
         # Decode WAV bytes to float32 numpy array — bypass ffmpeg entirely
+        timing.advance("audio_decode")
         audio = self._decode_wav(wav_bytes)
+        timing.receipt["audio_duration_seconds"] = float(len(audio)) / _WHISPER_SAMPLE_RATE
 
+        timing.advance("prompt_setup")
         kwargs = {
             "path_or_hf_repo": self._model,
             "language": "en",
         }
+        prompt = self._prompt_provider.resolve()
+        prompt_supported = supports_initial_prompt()
+        prompt_effective = bool(prompt.text) and prompt_supported
+        if prompt_effective:
+            kwargs["initial_prompt"] = prompt.text
+        self._last_prompt_receipt = prompt.receipt(
+            supported=prompt_supported,
+            payload_constructed=prompt_effective,
+            submission_attempted=False,
+            runtime_accepted=None,
+        )
+        logger.info(
+            "Local transcription prompt: requested=%s supported=%s payload=%s "
+            "sha256=%s chars=%d sources=%s",
+            self._last_prompt_receipt["requested"],
+            prompt_supported,
+            prompt_effective,
+            prompt.sha256,
+            prompt.char_count,
+            ",".join(prompt.sources) or "none",
+        )
         if supports_eager_eval():
             # Do not let Spoke's default timeout mask the eager_eval path.
             # Explicit non-default timeout choices still take precedence.
@@ -283,7 +393,16 @@ class LocalTranscriptionClient:
         else:
             kwargs["decode_timeout"] = self._decode_timeout
 
+        if prompt_effective:
+            self._last_prompt_receipt["submission_attempted"] = True
+        timing.receipt["effective_decode_controls"] = {
+            key: kwargs[key] for key in ("decode_timeout", "eager_eval") if key in kwargs
+        }
+        timing.advance("mlx_inference")
         result = runtime_whisper.transcribe(audio, **kwargs)
+        timing.advance("result_processing")
+        if prompt_effective:
+            self._last_prompt_receipt["runtime_accepted"] = True
 
         text = result.get("text", "").strip()
         duration_seconds = float(len(audio)) / _WHISPER_SAMPLE_RATE
