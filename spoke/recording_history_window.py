@@ -247,19 +247,19 @@ class RecordingHistoryWindow(NSObject):
             self._loading_partial = False
             self._load_failed = True
             return
+        was_incomplete = (getattr(self, "_loading_partial", False)
+                          or getattr(self, "_load_failed", False))
+        self._loading_partial = not complete
+        self._load_failed = False
         if payload["records"] != self._records:
             self._records = payload["records"]
             self._filter()
-        elif complete and (getattr(self, "_loading_partial", False)
-                           or getattr(self, "_load_failed", False)):
+        elif complete and (was_incomplete or not self._records):
             self._filter()
-        self._loading_partial = not complete
         if not complete:
             self._count.setStringValue_(f"Loading recordings | {len(self._records)} loaded")
         elif str(self._status.stringValue()).startswith("History unavailable:"):
             self._status.setStringValue_("Retention: manual")
-        if complete:
-            self._load_failed = False
         self._update_controls()
 
     def controlTextDidChange_(self, notification):
@@ -278,7 +278,13 @@ class RecordingHistoryWindow(NSObject):
         else:
             self._selected_id = None
         size = sum(r.get("byte_count", 0) or 0 for r in self._records)
-        self._count.setStringValue_(f"{len(self._filtered)} recordings  |  {size / 1048576:.1f} MB retained")
+        if getattr(self, "_loading_partial", False):
+            count = f"Loading recordings | {len(self._records)} loaded"
+        elif getattr(self, "_load_failed", False):
+            count = f"History unavailable | {len(self._records)} loaded"
+        else:
+            count = f"{len(self._filtered)} recordings  |  {size / 1048576:.1f} MB retained"
+        self._count.setStringValue_(count)
         self._render_detail()
 
     def numberOfRowsInTableView_(self, table):
@@ -317,7 +323,13 @@ class RecordingHistoryWindow(NSObject):
         if record is None:
             self._title.setStringValue_("Recordings")
             self._meta.setStringValue_("")
-            self._text.setString_("No recordings" if not self._records else "No matching recordings")
+            if getattr(self, "_loading_partial", False):
+                message = "No matching recordings yet"
+            elif getattr(self, "_load_failed", False):
+                message = "History unavailable"
+            else:
+                message = "No recordings" if not self._records else "No matching recordings"
+            self._text.setString_(message)
             self._route.setStringValue_("")
             self._update_controls()
             return

@@ -293,3 +293,39 @@ def test_history_recovers_count_after_error_even_when_rows_are_unchanged():
     owner.loaded_({"error": "unreadable"})
     owner.loaded_({"records": rows, "complete": True})
     owner._filter.assert_called_once_with()
+
+
+@pytest.mark.parametrize("partial,failed,label,detail", [
+    (True, False, "Loading recordings | 1 loaded", "No matching recordings yet"),
+    (False, True, "History unavailable | 1 loaded", "History unavailable"),
+])
+def test_history_search_preserves_incomplete_archive_state(partial, failed, label, detail):
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._loading_partial, owner._load_failed = partial, failed
+    owner._records = [{"capture_id": "newest", "attempts": [{"text": "latest"}], "byte_count": 0}]
+    owner._selected_id = None
+    owner._search, owner._table, owner._count = MagicMock(), MagicMock(), MagicMock()
+    owner._search.stringValue.return_value = "earlier"
+    owner._attempts, owner._title, owner._meta = MagicMock(), MagicMock(), MagicMock()
+    owner._text, owner._route, owner._update_controls = MagicMock(), MagicMock(), MagicMock()
+    owner.controlTextDidChange_(None)
+    assert owner._filtered == []
+    assert owner._count.setStringValue_.call_args.args[0] == label
+    assert owner._text.setString_.call_args.args[0] == detail
+
+
+def test_history_empty_archive_completes_its_initial_loading_state():
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._records = []
+    owner._loading_partial = owner._load_failed = False
+    owner._status, owner._count = MagicMock(), MagicMock()
+    owner._filter, owner._update_controls = MagicMock(), MagicMock()
+    owner.loaded_({"records": [], "complete": True})
+    owner._filter.assert_called_once_with()
+    assert owner._refreshing is False
