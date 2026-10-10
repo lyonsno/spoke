@@ -1518,7 +1518,7 @@ class SpokeAppDelegate(NSObject):
         if payload["reason"]:
             body += f" - {payload['reason']}"
         notification.setInformativeText_(body)
-        notification.setUserInfo_({"kind": "greenroom-ping"})
+        notification.setUserInfo_({"kind": "greenroom-ping", **({'url': payload['url']} if 'url' in payload else {})})
         self._greenroom_notification_center.deliverNotification_(notification)
 
     def userNotificationCenter_didActivateNotification_(self, center, notification) -> None:

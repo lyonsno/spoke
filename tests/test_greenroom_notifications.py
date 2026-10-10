@@ -85,7 +85,7 @@ def test_local_ping_socket_rejects_arbitrary_open_url():
 def test_only_greenroom_notifications_open_the_fixed_monitor_url():
     assert greenroom_url_for_notification({"kind": "greenroom-ping"}) == GREENROOM_MONITOR_URL
     assert greenroom_url_for_notification({"kind": "other"}) is None
-    assert greenroom_url_for_notification({"kind": "greenroom-ping", "url": "https://evil.invalid"}) == GREENROOM_MONITOR_URL
+    assert greenroom_url_for_notification({"kind": "greenroom-ping", "url": "https://evil.invalid"}) is None
 
 
 def test_pyobjc_dictionary_notification_info_opens_monitor():
