@@ -10,6 +10,8 @@ import socket
 import socketserver
 import stat
 import threading
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -24,7 +26,8 @@ GREENROOM_PING_SOCKET = (
 def valid_greenroom_ping(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
-    if set(payload) != {"schema", "job_id", "agent_id", "reason"}:
+    if set(payload) not in ({"schema", "job_id", "agent_id", "reason"},
+                            {"schema", "job_id", "agent_id", "reason", "url"}):
         return False
     return (
         payload.get("schema") == GREENROOM_PING_SCHEMA
@@ -33,17 +36,38 @@ def valid_greenroom_ping(payload: Any) -> bool:
         and isinstance(payload.get("agent_id"), str)
         and bool(payload["agent_id"].strip())
         and isinstance(payload.get("reason"), str)
+        and ('url' not in payload or valid_greenroom_destination(payload['url'], payload['job_id']))
     )
+
+
+def valid_greenroom_destination(value: Any, request_id: str | None = None) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlsplit(value)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if parsed.scheme != 'http' or parsed.netloc != '127.0.0.1:8766' or parsed.path != '/' or parsed.fragment:
+        return False
+    if set(query) != {'smoke', 'destination'} or any(len(items) != 1 for items in query.values()):
+        return False
+    identity, digest = query['smoke'][0], query['destination'][0]
+    try:
+        if str(UUID(identity)) != identity:
+            return False
+    except ValueError:
+        return False
+    return (request_id is None or request_id == identity) and len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
 
 
 def greenroom_url_for_notification(user_info: Any) -> str | None:
     if isinstance(user_info, Mapping):
         kind = user_info.get("kind")
+        url = user_info.get('url')
     else:
         object_for_key = getattr(user_info, "objectForKey_", None)
         kind = object_for_key("kind") if object_for_key is not None else None
+        url = object_for_key('url') if object_for_key is not None else None
     if kind == "greenroom-ping":
-        return GREENROOM_MONITOR_URL
+        return GREENROOM_MONITOR_URL if url is None else url if valid_greenroom_destination(url) else None
     return None
 
 
