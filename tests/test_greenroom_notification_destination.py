@@ -27,3 +27,10 @@ def test_notification_cannot_open_arbitrary_or_wrong_identity_url(url):
     value['url'] = url
     assert not valid_greenroom_ping(value)
     assert greenroom_url_for_notification({'kind': 'greenroom-ping', 'url': url}) is None
+
+
+def test_malformed_url_is_rejected_in_validation_and_native_activation():
+    value = payload()
+    value['url'] = 'http://[broken/'
+    assert not valid_greenroom_ping(value)
+    assert greenroom_url_for_notification({'kind': 'greenroom-ping', 'url': value['url']}) is None

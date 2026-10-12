@@ -1546,21 +1546,36 @@ class SpokeAppDelegate(NSObject):
         self._request_mic_permission()
 
     def _receive_greenroom_ping(self, payload: dict[str, str]) -> None:
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "showGreenroomPing:", payload, True
+        from Foundation import NSMutableDictionary
+
+        # Native scheduling does not propagate presentation exceptions to this thread.
+        request = NSMutableDictionary.dictionaryWithDictionary_(
+            {"payload": payload, "status": "pending"}
         )
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "showGreenroomPing:", request, True
+        )
+        if request["status"] != "delivered":
+            raise RuntimeError(request.get("error", "Greenroom notification presentation did not complete"))
 
-    def showGreenroomPing_(self, payload: dict[str, str]) -> None:
-        from AppKit import NSUserNotification
+    def showGreenroomPing_(self, request) -> None:
+        try:
+            from AppKit import NSUserNotification
 
-        notification = NSUserNotification.alloc().init()
-        notification.setTitle_("GPU Greenroom smoke needs you")
-        body = f"Job {payload['job_id']} | {payload['agent_id']}"
-        if payload["reason"]:
-            body += f" - {payload['reason']}"
-        notification.setInformativeText_(body)
-        notification.setUserInfo_({"kind": "greenroom-ping", **({'url': payload['url']} if 'url' in payload else {})})
-        self._greenroom_notification_center.deliverNotification_(notification)
+            payload = request["payload"]
+            notification = NSUserNotification.alloc().init()
+            notification.setTitle_("GPU Greenroom smoke needs you")
+            body = f"Job {payload['job_id']} | {payload['agent_id']}"
+            if payload["reason"]:
+                body += f" - {payload['reason']}"
+            notification.setInformativeText_(body)
+            notification.setUserInfo_({"kind": "greenroom-ping", **({'url': payload['url']} if 'url' in payload else {})})
+            self._greenroom_notification_center.deliverNotification_(notification)
+        except Exception as error:
+            request["error"] = str(error)
+            request["status"] = "failed"
+        else:
+            request["status"] = "delivered"
 
     def userNotificationCenter_didActivateNotification_(self, center, notification) -> None:
         from AppKit import NSWorkspace

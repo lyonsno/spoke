@@ -4,6 +4,7 @@ import os
 import socket
 from pathlib import Path
 import uuid
+import threading
 
 import pytest
 
@@ -139,6 +140,9 @@ def test_second_listener_cannot_replace_live_spoke_listener():
 
 def test_live_listener_probe_handles_server_closing_after_reply(monkeypatch):
     class RepliedProbe:
+        def setblocking(self, value):
+            assert value is False
+
         def connect(self, path):
             pass
 
@@ -175,3 +179,81 @@ def test_stale_socket_path_is_not_replaced_by_regular_file(tmp_path):
 
     with pytest.raises(RuntimeError, match="not a socket"):
         server.start()
+
+
+def test_occupied_listener_does_not_wait_for_a_protocol_reply():
+    path = _socket_path()
+    path.parent.mkdir()
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.listen()
+    server = GreenroomPingServer(lambda _: None, socket_path=path)
+    finished = threading.Event()
+    errors = []
+    def start():
+        try:
+            server.start()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+    worker = threading.Thread(target=start)
+    worker.start()
+    peer, _ = listener.accept()
+    try:
+        assert finished.wait(0.2), 'occupied optional listener must not block app startup on a reply'
+        assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
+        assert path.is_socket()
+    finally:
+        peer.close()
+        listener.close()
+        worker.join()
+        server.close()
+        path.unlink()
+        path.parent.rmdir()
+
+
+def test_malformed_url_gets_an_explicit_wire_rejection():
+    path = _socket_path()
+    received = []
+    server = GreenroomPingServer(received.append, socket_path=path)
+    server.start()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(path))
+            client.sendall(json.dumps({'schema': 'spoke.greenroom-ping.v1',
+                'job_id': 'job', 'agent_id': 'owner', 'reason': '', 'url': 'http://[broken/'}).encode() + b'\n')
+            assert client.makefile('rb').readline() == b'{"status": "rejected"}\n'
+        assert received == []
+    finally:
+        server.close()
+        path.parent.rmdir()
+
+
+def test_closed_occupancy_probe_is_quiet_and_does_not_dispatch(monkeypatch):
+    from spoke import greenroom_notifications as notifications
+    completed = threading.Event()
+    errors = []
+    received = []
+    class ObservedServer(notifications._ThreadedUnixServer):
+        def finish_request(self, request, client_address):
+            try:
+                super().finish_request(request, client_address)
+            finally:
+                completed.set()
+
+        def handle_error(self, request, client_address):
+            errors.append(client_address)
+    monkeypatch.setattr(notifications, '_ThreadedUnixServer', ObservedServer)
+    path = _socket_path()
+    server = GreenroomPingServer(received.append, socket_path=path)
+    server.start()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(path))
+        assert completed.wait(0.2)
+        server.close()
+        assert not errors and not received
+    finally:
+        server.close()
+        path.parent.rmdir()

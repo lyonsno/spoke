@@ -43,7 +43,10 @@ def valid_greenroom_ping(payload: Any) -> bool:
 def valid_greenroom_destination(value: Any, request_id: str | None = None) -> bool:
     if not isinstance(value, str):
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
     query = parse_qs(parsed.query, keep_blank_values=True)
     if parsed.scheme != 'http' or parsed.netloc != '127.0.0.1:8766' or parsed.path != '/' or parsed.fragment:
         return False
@@ -73,8 +76,11 @@ def greenroom_url_for_notification(user_info: Any) -> str | None:
 
 class _PingHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
+        line = self.rfile.readline()
+        if not line:
+            return
         try:
-            payload = json.loads(self.rfile.readline())
+            payload = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._respond("rejected")
             return
@@ -170,14 +176,13 @@ class GreenroomPingServer:
             raise RuntimeError(f"Greenroom ping path exists and is not a socket: {self.socket_path}")
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
+            probe.setblocking(False)
             probe.connect(str(self.socket_path))
         except OSError as exc:
             if exc.errno not in (errno.ECONNREFUSED, errno.ENOENT):
                 raise
             self.socket_path.unlink()
         else:
-            probe.sendall(b"\n")
-            probe.recv(1024)
             raise RuntimeError(f"another Spoke Greenroom ping listener is active at {self.socket_path}")
         finally:
             probe.close()
