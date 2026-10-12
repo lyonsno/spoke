@@ -246,7 +246,7 @@ def test_closed_occupancy_probe_is_quiet_and_does_not_dispatch(monkeypatch):
             errors.append(client_address)
     monkeypatch.setattr(notifications, '_ThreadedUnixServer', ObservedServer)
     path = _socket_path()
-    server = GreenroomPingServer(received.append, socket_path=path)
+    server = notifications.GreenroomPingServer(received.append, socket_path=path)
     server.start()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:

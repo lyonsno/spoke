@@ -1676,6 +1676,21 @@ class TestTranscriptionToken:
         inject.assert_not_called()
         d._add_tray_entry.assert_called_once_with(text, owner="user", activate=False)
 
+    def test_monitor_window_receives_no_automatic_dictation_paste(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+        host = MagicMock()
+        host._window.isKeyWindow.return_value = True
+        d._monitor_windows = {"fleet": host}
+        d._add_tray_entry = MagicMock()
+        text = "Keep this dictation while I consult the monitor"
+        with patch.object(main_module, "inject_text") as inject:
+            d.transcriptionComplete_({"token": 5, "text": text})
+            d.graceTimerFired_(None)
+        inject.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(text, owner="user", activate=False)
+
     def test_switcher_focus_completed_before_delivery_suppresses_paste(
         self, main_module, monkeypatch
     ):
@@ -5314,6 +5329,20 @@ class TestEnvValidation:
 
         assert result is not None
         assert detector_instance._on_recording_history_toggle == d._toggle_recording_history
+
+    @pytest.mark.parametrize("other_is_key", [False, True])
+    def test_monitor_switch_inherits_return_app_only_from_key_monitor(self, main_module, other_is_key):
+        import sys
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        old, destination = MagicMock(), MagicMock()
+        old._window.isVisible.return_value = True
+        old._window.isKeyWindow.return_value = other_is_key
+        destination._window.isVisible.return_value = False
+        d._monitor_windows = {"fleet": old, "greenroom": destination}
+        with patch.dict(sys.modules, {"spoke.monitor_window": MagicMock()}):
+            d._toggle_monitor("greenroom")
+        destination.show.assert_called_once_with(previous_app=old._previous_app if other_is_key else None)
+        old.dismiss.assert_called_once_with(restore_focus=False)
 
     def test_recording_history_chord_closes_visible_window_and_reopens(self, main_module):
         d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)

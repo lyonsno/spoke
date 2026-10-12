@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
 SLASH_KEYCODE = 44
+PERIOD_KEYCODE = 47
 QUOTE_KEYCODE = 39
 SEMICOLON_KEYCODE = 41
 RETURN_KEYCODE = 36
@@ -209,6 +210,9 @@ class SpacebarHoldDetector(NSObject):
         self._on_diaulos_switcher_toggle: Callable[[], None] | None = None
         self._suppress_semicolon_keyup = False
         self._suppress_quote_keyup = False
+        self._suppressed_monitor_keys = set()
+        self._on_fleet_monitor_toggle = None
+        self._on_greenroom_monitor_toggle = None
         self._on_approval_enter_pressed: Callable[[bool], None] | None = None
         self._on_approval_delete_pressed: Callable[[], None] | None = None
         self._tray_shift_down = False
@@ -321,6 +325,7 @@ class SpacebarHoldDetector(NSObject):
         self._suppress_delete_keyup = False
         self._awaiting_space_release = False
         self._suppress_quote_keyup = False
+        self._suppressed_monitor_keys = set()
         self._latched_space_down = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
@@ -339,6 +344,22 @@ class SpacebarHoldDetector(NSObject):
 
     def handle_key_down(self, keycode: int, flags: int) -> bool:
         """Handle a keyDown event. Returns True to suppress, False to pass through."""
+        if keycode in getattr(self, "_suppressed_monitor_keys", set()):
+            return True
+        if (keycode in {SLASH_KEYCODE, PERIOD_KEYCODE}
+                and not (keycode == SLASH_KEYCODE and getattr(self, "tray_active", False))
+                and self._state == _State.WAITING and not flags & _MODIFIER_MASK):
+            self._cancel_hold_timer()
+            self._state = _State.IDLE
+            self._awaiting_space_release = True
+            if not hasattr(self, "_suppressed_monitor_keys"):
+                self._suppressed_monitor_keys = set()
+            self._suppressed_monitor_keys.add(keycode)
+            callback = "_on_fleet_monitor_toggle" if keycode == SLASH_KEYCODE else "_on_greenroom_monitor_toggle"
+            cb = getattr(self, callback, None)
+            if cb is not None:
+                cb()
+            return True
         if keycode == SEMICOLON_KEYCODE:
             if getattr(self, "_suppress_semicolon_keyup", False):
                 return True
@@ -442,6 +463,9 @@ class SpacebarHoldDetector(NSObject):
         """
         if keycode == QUOTE_KEYCODE and getattr(self, "_suppress_quote_keyup", False):
             self._suppress_quote_keyup = False
+            return True
+        if keycode in getattr(self, "_suppressed_monitor_keys", set()):
+            self._suppressed_monitor_keys.discard(keycode)
             return True
         if keycode == SEMICOLON_KEYCODE and getattr(
             self, "_suppress_semicolon_keyup", False

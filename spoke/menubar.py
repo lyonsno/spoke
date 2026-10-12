@@ -92,6 +92,8 @@ class MenuBarIcon(NSObject):
         self._on_toggle_perceptasia_throughglass = None
         self._on_toggle_handsfree = None
         self._on_recording_history = None
+        self._on_fleet_monitor = None
+        self._on_greenroom_monitor = None
         self._on_teleporter = None
         self._status_item = None
         self._status_text = "Idle"
@@ -213,6 +215,8 @@ class MenuBarIcon(NSObject):
         menu.addItem_(NSMenuItem.separatorItem())
         for callback, title, action in (
             ("_on_recording_history", "Recordings", "showRecordingHistory:"),
+            ("_on_fleet_monitor", "Diauloi Monitor", "showFleetMonitor:"),
+            ("_on_greenroom_monitor", "GPU Greenroom", "showGreenroomMonitor:"),
             ("_on_teleporter", "Teleporter", "showTeleporter:"),
         ):
             if getattr(self, callback, None) is not None:
@@ -411,6 +415,14 @@ class MenuBarIcon(NSObject):
     def showRecordingHistory_(self, sender) -> None:
         if self._on_recording_history is not None:
             self._on_recording_history()
+
+    def showFleetMonitor_(self, sender) -> None:
+        if self._on_fleet_monitor is not None:
+            self._on_fleet_monitor()
+
+    def showGreenroomMonitor_(self, sender) -> None:
+        if self._on_greenroom_monitor is not None:
+            self._on_greenroom_monitor()
 
     def showTeleporter_(self, sender) -> None:
         if self._on_teleporter is not None:

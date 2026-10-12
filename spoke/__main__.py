@@ -1169,6 +1169,7 @@ class SpokeAppDelegate(NSObject):
         self._audio_spool = AudioSpool.from_env()
         self._history_trace = threading.local()
         self._recording_history = None
+        self._monitor_windows = {}
         self._history_model = self._load_preference("retranscription_route") or {
             "backend": self._whisper_backend, "model": self._transcription_model_id,
         }
@@ -1206,6 +1207,8 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
         self._detector._on_recording_history_toggle = self._toggle_recording_history
+        self._detector._on_fleet_monitor_toggle = self._toggle_fleet_monitor
+        self._detector._on_greenroom_monitor_toggle = self._toggle_greenroom_monitor
         self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
         self._detector._on_approval_delete_pressed = self._on_approval_delete_pressed
         self._detector._on_double_tap_shift = None
@@ -1463,6 +1466,8 @@ class SpokeAppDelegate(NSObject):
             self._quit, self._handle_model_menu_action
         )
         self._menubar._on_recording_history = self._show_recording_history
+        self._menubar._on_fleet_monitor = self._toggle_fleet_monitor
+        self._menubar._on_greenroom_monitor = self._toggle_greenroom_monitor
         self._menubar._on_teleporter = self._toggle_diaulos_switcher
         self._menubar.setup()
 
@@ -3216,6 +3221,34 @@ class SpokeAppDelegate(NSObject):
         if getattr(self, "_recording_history", None) is None:
             self._recording_history = RecordingHistoryWindow.alloc().initWithDelegate_(self)
         self._recording_history.show()
+
+    def _toggle_fleet_monitor(self) -> None:
+        self._toggle_monitor("fleet")
+
+    def _toggle_greenroom_monitor(self) -> None:
+        self._toggle_monitor("greenroom")
+
+    def _toggle_monitor(self, name) -> None:
+        from .monitor_window import MonitorWindow
+        windows = self._monitor_windows
+        host = windows.get(name)
+        if host is not None and host._window is not None and host._window.isVisible():
+            host.dismiss()
+            return
+        previous = None
+        for other in windows.values():
+            if other._window is not None and other._window.isVisible():
+                if other._window.isKeyWindow():
+                    previous = other._previous_app
+                other.dismiss(restore_focus=False)
+        if host is None:
+            host = MonitorWindow.alloc().initWithMonitor_(name)
+            windows[name] = host
+        host.show(previous_app=previous)
+
+    def _monitor_window_is_key(self) -> bool:
+        return any(host._window is not None and host._window.isKeyWindow()
+                   for host in getattr(self, "_monitor_windows", {}).values())
 
     def _toggle_recording_history(self) -> None:
         history = getattr(self, "_recording_history", None)
@@ -8112,6 +8145,7 @@ class SpokeAppDelegate(NSObject):
             delivery.switcher_generation
             != self._diaulos_switcher_presentation_generation()
             or self._recording_history_is_key()
+            or self._monitor_window_is_key()
             or (
                 diaulos_switcher is not None
                 and getattr(diaulos_switcher, "visible", False)
@@ -8367,6 +8401,8 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         if getattr(self, "_recording_history", None) is not None:
             self._recording_history.cleanup()
+        for host in getattr(self, "_monitor_windows", {}).values():
+            host.cleanup()
         self._detector.uninstall()
         self._preview_active = False
         hf = getattr(self, "_handsfree", None)

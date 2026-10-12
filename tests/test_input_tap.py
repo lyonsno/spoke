@@ -145,6 +145,39 @@ class TestSpacebarStateMachine:
         assert det.handle_key_up(mod.SEMICOLON_KEYCODE) is False
         det._on_diaulos_switcher_toggle.assert_not_called()
 
+    def test_monitor_chords_toggle_once_without_capture(self, input_tap_module):
+        mod = input_tap_module
+        for key, callback in [(44, "_on_fleet_monitor_toggle"), (47, "_on_greenroom_monitor_toggle")]:
+            det, start, end = self._make_detector(mod)
+            action = MagicMock()
+            setattr(det, callback, action)
+            assert det.handle_key_down(key, 0) is False
+            det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+            assert det.handle_key_down(key, 0) is True
+            assert det.handle_key_down(key, 0) is True
+            assert det.handle_key_up(key) is True
+            assert det.handle_key_up(mod.SPACEBAR_KEYCODE) is True
+            action.assert_called_once_with()
+            start.assert_not_called()
+            end.assert_not_called()
+            assert det._state == mod._State.IDLE
+            assert det.handle_key_down(key, 0) is False
+
+    def test_monitor_chords_do_not_interrupt_active_capture(self, input_tap_module):
+        mod = input_tap_module
+        det, start, end = self._make_detector(mod)
+        det._on_fleet_monitor_toggle = MagicMock()
+        det._on_greenroom_monitor_toggle = MagicMock()
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det.handle_key_down(44, 0) is False
+        assert det.handle_key_down(47, 0) is False
+        det._on_fleet_monitor_toggle.assert_not_called()
+        det._on_greenroom_monitor_toggle.assert_not_called()
+        assert det._state == mod._State.RECORDING
+        start.assert_called_once()
+        end.assert_not_called()
+
     def test_space_semicolon_toggles_diaulos_switcher_once(self, input_tap_module):
         det, on_start, _ = self._make_detector(input_tap_module)
         mod = input_tap_module
