@@ -2110,7 +2110,7 @@ class TestShiftReleaseRouting:
 
         # Enter recording state
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
-        det.holdTimerFired_(None)
+        det.holdTimerFired_(det._hold_timer)
         assert det._state == mod._State.RECORDING
 
         # Release with shift held
@@ -2119,7 +2119,7 @@ class TestShiftReleaseRouting:
         assert det._state == mod._State.IDLE
         assert det._pending_release_active is True
 
-        det.releaseDecisionTimerFired_(None)
+        det.releaseDecisionTimerFired_(det._release_decision_timer)
 
         on_end.assert_called_once_with(shift_held=True, enter_held=False)
 
@@ -2129,7 +2129,7 @@ class TestShiftReleaseRouting:
         det, on_start, on_end = self._make_detector(input_tap_module)
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
-        det.holdTimerFired_(None)
+        det.holdTimerFired_(det._hold_timer)
         assert det._state == mod._State.RECORDING
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
@@ -2178,7 +2178,7 @@ class TestShiftReleaseRouting:
         det, on_start, on_end = self._make_detector(mod)
         det._on_recording_history_toggle = MagicMock()
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
-        det.holdTimerFired_(None)
+        det.holdTimerFired_(det._hold_timer)
         assert det.handle_key_down(mod.QUOTE_KEYCODE, 0) is False
         assert det._state == mod._State.RECORDING
         det._on_recording_history_toggle.assert_not_called()

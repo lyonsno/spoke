@@ -328,6 +328,29 @@ print("imported")
 class TestContextWindowCarver:
     """Tests for the rolling context window and every-other-turn cadence."""
 
+    def test_fixture_drain_waits_for_inflight_worker_before_processing(self, monkeypatch, tmp_path):
+        mod = _import_converge()
+        carver = self._make_carver(monkeypatch, tmp_path, mod, self._noop_urlopen())
+        release = mod.threading.Event()
+        completed = mod.threading.Event()
+        worker = mod.threading.Thread(target=lambda: (release.wait(), completed.set()))
+        worker.start()
+        carver._thread = worker
+        join = worker.join
+        def release_and_join():
+            release.set()
+            join()
+        monkeypatch.setattr(worker, 'join', release_and_join)
+        def process_remaining():
+            assert completed.is_set(), 'drain processed while the existing worker was unfinished'
+        monkeypatch.setattr(carver, '_background_loop', process_remaining)
+        try:
+            carver._drain_sync()
+            assert completed.is_set()
+        finally:
+            release.set()
+            join()
+
     def _make_carver(self, monkeypatch, tmp_path, mod, urlopen_fn):
         monkeypatch.setattr(mod, "_ATTRACTORS_DIR", tmp_path / "attractors")
         monkeypatch.setattr(mod, "_ANAMNESIS_DIR", tmp_path / "anamnesis")
@@ -338,11 +361,19 @@ class TestContextWindowCarver:
         for d in ("attractors", "anamnesis", "topoi", "policy"):
             (tmp_path / d).mkdir(exist_ok=True)
         monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen_fn)
-        return mod.TurnCarver(
+        carver = mod.TurnCarver(
             base_url="http://localhost:8090",
             api_key="token",
             model="demo-model",
         )
+        drain = carver._drain_sync
+        def drain_completed_work():
+            worker = carver._thread
+            if worker is not None and worker is not threading.current_thread():
+                worker.join()
+            drain()
+        monkeypatch.setattr(carver, '_drain_sync', drain_completed_work)
+        return carver
 
     @staticmethod
     def _noop_urlopen():

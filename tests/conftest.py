@@ -174,6 +174,7 @@ def _make_fake_objc():
     o = types.ModuleType("objc")
     o.super = super  # Python super is fine for testing
     o.IBAction = lambda func: func
+    o.python_method = lambda func: func
     o.arch = "arm64"
     return o
 

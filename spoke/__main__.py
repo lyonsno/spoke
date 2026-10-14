@@ -1210,6 +1210,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_fleet_monitor_toggle = self._toggle_fleet_monitor
         self._detector._on_greenroom_monitor_toggle = self._toggle_greenroom_monitor
         self._detector._monitor_is_key = self._monitor_window_is_key
+        self._detector._monitor_context = self._monitor_key_context
         self._detector._on_monitor_space = self._monitor_space
         self._detector._on_monitor_navigate = self._monitor_navigate
         self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
@@ -3281,6 +3282,10 @@ class SpokeAppDelegate(NSObject):
     def _monitor_window_is_key(self) -> bool:
         return any(host._window is not None and host._window.isKeyWindow()
                    for host in getattr(self, "_monitor_windows", {}).values())
+
+    def _monitor_key_context(self):
+        return next((name for name, host in getattr(self, "_monitor_windows", {}).items()
+                     if host._window is not None and host._window.isKeyWindow()), None)
 
     def _toggle_recording_history(self) -> None:
         history = getattr(self, "_recording_history", None)

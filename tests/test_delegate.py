@@ -12,6 +12,7 @@ import time
 import threading
 import urllib.error
 import wave
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -2260,10 +2261,14 @@ class TestConcurrencyContract:
         def _sleep(seconds):
             sleeps.append(seconds)
 
+        shared_clock = main_module.time
+        shared_sleep = shared_clock.sleep
+        monkeypatch.setattr(main_module, 'time', SimpleNamespace(**vars(shared_clock)))
         with patch.object(main_module.time, "sleep", side_effect=_sleep):
             with patch.object(
-                main_module.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 0.0]
+                main_module.time, "monotonic", return_value=0.0
             ):
+                assert shared_clock.sleep is shared_sleep
                 d._preview_loop_batch()
 
         assert sleeps[:2] == [0.15, 0.4]
@@ -2293,10 +2298,14 @@ class TestConcurrencyContract:
         def _sleep(seconds):
             sleeps.append(seconds)
 
+        shared_clock = main_module.time
+        shared_sleep = shared_clock.sleep
+        monkeypatch.setattr(main_module, 'time', SimpleNamespace(**vars(shared_clock)))
         with patch.object(main_module.time, "sleep", side_effect=_sleep):
             with patch.object(
-                main_module.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 0.0]
+                main_module.time, "monotonic", return_value=0.0
             ):
+                assert shared_clock.sleep is shared_sleep
                 d._preview_loop_batch()
 
         assert d._preview_client.transcribe.call_count == 2
