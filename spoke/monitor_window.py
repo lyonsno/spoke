@@ -26,6 +26,56 @@ _QUIET_INTERVALS = """(() => {
  }, delay);
 })();"""
 
+_KEYBOARD = """(() => {
+ let selected = null;
+ const editing = node => node && (node.isContentEditable ||
+   node.matches('textarea,input:not([type=button]):not([type=submit]):not([type=checkbox]):not([type=radio]),select'));
+ const fleet = () => location.port === '8770' && location.pathname === '/fleet';
+ const rows = () => Array.from(document.querySelectorAll(fleet() ? '#rows > .row' :
+   'article.job-item,article.smoke-card')).filter(row => row.getClientRects().length);
+ const key = row => fleet() ? (row.querySelector('[data-jump]')?.dataset.jump || row.innerText) :
+   row.dataset.jobId || row.id;
+ function mark(scroll) {
+   for (const row of rows()) {
+     const active = key(row) === selected;
+     row.classList.toggle('spoke-monitor-selected', active);
+     if (active && scroll) row.scrollIntoView({block:'nearest',behavior:'instant'});
+   }
+ }
+ window.__spokeMonitorNavigate = direction => {
+   const list = rows(); if (!list.length) return;
+   const index = list.findIndex(row => key(row) === selected);
+   selected = key(list[index < 0 ? (direction > 0 ? 0 : list.length - 1) :
+     (index + direction + list.length) % list.length]);
+   mark(true);
+ };
+ window.__spokeMonitorSpace = () => {
+   if (editing(document.activeElement) && !document.activeElement.matches('select')) {
+     document.execCommand('insertText', false, ' ');
+   } else window.__spokeMonitorNavigate(1);
+ };
+ window.__spokeMonitorFocus = () => {
+   if (fleet()) document.querySelector('#search')?.focus({preventScroll:true});
+ };
+ document.addEventListener('keydown', event => {
+   if (event.code === 'Space' && !editing(event.target)) {
+     event.preventDefault();
+     if (!event.repeat) window.__spokeMonitorNavigate(event.shiftKey ? -1 : 1);
+   } else if (fleet() && !editing(event.target) && event.key.length === 1 &&
+              !event.metaKey && !event.ctrlKey && !event.altKey) {
+     const field = document.querySelector('#search');
+     if (field) {field.focus();document.execCommand('insertText',false,event.key);event.preventDefault();}
+   }
+ }, true);
+ document.addEventListener('DOMContentLoaded', () => {
+   const style = document.createElement('style');
+   style.textContent = '.spoke-monitor-selected{outline:2px solid #198a78;outline-offset:-2px;background-color:rgba(25,138,120,.09)}';
+   document.head.appendChild(style);
+   new MutationObserver(() => mark(false)).observe(document.body,{childList:true,subtree:true});
+   window.__spokeMonitorFocus();
+ });
+})();"""
+
 
 def local_monitor_url(url):
     try:
@@ -64,6 +114,11 @@ class MonitorWindow(NSObject):
         config.userContentController().addUserScript_(
             WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
                 _QUIET_INTERVALS, WKUserScriptInjectionTimeAtDocumentStart, True,
+            )
+        )
+        config.userContentController().addUserScript_(
+            WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+                _KEYBOARD, WKUserScriptInjectionTimeAtDocumentStart, True,
             )
         )
         web = WKWebView.alloc().initWithFrame_configuration_(NSMakeRect(0, 0, width, height - 42), config)
@@ -106,6 +161,7 @@ class MonitorWindow(NSObject):
         AK.NSApp().activateIgnoringOtherApps_(True)
         self._window.makeFirstResponder_(self._webview)
         self._set_visible(True)
+        self._focus_filter()
 
     @objc.python_method
     def dismiss(self, restore_focus=True):
@@ -115,9 +171,26 @@ class MonitorWindow(NSObject):
     def windowWillClose_(self, notification):
         restore = getattr(self, "_restore_focus", True) and self._window.isKeyWindow()
         self._set_visible(False)
+        on_close = getattr(self, "_on_close", None)
+        if on_close is not None:
+            on_close(self)
         if restore and self._previous_app is not None:
             self._previous_app.activateWithOptions_(1 << 1)
         self._restore_focus = True
+
+    @objc.python_method
+    def navigate(self, direction):
+        self._webview.evaluateJavaScript_completionHandler_(
+            f"window.__spokeMonitorNavigate?.({1 if direction > 0 else -1});", None,
+        )
+
+    @objc.python_method
+    def space(self):
+        self._webview.evaluateJavaScript_completionHandler_("window.__spokeMonitorSpace?.();", None)
+
+    @objc.python_method
+    def _focus_filter(self):
+        self._webview.evaluateJavaScript_completionHandler_("window.__spokeMonitorFocus?.();", None)
 
     def _set_visible(self, visible):
         self._webview.evaluateJavaScript_completionHandler_(
@@ -168,6 +241,8 @@ class MonitorWindow(NSObject):
         self._back_button.setEnabled_(webview.canGoBack())
         self._status.setStringValue_(str(webview.URL().absoluteString()))
         self._set_visible(self._window.isVisible())
+        if self._window.isKeyWindow():
+            self._focus_filter()
 
     def webView_didFailProvisionalNavigation_withError_(self, webview, navigation, error):
         self._back_button.setEnabled_(webview.canGoBack())

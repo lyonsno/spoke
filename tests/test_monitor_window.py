@@ -48,6 +48,16 @@ def test_monitor_background_close_does_not_steal_focus():
     owner._previous_app.activateWithOptions_.assert_not_called()
 
 
+def test_monitor_native_close_notifies_workspace():
+    owner = module().MonitorWindow.alloc().init()
+    owner._window, owner._previous_app = MagicMock(), None
+    owner._window.isKeyWindow.return_value = False
+    owner._set_visible = MagicMock()
+    owner._on_close = MagicMock()
+    owner.windowWillClose_(None)
+    owner._on_close.assert_called_once_with(owner)
+
+
 def test_monitor_local_popup_loads_in_retained_view():
     mod = module()
     owner = mod.MonitorWindow.alloc().init()

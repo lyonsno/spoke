@@ -31,6 +31,253 @@ class TestSpacebarStateMachine:
         det._on_diaulos_switcher_toggle = None
         return det, on_start, on_end
 
+    def test_monitor_space_is_navigation_not_recording_or_forwarding(self, input_tap_module):
+        mod = input_tap_module
+        det, start, end = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_space = MagicMock()
+        assert det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+        assert det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.IDLE
+        det._on_monitor_space.assert_called_once_with()
+        start.assert_not_called()
+        end.assert_not_called()
+        assert not det._forwarding
+
+    def test_monitor_space_chord_switches_without_space_action(self, input_tap_module):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_space = MagicMock()
+        det._on_greenroom_monitor_toggle = MagicMock()
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+        assert det.handle_monitor_event(mod.kCGEventKeyDown, mod.PERIOD_KEYCODE, 0)
+        det._on_greenroom_monitor_toggle.assert_called_once_with()
+        assert det.handle_monitor_event(mod.kCGEventKeyUp, mod.PERIOD_KEYCODE, 0)
+        assert det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+        det._on_monitor_space.assert_not_called()
+
+    def test_monitor_shift_tap_navigates_back_but_capitalization_does_not(self, input_tap_module):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_navigate = MagicMock()
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, mod.kCGEventFlagMaskShift)
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, 0)
+        det._on_monitor_navigate.assert_called_once_with(-1)
+        det._on_monitor_navigate.reset_mock()
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, mod.kCGEventFlagMaskShift)
+        assert not det.handle_monitor_event(mod.kCGEventKeyDown, 0, mod.kCGEventFlagMaskShift)
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, 0)
+        det._on_monitor_navigate.assert_not_called()
+
+    def test_monitor_gestures_do_not_take_over_active_dictation(self, input_tap_module):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._state = mod._State.RECORDING
+        assert not det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+
+    def test_monitor_space_release_is_consumed_after_focus_changes(self, input_tap_module):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_space = MagicMock()
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+        det._monitor_is_key = lambda: False
+        assert det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+        det._on_monitor_space.assert_not_called()
+
+    def test_monitor_rocking_gestures_navigate_both_directions(self, input_tap_module):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_navigate = MagicMock()
+        det._on_monitor_space = MagicMock()
+        # Shift held, Space tapped: forward, even when the filter has focus.
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, mod.kCGEventFlagMaskShift)
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, mod.kCGEventFlagMaskShift)
+        det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, mod.kCGEventFlagMaskShift)
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, 0)
+        # Space held, Shift tapped: backward; no extra Space action on release.
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, mod.kCGEventFlagMaskShift)
+        det.handle_monitor_event(mod.kCGEventFlagsChanged, 56, 0)
+        det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+        assert det._on_monitor_navigate.call_args_list == [call(1), call(-1)]
+        det._on_monitor_space.assert_not_called()
+
+    def test_monitor_summon_repeat_releases_original_latch(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        active = [False]
+        det._monitor_is_key = lambda: active[0]
+        det._on_fleet_monitor_toggle = lambda: active.__setitem__(0, True)
+        det._on_monitor_space = MagicMock()
+        monkeypatch.setattr(mod, '_active_detector', det)
+        event = object()
+        def send(kind, key):
+            mod.CGEventGetIntegerValueField.return_value = key
+            mod.CGEventGetFlags.return_value = 0
+            return mod._event_tap_callback(None, kind, event, None)
+        send(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE)
+        send(mod.kCGEventKeyDown, mod.SLASH_KEYCODE)
+        send(mod.kCGEventKeyUp, mod.SLASH_KEYCODE)
+        send(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE)
+        send(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE)
+        assert not det._awaiting_space_release
+        det._on_monitor_space.assert_not_called()
+        active[0] = False
+        send(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE)
+        assert det._state == mod._State.WAITING
+        send(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE)
+        assert det._forwarding
+
+    def test_monitor_typing_rollover_supplies_space_before_letter(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        typed = []
+        det._on_monitor_space = lambda: typed.append(' ')
+        monkeypatch.setattr(mod, '_active_detector', det)
+        event = object()
+        def send(kind, key):
+            mod.CGEventGetIntegerValueField.return_value = key
+            mod.CGEventGetFlags.return_value = 0
+            return mod._event_tap_callback(None, kind, event, None)
+        send(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE)
+        assert send(mod.kCGEventKeyDown, 0) is event
+        typed.append('a')
+        send(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE)
+        assert ''.join(typed) == ' a'
+
+    def test_monitor_long_hold_preserves_dictation_start_and_release(self, input_tap_module):
+        mod = input_tap_module
+        det, start, end = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_space = MagicMock()
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det._state == mod._State.RECORDING
+        start.assert_called_once_with()
+        assert not det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE)
+        end.assert_called_once()
+        det._on_monitor_space.assert_not_called()
+
+    def test_monitor_preserves_other_space_rooted_window_chords(self, input_tap_module):
+        mod = input_tap_module
+        for key, callback in ((mod.QUOTE_KEYCODE, '_on_recording_history_toggle'),
+                              (mod.SEMICOLON_KEYCODE, '_on_diaulos_switcher_toggle')):
+            det, _, _ = self._make_detector(mod)
+            det._monitor_is_key = lambda: True
+            det._on_monitor_space = MagicMock()
+            cb = MagicMock()
+            setattr(det, callback, cb)
+            det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+            assert det.handle_monitor_event(mod.kCGEventKeyDown, key, 0)
+            cb.assert_called_once_with()
+            det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+            assert not det._monitor_space_down
+            det._on_monitor_space.assert_not_called()
+
+    def test_monitor_window_chord_focus_handoff_clears_release_latch(self, input_tap_module):
+        mod = input_tap_module
+        det, _, _ = self._make_detector(mod)
+        active = [True]
+        det._monitor_is_key = lambda: active[0]
+        det._on_recording_history_toggle = lambda: active.__setitem__(0, False)
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE, 0)
+        det.handle_monitor_event(mod.kCGEventKeyDown, mod.QUOTE_KEYCODE, 0)
+        det.handle_monitor_event(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE, 0)
+        assert not det._awaiting_space_release
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+    def test_monitor_enter_chord_preserves_assistant_and_trailing_release(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        det, start, _ = self._make_detector(mod)
+        active = [True]
+        det._monitor_is_key = lambda: active[0]
+        det._on_monitor_space = MagicMock()
+        det._on_enter_during_waiting = MagicMock(side_effect=lambda: active.__setitem__(0, False))
+        monkeypatch.setattr(mod, 'ENTER_COMMANDS_ENABLED', True)
+        monkeypatch.setattr(mod, '_active_detector', det)
+        event = object()
+        def send(kind, key):
+            mod.CGEventGetIntegerValueField.return_value = key
+            mod.CGEventGetFlags.return_value = 0
+            return mod._event_tap_callback(None, kind, event, None)
+        send(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE)
+        assert send(mod.kCGEventKeyDown, mod.RETURN_KEYCODE) is None
+        det._on_enter_during_waiting.assert_called_once_with()
+        send(mod.kCGEventKeyUp, mod.RETURN_KEYCODE)
+        send(mod.kCGEventKeyUp, mod.SPACEBAR_KEYCODE)
+        det._on_monitor_space.assert_not_called()
+        start.assert_not_called()
+        send(mod.kCGEventKeyDown, mod.SPACEBAR_KEYCODE)
+        assert det._state == mod._State.WAITING
+
+    def test_monitor_recording_repeat_retains_missed_release_recovery(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        det, start, end = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        monkeypatch.setattr(mod, '_active_detector', det)
+        mod.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        mod.CGEventGetFlags.return_value = 0
+        event = object()
+        mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+        det.holdTimerFired_(None)
+        mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+        assert det._repeat_watchdog_timer is not None
+        det._last_space_keydown_monotonic = 0
+        det.repeatWatchdogFired_(None)
+        assert det._state == mod._State.IDLE
+        start.assert_called_once_with()
+        end.assert_called_once()
+        mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+        assert det._state == mod._State.WAITING
+
+    def test_monitor_fresh_hold_refreshes_enter_state(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        monkeypatch.setattr(mod, 'ENTER_COMMANDS_ENABLED', True)
+        for enter_down in (False, True):
+            det, start, end = self._make_detector(mod)
+            det._monitor_is_key = lambda: True
+            monkeypatch.setattr(mod, '_active_detector', det)
+            event = object()
+            mod.CGEventGetFlags.return_value = 0
+            mod.CGEventGetIntegerValueField.return_value = mod.RETURN_KEYCODE
+            mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+            mod.CGEventSourceKeyState.side_effect = lambda source, key: enter_down if key in mod.ENTER_KEYCODES else True
+            mod.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+            mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+            det.holdTimerFired_(None)
+            mod._event_tap_callback(None, mod.kCGEventKeyUp, event, None)
+            start.assert_called_once_with()
+            end.assert_called_once_with(shift_held=False, enter_held=enter_down)
+        mod.CGEventSourceKeyState.side_effect = None
+
+    def test_monitor_delayed_repeat_promotes_hold_without_timer(self, input_tap_module, monkeypatch):
+        mod = input_tap_module
+        det, start, end = self._make_detector(mod)
+        det._monitor_is_key = lambda: True
+        det._on_monitor_space = MagicMock()
+        monkeypatch.setattr(mod, '_active_detector', det)
+        mod.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        mod.CGEventGetFlags.return_value = 0
+        event = object()
+        mod.CGEventGetTimestamp.return_value = 1_000_000_000
+        mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+        mod.CGEventGetTimestamp.return_value = 1_500_000_000
+        mod._event_tap_callback(None, mod.kCGEventKeyDown, event, None)
+        assert det._state == mod._State.RECORDING
+        mod._event_tap_callback(None, mod.kCGEventKeyUp, event, None)
+        start.assert_called_once_with()
+        end.assert_called_once()
+        det._on_monitor_space.assert_not_called()
+
     def test_tap_spacebar_passes_through_on_quick_release(self, input_tap_module):
         """Quick tap: keyDown → keyUp before timer → should forward space."""
         det, on_start, on_end = self._make_detector(input_tap_module)

@@ -5344,6 +5344,27 @@ class TestEnvValidation:
         destination.show.assert_called_once_with(previous_app=old._previous_app if other_is_key else None)
         old.dismiss.assert_called_once_with(restore_focus=False)
 
+    def test_monitor_toggle_dismisses_all_visible_monitors(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        fleet, greenroom = MagicMock(), MagicMock()
+        for host in (fleet, greenroom):
+            host._window.isVisible.return_value = True
+        fleet._window.isKeyWindow.return_value = True
+        greenroom._window.isKeyWindow.return_value = False
+        d._monitor_windows = {"fleet": fleet, "greenroom": greenroom}
+        d._toggle_monitor("fleet")
+        fleet.dismiss.assert_called_once()
+        greenroom.dismiss.assert_called_once_with(restore_focus=False)
+
+    def test_monitor_native_close_dismisses_other_monitor_without_focus_restore(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        closing, other = MagicMock(), MagicMock()
+        other._window.isVisible.return_value = True
+        d._monitor_windows = {"fleet": closing, "greenroom": other}
+        d._dismiss_monitor_windows(closing)
+        closing.dismiss.assert_not_called()
+        other.dismiss.assert_called_once_with(restore_focus=False)
+
     def test_recording_history_chord_closes_visible_window_and_reopens(self, main_module):
         d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         d._recording_history = MagicMock()

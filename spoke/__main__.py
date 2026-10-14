@@ -1209,6 +1209,9 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_recording_history_toggle = self._toggle_recording_history
         self._detector._on_fleet_monitor_toggle = self._toggle_fleet_monitor
         self._detector._on_greenroom_monitor_toggle = self._toggle_greenroom_monitor
+        self._detector._monitor_is_key = self._monitor_window_is_key
+        self._detector._on_monitor_space = self._monitor_space
+        self._detector._on_monitor_navigate = self._monitor_navigate
         self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
         self._detector._on_approval_delete_pressed = self._on_approval_delete_pressed
         self._detector._on_double_tap_shift = None
@@ -3229,11 +3232,10 @@ class SpokeAppDelegate(NSObject):
         self._toggle_monitor("greenroom")
 
     def _toggle_monitor(self, name) -> None:
-        from .monitor_window import MonitorWindow
         windows = self._monitor_windows
         host = windows.get(name)
         if host is not None and host._window is not None and host._window.isVisible():
-            host.dismiss()
+            self._dismiss_monitor_windows()
             return
         previous = None
         for other in windows.values():
@@ -3242,9 +3244,39 @@ class SpokeAppDelegate(NSObject):
                     previous = other._previous_app
                 other.dismiss(restore_focus=False)
         if host is None:
+            from .monitor_window import MonitorWindow
             host = MonitorWindow.alloc().initWithMonitor_(name)
             windows[name] = host
+        host._on_close = self._dismiss_monitor_windows
         host.show(previous_app=previous)
+
+    def _dismiss_monitor_windows(self, closing=None) -> None:
+        if getattr(self, "_monitor_dismissing", False):
+            return
+        self._monitor_dismissing = True
+        try:
+            hosts = [host for host in self._monitor_windows.values()
+                     if host is not closing and host._window is not None and host._window.isVisible()]
+            hosts.sort(key=lambda host: bool(host._window.isKeyWindow()))
+            for host in hosts:
+                if closing is None and host._window.isKeyWindow():
+                    host.dismiss()
+                else:
+                    host.dismiss(restore_focus=False)
+        finally:
+            self._monitor_dismissing = False
+
+    def _monitor_space(self) -> None:
+        for host in self._monitor_windows.values():
+            if host._window is not None and host._window.isKeyWindow():
+                host.space()
+                return
+
+    def _monitor_navigate(self, direction) -> None:
+        for host in self._monitor_windows.values():
+            if host._window is not None and host._window.isKeyWindow():
+                host.navigate(direction)
+                return
 
     def _monitor_window_is_key(self) -> bool:
         return any(host._window is not None and host._window.isKeyWindow()

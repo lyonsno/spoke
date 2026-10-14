@@ -213,6 +213,9 @@ class SpacebarHoldDetector(NSObject):
         self._suppressed_monitor_keys = set()
         self._on_fleet_monitor_toggle = None
         self._on_greenroom_monitor_toggle = None
+        self._monitor_is_key = None
+        self._on_monitor_space = None
+        self._on_monitor_navigate = None
         self._on_approval_enter_pressed: Callable[[bool], None] | None = None
         self._on_approval_delete_pressed: Callable[[], None] | None = None
         self._tray_shift_down = False
@@ -341,6 +344,102 @@ class SpacebarHoldDetector(NSObject):
         logger.info("CGEventTap uninstalled")
 
     # ── event handling (called from C callback, main thread) ─
+
+    def handle_monitor_event(self, event_type, keycode, flags):
+        """Keep monitor gestures out of the dictation and synthetic-space paths."""
+        probe = getattr(self, "_monitor_is_key", None)
+        active = bool(probe is not None and probe())
+        if ((active or getattr(self, "_monitor_space_down", False)) and getattr(self, "_awaiting_space_release", False)
+                and keycode == SPACEBAR_KEYCODE and event_type in (kCGEventKeyDown, kCGEventKeyUp)):
+            if event_type == kCGEventKeyUp:
+                self._awaiting_space_release = False
+                self._monitor_space_down = False
+            return True
+        suppressed = getattr(self, "_suppressed_monitor_keys", set())
+        if keycode in suppressed and event_type in (kCGEventKeyDown, kCGEventKeyUp):
+            if event_type == kCGEventKeyUp:
+                suppressed.discard(keycode)
+            return True
+        held = getattr(self, "_monitor_space_down", False)
+        if held and event_type == kCGEventKeyUp and keycode == SPACEBAR_KEYCODE:
+            self._monitor_space_down = False
+            if self._state in (_State.RECORDING, _State.LATCHED):
+                return False
+            self._cancel_hold_timer()
+            self._state = _State.IDLE
+            if active and not self._monitor_space_used:
+                cb = (getattr(self, "_on_monitor_navigate", None) if self._monitor_space_shifted
+                      else getattr(self, "_on_monitor_space", None))
+                if cb is not None:
+                    cb(1) if self._monitor_space_shifted else cb()
+            return True
+        if not active or self._state not in (_State.IDLE, _State.WAITING) or (
+                self._state == _State.WAITING and not held):
+            self._monitor_shift_down = False
+            return held and keycode == SPACEBAR_KEYCODE and event_type == kCGEventKeyDown
+        if event_type == kCGEventFlagsChanged:
+            shifted = bool(flags & kCGEventFlagMaskShift)
+            was_down = getattr(self, "_monitor_shift_down", False)
+            if shifted and not was_down:
+                self._monitor_shift_down = True
+                self._monitor_shift_used = False
+                if held:
+                    self._cancel_hold_timer()
+                    self._state = _State.IDLE
+            elif not shifted and was_down:
+                self._monitor_shift_down = False
+                if not self._monitor_shift_used:
+                    cb = getattr(self, "_on_monitor_navigate", None)
+                    if cb is not None:
+                        cb(-1)
+                    if held:
+                        self._monitor_space_used = True
+            return True
+        if event_type == kCGEventKeyDown and not flags & _MODIFIER_MASK:
+            if held and keycode in ENTER_KEYCODES and ENTER_COMMANDS_ENABLED:
+                self._monitor_space_used = True
+                self._monitor_shift_used = True
+                return False
+            if held and keycode in {QUOTE_KEYCODE, SEMICOLON_KEYCODE}:
+                self._monitor_space_used = True
+                self._state = _State.WAITING
+                return self.handle_key_down(keycode, flags)
+            if keycode == SPACEBAR_KEYCODE:
+                if not held:
+                    self._monitor_space_down = True
+                    self._monitor_space_used = False
+                    self._monitor_space_shifted = bool(flags & kCGEventFlagMaskShift)
+                    if not self._monitor_space_shifted:
+                        self._last_space_keydown_monotonic = time.monotonic()
+                        self._shift_at_press = self._shift_latched = False
+                        self._tray_gesture_consumed = False
+                        self._state = _State.WAITING
+                        self._start_hold_timer()
+                self._monitor_shift_used = True
+                return True
+            if held and keycode in {SLASH_KEYCODE, PERIOD_KEYCODE}:
+                self._monitor_space_used = True
+                self._cancel_hold_timer()
+                self._state = _State.IDLE
+                self._suppressed_monitor_keys = suppressed
+                suppressed.add(keycode)
+                cb = getattr(self, "_on_fleet_monitor_toggle" if keycode == SLASH_KEYCODE
+                             else "_on_greenroom_monitor_toggle", None)
+                if cb is not None:
+                    cb()
+                return True
+        if event_type == kCGEventKeyDown:
+            self._monitor_shift_used = True
+            if held:
+                self._cancel_hold_timer()
+                self._state = _State.IDLE
+                if (not self._monitor_space_used and not flags & _MODIFIER_MASK
+                        and keycode < 51 and keycode not in {36, 48}):
+                    cb = getattr(self, "_on_monitor_space", None)
+                    if cb is not None:
+                        cb()
+                self._monitor_space_used = True
+        return False
 
     def handle_key_down(self, keycode: int, flags: int) -> bool:
         """Handle a keyDown event. Returns True to suppress, False to pass through."""
@@ -606,6 +705,7 @@ class SpacebarHoldDetector(NSObject):
 
     def _promote_waiting_to_recording(self) -> None:
         """Transition WAITING -> RECORDING and invoke hold-start once."""
+        self._monitor_space_down = False
         self._cancel_hold_timer()
         self._state = _State.RECORDING
         record_command_overlay_trace(
@@ -852,6 +952,60 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         det._cancel_forwarding_timer()
 
     keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+    event_timestamp_ns = _event_timestamp_ns(event) if event_type == kCGEventKeyDown else None
+
+    if event_type == kCGEventKeyDown and keycode == SPACEBAR_KEYCODE:
+        flags = CGEventGetFlags(event)
+        if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
+            det._idle_shift_interrupted = True
+        logger.debug("keyDown space: flags=%#x shift=%s state=%s",
+                     flags, bool(flags & kCGEventFlagMaskShift), det._state)
+        if det._state == _State.IDLE:
+            actual_enter_held = _current_enter_key_state()
+            if actual_enter_held is not None:
+                if actual_enter_held:
+                    if (
+                        getattr(det, '_enter_observed', False)
+                        and det._enter_observation_is_fresh()
+                    ):
+                        det._enter_held = True
+                    else:
+                        # A bare Quartz "Enter is down" probe can stay
+                        # wedged true across a missed keyUp or relaunch.
+                        # Only trust it for a fresh space-rooted gesture
+                        # if this process actually saw a recent Enter
+                        # keyDown that could own the chord.
+                        det._enter_held = False
+                        det._enter_observed = False
+                        det._enter_last_down_monotonic = 0.0
+                else:
+                    det._enter_held = False
+                    det._enter_observed = False
+                    det._enter_last_down_monotonic = 0.0
+            elif (
+                not getattr(det, '_enter_observed', False)
+                or not det._enter_observation_is_fresh()
+            ):
+                # If Quartz cannot answer and we have not actually seen
+                # a fresh Enter keyDown since returning idle, do not let a
+                # stale command-chord state poison a fresh space press.
+                det._enter_held = False
+                det._enter_observed = False
+                det._enter_last_down_monotonic = 0.0
+            det._space_keydown_timestamp_ns = event_timestamp_ns
+        elif det._state == _State.WAITING and det._waiting_elapsed_meets_threshold(
+            event_timestamp_ns
+        ):
+            logger.info("Delayed repeat crossed hold threshold — promoting to recording")
+            det._promote_waiting_to_recording()
+        # Mark space between shift down/up for tray shift-tap discrimination
+        if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
+            det._tray_space_between = True
+    elif event_type == kCGEventKeyUp and keycode == SPACEBAR_KEYCODE:
+        det._space_keydown_timestamp_ns = None
+
+    if det.handle_monitor_event(event_type, keycode, CGEventGetFlags(event)):
+        return None
 
     # Dictation-only launches leave Return/Enter entirely with the focused app.
     if keycode in ENTER_KEYCODES and not ENTER_COMMANDS_ENABLED:
@@ -859,7 +1013,6 @@ def _event_tap_callback(proxy, event_type, event, refcon):
 
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
-        event_timestamp_ns = _event_timestamp_ns(event)
         if keycode == DELETE_KEYCODE and getattr(det, "approval_active", False) and det._state == _State.IDLE:
             det._suppress_delete_keyup = True
             cb = getattr(det, "_on_approval_delete_pressed", None)
@@ -924,50 +1077,6 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 return None  # suppress enter while a latched exit chord is active
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
-        if keycode == SPACEBAR_KEYCODE:
-            logger.debug("keyDown space: flags=%#x shift=%s state=%s",
-                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
-            if det._state == _State.IDLE:
-                actual_enter_held = _current_enter_key_state()
-                if actual_enter_held is not None:
-                    if actual_enter_held:
-                        if (
-                            getattr(det, '_enter_observed', False)
-                            and det._enter_observation_is_fresh()
-                        ):
-                            det._enter_held = True
-                        else:
-                            # A bare Quartz "Enter is down" probe can stay
-                            # wedged true across a missed keyUp or relaunch.
-                            # Only trust it for a fresh space-rooted gesture
-                            # if this process actually saw a recent Enter
-                            # keyDown that could own the chord.
-                            det._enter_held = False
-                            det._enter_observed = False
-                            det._enter_last_down_monotonic = 0.0
-                    else:
-                        det._enter_held = False
-                        det._enter_observed = False
-                        det._enter_last_down_monotonic = 0.0
-                elif (
-                    not getattr(det, '_enter_observed', False)
-                    or not det._enter_observation_is_fresh()
-                ):
-                    # If Quartz cannot answer and we have not actually seen
-                    # a fresh Enter keyDown since returning idle, do not let a
-                    # stale command-chord state poison a fresh space press.
-                    det._enter_held = False
-                    det._enter_observed = False
-                    det._enter_last_down_monotonic = 0.0
-                det._space_keydown_timestamp_ns = event_timestamp_ns
-            elif det._state == _State.WAITING and det._waiting_elapsed_meets_threshold(
-                event_timestamp_ns
-            ):
-                logger.info("Delayed repeat crossed hold threshold — promoting to recording")
-                det._promote_waiting_to_recording()
-            # Mark space between shift down/up for tray shift-tap discrimination
-            if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
-                det._tray_space_between = True
         if det.handle_key_down(keycode, flags):
             return None  # suppress
     elif event_type == kCGEventKeyUp:
