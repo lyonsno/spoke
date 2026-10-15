@@ -329,3 +329,17 @@ def test_history_empty_archive_completes_its_initial_loading_state():
     owner.loaded_({"records": [], "complete": True})
     owner._filter.assert_called_once_with()
     assert owner._refreshing is False
+
+
+def test_history_normal_close_returns_to_origin_window(monkeypatch):
+    from spoke import recording_history_window as mod
+    from unittest.mock import MagicMock
+    owner = mod.RecordingHistoryWindow.alloc().init()
+    owner._window, owner._focus_return = MagicMock(), MagicMock()
+    owner._timer = None
+    owner._stop_audio = MagicMock()
+    app = MagicMock()
+    app.keyWindow.return_value = None
+    monkeypatch.setattr(mod.AK, "NSApp", lambda: app)
+    owner.windowWillClose_(None)
+    owner._focus_return.restore.assert_called_once_with()

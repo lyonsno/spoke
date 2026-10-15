@@ -3238,18 +3238,19 @@ class SpokeAppDelegate(NSObject):
         if host is not None and host._window is not None and host._window.isVisible():
             self._dismiss_monitor_windows()
             return
-        previous = None
+        previous = previous_focus = None
         for other in windows.values():
             if other._window is not None and other._window.isVisible():
                 if other._window.isKeyWindow():
                     previous = other._previous_app
+                    previous_focus = other._focus_return
                 other.dismiss(restore_focus=False)
         if host is None:
             from .monitor_window import MonitorWindow
             host = MonitorWindow.alloc().initWithMonitor_(name)
             windows[name] = host
         host._on_close = self._dismiss_monitor_windows
-        host.show(previous_app=previous)
+        host.show(previous_app=previous, previous_focus=previous_focus)
 
     def _dismiss_monitor_windows(self, closing=None) -> None:
         if getattr(self, "_monitor_dismissing", False):
@@ -3291,7 +3292,7 @@ class SpokeAppDelegate(NSObject):
         history = getattr(self, "_recording_history", None)
         window = getattr(history, "_window", None)
         if window is not None and window.isVisible():
-            window.close()
+            history.dismiss()
         else:
             self._show_recording_history()
 

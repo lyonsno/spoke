@@ -5350,7 +5350,10 @@ class TestEnvValidation:
         d._monitor_windows = {"fleet": old, "greenroom": destination}
         with patch.dict(sys.modules, {"spoke.monitor_window": MagicMock()}):
             d._toggle_monitor("greenroom")
-        destination.show.assert_called_once_with(previous_app=old._previous_app if other_is_key else None)
+        destination.show.assert_called_once_with(
+            previous_app=old._previous_app if other_is_key else None,
+            previous_focus=old._focus_return if other_is_key else None,
+        )
         old.dismiss.assert_called_once_with(restore_focus=False)
 
     def test_monitor_toggle_dismisses_all_visible_monitors(self, main_module):
@@ -5380,7 +5383,7 @@ class TestEnvValidation:
         d._show_recording_history = MagicMock()
         d._recording_history._window.isVisible.return_value = True
         d._toggle_recording_history()
-        d._recording_history._window.close.assert_called_once_with()
+        d._recording_history.dismiss.assert_called_once_with()
         d._show_recording_history.assert_not_called()
         d._recording_history._window.isVisible.return_value = False
         d._toggle_recording_history()

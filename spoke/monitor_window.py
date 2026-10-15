@@ -1,6 +1,5 @@
 """Retained native hosts for the two local shop monitors."""
 
-import os
 import subprocess
 from urllib.parse import urlsplit
 
@@ -8,6 +7,8 @@ import AppKit as AK
 import objc
 from Foundation import NSObject, NSMakeRect, NSURL, NSURLRequest
 from WebKit import WKWebView, WKWebViewConfiguration, WKUserScript, WKUserScriptInjectionTimeAtDocumentStart
+
+from .window_focus import WindowFocus, restore_window_focus
 
 MONITORS = {
     "fleet": ("Epistaxis Diauloi", "http://127.0.0.1:8770/fleet"),
@@ -17,13 +18,36 @@ MONITORS = {
 # The monitor pages use intervals for polling. Keep their retained views quiet.
 _QUIET_INTERVALS = """(() => {
  const original = window.setInterval.bind(window);
+ let pending = false;
  window.__spokeMonitorVisible = true;
- window.setInterval = (callback, delay, ...args) => original(() => {
-   if (window.__spokeMonitorVisible && !document.hidden) {
-     if (typeof callback === 'function') callback(...args);
-     else (0, eval)(callback);
+ const invoke = (callback, args) => {
+   if (typeof callback === 'function') callback(...args);
+   else (0, eval)(callback);
+ };
+ const resume = () => {
+   if (!pending || !window.__spokeMonitorVisible || document.hidden) return;
+   pending = false;
+   if (typeof window.load !== 'function') throw new Error('Monitor refresh unavailable');
+   window.load();
+   if (location.port === '8766') {
+     if (typeof window.loadSmoke !== 'function') throw new Error('Smoke refresh unavailable');
+     window.loadSmoke();
    }
- }, delay);
+ };
+ window.__spokeMonitorSetVisible = visible => {
+   if (visible && !window.__spokeMonitorVisible) pending = true;
+   if (!visible) pending = false;
+   window.__spokeMonitorVisible = visible;
+   resume();
+ };
+ document.addEventListener('visibilitychange', resume);
+ window.setInterval = (callback, delay, ...args) => {
+   return original(() => {
+   if (window.__spokeMonitorVisible && !document.hidden) {
+     invoke(callback, args);
+   }
+   }, delay);
+ };
 })();"""
 
 _KEYBOARD = """(() => {
@@ -93,6 +117,7 @@ class MonitorWindow(NSObject):
         self._name = name
         self._title, self._url = MONITORS[name]
         self._window = self._webview = self._previous_app = None
+        self._focus_return = None
         self._restore_focus = True
         return self
 
@@ -149,14 +174,11 @@ class MonitorWindow(NSObject):
         web.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(self._url)))
 
     @objc.python_method
-    def show(self, previous_app=None):
+    def show(self, previous_app=None, previous_focus=None):
         self.setup()
-        if previous_app is not None:
-            self._previous_app = previous_app
-        elif not self._window.isVisible():
-            app = AK.NSWorkspace.sharedWorkspace().frontmostApplication()
-            if app is not None and app.processIdentifier() != os.getpid():
-                self._previous_app = app
+        if previous_focus is not None or previous_app is not None or not self._window.isVisible():
+            self._focus_return = previous_focus or WindowFocus.capture(previous_app)
+            self._previous_app = self._focus_return.app if self._focus_return is not None else None
         self._window.makeKeyAndOrderFront_(None)
         AK.NSApp().activateIgnoringOtherApps_(True)
         self._window.makeFirstResponder_(self._webview)
@@ -166,16 +188,23 @@ class MonitorWindow(NSObject):
     @objc.python_method
     def dismiss(self, restore_focus=True):
         self._restore_focus = restore_focus
+        self._return_focus_on_close = bool(self._window.isKeyWindow())
         self._window.close()
 
+    def windowShouldClose_(self, sender):
+        self._return_focus_on_close = bool(self._window.isKeyWindow())
+        return True
+
     def windowWillClose_(self, notification):
-        restore = getattr(self, "_restore_focus", True) and self._window.isKeyWindow()
+        restore = getattr(self, "_restore_focus", True)
+        was_key = getattr(self, '_return_focus_on_close', None)
+        self._return_focus_on_close = None
         self._set_visible(False)
         on_close = getattr(self, "_on_close", None)
         if on_close is not None:
             on_close(self)
-        if restore and self._previous_app is not None:
-            self._previous_app.activateWithOptions_(1 << 1)
+        if restore:
+            restore_window_focus(self, self._window, was_key=was_key)
         self._restore_focus = True
 
     @objc.python_method
@@ -194,8 +223,7 @@ class MonitorWindow(NSObject):
 
     def _set_visible(self, visible):
         self._webview.evaluateJavaScript_completionHandler_(
-            "window.__spokeMonitorVisible=" + ("true" if visible else "false")
-            + ";document.dispatchEvent(new Event('visibilitychange'));", None,
+            "window.__spokeMonitorSetVisible?.(" + ("true" if visible else "false") + ");", None,
         )
 
     def reload_(self, sender):

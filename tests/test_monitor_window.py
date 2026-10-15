@@ -1,5 +1,69 @@
 import importlib.util
+import json
+import subprocess
+import pytest
 from unittest.mock import MagicMock
+
+
+def test_monitor_close_returns_focus_after_appkit_has_cleared_key_window(monkeypatch):
+    mod = module()
+    owner = mod.MonitorWindow.alloc().init()
+    owner._window, owner._previous_app = MagicMock(), None
+    owner._window.isKeyWindow.return_value = False
+    owner._focus_return = MagicMock()
+    owner._set_visible = MagicMock()
+    app = MagicMock()
+    app.keyWindow.return_value = None
+    monkeypatch.setattr(mod.AK, "NSApp", lambda: app)
+    owner.windowWillClose_(None)
+    owner._focus_return.restore.assert_called_once_with()
+
+
+def test_monitor_dismiss_keeps_return_ownership_across_appkit_key_handoff(monkeypatch):
+    mod = module()
+    owner = mod.MonitorWindow.alloc().init()
+    owner._window, owner._focus_return = MagicMock(), MagicMock()
+    owner._window.isKeyWindow.return_value = True
+    owner._set_visible = MagicMock()
+    app = MagicMock()
+    app.keyWindow.return_value = owner._window
+    monkeypatch.setattr(mod.AK, 'NSApp', lambda: app)
+    def close():
+        app.keyWindow.return_value = MagicMock(name='automatically-selected-sibling')
+        owner.windowWillClose_(None)
+    owner._window.close.side_effect = close
+    owner.dismiss()
+    owner._focus_return.restore.assert_called_once_with()
+
+
+@pytest.mark.parametrize('port', ['8770', '8766'])
+def test_monitor_resume_polls_once_without_waiting_for_interval(port):
+    mod = module()
+    owner = mod.MonitorWindow.alloc().init()
+    owner._webview = MagicMock()
+    scripts = []
+    for visible in (False, True, True):
+        owner._set_visible(visible)
+        scripts.append(owner._webview.evaluateJavaScript_completionHandler_.call_args.args[0])
+    source = """
+const vm=require('node:vm'), input=JSON.parse(process.argv[1]);
+let ticks=0,smokes=0,next=0;const listeners={},timers=new Map();
+const document={hidden:false,addEventListener(n,f){(listeners[n]??=[]).push(f)},dispatchEvent(e){for(const f of listeners[e.type]||[])f(e)}};
+const window={load(){ticks++},loadSmoke(){smokes++},setInterval(f){timers.set(++next,f);return next},clearInterval(id){timers.delete(id)}};
+const c=vm.createContext({window,document,location:{port:input.port},Event:class{constructor(type){this.type=type}}});
+vm.runInContext(input.source,c);window.setInterval(()=>ticks++,5000);
+vm.runInContext(input.scripts[0],c);for(const f of timers.values())f();const hidden=ticks;
+document.hidden=true;vm.runInContext(input.scripts[1],c);const beforeVisible=ticks;
+document.hidden=false;document.dispatchEvent({type:'visibilitychange'});const resumed=ticks;
+vm.runInContext(input.scripts[2],c);const repeated=ticks;
+const canceled=window.setInterval(()=>ticks+=100,5000);window.clearInterval(canceled);
+vm.runInContext(input.scripts[0],c);vm.runInContext(input.scripts[1],c);
+console.log(JSON.stringify({hidden,beforeVisible,resumed,repeated,second:ticks,smokes}));
+"""
+    result = subprocess.run(["node", "-e", source, json.dumps({"source": mod._QUIET_INTERVALS, "scripts": scripts, "port": port})],
+                            check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == {"hidden": 0, "beforeVisible": 0, "resumed": 1, "repeated": 1, "second": 2,
+                                      "smokes": 2 if port == '8766' else 0}
 
 
 def module():
@@ -26,8 +90,12 @@ def test_monitor_show_reuses_page_and_close_retains_it(monkeypatch):
     owner.setup = MagicMock()
     owner._set_visible = MagicMock()
     app = MagicMock()
+    app.keyWindow.return_value = owner._window
     monkeypatch.setattr(mod.AK, "NSApp", lambda: app)
     prior = MagicMock()
+    target = MagicMock(app=prior)
+    target.restore.side_effect = lambda: prior.activateWithOptions_(2)
+    monkeypatch.setattr(mod.WindowFocus, "capture", lambda app: target)
     owner.show(previous_app=prior)
     owner._webview.loadRequest_.assert_not_called()
     owner._set_visible.assert_called_with(True)

@@ -311,8 +311,10 @@ class DiaulosSwitcherOverlay(NSObject):
         started_at = time.monotonic()
         self.setup()
         was_visible = self.visible
-        workspace = NSWorkspace.sharedWorkspace()
-        self._previous_app = workspace.frontmostApplication()
+        from .window_focus import WindowFocus
+        if not was_visible:
+            self._focus_return = WindowFocus.capture()
+            self._previous_app = self._focus_return.app if self._focus_return is not None else None
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
         self._model.set_query("")
@@ -358,6 +360,7 @@ class DiaulosSwitcherOverlay(NSObject):
             )
             return False
         was_visible = self.visible
+        was_key = bool(self._panel is not None and self._panel.isKeyWindow())
         self._activation_generation += 1
         self._remove_key_monitor()
         host = getattr(self, "_shell_host", None)
@@ -374,9 +377,8 @@ class DiaulosSwitcherOverlay(NSObject):
             )
         if restore_previous and self._previous_app is not None:
             try:
-                self._previous_app.activateWithOptions_(
-                    _NSApplicationActivateIgnoringOtherApps
-                )
+                from .window_focus import restore_window_focus
+                restore_window_focus(self, self._panel, was_key=was_key)
             except Exception:
                 logger.debug("Could not restore prior foreground app", exc_info=True)
         self._previous_app = None
