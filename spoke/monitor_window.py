@@ -9,6 +9,7 @@ from Foundation import NSObject, NSMakeRect, NSURL, NSURLRequest
 from WebKit import WKWebView, WKWebViewConfiguration, WKUserScript, WKUserScriptInjectionTimeAtDocumentStart
 
 from .window_focus import WindowFocus, restore_window_focus
+from .monitor_freshness import FRESHNESS_SCRIPT as _FRESHNESS
 
 MONITORS = {
     "fleet": ("Epistaxis Diauloi", "http://127.0.0.1:8770/fleet"),
@@ -35,6 +36,7 @@ _QUIET_INTERVALS = """(() => {
    }
  };
  window.__spokeMonitorSetVisible = visible => {
+   window.__spokeMonitorFreshness?.(visible);
    if (visible && !window.__spokeMonitorVisible) pending = true;
    if (!visible) pending = false;
    window.__spokeMonitorVisible = visible;
@@ -136,6 +138,11 @@ class MonitorWindow(NSObject):
         window.center()
         content = window.contentView()
         config = WKWebViewConfiguration.alloc().init()
+        config.userContentController().addUserScript_(
+            WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+                _FRESHNESS, WKUserScriptInjectionTimeAtDocumentStart, True,
+            )
+        )
         config.userContentController().addUserScript_(
             WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
                 _QUIET_INTERVALS, WKUserScriptInjectionTimeAtDocumentStart, True,
