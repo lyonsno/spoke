@@ -47,9 +47,9 @@ def test_monitor_resume_polls_once_without_waiting_for_interval(port):
         scripts.append(owner._webview.evaluateJavaScript_completionHandler_.call_args.args[0])
     source = """
 const vm=require('node:vm'), input=JSON.parse(process.argv[1]);
-let ticks=0,smokes=0,next=0;const listeners={},timers=new Map();
+let ticks=0,smokes=0,next=0;const fresh=[],listeners={},timers=new Map();
 const document={hidden:false,addEventListener(n,f){(listeners[n]??=[]).push(f)},dispatchEvent(e){for(const f of listeners[e.type]||[])f(e)}};
-const window={load(){ticks++},loadSmoke(){smokes++},setInterval(f){timers.set(++next,f);return next},clearInterval(id){timers.delete(id)}};
+const window={load(value){ticks++;fresh.push(value===true)},loadSmoke(){smokes++},setInterval(f){timers.set(++next,f);return next},clearInterval(id){timers.delete(id)}};
 const c=vm.createContext({window,document,location:{port:input.port},Event:class{constructor(type){this.type=type}}});
 vm.runInContext(input.source,c);window.setInterval(()=>ticks++,5000);
 vm.runInContext(input.scripts[0],c);for(const f of timers.values())f();const hidden=ticks;
@@ -58,12 +58,13 @@ document.hidden=false;document.dispatchEvent({type:'visibilitychange'});const re
 vm.runInContext(input.scripts[2],c);const repeated=ticks;
 const canceled=window.setInterval(()=>ticks+=100,5000);window.clearInterval(canceled);
 vm.runInContext(input.scripts[0],c);vm.runInContext(input.scripts[1],c);
-console.log(JSON.stringify({hidden,beforeVisible,resumed,repeated,second:ticks,smokes}));
+console.log(JSON.stringify({hidden,beforeVisible,resumed,repeated,second:ticks,smokes,fresh}));
 """
     result = subprocess.run(["node", "-e", source, json.dumps({"source": mod._QUIET_INTERVALS, "scripts": scripts, "port": port})],
                             check=True, capture_output=True, text=True)
     assert json.loads(result.stdout) == {"hidden": 0, "beforeVisible": 0, "resumed": 1, "repeated": 1, "second": 2,
-                                      "smokes": 2 if port == '8766' else 0}
+                                      "smokes": 2 if port == '8766' else 0,
+                                      "fresh": [port == '8770', port == '8770']}
 
 
 def module():

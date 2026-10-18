@@ -29,7 +29,7 @@ _QUIET_INTERVALS = """(() => {
    if (!pending || !window.__spokeMonitorVisible || document.hidden) return;
    pending = false;
    if (typeof window.load !== 'function') throw new Error('Monitor refresh unavailable');
-   window.load();
+   window.load(location.port === '8770');
    if (location.port === '8766') {
      if (typeof window.loadSmoke !== 'function') throw new Error('Smoke refresh unavailable');
      window.loadSmoke();
