@@ -59,6 +59,18 @@ def finish_arm(compositor, arm):
         arm[average] = arm[pixels] / max(arm[count], 1) / 1000000
 
 
+def finish_failed_arm(compositor, arm):
+    scoped = dict(arm)
+    try:
+        finish_arm(compositor, scoped)
+    except BaseException:
+        arm["diagnostic_finalization_error"] = traceback.format_exc()
+        arm["diagnostics_authority"] = "last-trustworthy-only"
+    else:
+        arm.update(scoped)
+        arm["diagnostics_authority"] = "arm-scoped"
+
+
 def run_native(args, report, save):
     import objc
     import Quartz as Q
@@ -323,7 +335,7 @@ def run_native(args, report, save):
                 for thread in threading.enumerate() if thread.ident in frames}
             if state["compositor"] is not None:
                 current = state["compositor"]
-                state["arm"].update(current.diagnostics_snapshot())
+                finish_failed_arm(current, state["arm"])
                 state["arm"]["startup_objects"] = {
                     key: getattr(current, key, None) is not None for key in (
                         "_capture_content", "_capture_display", "_stream", "_stream_output",

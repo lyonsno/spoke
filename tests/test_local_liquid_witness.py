@@ -49,6 +49,39 @@ def test_second_arm_excludes_first_arm_pipeline_work():
     assert arm["avg_warp_dispatch_mp"] == pytest.approx(0.001)
 
 
+def test_failed_zero_work_arm_keeps_prior_work_only_in_lifetime_snapshots():
+    from types import SimpleNamespace
+    from tests import native_local_liquid_witness as witness
+
+    previous = {"drawable_copy_frames": 187, "drawable_copy_pixels": 1443771648,
+                "mip_generation_frames": 0, "mip_generation_source_pixels": 0,
+                "warp_dispatches": 187, "warp_dispatch_pixels": 51026503}
+    compositor = SimpleNamespace(diagnostics_snapshot=lambda: previous,
+        _pipeline=SimpleNamespace(diagnostics_snapshot=lambda: previous))
+    arm = {"pipeline_before": previous, "capture_sizes": [], "warp_rows": []}
+    witness.finish_failed_arm(compositor, arm)
+    assert arm["drawable_copy_frames"] == arm["drawable_copy_pixels"] == 0
+    assert arm["warp_dispatches"] == arm["warp_dispatch_pixels"] == 0
+    assert arm["pipeline_after"] == previous
+    assert arm["pipeline_before"] == previous
+
+
+def test_failure_diagnostic_error_preserves_original_failure_and_raw_rows():
+    from types import SimpleNamespace
+    from tests import native_local_liquid_witness as witness
+
+    def broken():
+        raise RuntimeError("diagnostic collection failed")
+
+    rows = [{"capture_size": [800, 600]}]
+    arm = {"error": "original startup failure", "warp_rows": rows}
+    witness.finish_failed_arm(SimpleNamespace(diagnostics_snapshot=broken), arm)
+    assert arm["error"] == "original startup failure"
+    assert arm["warp_rows"] is rows
+    assert "diagnostic collection failed" in arm["diagnostic_finalization_error"]
+    assert arm["diagnostics_authority"] == "last-trustworthy-only"
+
+
 def test_witness_rejects_missing_capture_and_fallback_dimensions():
     from tests import native_local_liquid_witness as witness
 
