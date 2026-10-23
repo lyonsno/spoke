@@ -305,8 +305,12 @@ class FullScreenCompositor:
     # to prevent feedback loops when multiple compositors run concurrently.
     _active_compositor_windows: set[int] = set()
 
-    def __init__(self, screen):
+    def __init__(self, screen, *, capture_rect=None):
         self._screen = screen
+        from .compositor_viewport import CaptureViewport
+        self._capture_viewport = (
+            CaptureViewport.for_screen(screen, capture_rect) if capture_rect is not None else None
+        )
         self._lock = threading.Lock()
         self._running = False
 
@@ -850,7 +854,9 @@ class FullScreenCompositor:
         Fall back to a WindowServer rect capture only when the frame buffer
         cannot be read.
         """
-        sampled = _sample_pixel_buffer_brightness(pixel_buffer, w, h, config, self._screen)
+        viewport = getattr(self, "_capture_viewport", None)
+        local_config = viewport.local_config(config) if viewport is not None else config
+        sampled = _sample_pixel_buffer_brightness(pixel_buffer, w, h, local_config, self._screen)
         if sampled is not None:
             self._sampled_brightness = sampled
             return "pixel_buffer"
@@ -948,6 +954,11 @@ class FullScreenCompositor:
 
         screen = self._screen
         frame = screen.frame()
+        viewport = getattr(self, "_capture_viewport", None)
+        if viewport is not None:
+            from Foundation import NSMakeRect
+            origin, size = viewport.window_rect
+            frame = NSMakeRect(*origin, *size)
         scale = screen.backingScaleFactor() if hasattr(screen, "backingScaleFactor") else 2.0
 
         # Borderless, transparent, full-screen, just below the command overlay
@@ -1063,13 +1074,17 @@ class FullScreenCompositor:
         )
         content_filter = SCContentFilter.alloc().initWithDisplay_excludingWindows_(display, excluded)
 
-        # Configure: full display, no sourceRect
+        # Full display is the default. A fixed viewport is an opt-in experiment.
         SCStreamConfiguration = bridge["SCStreamConfiguration"]
         config = SCStreamConfiguration.alloc().init()
         scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
         display_frame = display.frame()
         pixel_w = int(display_frame.size.width * scale)
         pixel_h = int(display_frame.size.height * scale)
+        viewport = getattr(self, "_capture_viewport", None)
+        if viewport is not None:
+            config.setSourceRect_(viewport.source_rect)
+            pixel_w, pixel_h = viewport.pixel_size
         config.setWidth_(pixel_w)
         config.setHeight_(pixel_h)
         config.setQueueDepth_(8)
@@ -1695,6 +1710,14 @@ class FullScreenCompositor:
                 return
             if any("content_width_points" not in config or "center_x" not in config for config in warp_configs):
                 return
+
+            viewport = getattr(self, "_capture_viewport", None)
+            if viewport is not None:
+                if (w, h) != viewport.pixel_size:
+                    raise RuntimeError(
+                        f"Capture viewport size mismatch: {(w, h)} != {viewport.pixel_size}"
+                    )
+                warp_configs = [viewport.local_config(config) for config in warp_configs]
 
             if self._last_drawable_size != (w, h):
                 self._metal_layer.setDrawableSize_((w, h))

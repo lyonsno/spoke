@@ -24,6 +24,46 @@ class _FakeWindow:
         return self._window_number
 
 
+def test_fixed_capture_viewport_maps_display_pixels_without_scaling_lens(monkeypatch):
+    import importlib
+    module = importlib.import_module("spoke.fullscreen_compositor")
+    metal_warp = importlib.import_module("spoke.metal_warp")
+
+    monkeypatch.setattr(metal_warp, "get_metal_warp_pipeline", lambda: object())
+    screen = SimpleNamespace(
+        frame=lambda: SimpleNamespace(
+            origin=SimpleNamespace(x=-1000, y=200),
+            size=SimpleNamespace(width=1000, height=800)),
+        backingScaleFactor=lambda: 2.0,
+    )
+    compositor = module.FullScreenCompositor(screen, capture_rect=(100, 50, 400, 300))
+    viewport = compositor._capture_viewport
+    assert viewport.pixel_size == (800, 600)
+    assert viewport.window_rect == ((-900, 650), (400, 300))
+    original = {"center_x": 600, "center_y": 400, "content_width_points": 200,
+                "content_height_points": 80, "client_id": "test"}
+    assert viewport.local_config(original) == {**original, "center_x": 400, "center_y": 300}
+    assert original["center_x"] == 600
+
+
+@pytest.mark.parametrize("rect", [(-1, 0, 10, 10), (0, 0, 1001, 10),
+                                    (0, 0, 10, 0), (0.1, 0, 10, 10),
+                                    (float("nan"), 0, 10, 10)])
+def test_fixed_capture_viewport_rejects_clipped_or_fractional_pixel_routes(monkeypatch, rect):
+    import importlib
+    module = importlib.import_module("spoke.fullscreen_compositor")
+    metal_warp = importlib.import_module("spoke.metal_warp")
+
+    monkeypatch.setattr(metal_warp, "get_metal_warp_pipeline", lambda: object())
+    screen = SimpleNamespace(
+        frame=lambda: SimpleNamespace(
+            origin=SimpleNamespace(x=0, y=0), size=SimpleNamespace(width=1000, height=800)),
+        backingScaleFactor=lambda: 2.0,
+    )
+    with pytest.raises(ValueError, match="capture viewport"):
+        module.FullScreenCompositor(screen, capture_rect=rect)
+
+
 class _FakeCompositorWindow:
     def __init__(self):
         self.alphas = []
