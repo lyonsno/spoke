@@ -86,6 +86,7 @@ def _selected_pane_payload(candidate, **overrides) -> dict:
 
 @pytest.fixture
 def overlay_module(mock_pyobjc):
+    mock_pyobjc["Quartz"].CATransaction = MagicMock()
     sys.modules.pop("spoke.diaulos_switcher_overlay", None)
     module = importlib.import_module("spoke.diaulos_switcher_overlay")
     yield module
@@ -119,9 +120,10 @@ def test_teleporter_reports_native_fallback_when_async_capture_fails(overlay_mod
     overlay = overlay_module.DiaulosSwitcherOverlay.__new__(
         overlay_module.DiaulosSwitcherOverlay
     )
-    host = object()
+    host = MagicMock()
     overlay.visible = True
     overlay._shell_host = host
+    overlay._panel = MagicMock()
     overlay._shell_unavailable = False
     overlay._status_label = MagicMock()
     overlay._keyboard_monitor_available = True
@@ -920,6 +922,172 @@ def test_activation_success_hides_panel_before_foregrounding_wezterm(overlay_mod
     assert overlay.visible is False
     assert overlay.presentation_generation == 1
     assert events == ["panel-hidden", "wezterm-foregrounded"]
+
+
+def _animated_switcher(module):
+    from spoke.optical_lifecycle import HouseTransition
+    from spoke.house_optical_primitive import compile_house_optical_shell_config
+
+    overlay = module.DiaulosSwitcherOverlay.__new__(module.DiaulosSwitcherOverlay)
+    overlay.visible = True
+    overlay.presentation_generation = 1
+    overlay._panel = MagicMock()
+    overlay._previous_app = None
+    overlay._activation_in_flight = False
+    overlay._activation_generation = 0
+    overlay._key_monitor_token = None
+    overlay._shell_host = MagicMock()
+    overlay._shell_registered = True
+    overlay._shell_transition = HouseTransition()
+    overlay._shell_transition.rest()
+    overlay._shell_final = dict(compile_house_optical_shell_config(720, 560), client_id="spoke.teleporter")
+    overlay._shell_epoch = 1
+    overlay._shell_waiting = False
+    overlay._shell_tick_timer = None
+    overlay._shell_sidecars_registered = True
+    overlay._set_shell_planes = MagicMock()
+    return overlay
+
+
+def test_animated_hide_releases_input_immediately_but_keeps_house_tail(overlay_module):
+    overlay = _animated_switcher(overlay_module)
+    host = overlay._shell_host
+    overlay.hide()
+    assert overlay.visible is False
+    assert overlay.accepts_dictation() is False
+    host.release_client.assert_not_called()
+    overlay._panel.orderOut_.assert_not_called()
+    assert overlay._shell_transition.phase == "dismiss"
+    overlay._panel.setIgnoresMouseEvents_.assert_called_with(True)
+
+
+def test_force_cleanup_releases_all_and_does_not_leave_tail_timer(overlay_module):
+    overlay = _animated_switcher(overlay_module)
+    host = overlay._shell_host
+    timer = MagicMock()
+    overlay._shell_tick_timer = timer
+    overlay.hide(force=True)
+    assert {call.args[0] for call in host.release_client.call_args_list} == {
+        "spoke.teleporter", "spoke.teleporter.dismiss_seam", "spoke.teleporter.dismiss_radial_pucker",
+    }
+    timer.invalidate.assert_called_once()
+    overlay._panel.orderOut_.assert_called_once()
+
+
+def test_stale_first_present_cannot_rewind_or_resurrect_panel(overlay_module):
+    overlay = _animated_switcher(overlay_module)
+    assert callable(getattr(type(overlay), "opticalShellDidPresent_", None)), "Teleporter first-present admission missing"
+    overlay._shell_waiting = True
+    overlay.opticalShellDidPresent_({"epoch": 0, "host": overlay._shell_host})
+    assert overlay._shell_waiting is True
+    overlay.visible = False
+    overlay.opticalShellDidPresent_({"epoch": 1, "host": overlay._shell_host})
+    assert overlay._shell_waiting is True
+
+
+def test_native_fallback_is_not_reanimated_by_late_first_present(overlay_module):
+    overlay = _animated_switcher(overlay_module)
+    assert callable(getattr(type(overlay), "opticalShellDidPresent_", None)), "Teleporter first-present admission missing"
+    overlay._shell_waiting = False
+    overlay.opticalShellDidPresent_({"epoch": 1, "host": overlay._shell_host})
+    assert overlay._shell_transition.phase == "rest"
+    overlay._set_shell_planes.assert_not_called()
+
+
+@pytest.mark.parametrize("last_progress,hide_progress", [
+    (0.0, .1), (.5, .9), (.8, .85),
+    ("before_release", "after_release"), ("before_release", 1.001),
+    (0.0, 2.0), (.99, 1.2),
+])
+def test_hide_between_ticks_preserves_last_applied_foreground(overlay_module, monkeypatch, last_progress, hide_progress):
+    from spoke.house_optical_primitive import optical_text_release_progress, OPTICAL_MATERIALIZATION_S
+
+    overlay = _animated_switcher(overlay_module)
+    overlay._shell_transition.summon(10)
+    release = optical_text_release_progress()
+    last_progress = release - .005 if last_progress == "before_release" else last_progress
+    hide_progress = release + .005 if hide_progress == "after_release" else hide_progress
+    last_tick = 10 + last_progress * OPTICAL_MATERIALIZATION_S
+    hide_time = 10 + hide_progress * OPTICAL_MATERIALIZATION_S
+    overlay._publish_shell_frame(last_tick)
+    before = overlay._set_shell_planes.call_args.args[1]
+    monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: hide_time)
+    overlay.hide()
+    timer = overlay._shell_tick_timer
+    for interval in (1 / 60, 2 / 60, 3 / 60):
+        monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: hide_time + interval)
+        overlay.opticalShellStep_(timer)
+        after = overlay._set_shell_planes.call_args.args[1]
+        assert after["alpha"] <= before["alpha"]
+        assert after["height_frac"] <= before["height_frac"]
+        assert after["width_frac"] <= before["width_frac"]
+
+
+def test_rejected_publication_does_not_advance_applied_foreground(overlay_module):
+    overlay = _animated_switcher(overlay_module)
+    overlay._shell_transition.summon(10)
+    overlay._publish_shell_frame(10)
+    before = dict(overlay._shell_applied_text)
+    overlay._shell_host.update_client_configs.return_value = False
+    with pytest.raises(RuntimeError, match="publication rejected"):
+        overlay._publish_shell_frame(11)
+    assert overlay._shell_applied_text == before
+
+
+def test_pending_capture_hide_releases_clients_without_an_invisible_tail(overlay_module):
+    overlay = _animated_switcher(overlay_module)
+    host = overlay._shell_host
+    overlay._shell_waiting = True
+    timer = MagicMock()
+    overlay._shell_tick_timer = timer
+    overlay.hide()
+    assert overlay.visible is False
+    assert overlay._shell_transition is None
+    assert overlay._shell_tick_timer is None
+    timer.invalidate.assert_called_once()
+    assert host.release_client.call_count == 3
+    overlay._panel.orderOut_.assert_called_once()
+
+
+def test_reopen_during_close_rejects_the_old_timer(overlay_module, monkeypatch):
+    overlay = _animated_switcher(overlay_module)
+    overlay._delegate = MagicMock()
+    # First hide creates a close timer; prepare replaces it on reopen.
+    old_timer, new_timer = MagicMock(), MagicMock()
+    monkeypatch.setattr(overlay_module.NSTimer,
+        "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+        MagicMock(side_effect=[old_timer, new_timer]))
+    monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: 10.0)
+    overlay.hide()
+    overlay.visible = True
+    monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: 10.05)
+    overlay._prepare_shell_entrance()
+    calls = overlay._set_shell_planes.call_count
+    host = overlay._shell_host
+    overlay.opticalShellStep_(old_timer)
+    assert overlay._shell_tick_timer is new_timer
+    assert overlay._set_shell_planes.call_count == calls
+    host.release_client.assert_not_called()
+    assert overlay._shell_transition.phase == "summon"
+    assert overlay._shell_waiting is False
+    frame = overlay._publish_shell_frame(10.05)
+    assert frame.text["alpha"] == 0
+
+
+def test_start_grace_applies_native_rest_without_late_reanimation(overlay_module, monkeypatch):
+    overlay = _animated_switcher(overlay_module)
+    overlay._shell_transition.summon(10)
+    overlay._shell_waiting = True
+    overlay._shell_wait_started = 10
+    overlay._shell_tick_timer = timer = MagicMock()
+    monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: 10.26)
+    overlay.opticalShellStep_(timer)
+    assert overlay._shell_applied_text["alpha"] == 1
+    assert overlay._shell_transition.phase == "rest"
+    assert overlay._shell_tick_timer is None
+    calls = overlay._set_shell_planes.call_count
+    overlay.opticalShellDidPresent_({"epoch": 1, "host": overlay._shell_host})
+    assert overlay._set_shell_planes.call_count == calls
 
 
 def test_visible_overlay_owns_navigation_through_local_key_monitor(

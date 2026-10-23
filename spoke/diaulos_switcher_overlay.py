@@ -29,7 +29,8 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWorkspace,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer
+from Foundation import NSMakeRect, NSObject, NSTimer, NSRunLoop
+from Quartz import CALayer, CAShapeLayer, CATransaction, CGPathCreateWithRoundedRect
 
 from .diaulos_switcher import (
     DiaulosActivationError,
@@ -56,6 +57,9 @@ _DOWN_ARROW_KEYCODE = 125
 _ESCAPE_KEYCODE = 53
 _ENTER_KEYCODES = {36, 76}
 _WEZTERM_BUNDLE_IDENTIFIER = "com.github.wez.wezterm"
+_SHELL_CLIENT_ID = "spoke.teleporter"
+# Same native-readiness grace as CommandOverlay; not a capture timeout.
+_SHELL_START_GRACE_S = 0.25
 
 
 def _label(text: str, frame, *, size: float, color, bold: bool = False):
@@ -136,6 +140,12 @@ class DiaulosSwitcherOverlay(NSObject):
         self._shell_host = None
         self._shell_registered = False
         self._shell_unavailable = False
+        self._shell_transition = None
+        self._shell_final = None
+        self._shell_tick_timer = None
+        self._shell_epoch = 0
+        self._shell_waiting = False
+        self._shell_sidecars_registered = False
         self._row_buttons = []
         self.visible = False
         self.presentation_generation = 0
@@ -172,11 +182,21 @@ class DiaulosSwitcherOverlay(NSObject):
         )
         panel.setMovableByWindowBackground_(True)
 
-        content = panel.contentView()
+        root = panel.contentView()
+        root.setWantsLayer_(True)
+        root.layer().setCornerRadius_(8.0)
+        root.layer().setMasksToBounds_(True)
+        self._shell_body_layer = CALayer.layer()
+        self._shell_body_layer.setFrame_(root.bounds())
+        self._shell_body_layer.setCornerRadius_(8.0)
+        self._shell_body_layer.setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.07, 0.075, 0.075, 0.97).CGColor())
+        root.layer().addSublayer_(self._shell_body_layer)
+        content = NSView.alloc().initWithFrame_(root.bounds())
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(8.0)
-        content.layer().setMasksToBounds_(True)
-        content.layer().setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(0.07, 0.075, 0.075, 0.97).CGColor())
+        root.addSubview_(content)
+        self._shell_foreground = content
+        self._shell_text_mask = CAShapeLayer.layer()
+        content.layer().setMask_(self._shell_text_mask)
         title_y = _PANEL_HEIGHT - _PADDING - _TITLE_HEIGHT
         mark = NSImageView.alloc().initWithFrame_(NSMakeRect(_PADDING, title_y, 24, 24))
         mark.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_("point.topleft.down.curvedto.point.bottomright.up", "Teleporter"))
@@ -251,6 +271,7 @@ class DiaulosSwitcherOverlay(NSObject):
         )
         content.addSubview_(self._status_label)
         self._panel = panel
+        self._set_shell_planes(dict(opacity=1.0, height_frac=1.0), dict(alpha=1.0, width_frac=1.0, height_frac=1.0))
 
     def prewarm(self) -> None:
         """Build the hidden panel and prime cached rows before the user gesture."""
@@ -323,6 +344,8 @@ class DiaulosSwitcherOverlay(NSObject):
             self.presentation_generation = (
                 getattr(self, "presentation_generation", 0) + 1
             )
+            self._prepare_shell_entrance()
+        self._panel.setIgnoresMouseEvents_(False)
         self._install_key_monitor()
         self._set_status(
             "Refreshing live Diauloi"
@@ -363,18 +386,24 @@ class DiaulosSwitcherOverlay(NSObject):
         was_key = bool(self._panel is not None and self._panel.isKeyWindow())
         self._activation_generation += 1
         self._remove_key_monitor()
-        host = getattr(self, "_shell_host", None)
-        if host is not None:
-            host.release_client("spoke.teleporter")
-        self._shell_host = None
-        self._shell_registered = False
-        if self._panel is not None:
-            self._panel.orderOut_(None)
         self.visible = False
         if was_visible:
             self.presentation_generation = (
                 getattr(self, "presentation_generation", 0) + 1
             )
+        transition = getattr(self, "_shell_transition", None)
+        animate = (was_visible and not force and transition is not None
+                   and not getattr(self, "_shell_waiting", False)
+                   and getattr(self, "_shell_registered", False)
+                   and getattr(self, "_shell_final", None) is not None)
+        if animate:
+            self._shell_epoch += 1
+            transition.dismiss(time.perf_counter(), exposed_text=getattr(self, "_shell_applied_text", None))
+            self._panel.setIgnoresMouseEvents_(True)
+            self._panel.resignKeyWindow()
+            self._start_shell_ticks()
+        else:
+            self._finish_shell()
         if restore_previous and self._previous_app is not None:
             try:
                 from .window_focus import restore_window_focus
@@ -383,6 +412,136 @@ class DiaulosSwitcherOverlay(NSObject):
                 logger.debug("Could not restore prior foreground app", exc_info=True)
         self._previous_app = None
         return True
+
+    def _prepare_shell_entrance(self):
+        if (os.environ.get("SPOKE_TELEPORTER_OPTICAL_SHELL", "1") == "0"
+                or getattr(getattr(self, "_delegate", None), "_overlay_compositor_registry", None) is None):
+            return
+        from .optical_lifecycle import HouseTransition
+
+        self._shell_epoch = getattr(self, "_shell_epoch", 0) + 1
+        now = time.perf_counter()
+        transition = getattr(self, "_shell_transition", None)
+        reversing = transition is not None and transition.phase == "dismiss" and self._shell_registered
+        if not reversing:
+            transition = HouseTransition()
+        transition.summon(now)
+        self._shell_transition = transition
+        self._shell_waiting = not reversing
+        self._shell_wait_started = now
+        self._shell_present_armed = False
+        self._shell_applied_text = dict(alpha=0.0, width_frac=1.0, height_frac=0.0)
+        self._panel.setHasShadow_(False)
+        self._set_shell_planes(dict(opacity=0.0, height_frac=0.0), dict(alpha=0.0, width_frac=1.0, height_frac=0.0))
+        self._start_shell_ticks()
+
+    def _start_shell_ticks(self):
+        timer = getattr(self, "_shell_tick_timer", None)
+        if timer is not None:
+            timer.invalidate()
+        self._shell_tick_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 60.0, self, "opticalShellStep:", None, True,
+        )
+        for mode in ("NSRunLoopCommonModes", "NSEventTrackingRunLoopMode"):
+            NSRunLoop.currentRunLoop().addTimer_forMode_(self._shell_tick_timer, mode)
+
+    def _stop_shell_ticks(self):
+        timer = getattr(self, "_shell_tick_timer", None)
+        self._shell_tick_timer = None
+        if timer is not None:
+            timer.invalidate()
+
+    def _finish_shell(self):
+        self._stop_shell_ticks()
+        self._shell_epoch = getattr(self, "_shell_epoch", 0) + 1
+        self._shell_waiting = False
+        host = getattr(self, "_shell_host", None)
+        if host is not None:
+            for client_id in self._shell_client_ids():
+                host.release_client(client_id)
+        self._shell_host = None
+        self._shell_registered = False
+        self._shell_sidecars_registered = False
+        self._shell_transition = None
+        self._shell_final = None
+        if self._panel is not None:
+            if not self.visible:
+                self._panel.orderOut_(None)
+            else:
+                self._set_shell_planes(dict(opacity=1.0, height_frac=1.0), dict(alpha=1.0, width_frac=1.0, height_frac=1.0))
+                self._panel.setHasShadow_(True)
+
+    def _shell_client_ids(self):
+        ids = [_SHELL_CLIENT_ID]
+        if getattr(self, "_shell_sidecars_registered", False):
+            ids.extend(f"{_SHELL_CLIENT_ID}.{suffix}" for suffix in ("dismiss_seam", "dismiss_radial_pucker"))
+        return ids
+
+    def _set_shell_planes(self, body, text):
+        foreground = getattr(self, "_shell_foreground", None)
+        if foreground is None:
+            return
+        CATransaction.begin()
+        CATransaction.setDisableActions_(True)
+        try:
+            self._shell_body_layer.setValue_forKeyPath_(max(body["height_frac"], .001), "transform.scale.y")
+            self._shell_body_layer.setOpacity_(body["opacity"])
+            width, height = _PANEL_WIDTH * text["width_frac"], _PANEL_HEIGHT * text["height_frac"]
+            rect = ((_PANEL_WIDTH - width) / 2, (_PANEL_HEIGHT - height) / 2), (width, height)
+            self._shell_text_mask.setPath_(CGPathCreateWithRoundedRect(rect, min(8.0, height / 2), min(8.0, height / 2), None))
+            foreground.layer().setOpacity_(text["alpha"])
+        finally:
+            CATransaction.commit()
+
+    def _publish_shell_frame(self, now):
+        transition = self._shell_transition
+        sample_time = self._shell_wait_started if self._shell_waiting else now
+        frame = transition.frame(self._shell_final, sample_time)
+        if not self._shell_host.update_client_configs(frame.configs):
+            raise RuntimeError("House transition publication rejected")
+        self._set_shell_planes(frame.body, frame.text)
+        self._shell_applied_text = dict(frame.text)
+        return frame
+
+    def opticalShellStep_(self, timer):
+        if timer is not getattr(self, "_shell_tick_timer", None):
+            return
+        now = time.perf_counter()
+        if getattr(self, "_shell_waiting", False):
+            if now - self._shell_wait_started < _SHELL_START_GRACE_S:
+                return
+            # Never rewind an already usable native panel when capture arrives late.
+            self._shell_waiting = False
+            self._shell_transition.rest()
+        if getattr(self, "_shell_final", None) is None:
+            self._finish_shell()
+            return
+        try:
+            frame = self._publish_shell_frame(now)
+            if frame.phase == "hidden":
+                self._finish_shell()
+            elif frame.phase == "rest":
+                self._shell_transition.rest()
+                self._panel.setHasShadow_(True)
+                self._stop_shell_ticks()
+            elif frame.phase == "tail":
+                self._panel.orderOut_(None)
+        except Exception:
+            logger.exception("Teleporter transition failed; retaining native controls")
+            self._finish_shell()
+
+    def opticalShellDidPresent_(self, payload):
+        if (not self.visible or not getattr(self, "_shell_waiting", False)
+                or payload.get("epoch") != self._shell_epoch
+                or payload.get("host") is not self._shell_host):
+            return
+        now = time.perf_counter()
+        if now - self._shell_wait_started >= _SHELL_START_GRACE_S:
+            self._shell_transition.rest()
+        else:
+            self._shell_transition.started_at = now
+        self._shell_waiting = False
+        self.opticalShellStep_(self._shell_tick_timer)
 
     def windowDidMove_(self, notification):
         if self.visible:
@@ -411,12 +570,12 @@ class DiaulosSwitcherOverlay(NSObject):
             config["optical_field"].update(coordinates)
             host = registry.host_for_screen(screen)
             if self._shell_host is not None and self._shell_host is not host:
-                self._shell_host.release_client("spoke.teleporter")
+                for client_id in self._shell_client_ids():
+                    self._shell_host.release_client(client_id)
                 self._shell_registered = False
+                self._shell_sidecars_registered = False
             self._shell_host = host
-            if self._shell_registered:
-                success = host.update_client_config("spoke.teleporter", config)
-            else:
+            if not self._shell_registered:
                 from .fullscreen_compositor import OverlayClientIdentity
 
                 identity = OverlayClientIdentity(
@@ -432,12 +591,37 @@ class DiaulosSwitcherOverlay(NSObject):
                         False,
                     )
 
-                host.register_client(
+                self._shell_client = host.register_client(
                     identity,
                     window=self._panel,
                     content_view=self._panel.contentView(),
                     on_capture_state=capture_state_changed,
                 )
+            transition = getattr(self, "_shell_transition", None)
+            if transition is not None:
+                if not self._shell_sidecars_registered:
+                    from .fullscreen_compositor import OverlayClientIdentity
+
+                    for suffix in ("dismiss_seam", "dismiss_radial_pucker"):
+                        host.register_client(
+                            OverlayClientIdentity(client_id=f"{_SHELL_CLIENT_ID}.{suffix}", display_id=host.display_id, role="hud"),
+                            window=None, content_view=None,
+                        )
+                    self._shell_sidecars_registered = True
+                self._shell_final = config
+                self._publish_shell_frame(time.perf_counter())
+                success = True
+                if self._shell_waiting and not self._shell_present_armed:
+                    self._shell_present_armed = True
+                    epoch = self._shell_epoch
+
+                    def did_present():
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "opticalShellDidPresent:", {"host": host, "epoch": epoch}, False,
+                        )
+
+                    self._shell_client.set_on_first_present(did_present)
+            else:
                 success = host.update_client_config("spoke.teleporter", config)
             self._shell_registered = bool(success)
             if not success:
@@ -445,6 +629,7 @@ class DiaulosSwitcherOverlay(NSObject):
                 self._set_status("Native presentation; optical shell unavailable")
             logger.info("Teleporter House shell: registered=%s display=%s", success, host.display_id)
         except Exception:
+            self._finish_shell()
             self._shell_unavailable = True
             self._set_status("Native presentation; optical shell unavailable")
             logger.exception("Teleporter optical publication failed; native controls remain usable")
@@ -457,6 +642,7 @@ class DiaulosSwitcherOverlay(NSObject):
         status_label = getattr(self, "_status_label", None)
         old_status = status_label.stringValue() if status_label is not None else ""
         if state == "failed":
+            self._finish_shell()
             self._shell_unavailable = True
             suffix = f" ({error})" if error else ""
             self._set_status(f"Native presentation; optical shell unavailable{suffix}")
@@ -468,6 +654,7 @@ class DiaulosSwitcherOverlay(NSObject):
             if old_status.startswith("Native presentation; optical shell"):
                 self._set_status("")
         elif state == "cancelled":
+            self._finish_shell()
             self._shell_unavailable = True
             self._set_status("Native presentation; optical shell stopped")
 
