@@ -3,11 +3,33 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import logging
 from pathlib import Path
 import time
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def timed_inference_context(lock, timings=None):
+    """Separate shared-client queueing from time spent owning the client."""
+    started = time.monotonic()
+    timing = {}
+    try:
+        with lock:
+            acquired = time.monotonic()
+            timing["lock_wait_seconds"] = acquired - started
+            try:
+                yield timing
+            finally:
+                timing["lock_held_seconds"] = time.monotonic() - acquired
+    finally:
+        if timing:
+            if timings is not None:
+                timings.append(dict(timing))
+            logger.info("Local inference lock: wait=%.3fs held=%.3fs",
+                        timing["lock_wait_seconds"], timing.get("lock_held_seconds", 0.0))
 
 
 def client_receipt(client) -> dict:
@@ -41,12 +63,13 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
     phase = "audio_validation"
     text, error, client = None, None, None
     effective = {}
+    timing = None
     try:
         wav = spool.read_recording_audio(capture_id)
         phase = "client_creation"
         client = client_factory(dict(route))
         phase = "inference"
-        with inference_context(client):
+        with inference_context(client) as timing:
             try:
                 text = client.transcribe(wav)
                 if not isinstance(text, str):
@@ -62,7 +85,9 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
         logger.exception("Recording re-transcription failed at %s", phase)
     spool.finish_attempt(
         capture_id, attempt_id, text=text, error=error, effective=effective,
-        wall_seconds=time.monotonic() - started, evidence={"phase": phase},
+        wall_seconds=time.monotonic() - started,
+        evidence={"phase": phase, **({"local_inference": dict(timing)}
+                                    if isinstance(timing, dict) else {})},
     )
 
 

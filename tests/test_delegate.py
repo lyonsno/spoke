@@ -5572,6 +5572,48 @@ class TestRecordingCap:
         assert d.performSelectorOnMainThread_withObject_waitUntilDone_.call_count == 2
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_live_history_separates_inference_lock_wait_from_client_work(
+    main_module, monkeypatch, tmp_path, fails
+):
+    from types import SimpleNamespace
+    from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+
+    delegate = _make_delegate(main_module, monkeypatch)
+    now = [100.0]
+    monkeypatch.setattr(main_module.time, "monotonic", lambda: now[0])
+
+    class WaitingLock:
+        def __enter__(self):
+            now[0] += 5.0
+        def __exit__(self, *args):
+            return False
+
+    def transcribe(audio):
+        now[0] += 2.0
+        if fails:
+            raise RuntimeError("backend failed")
+        return "retained words"
+
+    delegate._client = SimpleNamespace(transcribe=transcribe)
+    delegate._local_inference_lock = WaitingLock()
+    delegate._touch_model = MagicMock()
+    delegate._whisper_backend, delegate._transcription_model_id = "local", "fixture"
+    delegate._transcribe_final_buffer = lambda audio, **kwargs: delegate._transcribe_full_buffer(audio)
+    delegate._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = delegate._audio_spool.spool_capture(_silent_wav(1))
+    if fails:
+        with pytest.raises(RuntimeError, match="backend failed"):
+            delegate._transcribe_with_history(b"audio", capture_id=capture.capture_id)
+    else:
+        assert delegate._transcribe_with_history(b"audio", capture_id=capture.capture_id) == "retained words"
+    attempt = delegate._audio_spool.list_recordings()[0]["attempts"][0]
+    assert attempt["evidence"]["local_inference"] == [
+        {"lock_wait_seconds": 5.0, "lock_held_seconds": 2.0}
+    ]
+    assert attempt["wall_seconds"] == 7.0
+
+
 class TestCommandTranscribeWorker:
     """Test _command_transcribe_worker branching and dispatch."""
 

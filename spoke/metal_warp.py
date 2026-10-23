@@ -750,11 +750,6 @@ class MetalWarpPipeline:
         self._thread_exec_width = pipeline.threadExecutionWidth()
         self._max_tg_height = pipeline.maxTotalThreadsPerThreadgroup() // self._thread_exec_width
 
-        # Pre-allocate reusable params buffer (avoids alloc per frame)
-        self._params_buffer = self._device.newBufferWithLength_options_(
-            _WARP_PARAMS_SIZE, 0,  # MTLResourceStorageModeShared
-        )
-
         logger.info("Metal warp pipeline created (threadgroup=%dx%d)",
                      self._thread_exec_width, self._max_tg_height)
 
@@ -1007,7 +1002,7 @@ class MetalWarpPipeline:
         blit = command_buffer.blitCommandEncoder()
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
         self._record_drawable_copy(in_w, in_h)
-        if needs_mip_texture and self._mip_texture is not None:
+        if len(shell_configs) == 1 and needs_mip_texture and self._mip_texture is not None:
             origin = (0, 0, 0)
             size = (in_w, in_h, 1)
             try:
@@ -1056,10 +1051,12 @@ class MetalWarpPipeline:
                     if index == len(shell_configs) - 1
                     else (multipass_a if index % 2 == 0 else multipass_b)
                 )
-                if current_source is not pass_dest:
+                prepare_mips = _shell_needs_mip_texture(config) and self._mip_texture is not None
+                if current_source is not pass_dest or prepare_mips:
                     blit = command_buffer.blitCommandEncoder()
-                    blit.copyFromTexture_toTexture_(current_source, pass_dest)
-                    if _shell_needs_mip_texture(config) and self._mip_texture is not None:
+                    if current_source is not pass_dest:
+                        blit.copyFromTexture_toTexture_(current_source, pass_dest)
+                    if prepare_mips:
                         origin = (0, 0, 0)
                         size = (out_w, out_h, 1)
                         try:
@@ -1136,21 +1133,14 @@ class MetalWarpPipeline:
                     warp_config = dict(active_config)
                     warp_config["temporal_blend"] = 1.0
 
-                # Update reusable params buffer via memmove (no alloc per frame)
+                # The command executes asynchronously; each submission must own
+                # its parameters until Metal has finished reading them.
                 params_data = _pack_warp_params(
                     out_w, out_h, warp_config,
                     grid_offset_x=float(box_x0),
                     grid_offset_y=float(box_y0),
                 )
-                if self._params_buffer is not None:
-                    contents_ptr = self._params_buffer.contents()
-                    if contents_ptr is not None:
-                        ctypes.memmove(contents_ptr, params_data, len(params_data))
-                        params_buffer = self._params_buffer
-                    else:
-                        params_buffer = _create_metal_buffer(self._device, params_data)
-                else:
-                    params_buffer = _create_metal_buffer(self._device, params_data)
+                params_buffer = _create_metal_buffer(self._device, params_data)
 
                 if params_buffer is None:
                     self._last_warp_dispatches_by_client[str(active_config.get("client_id") or "")]["skip_reason"] = "parameter_buffer_unavailable"

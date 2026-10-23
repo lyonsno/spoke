@@ -51,6 +51,31 @@ def test_retranscription_failure_before_client_is_durable(tmp_path):
     assert result["effective"] == {}
 
 
+def test_retranscription_retains_inference_lock_timing(tmp_path):
+    from contextlib import contextmanager
+    run = _service()
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    route = {"backend": "local", "model": "fixture"}
+    attempt = spool.start_attempt(capture.capture_id, requested=route, kind="retranscription")
+
+    class Client:
+        def transcribe(self, audio):
+            return "recovered"
+
+    @contextmanager
+    def inference(client):
+        timing = {"lock_wait_seconds": 5.0}
+        yield timing
+        timing["lock_held_seconds"] = 2.0
+
+    run(spool, capture.capture_id, attempt, route, lambda r: Client(), inference)
+    result = spool.list_recordings()[0]["attempts"][0]
+    assert result["evidence"]["local_inference"] == {
+        "lock_wait_seconds": 5.0, "lock_held_seconds": 2.0
+    }
+
+
 def test_retranscription_integrity_failure_never_loads_model(tmp_path):
     run = _service()
     spool = AudioSpool(AudioSpoolConfig(root=tmp_path))

@@ -448,8 +448,9 @@ def test_warp_exterior_mix_weight_keeps_boundary_strength_but_starts_later_with_
     assert metal_warp._warp_exterior_mix_weight(30.0, 20.0) == pytest.approx(0.0)
 
 
-def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
-    """Each shell pass needs immutable params for the queued Metal command."""
+@pytest.fixture
+def queued_warp_pipeline(monkeypatch):
+    """Retain queued resources without simulating GPU completion."""
 
     class FakeBuffer:
         def __init__(self, data_or_length):
@@ -507,6 +508,9 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
 
         def newBufferWithLength_options_(self, length, _options):
             return FakeBuffer(length)
+
+        def newBufferWithBytes_length_options_(self, data, _length, _options):
+            return FakeBuffer(data)
 
     class FakeBlitEncoder:
         def __init__(self):
@@ -608,6 +612,43 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     pipeline._max_tg_height = 8
     pipeline._params_buffer = FakeBuffer(metal_warp._WARP_PARAMS_SIZE)
 
+    return pipeline, FakeDrawable
+
+
+def test_single_shell_queued_parameters_survive_next_submission(queued_warp_pipeline):
+    pipeline, drawable = queued_warp_pipeline
+    config = {"center_x": 25.0, "center_y": 20.0,
+              "content_width_points": 20.0, "content_height_points": 10.0,
+              "mip_blur_strength": 0.0}
+    assert pipeline.warp_to_drawable(object(), drawable(), width=100, height=50,
+                                     shell_config=config)
+    first = pipeline._command_queue.command_buffers[-1].encoders[0].params_buffer
+    payload = first.payload()
+    assert pipeline.warp_to_drawable(object(), drawable(), width=100, height=50,
+                                     shell_config={**config, "center_x": 75.0})
+    second = pipeline._command_queue.command_buffers[-1].encoders[0].params_buffer
+    assert first.payload() == payload
+    assert metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, second.payload())[10] == 75.0
+
+
+def test_multipass_prepares_blur_only_from_each_consumed_source(queued_warp_pipeline):
+    pipeline, drawable = queued_warp_pipeline
+    config = {"center_x": 25.0, "center_y": 20.0,
+              "content_width_points": 20.0, "content_height_points": 10.0,
+              "mip_blur_strength": 1.0}
+    assert pipeline.warp_to_drawable(object(), drawable(), width=100, height=50,
+                                     shell_config=[config, {**config, "center_x": 75.0}])
+    command = pipeline._command_queue.command_buffers[-1]
+    copies = [pair for encoder in command.blit_encoders for pair in encoder.copies]
+    assert not any(src == "input" and dst.startswith("scratch-") for src, dst in copies)
+    assert len(copies) == 5
+    assert pipeline.diagnostics_snapshot()["mip_generation_frames"] == 2
+
+
+def test_multi_shell_draw_uses_distinct_params_buffers(queued_warp_pipeline):
+    """Each shell pass needs immutable params for the queued Metal command."""
+    pipeline, FakeDrawable = queued_warp_pipeline
+
     assert pipeline.warp_to_drawable(
         object(),
         FakeDrawable(),
@@ -669,6 +710,25 @@ def test_multi_shell_draw_uses_distinct_params_buffers(monkeypatch):
     ] == [pytest.approx(1.0), pytest.approx(1.0)]
 
 
+@pytest.mark.parametrize("used_mip", [False, True])
+def test_skipped_prefix_still_prepares_visible_final_blur(queued_warp_pipeline, used_mip):
+    pipeline, drawable = queued_warp_pipeline
+    config = {"center_x": 25.0, "center_y": 20.0,
+              "content_width_points": 20.0, "content_height_points": 10.0,
+              "mip_blur_strength": 1.0}
+    if used_mip:
+        pipeline.warp_to_drawable(object(), drawable(), width=100, height=50,
+                                  shell_config=config)
+    before = pipeline.diagnostics_snapshot()["mip_generation_frames"]
+    pipeline.warp_to_drawable(object(), drawable(), width=100, height=50,
+        shell_config=[{**config, "center_x": -1000.0}, config])
+    command = pipeline._command_queue.command_buffers[-1]
+    assert len(command.encoders) == 1
+    assert pipeline.diagnostics_snapshot()["mip_generation_frames"] - before == 1
+    copies = [pair for encoder in command.blit_encoders for pair in encoder.copies]
+    assert ("drawable", command.encoders[0].source_texture.label) in copies
+
+
 def test_warp_diagnostics_record_fullscreen_mip_cost_against_bounded_shell(monkeypatch):
     """Current blur source work is full-frame even when the shell dispatch is bounded."""
 
@@ -720,6 +780,9 @@ def test_warp_diagnostics_record_fullscreen_mip_cost_against_bounded_shell(monke
 
         def newBufferWithLength_options_(self, length, _options):
             return FakeBuffer(length)
+
+        def newBufferWithBytes_length_options_(self, data, _length, _options):
+            return FakeBuffer(data)
 
     class FakeBlitEncoder:
         def copyFromTexture_toTexture_(self, *_args):
@@ -871,6 +934,9 @@ def test_crisp_shell_skips_mip_generation_and_samples_input_texture(monkeypatch)
 
         def newBufferWithLength_options_(self, length, _options):
             return FakeBuffer(length)
+
+        def newBufferWithBytes_length_options_(self, data, _length, _options):
+            return FakeBuffer(data)
 
     class FakeBlitEncoder:
         def __init__(self):

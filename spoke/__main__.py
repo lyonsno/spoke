@@ -3355,6 +3355,7 @@ class SpokeAppDelegate(NSObject):
         if trace is None:
             trace = self._history_trace = threading.local()
         trace.routes = []
+        trace.inference_timings = []
         started = time.monotonic()
         text, error = None, None
         try:
@@ -3371,11 +3372,13 @@ class SpokeAppDelegate(NSObject):
                         capture_id, attempt_id, text=text, error=error,
                         effective=routes[-1] if routes else client_receipt(self._client),
                         wall_seconds=time.monotonic() - started,
-                        evidence={"routes": routes, "delivery": "not_verified"},
+                        evidence={"routes": routes, "delivery": "not_verified",
+                                  "local_inference": trace.inference_timings},
                     )
                 except Exception:
                     logger.exception("Could not finish recording history attempt %s", attempt_id)
             trace.routes = None
+            trace.inference_timings = None
 
     def _record_history_delivery(self, history, state, detail="") -> None:
         if not history:
@@ -8141,7 +8144,9 @@ class SpokeAppDelegate(NSObject):
         # Touch the model on each local inference so TTL doesn't expire
         # while the model is actively in use.
         self._touch_model(client)
-        return lock
+        from .recording_history import timed_inference_context
+        timings = getattr(getattr(self, "_history_trace", None), "inference_timings", None)
+        return timed_inference_context(lock, timings)
 
     def _inject_result_text(
         self,
