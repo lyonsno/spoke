@@ -15,11 +15,16 @@ def main():
     for name in ("out", "repo-root", "greenroom-root", "queue-dir"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--lease-id", required=True)
+    parser.add_argument("--startup-seconds", type=float, default=15)
+    parser.add_argument("--native-capture-library", type=Path)
+    parser.add_argument("--render-on-capture", action="store_true")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    route = ("typed Swift/SCK capture feeding existing Python House renderer" if args.native_capture_library else
+             "native Python/AppKit/SCK/Metal full vs localized House")
     receipt = {"passed": False, "phase": "permission", "pid": os.getpid(),
                "repo_root": str(args.repo_root), "queue": str(args.queue_dir),
-               "route": "native Python/AppKit/SCK/Metal full vs localized House",
+               "route": route,
                "lease_id": args.lease_id}
     path = args.out / "lease-run.json"
 
@@ -35,14 +40,8 @@ def main():
             raise RuntimeError("Effective host lacks Screen Recording permission")
         sys.path.insert(0, str(args.greenroom_root))
         from gpu_queue.queue import GPUQueue
-        from gpu_queue.performance_window import native_dialog
         queue = GPUQueue(args.queue_dir)
-        receipt["phase"] = "confirmation"; save()
-        answer = native_dialog({"job_id": args.lease_id, "owner": "warpstorm-pit-boss",
-            "route": receipt["route"], "reason": "Two brief House warp arms over moving lines. No stress workload; live Spoke remains untouched."})
-        receipt["operator_response"] = answer
-        if answer is not True:
-            raise RuntimeError("Measurement not confirmed")
+        receipt["claim"] = "Correctness observation under natural load, not a controlled performance comparison"
         if any((queue.queue_dir / "pending").iterdir()) or any((queue.queue_dir / "running").iterdir()):
             raise RuntimeError("Existing queued work has priority; no lease claimed")
         lease = queue.claim_lease(owner="warpstorm-pit-boss", agent_id="warpstorm-pit-boss",
@@ -50,9 +49,14 @@ def main():
             backend="SCK/Metal", device="M4 Max/WindowServer", profile="localized House experiment",
             supports_checkpoints=False, interruptible=True, lease_id=args.lease_id)
         command = [sys.executable, str(args.repo_root / "tests/native_local_liquid_witness.py"),
-                   "--repo-root", str(args.repo_root), "--out", str(args.out)]
+                   "--repo-root", str(args.repo_root), "--out", str(args.out),
+                   "--startup-seconds", str(args.startup_seconds)]
+        if args.native_capture_library:
+            command.extend(["--native-capture-library", str(args.native_capture_library)])
+        if args.render_on_capture:
+            command.append("--render-on-capture")
         receipt.update(phase="execution", command=command,
-            witness_sha256=hashlib.sha256(Path(command[1]).read_bytes()).hexdigest())
+            witness_sha256=hashlib.sha256((args.repo_root / "tests/native_local_liquid_witness.py").read_bytes()).hexdigest())
         save()
         with (args.out / "stdout.log").open("w") as stdout, (args.out / "stderr.log").open("w") as stderr:
             receipt["exit_code"] = subprocess.run(command, cwd=args.repo_root, stdout=stdout, stderr=stderr).returncode

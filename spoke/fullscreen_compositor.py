@@ -990,6 +990,12 @@ class FullScreenCompositor:
         self._metal_layer = CAMetalLayer.alloc().init()
         self._metal_layer.setDevice_(self._pipeline.device)
         self._metal_layer.setPixelFormat_(80)  # BGRA8Unorm
+        # SCK defaults to the display color space. Untagged presentation makes
+        # a captured patch visibly differ from the live desktop around it.
+        if hasattr(screen, "colorSpace"):
+            color_space = screen.colorSpace()
+            if color_space is not None and color_space.CGColorSpace() is not None:
+                self._metal_layer.setColorspace_(color_space.CGColorSpace())
         self._metal_layer.setFramebufferOnly_(False)
         self._metal_layer.setOpaque_(False)
         self._metal_layer.setContentsScale_(scale)

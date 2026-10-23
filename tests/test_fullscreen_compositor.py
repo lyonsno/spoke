@@ -24,6 +24,26 @@ class _FakeWindow:
         return self._window_number
 
 
+def test_compositor_layer_matches_the_captured_display_color_space(monkeypatch):
+    import importlib
+    from unittest.mock import MagicMock
+    module = importlib.import_module("spoke.fullscreen_compositor")
+    color_space = object()
+    layer = MagicMock()
+    monkeypatch.setattr(module.objc, "lookUpClass", lambda name: SimpleNamespace(
+        alloc=lambda: SimpleNamespace(init=lambda: layer)), raising=False)
+    compositor = module.FullScreenCompositor.__new__(module.FullScreenCompositor)
+    compositor._screen = SimpleNamespace(
+        frame=lambda: SimpleNamespace(origin=SimpleNamespace(x=0, y=0),
+                                      size=SimpleNamespace(width=1000, height=800)),
+        backingScaleFactor=lambda: 2,
+        colorSpace=lambda: SimpleNamespace(CGColorSpace=lambda: color_space),
+    )
+    compositor._pipeline = SimpleNamespace(device=object())
+    compositor._create_fullscreen_window()
+    layer.setColorspace_.assert_called_once_with(color_space)
+
+
 def test_fixed_capture_viewport_maps_display_pixels_without_scaling_lens(monkeypatch):
     import importlib
     module = importlib.import_module("spoke.fullscreen_compositor")
