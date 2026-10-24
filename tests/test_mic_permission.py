@@ -123,19 +123,12 @@ class TestMicPermissionAsync:
         """A hardware/runtime failure should dispatch micProbeFailed, not permission denial."""
         delegate = _make_mic_delegate(main_module, monkeypatch)
 
-        rec_called = threading.Event()
         fake_sd = MagicMock()
-
-        def failing_rec(*args, **kwargs):
-            rec_called.set()
-            raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
-
-        fake_sd.rec.side_effect = failing_rec
+        fake_sd.rec.side_effect = RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
 
         with patch.dict("sys.modules", {"sounddevice": fake_sd}):
-            delegate._request_mic_permission()
-            rec_called.wait(timeout=2.0)
-            time.sleep(0.05)
+            # Thread dispatch is covered separately; classify the failure deterministically.
+            delegate._probe_mic_permission_portaudio_fallback()
 
         fake_sd.rec.assert_called_once()
         delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_with(

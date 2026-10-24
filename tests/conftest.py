@@ -246,6 +246,7 @@ def menubar_module(mock_pyobjc):
 @pytest.fixture
 def main_module(mock_pyobjc):
     """Import spoke.__main__ with mocked PyObjC and sub-modules."""
+    house_window = sys.modules.get("spoke.house_window")
     # Clear all cached spoke modules so they re-import against fakes
     for name in list(sys.modules):
         if name.startswith("spoke."):
@@ -256,10 +257,16 @@ def main_module(mock_pyobjc):
     fake_focus_check.has_focused_text_input = MagicMock(return_value=True)
     fake_focus_check.focused_text_contains = MagicMock(return_value=None)
     fake_focus_check._get_focused_role = MagicMock(return_value="AXTextField")
+    fake_focus_check._cf = fake_focus_check._hi = None
+    fake_focus_check._cfstr = MagicMock(return_value=None)
     sys.modules["spoke.focus_check"] = fake_focus_check
 
-    mod = importlib.import_module("spoke.__main__")
-    yield mod
-    for name in list(sys.modules):
-        if name.startswith("spoke."):
-            sys.modules.pop(name, None)
+    try:
+        yield importlib.import_module("spoke.__main__")
+    finally:
+        for name in list(sys.modules):
+            if name.startswith("spoke."):
+                sys.modules.pop(name, None)
+        # Native Objective-C classes cannot be registered twice in one process.
+        if house_window is not None:
+            sys.modules["spoke.house_window"] = house_window

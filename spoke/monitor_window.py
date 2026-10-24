@@ -8,8 +8,9 @@ import objc
 from Foundation import NSObject, NSMakeRect, NSURL, NSURLRequest
 from WebKit import WKWebView, WKWebViewConfiguration, WKUserScript, WKUserScriptInjectionTimeAtDocumentStart
 
-from .window_focus import WindowFocus, restore_window_focus
+from .window_focus import WindowFocus, restore_window_focus, window_owns_key
 from .monitor_freshness import FRESHNESS_SCRIPT as _FRESHNESS
+from .house_window import HouseWindowShell
 
 MONITORS = {
     "fleet": ("Epistaxis Diauloi", "http://127.0.0.1:8770/fleet"),
@@ -111,7 +112,7 @@ def local_monitor_url(url):
         return False
 
 
-class MonitorWindow(NSObject):
+class MonitorWindow(HouseWindowShell):
     def initWithMonitor_(self, name):
         self = objc.super(MonitorWindow, self).init()
         if self is None:
@@ -178,14 +179,17 @@ class MonitorWindow(NSObject):
                 self._back_button = button
                 button.setEnabled_(False)
         self._window, self._webview = window, web
+        self._init_window_shell(window, f"spoke.monitor.{self._name}")
         web.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(self._url)))
 
     @objc.python_method
     def show(self, previous_app=None, previous_focus=None):
         self.setup()
-        if previous_focus is not None or previous_app is not None or not self._window.isVisible():
+        if (previous_focus is not None or previous_app is not None
+                or not getattr(self, "_popup_visible", self._window.isVisible())):
             self._focus_return = previous_focus or WindowFocus.capture(previous_app)
             self._previous_app = self._focus_return.app if self._focus_return is not None else None
+        self._show_window_shell()
         self._window.makeKeyAndOrderFront_(None)
         AK.NSApp().activateIgnoringOtherApps_(True)
         self._window.makeFirstResponder_(self._webview)
@@ -195,14 +199,19 @@ class MonitorWindow(NSObject):
     @objc.python_method
     def dismiss(self, restore_focus=True):
         self._restore_focus = restore_focus
-        self._return_focus_on_close = bool(self._window.isKeyWindow())
-        self._window.close()
+        self._return_focus_on_close = window_owns_key(self._window)
+        if self._dismiss_window_shell(restore_focus):
+            self.windowWillClose_(None)
+        else:
+            self._window.close()
 
     def windowShouldClose_(self, sender):
-        self._return_focus_on_close = bool(self._window.isKeyWindow())
-        return True
+        self.dismiss()
+        return False
 
     def windowWillClose_(self, notification):
+        if getattr(self, "visible", False):
+            self._dismiss_window_shell(False)
         restore = getattr(self, "_restore_focus", True)
         was_key = getattr(self, '_return_focus_on_close', None)
         self._return_focus_on_close = None
@@ -275,7 +284,7 @@ class MonitorWindow(NSObject):
     def webView_didFinishNavigation_(self, webview, navigation):
         self._back_button.setEnabled_(webview.canGoBack())
         self._status.setStringValue_(str(webview.URL().absoluteString()))
-        self._set_visible(self._window.isVisible())
+        self._set_visible(self._window.isVisible() and getattr(self, "_popup_visible", True))
         if self._window.isKeyWindow():
             self._focus_filter()
 

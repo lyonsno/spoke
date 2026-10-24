@@ -14,7 +14,8 @@ import AppKit as AK
 from Foundation import NSData, NSIndexSet, NSMakeRect, NSObject, NSTimer, NSURL
 
 from .recording_history import delivery_label, duration_label, first_line, run_retranscription
-from .window_focus import WindowFocus, restore_window_focus
+from .window_focus import WindowFocus, restore_window_focus, window_owns_key
+from .house_window import HouseWindowShell
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def _date_label(value):
         return "Unknown capture time"
 
 
-class RecordingHistoryWindow(NSObject):
+class RecordingHistoryWindow(HouseWindowShell):
     def initWithDelegate_(self, delegate):
         self = objc.super(RecordingHistoryWindow, self).init()
         if self is None:
@@ -158,6 +159,7 @@ class RecordingHistoryWindow(NSObject):
         self._status.setStringValue_("Retention: manual" if self._spool.config.enabled else "Recording history disabled")
         content.addSubview_(self._status)
         self._window = window
+        self._init_window_shell(window, "spoke.recordings")
         self._populate_models()
         self._render_detail()
 
@@ -194,11 +196,14 @@ class RecordingHistoryWindow(NSObject):
             self._models.addItemWithTitle_(f"Unavailable: {selected.get('model', 'unknown')}")
             self._models.selectItemAtIndex_(len(self._model_routes))
 
-    def show(self):
+    @objc.python_method
+    def show(self, previous_app=None, previous_focus=None):
         self.setup()
-        if not self._window.isVisible():
-            self._focus_return = WindowFocus.capture()
+        if (previous_focus is not None or previous_app is not None
+                or not getattr(self, "_popup_visible", self._window.isVisible())):
+            self._focus_return = previous_focus or WindowFocus.capture(previous_app)
             self._previous_app = self._focus_return.app if self._focus_return is not None else None
+        self._show_window_shell()
         self._window.makeKeyAndOrderFront_(None)
         AK.NSApp().activateIgnoringOtherApps_(True)
         self.refresh_(None)
@@ -208,28 +213,42 @@ class RecordingHistoryWindow(NSObject):
             )
 
     @objc.python_method
-    def dismiss(self):
-        self._return_focus_on_close = bool(self._window.isKeyWindow())
-        self._window.close()
+    def dismiss(self, restore_focus=True):
+        self._restore_focus = restore_focus
+        self._return_focus_on_close = window_owns_key(self._window)
+        if self._dismiss_window_shell(restore_focus):
+            self.windowWillClose_(None)
+        else:
+            self._window.close()
 
     def windowShouldClose_(self, sender):
-        self._return_focus_on_close = bool(self._window.isKeyWindow())
-        return True
+        self.dismiss()
+        return False
 
     def windowWillClose_(self, notification):
+        alert = getattr(self, "_trash_alert", None)
+        self._trash_alert = None
+        if alert is not None:
+            self._window.endSheet_returnCode_(alert.window(), 1001)
+        if getattr(self, "visible", False):
+            self._dismiss_window_shell(False)
         was_key = getattr(self, '_return_focus_on_close', None)
         self._return_focus_on_close = None
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
         self._stop_audio()
-        if not getattr(self, '_cleaning_up', False):
+        on_close = getattr(self, "_on_close", None)
+        if on_close is not None:
+            on_close(self)
+        if not getattr(self, '_cleaning_up', False) and getattr(self, '_restore_focus', True):
             restore_window_focus(self, self._window, was_key=was_key)
+        self._restore_focus = True
 
     def cleanup(self):
         self._cleaning_up = True
         if self._window is not None:
-            self._window.close()
+            self.dismiss(restore_focus=False)
         self._replays.shutdown(wait=False, cancel_futures=False)
 
     def refresh_(self, sender):
@@ -490,19 +509,31 @@ class RecordingHistoryWindow(NSObject):
 
     def trashRecording_(self, sender):
         record = self._selected()
-        if not record or record["capture_id"] in self._busy or self._delegate._history_live_busy():
+        if (not record or record["capture_id"] in self._busy or self._delegate._history_live_busy()
+                or getattr(self, "_trash_alert", None) is not None):
             return
         alert = AK.NSAlert.alloc().init()
         alert.setMessageText_("Move this recording to Trash?")
         alert.setInformativeText_("The original audio and all transcription attempts will move together.")
         alert.addButtonWithTitle_("Move to Trash")
         alert.addButtonWithTitle_("Cancel")
-        if alert.runModal() != 1000:
-            return
+        self._trash_alert = alert
+
+        def confirmed(response):
+            if self._trash_alert is not alert:
+                return
+            self._trash_alert = None
+            if (response == 1000 and record["capture_id"] not in self._busy
+                    and not self._delegate._history_live_busy()):
+                self._trash_recording(record["capture_id"])
+
+        alert.beginSheetModalForWindow_completionHandler_(self._window, confirmed)
+
+    def _trash_recording(self, capture_id):
         self._stop_audio()
-        base = self._spool._capture_path(record["capture_id"])
+        base = self._spool._capture_path(capture_id)
         paths = [base.with_suffix(".wav"), base.with_suffix(".json"),
-                 self._spool.config.root / "attempts" / record["capture_id"]]
+                 self._spool.config.root / "attempts" / capture_id]
         urls = [NSURL.fileURLWithPath_(str(path)) for path in paths if path.exists()]
         def complete(mapping, error):
             self.performSelectorOnMainThread_withObject_waitUntilDone_(

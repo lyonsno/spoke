@@ -178,3 +178,28 @@ def test_monitor_new_summon_observes_current_external_app(monkeypatch):
     owner._set_visible = MagicMock()
     owner.show(previous_app=None)
     assert owner._previous_app is terminal
+
+
+def test_monitor_reopen_during_native_tail_captures_new_origin(monkeypatch):
+    mod = module()
+    owner = mod.MonitorWindow.alloc().init()
+    owner._window = MagicMock()
+    owner._window.isVisible.return_value = True
+    owner._popup_visible = False
+    owner.setup, owner._show_window_shell = MagicMock(), MagicMock()
+    owner._set_visible, owner._focus_filter = MagicMock(), MagicMock()
+    owner._webview = MagicMock()
+    current = MagicMock()
+    capture = MagicMock(return_value=current)
+    monkeypatch.setattr(mod.WindowFocus, "capture", capture)
+    monkeypatch.setattr(mod.AK, "NSApp", lambda: MagicMock())
+    owner.show()
+    capture.assert_called_once_with(None)
+    assert owner._focus_return is current
+    owner._popup_visible = True
+    owner.show()
+    capture.assert_called_once_with(None)
+    inherited = MagicMock()
+    owner.show(previous_focus=inherited)
+    assert owner._focus_return is inherited
+    capture.assert_called_once_with(None)

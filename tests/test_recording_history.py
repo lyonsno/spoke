@@ -368,3 +368,73 @@ def test_history_normal_close_returns_to_origin_window(monkeypatch):
     monkeypatch.setattr(mod.AK, "NSApp", lambda: app)
     owner.windowWillClose_(None)
     owner._focus_return.restore.assert_called_once_with()
+
+
+def test_history_trash_is_a_cancelable_child_sheet(monkeypatch):
+    from spoke import recording_history_window as mod
+    from unittest.mock import MagicMock
+    owner = mod.RecordingHistoryWindow.alloc().init()
+    owner._window, owner._delegate = MagicMock(), MagicMock()
+    owner._delegate._history_live_busy.return_value = False
+    owner._busy = set()
+    owner._selected = lambda: {"capture_id": "retained"}
+    owner._stop_audio = MagicMock()
+    owner._spool = MagicMock()
+    owner._timer = None
+    alert = MagicMock()
+    monkeypatch.setattr(mod.AK, "NSAlert", MagicMock())
+    mod.AK.NSAlert.alloc.return_value.init.return_value = alert
+    owner.trashRecording_(None)
+    alert.runModal.assert_not_called()
+    sheet, complete = alert.beginSheetModalForWindow_completionHandler_.call_args.args
+    assert sheet is owner._window
+    owner._restore_focus = False
+    owner.windowWillClose_(None)
+    owner._window.endSheet_returnCode_.assert_called_once_with(alert.window(), 1001)
+    complete(1000)  # Late acceptance after replacement cannot delete a recording.
+    owner._spool._capture_path.assert_not_called()
+
+
+def test_history_reopen_during_native_tail_captures_new_origin(monkeypatch):
+    from spoke import recording_history_window as mod
+    from unittest.mock import MagicMock
+    owner = mod.RecordingHistoryWindow.alloc().init()
+    owner._window = MagicMock()
+    owner._window.isVisible.return_value = True
+    owner._popup_visible = False
+    owner.setup, owner._show_window_shell, owner.refresh_ = MagicMock(), MagicMock(), MagicMock()
+    owner._timer = MagicMock()
+    current = MagicMock()
+    capture = MagicMock(return_value=current)
+    monkeypatch.setattr(mod.WindowFocus, "capture", capture)
+    monkeypatch.setattr(mod.AK, "NSApp", lambda: MagicMock())
+    owner.show()
+    capture.assert_called_once_with(None)
+    assert owner._focus_return is current
+    owner._popup_visible = True
+    owner.show()
+    capture.assert_called_once_with(None)
+    inherited = MagicMock()
+    owner.show(previous_focus=inherited)
+    assert owner._focus_return is inherited
+    capture.assert_called_once_with(None)
+
+
+@pytest.mark.parametrize("sheet_key", [True, False])
+def test_history_dismiss_returns_focus_owned_by_confirmation_sheet(monkeypatch, sheet_key):
+    from spoke import recording_history_window as mod
+    from unittest.mock import MagicMock
+    owner = mod.RecordingHistoryWindow.alloc().init()
+    owner._window, owner._focus_return = MagicMock(), MagicMock()
+    owner._window.isKeyWindow.return_value = False
+    owner._window.attachedSheet.return_value.isKeyWindow.return_value = sheet_key
+    owner._timer = None
+    owner._stop_audio = MagicMock()
+    owner._trash_alert = MagicMock()
+    owner._window.close.side_effect = lambda: owner.windowWillClose_(None)
+    owner.dismiss()
+    if sheet_key:
+        owner._focus_return.restore.assert_called_once_with()
+    else:
+        owner._focus_return.restore.assert_not_called()
+    owner._window.endSheet_returnCode_.assert_called_once()

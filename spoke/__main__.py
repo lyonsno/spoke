@@ -3224,7 +3224,62 @@ class SpokeAppDelegate(NSObject):
         from .recording_history_window import RecordingHistoryWindow
         if getattr(self, "_recording_history", None) is None:
             self._recording_history = RecordingHistoryWindow.alloc().initWithDelegate_(self)
-        self._recording_history.show()
+        previous, focus = self._replace_popup(self._recording_history)
+        self._recording_history._on_close = self._dismiss_monitor_windows
+        self._recording_history.show(previous_app=previous, previous_focus=focus)
+
+    def _popup_hosts(self):
+        hosts = list(getattr(self, "_monitor_windows", {}).values())
+        history = getattr(self, "_recording_history", None)
+        if history is not None:
+            hosts.append(history)
+        switcher = getattr(self, "_diaulos_switcher", None)
+        if switcher is not None:
+            hosts.append(switcher)
+        return hosts
+
+    def _popup_window(self, host):
+        return (host._panel if host is getattr(self, "_diaulos_switcher", None)
+                else getattr(host, "_window", None))
+
+    def _popup_visible(self, host):
+        if host is getattr(self, "_diaulos_switcher", None):
+            return host.visible
+        window = self._popup_window(host)
+        return (window is not None and window.isVisible()
+                and getattr(host, "_popup_visible", True) is not False)
+
+    def _popup_owns_key(self, host):
+        from .window_focus import window_owns_key
+        return window_owns_key(self._popup_window(host))
+
+    def _close_popup(self, host, restore_focus=False):
+        if host is getattr(self, "_diaulos_switcher", None):
+            host.hide(restore_previous=restore_focus, force=not restore_focus)
+        elif restore_focus:
+            host.dismiss()
+        else:
+            host.dismiss(restore_focus=False)
+
+    def _replace_popup(self, target):
+        previous = focus = None
+        self._monitor_dismissing = True
+        try:
+            for host in self._popup_hosts():
+                if host is target:
+                    continue
+                window = self._popup_window(host)
+                if self._popup_visible(host):
+                    if self._popup_owns_key(host):
+                        previous, focus = host._previous_app, host._focus_return
+                    self._close_popup(host)
+                elif getattr(host, "_shell_host", None) is not None:
+                    # A dismissed window's optical tail must not survive replacement.
+                    host._finish_shell()
+        finally:
+            self._monitor_dismissing = False
+        target._delegate = self
+        return previous, focus
 
     def _toggle_fleet_monitor(self) -> None:
         self._toggle_monitor("fleet")
@@ -3235,21 +3290,15 @@ class SpokeAppDelegate(NSObject):
     def _toggle_monitor(self, name) -> None:
         windows = self._monitor_windows
         host = windows.get(name)
-        if host is not None and host._window is not None and host._window.isVisible():
+        if host is not None and self._popup_visible(host):
             self._dismiss_monitor_windows()
             return
-        previous = previous_focus = None
-        for other in windows.values():
-            if other._window is not None and other._window.isVisible():
-                if other._window.isKeyWindow():
-                    previous = other._previous_app
-                    previous_focus = other._focus_return
-                other.dismiss(restore_focus=False)
         if host is None:
             from .monitor_window import MonitorWindow
             host = MonitorWindow.alloc().initWithMonitor_(name)
             windows[name] = host
         host._on_close = self._dismiss_monitor_windows
+        previous, previous_focus = self._replace_popup(host)
         host.show(previous_app=previous, previous_focus=previous_focus)
 
     def _dismiss_monitor_windows(self, closing=None) -> None:
@@ -3257,14 +3306,14 @@ class SpokeAppDelegate(NSObject):
             return
         self._monitor_dismissing = True
         try:
-            hosts = [host for host in self._monitor_windows.values()
-                     if host is not closing and host._window is not None and host._window.isVisible()]
-            hosts.sort(key=lambda host: bool(host._window.isKeyWindow()))
+            hosts = [host for host in self._popup_hosts() if host is not closing]
+            hosts.sort(key=self._popup_owns_key)
             for host in hosts:
-                if closing is None and host._window.isKeyWindow():
-                    host.dismiss()
-                else:
-                    host.dismiss(restore_focus=False)
+                if self._popup_visible(host):
+                    self._close_popup(host, restore_focus=(closing is None
+                                      and self._popup_owns_key(host)))
+                elif getattr(host, "_shell_host", None) is not None:
+                    host._finish_shell()
         finally:
             self._monitor_dismissing = False
 
@@ -3291,8 +3340,8 @@ class SpokeAppDelegate(NSObject):
     def _toggle_recording_history(self) -> None:
         history = getattr(self, "_recording_history", None)
         window = getattr(history, "_window", None)
-        if window is not None and window.isVisible():
-            history.dismiss()
+        if window is not None and self._popup_visible(history):
+            self._dismiss_monitor_windows()
         else:
             self._show_recording_history()
 
@@ -4840,7 +4889,13 @@ class SpokeAppDelegate(NSObject):
     def _toggle_diaulos_switcher(self) -> None:
         """Open or close the voice-native live Diaulos switcher."""
         self._prepare_diaulos_switcher()
-        self._diaulos_switcher.toggle()
+        host = self._diaulos_switcher
+        host._on_close = self._dismiss_monitor_windows
+        if host.visible:
+            self._dismiss_monitor_windows()
+        else:
+            previous, focus = self._replace_popup(host)
+            host.show(previous_app=previous, previous_focus=focus)
 
     def _prepare_diaulos_switcher(self) -> None:
         """Construct and prime the Teleporter outside the user gesture path."""

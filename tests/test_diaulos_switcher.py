@@ -87,10 +87,14 @@ def _selected_pane_payload(candidate, **overrides) -> dict:
 @pytest.fixture
 def overlay_module(mock_pyobjc):
     mock_pyobjc["Quartz"].CATransaction = MagicMock()
+    shared = sys.modules.pop("spoke.house_window", None)
     sys.modules.pop("spoke.diaulos_switcher_overlay", None)
     module = importlib.import_module("spoke.diaulos_switcher_overlay")
     yield module
     sys.modules.pop("spoke.diaulos_switcher_overlay", None)
+    sys.modules.pop("spoke.house_window", None)
+    if shared is not None:
+        sys.modules["spoke.house_window"] = shared
 
 
 def test_parse_live_inventory_is_uncapped_and_preserves_observation_identity():
@@ -732,7 +736,7 @@ def test_client_rejects_malformed_snapshot_and_refresh_output(tmp_path):
         client.refresh()
 
 
-def test_activation_commit_cannot_be_dismissed_or_superseded(overlay_module):
+def test_activation_commit_remains_single_flight_after_dismissal(overlay_module):
     candidate = parse_live_inventory(_payload(2))[0]
     started = threading.Event()
     release = threading.Event()
@@ -768,8 +772,9 @@ def test_activation_commit_cannot_be_dismissed_or_superseded(overlay_module):
     overlay.activate_selected()
     assert started.wait(timeout=1.0)
     try:
-        assert overlay.hide() is False
-        overlay.toggle()
+        assert overlay.hide() is True
+        assert overlay.visible is False
+        overlay.visible = True
         overlay.activate_selected()
         deadline = time.monotonic() + 0.5
         while len(calls) < 2 and time.monotonic() < deadline:
@@ -782,6 +787,30 @@ def test_activation_commit_cannot_be_dismissed_or_superseded(overlay_module):
         assert overlay._activation_in_flight is True
     finally:
         release.set()
+
+
+def test_replacement_detaches_activation_without_stranding_latch(overlay_module):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(overlay_module.DiaulosSwitcherOverlay)
+    overlay.visible = True
+    overlay._activation_in_flight = True
+    overlay._activation_handle = "target"
+    overlay._activation_generation = 7
+    overlay._panel = MagicMock()
+    overlay._previous_app = None
+    overlay._remove_key_monitor = MagicMock()
+    overlay._finish_shell = MagicMock()
+    overlay._search_field = MagicMock()
+    overlay._activate_wezterm = MagicMock()
+    overlay._apply_inventory_payload = MagicMock()
+    assert overlay.hide(restore_previous=False, force=True)
+    # Reopening the same panel does not give the old completion focus authority.
+    overlay.visible = True
+    overlay.activationFinished_({"generation": 7, "receipt": {}})
+    assert not overlay._activation_in_flight
+    assert overlay.visible
+    overlay._activate_wezterm.assert_not_called()
+
+
 
 
 def test_activation_failure_restores_visible_interaction(overlay_module):

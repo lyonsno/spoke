@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -29,8 +28,8 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWorkspace,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer, NSRunLoop
-from Quartz import CALayer, CAShapeLayer, CATransaction, CGPathCreateWithRoundedRect
+from Foundation import NSMakeRect, NSTimer
+from Quartz import CALayer, CAShapeLayer
 
 from .diaulos_switcher import (
     DiaulosActivationError,
@@ -38,6 +37,7 @@ from .diaulos_switcher import (
     DiaulosSwitcherModel,
     EpistaxisDiaulosClient,
 )
+from .house_window import HouseWindowShell
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +57,6 @@ _DOWN_ARROW_KEYCODE = 125
 _ESCAPE_KEYCODE = 53
 _ENTER_KEYCODES = {36, 76}
 _WEZTERM_BUNDLE_IDENTIFIER = "com.github.wez.wezterm"
-_SHELL_CLIENT_ID = "spoke.teleporter"
-# Same native-readiness grace as CommandOverlay; not a capture timeout.
-_SHELL_START_GRACE_S = 0.25
 
 
 def _label(text: str, frame, *, size: float, color, bold: bool = False):
@@ -84,6 +81,9 @@ class _SwitcherPanel(NSPanel):
 
     def canBecomeMainWindow(self):
         return False
+
+    def performClose_(self, sender):
+        self.delegate().hide()
 
 
 class _SwitcherSearchField(NSTextField):
@@ -110,7 +110,7 @@ class _SwitcherSearchField(NSTextField):
         objc.super(_SwitcherSearchField, self).keyDown_(event)
 
 
-class DiaulosSwitcherOverlay(NSObject):
+class DiaulosSwitcherOverlay(HouseWindowShell):
     def initWithDelegate_(self, delegate):
         self = objc.super(DiaulosSwitcherOverlay, self).init()
         if self is None:
@@ -328,13 +328,14 @@ class DiaulosSwitcherOverlay(NSObject):
         else:
             self.show()
 
-    def show(self) -> None:
+    @objc.python_method
+    def show(self, previous_app=None, previous_focus=None) -> None:
         started_at = time.monotonic()
         self.setup()
         was_visible = self.visible
         from .window_focus import WindowFocus
         if not was_visible:
-            self._focus_return = WindowFocus.capture()
+            self._focus_return = previous_focus or WindowFocus.capture(previous_app)
             self._previous_app = self._focus_return.app if self._focus_return is not None else None
         self._search_field.setStringValue_("")
         self._search_field.setEnabled_(True)
@@ -377,14 +378,14 @@ class DiaulosSwitcherOverlay(NSObject):
             ).start()
 
     def hide(self, *, restore_previous: bool = True, force: bool = False) -> bool:
-        if self._activation_in_flight and not force:
-            self._set_status(
-                f"Focus committed to {self._activation_handle or 'selected Diaulos'}"
-            )
-            return False
         was_visible = self.visible
         was_key = bool(self._panel is not None and self._panel.isKeyWindow())
-        self._activation_generation += 1
+        if self._activation_in_flight:
+            # The committed remote action still finishes, but replacement takes
+            # away its authority to close a later panel or foreground WezTerm.
+            self._activation_detached = True
+        else:
+            self._activation_generation += 1
         self._remove_key_monitor()
         self.visible = False
         if was_visible:
@@ -411,252 +412,11 @@ class DiaulosSwitcherOverlay(NSObject):
             except Exception:
                 logger.debug("Could not restore prior foreground app", exc_info=True)
         self._previous_app = None
+        on_close = getattr(self, "_on_close", None)
+        if was_visible and on_close is not None:
+            on_close(self)
         return True
 
-    def _prepare_shell_entrance(self):
-        if (os.environ.get("SPOKE_TELEPORTER_OPTICAL_SHELL", "1") == "0"
-                or getattr(getattr(self, "_delegate", None), "_overlay_compositor_registry", None) is None):
-            return
-        from .optical_lifecycle import HouseTransition
-
-        self._shell_epoch = getattr(self, "_shell_epoch", 0) + 1
-        now = time.perf_counter()
-        transition = getattr(self, "_shell_transition", None)
-        reversing = transition is not None and transition.phase == "dismiss" and self._shell_registered
-        if not reversing:
-            transition = HouseTransition()
-        transition.summon(now)
-        self._shell_transition = transition
-        self._shell_waiting = not reversing
-        self._shell_wait_started = now
-        self._shell_present_armed = False
-        self._shell_applied_text = dict(alpha=0.0, width_frac=1.0, height_frac=0.0)
-        self._panel.setHasShadow_(False)
-        self._set_shell_planes(dict(opacity=0.0, height_frac=0.0), dict(alpha=0.0, width_frac=1.0, height_frac=0.0))
-        self._start_shell_ticks()
-
-    def _start_shell_ticks(self):
-        timer = getattr(self, "_shell_tick_timer", None)
-        if timer is not None:
-            timer.invalidate()
-        self._shell_tick_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / 60.0, self, "opticalShellStep:", None, True,
-        )
-        for mode in ("NSRunLoopCommonModes", "NSEventTrackingRunLoopMode"):
-            NSRunLoop.currentRunLoop().addTimer_forMode_(self._shell_tick_timer, mode)
-
-    def _stop_shell_ticks(self):
-        timer = getattr(self, "_shell_tick_timer", None)
-        self._shell_tick_timer = None
-        if timer is not None:
-            timer.invalidate()
-
-    def _finish_shell(self):
-        self._stop_shell_ticks()
-        self._shell_epoch = getattr(self, "_shell_epoch", 0) + 1
-        self._shell_waiting = False
-        host = getattr(self, "_shell_host", None)
-        if host is not None:
-            for client_id in self._shell_client_ids():
-                host.release_client(client_id)
-        self._shell_host = None
-        self._shell_registered = False
-        self._shell_sidecars_registered = False
-        self._shell_transition = None
-        self._shell_final = None
-        if self._panel is not None:
-            if not self.visible:
-                self._panel.orderOut_(None)
-            else:
-                self._set_shell_planes(dict(opacity=1.0, height_frac=1.0), dict(alpha=1.0, width_frac=1.0, height_frac=1.0))
-                self._panel.setHasShadow_(True)
-
-    def _shell_client_ids(self):
-        ids = [_SHELL_CLIENT_ID]
-        if getattr(self, "_shell_sidecars_registered", False):
-            ids.extend(f"{_SHELL_CLIENT_ID}.{suffix}" for suffix in ("dismiss_seam", "dismiss_radial_pucker"))
-        return ids
-
-    def _set_shell_planes(self, body, text):
-        foreground = getattr(self, "_shell_foreground", None)
-        if foreground is None:
-            return
-        CATransaction.begin()
-        CATransaction.setDisableActions_(True)
-        try:
-            self._shell_body_layer.setValue_forKeyPath_(max(body["height_frac"], .001), "transform.scale.y")
-            self._shell_body_layer.setOpacity_(body["opacity"])
-            width, height = _PANEL_WIDTH * text["width_frac"], _PANEL_HEIGHT * text["height_frac"]
-            rect = ((_PANEL_WIDTH - width) / 2, (_PANEL_HEIGHT - height) / 2), (width, height)
-            self._shell_text_mask.setPath_(CGPathCreateWithRoundedRect(rect, min(8.0, height / 2), min(8.0, height / 2), None))
-            foreground.layer().setOpacity_(text["alpha"])
-        finally:
-            CATransaction.commit()
-
-    def _publish_shell_frame(self, now):
-        transition = self._shell_transition
-        sample_time = self._shell_wait_started if self._shell_waiting else now
-        frame = transition.frame(self._shell_final, sample_time)
-        if not self._shell_host.update_client_configs(frame.configs):
-            raise RuntimeError("House transition publication rejected")
-        self._set_shell_planes(frame.body, frame.text)
-        self._shell_applied_text = dict(frame.text)
-        return frame
-
-    def opticalShellStep_(self, timer):
-        if timer is not getattr(self, "_shell_tick_timer", None):
-            return
-        now = time.perf_counter()
-        if getattr(self, "_shell_waiting", False):
-            if now - self._shell_wait_started < _SHELL_START_GRACE_S:
-                return
-            # Never rewind an already usable native panel when capture arrives late.
-            self._shell_waiting = False
-            self._shell_transition.rest()
-        if getattr(self, "_shell_final", None) is None:
-            self._finish_shell()
-            return
-        try:
-            frame = self._publish_shell_frame(now)
-            if frame.phase == "hidden":
-                self._finish_shell()
-            elif frame.phase == "rest":
-                self._shell_transition.rest()
-                self._panel.setHasShadow_(True)
-                self._stop_shell_ticks()
-            elif frame.phase == "tail":
-                self._panel.orderOut_(None)
-        except Exception:
-            logger.exception("Teleporter transition failed; retaining native controls")
-            self._finish_shell()
-
-    def opticalShellDidPresent_(self, payload):
-        if (not self.visible or not getattr(self, "_shell_waiting", False)
-                or payload.get("epoch") != self._shell_epoch
-                or payload.get("host") is not self._shell_host):
-            return
-        now = time.perf_counter()
-        if now - self._shell_wait_started >= _SHELL_START_GRACE_S:
-            self._shell_transition.rest()
-        else:
-            self._shell_transition.started_at = now
-        self._shell_waiting = False
-        self.opticalShellStep_(self._shell_tick_timer)
-
-    def windowDidMove_(self, notification):
-        if self.visible:
-            self.publishOpticalShell_(None)
-
-    def publishOpticalShell_(self, timer):
-        if not self.visible or os.environ.get("SPOKE_TELEPORTER_OPTICAL_SHELL", "1") == "0":
-            return
-        registry = getattr(self._delegate, "_overlay_compositor_registry", None)
-        if registry is None:
-            return
-        try:
-            from .house_optical_primitive import compile_external_carrier_config
-            from .optical_field import OpticalFieldRequest, OpticalFieldProfileRef, OpticalFieldPresentation
-            from .perceptasia_throughglass import _display_local_scaled_window_bounds
-            screen = self._panel.screen() or NSScreen.mainScreen()
-            bounds, coordinates = _display_local_scaled_window_bounds(self._panel.frame(), screen)
-            request = OpticalFieldRequest(
-                caller_id="spoke.teleporter", continuity_key="spoke.teleporter", bounds=bounds,
-                role="hud", state="rest", visible=True, visibility_scope="independent",
-                presentation=OpticalFieldPresentation(layer="hud", order=43),
-                presentation_layer="hud", layout_recipe="teleporter-native-carrier",
-                profile=OpticalFieldProfileRef(base="assistant_shell"), z_index=43,
-            )
-            config = compile_external_carrier_config(request, carrier="external_native")
-            config["optical_field"].update(coordinates)
-            host = registry.host_for_screen(screen)
-            if self._shell_host is not None and self._shell_host is not host:
-                for client_id in self._shell_client_ids():
-                    self._shell_host.release_client(client_id)
-                self._shell_registered = False
-                self._shell_sidecars_registered = False
-            self._shell_host = host
-            if not self._shell_registered:
-                from .fullscreen_compositor import OverlayClientIdentity
-
-                identity = OverlayClientIdentity(
-                    client_id="spoke.teleporter",
-                    display_id=host.display_id,
-                    role="hud",
-                )
-
-                def capture_state_changed(state, error=None):
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "opticalShellCaptureStateChanged:",
-                        {"host": host, "state": state, "error": error},
-                        False,
-                    )
-
-                self._shell_client = host.register_client(
-                    identity,
-                    window=self._panel,
-                    content_view=self._panel.contentView(),
-                    on_capture_state=capture_state_changed,
-                )
-            transition = getattr(self, "_shell_transition", None)
-            if transition is not None:
-                if not self._shell_sidecars_registered:
-                    from .fullscreen_compositor import OverlayClientIdentity
-
-                    for suffix in ("dismiss_seam", "dismiss_radial_pucker"):
-                        host.register_client(
-                            OverlayClientIdentity(client_id=f"{_SHELL_CLIENT_ID}.{suffix}", display_id=host.display_id, role="hud"),
-                            window=None, content_view=None,
-                        )
-                    self._shell_sidecars_registered = True
-                self._shell_final = config
-                self._publish_shell_frame(time.perf_counter())
-                success = True
-                if self._shell_waiting and not self._shell_present_armed:
-                    self._shell_present_armed = True
-                    epoch = self._shell_epoch
-
-                    def did_present():
-                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                            "opticalShellDidPresent:", {"host": host, "epoch": epoch}, False,
-                        )
-
-                    self._shell_client.set_on_first_present(did_present)
-            else:
-                success = host.update_client_config("spoke.teleporter", config)
-            self._shell_registered = bool(success)
-            if not success:
-                self._shell_unavailable = True
-                self._set_status("Native presentation; optical shell unavailable")
-            logger.info("Teleporter House shell: registered=%s display=%s", success, host.display_id)
-        except Exception:
-            self._finish_shell()
-            self._shell_unavailable = True
-            self._set_status("Native presentation; optical shell unavailable")
-            logger.exception("Teleporter optical publication failed; native controls remain usable")
-
-    def opticalShellCaptureStateChanged_(self, payload: dict) -> None:
-        if payload.get("host") is not self._shell_host or not self.visible:
-            return
-        state = payload.get("state")
-        error = payload.get("error")
-        status_label = getattr(self, "_status_label", None)
-        old_status = status_label.stringValue() if status_label is not None else ""
-        if state == "failed":
-            self._finish_shell()
-            self._shell_unavailable = True
-            suffix = f" ({error})" if error else ""
-            self._set_status(f"Native presentation; optical shell unavailable{suffix}")
-        elif state == "pending":
-            self._shell_unavailable = True
-            self._set_status("Native presentation; optical shell starting")
-        elif state == "started":
-            self._shell_unavailable = False
-            if old_status.startswith("Native presentation; optical shell"):
-                self._set_status("")
-        elif state == "cancelled":
-            self._finish_shell()
-            self._shell_unavailable = True
-            self._set_status("Native presentation; optical shell stopped")
 
     def selectCandidate_(self, sender):
         if self._activation_in_flight:
@@ -836,7 +596,7 @@ class DiaulosSwitcherOverlay(NSObject):
         self._set_status(status)
 
     def activationFinished_(self, payload: dict) -> None:
-        if payload["generation"] != self._activation_generation or not self.visible:
+        if payload["generation"] != self._activation_generation:
             return
         self._activation_in_flight = False
         self._activation_handle = None
@@ -847,6 +607,12 @@ class DiaulosSwitcherOverlay(NSObject):
         )
         self._pending_inventory_payload = None
         self._pending_inventory_error_payload = None
+        detached = getattr(self, "_activation_detached", False)
+        self._activation_detached = False
+        if detached or not self.visible:
+            if pending_inventory is not None:
+                self._apply_inventory_payload(pending_inventory)
+            return
         if payload.get("error"):
             activation_error = str(payload["error"])
             self._panel.makeFirstResponder_(self._search_field)

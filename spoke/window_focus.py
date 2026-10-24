@@ -88,6 +88,15 @@ class WindowFocus:
         return True
 
 
+def window_owns_key(window):
+    if window is None:
+        return False
+    if window.isKeyWindow():
+        return True
+    sheet = window.attachedSheet()
+    return sheet is not None and bool(sheet.isKeyWindow())
+
+
 def restore_window_focus(owner, window, was_key=None):
     # AppKit may have cleared the closing window before windowWillClose arrives.
     # A different key Spoke window or external app owns any newer focus decision.

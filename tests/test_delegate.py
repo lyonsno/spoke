@@ -5346,6 +5346,7 @@ class TestEnvValidation:
         old, destination = MagicMock(), MagicMock()
         old._window.isVisible.return_value = True
         old._window.isKeyWindow.return_value = other_is_key
+        old._window.attachedSheet.return_value = None
         destination._window.isVisible.return_value = False
         d._monitor_windows = {"fleet": old, "greenroom": destination}
         with patch.dict(sys.modules, {"spoke.monitor_window": MagicMock()}):
@@ -5363,6 +5364,7 @@ class TestEnvValidation:
             host._window.isVisible.return_value = True
         fleet._window.isKeyWindow.return_value = True
         greenroom._window.isKeyWindow.return_value = False
+        greenroom._window.attachedSheet.return_value = None
         d._monitor_windows = {"fleet": fleet, "greenroom": greenroom}
         d._toggle_monitor("fleet")
         fleet.dismiss.assert_called_once()
@@ -5376,6 +5378,73 @@ class TestEnvValidation:
         d._dismiss_monitor_windows(closing)
         closing.dismiss.assert_not_called()
         other.dismiss.assert_called_once_with(restore_focus=False)
+
+    def test_monitor_replaces_history_and_inherits_its_focus(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        history, target = MagicMock(), MagicMock()
+        history._window.isVisible.return_value = True
+        history._window.isKeyWindow.return_value = True
+        target._window.isVisible.return_value = False
+        d._recording_history = history
+        d._monitor_windows = {"fleet": target}
+        d._toggle_monitor("fleet")
+        history.dismiss.assert_called_once_with(restore_focus=False)
+        target.show.assert_called_once_with(previous_app=history._previous_app,
+                                            previous_focus=history._focus_return)
+
+    def test_monitor_close_also_dismisses_history_and_teleporter(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        history, switcher, closing = MagicMock(), MagicMock(), MagicMock()
+        history._window.isVisible.return_value = True
+        switcher.visible = True
+        d._recording_history, d._diaulos_switcher = history, switcher
+        d._monitor_windows = {"fleet": closing}
+        d._dismiss_monitor_windows(closing)
+        history.dismiss.assert_called_once_with(restore_focus=False)
+        switcher.hide.assert_called_once_with(restore_previous=False, force=True)
+
+    def test_monitor_replaces_history_sheet_and_inherits_origin(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        history, target = MagicMock(), MagicMock()
+        history._window.isVisible.return_value = True
+        history._window.isKeyWindow.return_value = False
+        history._window.attachedSheet.return_value.isKeyWindow.return_value = True
+        target._window.isVisible.return_value = False
+        d._recording_history = history
+        d._monitor_windows = {"fleet": target}
+        d._toggle_monitor("fleet")
+        history.dismiss.assert_called_once_with(restore_focus=False)
+        target.show.assert_called_once_with(previous_app=history._previous_app,
+                                            previous_focus=history._focus_return)
+
+    def test_history_open_replaces_monitor(self, main_module):
+        import sys
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        history, monitor = MagicMock(), MagicMock()
+        history._window.isVisible.return_value = False
+        monitor._window.isVisible.return_value = True
+        monitor._window.isKeyWindow.return_value = True
+        d._recording_history = history
+        d._monitor_windows = {"fleet": monitor}
+        with patch.dict(sys.modules, {"spoke.recording_history_window": MagicMock()}):
+            d._show_recording_history()
+        monitor.dismiss.assert_called_once_with(restore_focus=False)
+        history.show.assert_called_once_with(previous_app=monitor._previous_app,
+                                             previous_focus=monitor._focus_return)
+
+    def test_teleporter_replaces_monitor_without_old_optical_tail(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        switcher, monitor = MagicMock(), MagicMock()
+        switcher.visible = False
+        monitor._window.isVisible.return_value = True
+        monitor._window.isKeyWindow.return_value = True
+        d._diaulos_switcher = switcher
+        d._monitor_windows = {"fleet": monitor}
+        d._prepare_diaulos_switcher = MagicMock()
+        d._toggle_diaulos_switcher()
+        monitor.dismiss.assert_called_once_with(restore_focus=False)
+        switcher.show.assert_called_once_with(previous_app=monitor._previous_app,
+                                              previous_focus=monitor._focus_return)
 
     def test_recording_history_chord_closes_visible_window_and_reopens(self, main_module):
         d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
