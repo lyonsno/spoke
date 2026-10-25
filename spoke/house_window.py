@@ -8,7 +8,7 @@ import logging
 import os
 import time
 
-from AppKit import NSScreen
+from AppKit import NSColor, NSScreen, NSWindowAnimationBehaviorNone
 from Foundation import NSObject, NSTimer, NSRunLoop
 from Quartz import CAShapeLayer, CATransaction, CGPathCreateWithRoundedRect
 
@@ -39,6 +39,10 @@ class HouseWindowShell(NSObject):
         self._shell_body_layer = None
         self._shell_text_mask = CAShapeLayer.layer()
         foreground.layer().setMask_(self._shell_text_mask)
+        # The window background must collapse with its chrome and controls,
+        # not remain as an unmasked WindowServer rectangle behind them.
+        foreground.layer().setBackgroundColor_(window.backgroundColor().CGColor())
+        window.setBackgroundColor_(NSColor.clearColor())
         window.setOpaque_(False)
         # Same native-above-compositor ordering as CommandOverlay. Remain below
         # native menus and attached sheets.
@@ -75,6 +79,7 @@ class HouseWindowShell(NSObject):
                 and self._shell_final is not None):
             self._shell_epoch += 1
             transition.dismiss(time.perf_counter(), exposed_text=self._shell_applied_text)
+            self._panel.setHasShadow_(False)
             self._panel.setIgnoresMouseEvents_(True)
             self._panel.resignKeyWindow()
             self._start_shell_ticks()
@@ -92,6 +97,7 @@ class HouseWindowShell(NSObject):
             return
         from .optical_lifecycle import HouseTransition
 
+        self._panel.setAnimationBehavior_(NSWindowAnimationBehaviorNone)
         self._shell_epoch = getattr(self, "_shell_epoch", 0) + 1
         now = time.perf_counter()
         transition = getattr(self, "_shell_transition", None)
@@ -161,11 +167,16 @@ class HouseWindowShell(NSObject):
             if body_layer is not None:
                 body_layer.setValue_forKeyPath_(max(body["height_frac"], .001), "transform.scale.y")
                 body_layer.setOpacity_(body["opacity"])
+            height_frac, alpha = text["height_frac"], text["alpha"]
+            if body_layer is None:
+                # Ordinary windows combine body and text in one native plane.
+                height_frac = min(height_frac, body["height_frac"])
+                alpha = min(alpha, body["opacity"])
             size = foreground.bounds().size
-            width, height = size.width * text["width_frac"], size.height * text["height_frac"]
+            width, height = size.width * text["width_frac"], size.height * height_frac
             rect = ((size.width - width) / 2, (size.height - height) / 2), (width, height)
             self._shell_text_mask.setPath_(CGPathCreateWithRoundedRect(rect, min(8.0, height / 2), min(8.0, height / 2), None))
-            foreground.layer().setOpacity_(text["alpha"])
+            foreground.layer().setOpacity_(alpha)
         finally:
             CATransaction.commit()
 

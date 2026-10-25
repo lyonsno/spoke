@@ -400,6 +400,7 @@ class DiaulosSwitcherOverlay(HouseWindowShell):
         if animate:
             self._shell_epoch += 1
             transition.dismiss(time.perf_counter(), exposed_text=getattr(self, "_shell_applied_text", None))
+            self._panel.setHasShadow_(False)
             self._panel.setIgnoresMouseEvents_(True)
             self._panel.resignKeyWindow()
             self._start_shell_ticks()

@@ -163,6 +163,7 @@ def _make_fake_appkit():
     a.NSEvent.addLocalMonitorForEventsMatchingMask_handler_ = MagicMock(return_value=MagicMock())
     a.NSEvent.removeMonitor_ = MagicMock()
     a.NSWindowStyleMaskNonactivatingPanel = 128
+    a.NSWindowAnimationBehaviorNone = 2
     a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
     a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
     a.NSWindowCollectionBehaviorStationary = 1 << 4

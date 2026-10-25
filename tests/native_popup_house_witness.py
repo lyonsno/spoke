@@ -40,6 +40,10 @@ def main():
         import Foundation as FD
         import objc
         from spoke import house_window, monitor_window, recording_history_window, diaulos_switcher_overlay
+        from spoke.house_optical_primitive import (
+            house_dismiss_materialization_fill_state,
+            house_dismiss_text_collapse_state,
+        )
         for module in (house_window, monitor_window, recording_history_window, diaulos_switcher_overlay):
             assert Path(module.__file__).resolve().parent == root / "spoke", "Wrong import route"
         app = AK.NSApplication.sharedApplication()
@@ -97,13 +101,19 @@ def main():
             assert width > 0 and height > 0
             entry = report["windows"][host._shell_client_id] = {
                 "size": [width, height], "window_alpha": window.alphaValue(), "frames": {},
+                "background_alpha": window.backgroundColor().alphaComponent(),
             }
             # Real native CALayer masks, with the same plane values used by the
             # shared runner. Capture/scanout and live scrolling are not exercised.
-            for name, fraction in (("rest", 1.0), ("reveal", 0.4), ("hidden", 0.0)):
+            states = [(name, {"opacity": fraction, "height_frac": fraction},
+                       {"alpha": 1.0, "width_frac": 1.0, "height_frac": fraction})
+                      for name, fraction in (("rest", 1.0), ("reveal", 0.4), ("hidden", 0.0))]
+            states.extend((name, house_dismiss_materialization_fill_state(progress),
+                           house_dismiss_text_collapse_state(progress))
+                          for name, progress in (("dismiss80", 0.8), ("dismiss60", 0.6)))
+            for name, body, text in states:
                 report["phase"] = host._shell_client_id + "_" + name
-                host._set_shell_planes({"opacity": fraction, "height_frac": fraction},
-                                       {"alpha": 1.0, "width_frac": 1.0, "height_frac": fraction})
+                host._set_shell_planes(body, text)
                 bitmap = AK.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
                     None, width, height, 8, 4, True, False, AK.NSDeviceRGBColorSpace, width * 4, 32,
                 )
@@ -115,12 +125,19 @@ def main():
                 raw = bytes(bitmap.bitmapData())
                 occupied = sum(alpha != 0 for alpha in raw[3::4])
                 colors = len(set(zip(raw[0::4], raw[1::4], raw[2::4], raw[3::4])))
-                entry["frames"][name] = {"path": str(path), "occupied_pixels": occupied, "colors": colors}
+                rows = [y for y in range(height) if any(raw[(y * width) * 4 + 3:((y + 1) * width) * 4:4])]
+                row_span = rows[-1] - rows[0] + 1 if rows else 0
+                entry["frames"][name] = {"path": str(path), "occupied_pixels": occupied, "colors": colors,
+                                          "occupied_row_span": row_span, "body": body, "text": text}
+                if name.startswith("dismiss") and host._shell_body_layer is None:
+                    limit = height * min(body["height_frac"], text["height_frac"])
+                    assert row_span <= limit + 2, "Native pixels extend outside closing body"
             frames = entry["frames"]
             assert frames["rest"]["occupied_pixels"] > 0, "Blank native carrier"
             assert frames["rest"]["colors"] > 128, "Native carrier has no painted controls"
             assert 0 < frames["reveal"]["occupied_pixels"] < frames["rest"]["occupied_pixels"], "Reveal did not clip native pixels"
             assert frames["hidden"]["occupied_pixels"] == 0, "Hidden native pixels leaked"
+            assert entry["background_alpha"] == 0, "Unmasked window background can leak outside captured layer"
             assert window.alphaValue() == 0 and not window.isKeyWindow()
             window.orderOut_(None)
         report.update(passed=True, phase="complete", claim_limit="Installed AppKit native carrier pixels and reveal masks only; transparent input-ignoring non-key windows, no SCK, Metal presentation, desktop scanout or latency claim.")
