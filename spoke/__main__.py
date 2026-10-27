@@ -1170,6 +1170,7 @@ class SpokeAppDelegate(NSObject):
         self._history_trace = threading.local()
         self._recording_history = None
         self._monitor_windows = {}
+        self._active_popup = None
         self._history_model = self._load_preference("retranscription_route") or {
             "backend": self._whisper_backend, "model": self._transcription_model_id,
         }
@@ -3263,6 +3264,7 @@ class SpokeAppDelegate(NSObject):
 
     def _replace_popup(self, target):
         previous = focus = None
+        self._active_popup = target
         self._monitor_dismissing = True
         try:
             for host in self._popup_hosts():
@@ -3302,8 +3304,11 @@ class SpokeAppDelegate(NSObject):
         host.show(previous_app=previous, previous_focus=previous_focus)
 
     def _dismiss_monitor_windows(self, closing=None) -> None:
+        if closing is not None and closing is not getattr(self, "_active_popup", None):
+            return
         if getattr(self, "_monitor_dismissing", False):
             return
+        self._active_popup = None
         self._monitor_dismissing = True
         try:
             hosts = [host for host in self._popup_hosts() if host is not closing]

@@ -382,41 +382,8 @@ class EpistaxisDiaulosClient:
         current = current_candidates[0]
         self._verify_selected_identity(candidate, current)
 
-        list_command = self._wezterm_command("list", "--format", "json")
-        result = self._run_process(list_command, DiaulosActivationError)
-        if result.returncode:
-            raise DiaulosActivationError(
-                result.stderr.strip()
-                or f"WezTerm pane enumeration exited {result.returncode}"
-            )
-        try:
-            payload = json.loads(result.stdout)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise DiaulosActivationError(
-                f"WezTerm pane enumeration returned invalid JSON: {exc}"
-            ) from exc
-        if not isinstance(payload, list) or any(
-            not isinstance(row, dict) for row in payload
-        ):
-            raise DiaulosActivationError(
-                "WezTerm pane enumeration returned a non-list payload"
-            )
-
-        matches: list[dict[str, Any]] = []
-        for row in payload:
-            try:
-                pane_id = _optional_int(row.get("pane_id"), "live pane_id")
-            except DiaulosInventoryError as exc:
-                raise DiaulosActivationError(str(exc)) from exc
-            if pane_id == candidate.pane_id:
-                matches.append(row)
-        if len(matches) != 1:
-            raise DiaulosActivationError(
-                "selected pane is not present exactly once in the current WezTerm observation"
-            )
-        live = matches[0]
-        self._verify_live_route(candidate, live)
-
+        # The strict probe already enumerated WezTerm and verified this exact
+        # live route plus its runtime lineage. Activate immediately after it.
         activate_command = self._wezterm_command(
             "activate-pane",
             "--pane-id",
@@ -433,9 +400,7 @@ class EpistaxisDiaulosClient:
             "expected_pane_id": candidate.pane_id,
             "tab_id": candidate.tab_id,
             "window_id": candidate.window_id,
-            "verification": (
-                "selected-pane-lineage-and-direct-wezterm-enumeration"
-            ),
+            "verification": "exact-selected-pane-lineage",
         }
 
     def _run_epistaxis(self, command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -543,38 +508,6 @@ class EpistaxisDiaulosClient:
                 f"({', '.join(changed)}); selected={_format_route(selected)}; "
                 f"current={_format_route(current)}"
             )
-
-    @staticmethod
-    def _verify_live_route(
-        candidate: DiaulosCandidate,
-        live: dict[str, Any],
-    ) -> None:
-        comparisons = (
-            ("tab_id", candidate.tab_id),
-            ("window_id", candidate.window_id),
-        )
-        for field, expected in comparisons:
-            if expected is None:
-                continue
-            try:
-                observed = _optional_int(live.get(field), f"live {field}")
-            except DiaulosInventoryError as exc:
-                raise DiaulosActivationError(str(exc)) from exc
-            if observed != expected:
-                raise DiaulosActivationError(
-                    f"selected pane {field} changed from {expected} to {observed}"
-                )
-        observed_cwd = _normalize_pane_cwd(str(live.get("cwd") or ""))
-        if observed_cwd != candidate.cwd:
-            raise DiaulosActivationError(
-                f"selected pane cwd changed from {candidate.cwd} to {observed_cwd or 'missing'}"
-            )
-        observed_tty = str(live.get("tty_name") or live.get("tty") or "").strip()
-        if observed_tty != candidate.tty:
-            raise DiaulosActivationError(
-                f"selected pane tty changed from {candidate.tty} to {observed_tty or 'missing'}"
-            )
-
 
 def _epistaxis_search_path() -> str:
     return os.pathsep.join(

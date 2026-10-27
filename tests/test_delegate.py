@@ -4838,6 +4838,9 @@ class TestWarmupContract:
         d._schedule_handsfree_auto_enable_retry.assert_called_once_with()
 
 class TestRuntimePhaseLogging:
+    def test_shared_fixture_isolates_runtime_phase_path(self, main_module, tmp_path):
+        assert main_module._runtime_phase_path() == tmp_path / "spoke-last-phase.json"
+
     """Test runtime phase snapshot behavior under repeated writes."""
 
     def test_record_runtime_phase_handles_concurrent_updates(
@@ -5375,6 +5378,7 @@ class TestEnvValidation:
         closing, other = MagicMock(), MagicMock()
         other._window.isVisible.return_value = True
         d._monitor_windows = {"fleet": closing, "greenroom": other}
+        d._active_popup = closing
         d._dismiss_monitor_windows(closing)
         closing.dismiss.assert_not_called()
         other.dismiss.assert_called_once_with(restore_focus=False)
@@ -5399,9 +5403,29 @@ class TestEnvValidation:
         switcher.visible = True
         d._recording_history, d._diaulos_switcher = history, switcher
         d._monitor_windows = {"fleet": closing}
+        d._active_popup = closing
         d._dismiss_monitor_windows(closing)
         history.dismiss.assert_called_once_with(restore_focus=False)
         switcher.hide.assert_called_once_with(restore_previous=False, force=True)
+
+    def test_replaced_popup_close_cannot_dismiss_its_successor(self, main_module):
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        old, current = MagicMock(), MagicMock()
+        old._window.isVisible.return_value = True
+        old._window.isKeyWindow.return_value = True
+        current._window.isVisible.return_value = False
+        d._monitor_windows = {"fleet": old, "greenroom": current}
+        d._active_popup = old
+        d._toggle_monitor("greenroom")
+        current._window.isVisible.return_value = True
+        current._window.isKeyWindow.return_value = True
+        old._window.isVisible.return_value = False
+        current.dismiss.reset_mock()
+        d._dismiss_monitor_windows(old)
+        current.dismiss.assert_not_called()
+        assert d._active_popup is current
+        d._dismiss_monitor_windows(current)
+        assert d._active_popup is None
 
     def test_monitor_replaces_history_sheet_and_inherits_origin(self, main_module):
         d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)

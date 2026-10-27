@@ -22,6 +22,7 @@ import pytest
 _test_runtime_dir = tempfile.mkdtemp(prefix="spoke-test-")
 os.environ["SPOKE_LOCK_PATH"] = os.path.join(_test_runtime_dir, ".spoke.lock")
 os.environ["SPOKE_HEARTBEAT_PATH"] = os.path.join(_test_runtime_dir, ".spoke-heartbeat.json")
+os.environ["SPOKE_RUNTIME_PHASE_PATH"] = os.path.join(_test_runtime_dir, "spoke-last-phase.json")
 os.environ["SPOKE_MODEL_PREFERENCES_PATH"] = os.path.join(
     _test_runtime_dir, "model_preferences.json"
 )
@@ -33,6 +34,7 @@ def isolate_model_preferences(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "SPOKE_MODEL_PREFERENCES_PATH", str(tmp_path / "model_preferences.json")
     )
+    monkeypatch.setenv("SPOKE_RUNTIME_PHASE_PATH", str(tmp_path / "spoke-last-phase.json"))
 
 
 def _make_fake_quartz():

@@ -540,7 +540,7 @@ class DiaulosSwitcherOverlay(HouseWindowShell):
         self._set_status(f"Focusing {candidate.handle} (committed)")
         threading.Thread(
             target=self._activation_worker,
-            args=(generation, candidate),
+            args=(generation, candidate, time.monotonic()),
             daemon=True,
         ).start()
 
@@ -599,6 +599,16 @@ class DiaulosSwitcherOverlay(HouseWindowShell):
     def activationFinished_(self, payload: dict) -> None:
         if payload["generation"] != self._activation_generation:
             return
+        if "worker_finished_at" in payload and "selected_at" in payload:
+            now = time.monotonic()
+            logger.info(
+                "Diaulos activation callback: generation=%s handle=%s dispatch_ms=%.1f "
+                "selection_to_callback_ms=%.1f detached=%s",
+                payload["generation"], self._activation_handle,
+                (now - payload["worker_finished_at"]) * 1000.0,
+                (now - payload["selected_at"]) * 1000.0,
+                bool(getattr(self, "_activation_detached", False)),
+            )
         self._activation_in_flight = False
         self._activation_handle = None
         self._search_field.setEnabled_(True)
@@ -694,7 +704,7 @@ class DiaulosSwitcherOverlay(HouseWindowShell):
             False,
         )
 
-    def _activation_worker(self, generation: int, candidate) -> None:
+    def _activation_worker(self, generation: int, candidate, selected_at=None) -> None:
         started_at = time.monotonic()
         try:
             receipt = self._client.activate(candidate)
@@ -719,6 +729,8 @@ class DiaulosSwitcherOverlay(HouseWindowShell):
             (time.monotonic() - started_at) * 1000.0,
             "error" if payload.get("error") else "complete",
         )
+        payload["worker_finished_at"] = time.monotonic()
+        payload["selected_at"] = started_at if selected_at is None else selected_at
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "activationFinished:",
             payload,

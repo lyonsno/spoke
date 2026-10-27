@@ -299,22 +299,19 @@ def test_client_loads_snapshot_and_activates_after_selected_lineage_probe(
             "--pane-id", "10",
             "--json",
         ],
-        ["wezterm", "cli", "--no-auto-start", "list", "--format", "json"],
         ["wezterm", "cli", "--no-auto-start", "activate-pane", "--pane-id", "10"],
     ]
     assert receipt["pane_id"] == 10
     assert receipt["diaulos"] == "thing-0"
-    assert receipt["verification"] == "selected-pane-lineage-and-direct-wezterm-enumeration"
+    assert receipt["verification"] == "exact-selected-pane-lineage"
 
 
 @pytest.mark.parametrize(
-    ("source", "field"),
-    [("selected", field) for field in ("requested_pane_id", "pane_id", "tab_id", "window_id")]
-    + [("wezterm", field) for field in ("pane_id", "tab_id", "window_id")],
+    "field", ["requested_pane_id", "pane_id", "tab_id", "window_id"],
 )
 @pytest.mark.parametrize("value", [True, 1.9, 1.0, "1.9", None, {}, []])
 def test_activation_rejects_malformed_identity_before_activation(
-    tmp_path, source, field, value
+    tmp_path, field, value
 ):
     payload = _payload(1)
     payload["entries"][0].update(pane_id=1, tab_id=1, window_id=1)
@@ -322,9 +319,7 @@ def test_activation_rejects_malformed_identity_before_activation(
     selected = _selected_pane_payload(candidate)
     live = _live_panes(1)
     live[0].update(pane_id=1, tab_id=1, window_id=1)
-    if source == "wezterm":
-        live[0][field] = value
-    elif field == "requested_pane_id":
+    if field == "requested_pane_id":
         selected[field] = value
     else:
         selected["entries"][0][field] = value
@@ -344,7 +339,7 @@ def test_activation_rejects_malformed_identity_before_activation(
     with pytest.raises(DiaulosActivationError):
         client.activate(candidate)
 
-    assert len(calls) == (1 if source == "selected" else 2)
+    assert len(calls) == 1
     assert not any("activate-pane" in command for command in calls)
 
 
@@ -616,7 +611,7 @@ def test_activation_drops_inherited_wezterm_socket_from_both_cli_calls(
     )
     client.activate(parse_live_inventory(_payload(1))[0])
 
-    assert len(observed_environments) == 3
+    assert len(observed_environments) == 2
     assert all(
         "WEZTERM_UNIX_SOCKET" not in environment
         for environment in observed_environments
@@ -679,29 +674,34 @@ def test_missing_epistaxis_affects_refresh_only(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("pane_id", 11, "pane is not present exactly once"),
+        ("pane_id", 11, "pane_id"),
         ("tab_id", 999, "tab_id"),
         ("window_id", 999, "window_id"),
         ("cwd", "file:///tmp/recycled", "cwd"),
+        ("tty", "/dev/ttys999", "tty"),
+        ("handle", "replacement", "handle"),
+        ("diaulos_id", "dia-replacement", "diaulos_id"),
+        ("resume_backend", "claude", "resume_backend"),
+        ("thread_id", "replacement-thread", "thread_id"),
     ],
 )
-def test_direct_activation_refuses_recycled_route_identity(
+def test_activation_refuses_every_changed_selected_route_field(
     tmp_path,
     field,
     value,
     message,
 ):
     calls: list[list[str]] = []
-    panes = _live_panes(1)
-    panes[0][field] = value
+    candidate = parse_live_inventory(_payload(1))[0]
+    selected = _selected_pane_payload(candidate, entry={field: value})
 
     def runner(command, **kwargs):
         calls.append(command)
         if "diaulos" in command and "live" in command:
             return subprocess.CompletedProcess(
-                command, 0, json.dumps(_selected_pane_payload(candidate)), ""
+                command, 0, json.dumps(selected), ""
             )
-        return subprocess.CompletedProcess(command, 0, json.dumps(panes), "")
+        raise AssertionError("Changed route must not reach activation")
 
     client = EpistaxisDiaulosClient(
         runner=runner,
@@ -714,9 +714,8 @@ def test_direct_activation_refuses_recycled_route_identity(
     with pytest.raises(DiaulosActivationError, match=message):
         client.activate(candidate)
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert calls[0][-3:] == ["--pane-id", "10", "--json"]
-    assert calls[1][-3:] == ["list", "--format", "json"]
 
 
 def test_client_rejects_malformed_snapshot_and_refresh_output(tmp_path):
@@ -809,6 +808,21 @@ def test_replacement_detaches_activation_without_stranding_latch(overlay_module)
     assert not overlay._activation_in_flight
     assert overlay.visible
     overlay._activate_wezterm.assert_not_called()
+
+
+def test_activation_completion_reports_main_dispatch_delay(overlay_module, monkeypatch, caplog):
+    overlay = overlay_module.DiaulosSwitcherOverlay.__new__(overlay_module.DiaulosSwitcherOverlay)
+    overlay._activation_generation = 7
+    overlay._activation_handle = "target"
+    overlay._search_field = MagicMock()
+    overlay._activation_detached = True
+    overlay.visible = False
+    monkeypatch.setattr(overlay_module.time, "monotonic", lambda: 15.0)
+    with caplog.at_level("INFO", logger="spoke.diaulos_switcher_overlay"):
+        overlay.activationFinished_({"generation": 7, "receipt": {},
+                                     "selected_at": 10.0, "worker_finished_at": 12.0})
+    assert "dispatch_ms=3000.0" in caplog.text
+    assert "selection_to_callback_ms=5000.0" in caplog.text
 
 
 
