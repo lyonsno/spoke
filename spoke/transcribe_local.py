@@ -8,12 +8,14 @@ avoid requiring ffmpeg.
 from __future__ import annotations
 
 import importlib
+from contextlib import contextmanager
 import inspect
 import io
 import logging
 import os
 from pathlib import Path
 import time
+import threading
 import wave
 
 import numpy as np
@@ -274,6 +276,7 @@ class LocalTranscriptionClient:
         self._model_instance = None
         self._warned_eager_eval_unsupported = False
         self._worker = None
+        self._call_scope = threading.local()
         if isolated:
             from .inference_process import InferenceProcess
             self._worker = InferenceProcess(__name__, type(self).__name__, {
@@ -291,13 +294,23 @@ class LocalTranscriptionClient:
         self._loaded = False
         return self._worker.cancel()
 
+    @contextmanager
+    def cancellation_scope(self):
+        previous = getattr(self._call_scope, "generation", None)
+        self._call_scope.generation = self._worker.generation
+        try:
+            yield
+        finally:
+            self._call_scope.generation = previous
+
     def _worker_call(self, method, *args):
         from .inference_process import InferenceCancelled
         if method == "transcribe":
             self._last_receipt = self._last_prompt_receipt = None
             self._worker_receipt = None
         try:
-            response = self._worker.call(method, *args)
+            response = self._worker.call(method, *args,
+                generation=getattr(self._call_scope, "generation", None))
         except InferenceCancelled:
             self._loaded = False
             self._last_receipt = {"status": "cancelled", "model": self._model}

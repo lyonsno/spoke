@@ -51,7 +51,7 @@ def test_cancelled_whisper_does_not_start_automatic_fallback(monkeypatch):
     from spoke.transcribe_local import LocalTranscriptionClient
 
     client = LocalTranscriptionClient(model="fixture", isolated=True)
-    monkeypatch.setattr(client._worker, "call", lambda *args: (_ for _ in ()).throw(InferenceCancelled()))
+    monkeypatch.setattr(client._worker, "call", lambda *args, **kwargs: (_ for _ in ()).throw(InferenceCancelled()))
     with pytest.raises(InferenceCancelled):
         client.transcribe(b"exact audio")
     assert client._last_receipt["status"] == "cancelled"
@@ -98,9 +98,29 @@ def test_control_rejects_a_result_that_finishes_after_cancel():
 
     control = InferenceControl()
     cancelled = []
-    client = SimpleNamespace(supports_cancellation=True, cancel=lambda: cancelled.append(True))
+    from contextlib import nullcontext
+    client = SimpleNamespace(supports_cancellation=True, cancel=lambda: cancelled.append(True),
+                             cancellation_scope=nullcontext)
     with pytest.raises(InferenceCancelled):
         with control.context(threading.Lock(), client):
             assert control.cancel() is True
     assert cancelled == [True]
+
+
+def test_cancel_before_worker_submission_cannot_resurrect_old_work():
+    from spoke.inference_process import InferenceCancelled, InferenceControl, InferenceProcess
+    from spoke.transcribe_local import LocalTranscriptionClient
+
+    control = InferenceControl()
+    client = LocalTranscriptionClient(model="fixture", isolated=True)
+    client._worker = InferenceProcess("tests.fixtures.inference_client", "FixtureClient", {})
+    try:
+        with pytest.raises(InferenceCancelled):
+            with control.context(threading.Lock(), client):
+                control.cancel()
+                with pytest.raises(InferenceCancelled):
+                    client.transcribe(b"recover")
+        assert client._worker.pid is None
+    finally:
+        client.close()
 

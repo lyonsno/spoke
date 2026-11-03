@@ -1,6 +1,6 @@
 """Owned, reusable inference process with explicit user cancellation."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import importlib
 import os
 from pathlib import Path
@@ -32,9 +32,14 @@ class InferenceProcess:
         with self._state:
             return self._process.pid if self._process is not None else None
 
-    def call(self, method, *args):
+    @property
+    def generation(self):
         with self._state:
-            generation = self._generation
+            return self._generation
+
+    def call(self, method, *args, generation=None):
+        if generation is None:
+            generation = self.generation
         with self._calls:
             with self._state:
                 if generation != self._generation:
@@ -140,10 +145,12 @@ class InferenceControl:
         from .recording_history import timed_inference_context
         if epoch is None:
             epoch = self.epoch
-        with timed_inference_context(lock, timings) as timing:
+        with timed_inference_context(lock, timings) as timing, ExitStack() as scope:
             with self._state:
                 if epoch != self._epoch:
                     raise InferenceCancelled()
+                if getattr(client, "supports_cancellation", False) is True:
+                    scope.enter_context(client.cancellation_scope())
                 self._active = client
             try:
                 yield timing
