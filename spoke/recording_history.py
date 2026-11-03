@@ -40,7 +40,7 @@ def client_receipt(client) -> dict:
         value = getattr(client, name, None)
         if isinstance(value, (str, int, float, bool, Path)):
             receipt[name.removeprefix("_")] = str(value) if isinstance(value, Path) else value
-    for name in ("_last_receipt", "_last_prompt_receipt", "last_route"):
+    for name in ("_last_receipt", "_last_prompt_receipt", "last_route", "_worker_receipt"):
         value = getattr(client, name, None)
         if isinstance(value, dict):
             receipt[name.removeprefix("_")] = copy.deepcopy(value)
@@ -54,24 +54,36 @@ def client_receipt(client) -> dict:
     ):
         receipt["prompt_snapshot"] = {"text": prompt.text, "sha256": prompt.sha256,
                                       "sources": list(prompt.sources)}
+    worker = receipt.get("worker_receipt", {}).get("effective", {})
+    if isinstance(worker.get("prompt_snapshot"), dict):
+        receipt["prompt_snapshot"] = copy.deepcopy(worker["prompt_snapshot"])
     return receipt
 
 
-def run_retranscription(spool, capture_id, attempt_id, route, client_factory, inference_context):
+def run_retranscription(spool, capture_id, attempt_id, route, client_factory, inference_context,
+                        cancel_check=lambda: False):
     """Run one exact-route replay. Failures never fall back or replace an attempt."""
     started = time.monotonic()
     phase = "audio_validation"
     text, error, client = None, None, None
     effective = {}
     timing = None
+    cancelled = False
+    from .inference_process import InferenceCancelled
     try:
+        if cancel_check():
+            raise InferenceCancelled()
         wav = spool.read_recording_audio(capture_id)
         phase = "client_creation"
         client = client_factory(dict(route))
         phase = "inference"
         with inference_context(client) as timing:
             try:
+                if cancel_check():
+                    raise InferenceCancelled()
                 text = client.transcribe(wav)
+                if cancel_check():
+                    raise InferenceCancelled()
                 if not isinstance(text, str):
                     raise TypeError("Transcription backend returned non-text output")
             finally:
@@ -80,6 +92,9 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
                 if callable(close):
                     close()
         phase = "complete"
+    except InferenceCancelled as exc:
+        cancelled = True
+        text, error = None, str(exc)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         logger.exception("Recording re-transcription failed at %s", phase)
@@ -88,6 +103,7 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
         wall_seconds=time.monotonic() - started,
         evidence={"phase": phase, **({"local_inference": dict(timing)}
                                     if isinstance(timing, dict) else {})},
+        cancelled=cancelled,
     )
 
 
@@ -101,7 +117,7 @@ def first_line(record: dict) -> str:
     if isinstance(text, str) and text.strip():
         return " ".join(text.splitlines()[0].split())
     return {"pending": "Transcription pending", "failed": "Transcription failed",
-            "blank": "Blank transcription"}.get(original.get("status"), "Unverified transcription")
+            "blank": "Blank transcription", "cancelled": "Transcription stopped"}.get(original.get("status"), "Unverified transcription")
 
 
 def duration_label(seconds) -> str:

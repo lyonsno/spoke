@@ -119,6 +119,25 @@ def test_empty_error_still_marks_attempt_failed(tmp_path):
     assert spool.list_recordings()[0]["attempts"][0]["status"] == "failed"
 
 
+def test_cancelled_replay_is_terminal_and_keeps_audio_and_prior_attempt(tmp_path):
+    run = _service()
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    original = spool.start_attempt(capture.capture_id, requested={"model": "first"})
+    spool.finish_attempt(capture.capture_id, original, text="Original", effective={}, wall_seconds=1)
+    before = capture.wav_path.read_bytes()
+    prior = (tmp_path / "attempts" / capture.capture_id / f"{original}.result.json").read_bytes()
+    retry = spool.start_attempt(capture.capture_id, requested={"model": "second"}, kind="retranscription")
+    calls = []
+    run(spool, capture.capture_id, retry, {}, lambda route: calls.append(route),
+        lambda client: nullcontext(), cancel_check=lambda: True)
+    record = spool.list_recordings()[0]
+    assert calls == []
+    assert record["attempts"][-1]["status"] == "cancelled"
+    assert capture.wav_path.read_bytes() == before
+    assert (tmp_path / "attempts" / capture.capture_id / f"{original}.result.json").read_bytes() == prior
+
+
 def test_delivery_events_are_chronological_not_uuid_order(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from spoke import audio_spool
@@ -220,6 +239,60 @@ def test_history_copy_failure_does_not_publish_copied(monkeypatch):
     owner.copyText_(None)
     owner._spool.record_delivery.assert_not_called()
     assert "Copy failed" in owner._status.setStringValue_.call_args.args[0]
+
+
+def test_history_offers_explicit_takeover_while_live_transcription_is_busy():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._selected = lambda: {"capture_id": "capture", "audio_available": True}
+    owner._attempt = lambda: None
+    route = {"backend": "local", "model": "recovery"}
+    owner._delegate = SimpleNamespace(_history_live_busy=lambda: True,
+        _history_can_take_over=lambda: True, _history_model=route)
+    owner._busy = set()
+    owner._model_routes = [{"route": route, "available": True}]
+    for name in ("_copy", "_insert", "_play", "_trash", "_retry", "_force_retry"):
+        setattr(owner, name, MagicMock())
+    owner._update_controls()
+    owner._retry.setEnabled_.assert_called_once_with(False)
+    owner._force_retry.setEnabled_.assert_called_once_with(True)
+
+
+def test_old_replay_completion_does_not_clear_new_replay():
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    owner._replay_generation = 2
+    owner._busy = {"same-recording"}
+    owner._status = MagicMock()
+    owner.refresh_ = MagicMock()
+    owner.replayFinished_({"capture_id": "same-recording", "generation": 1})
+    assert owner._busy == {"same-recording"}
+    owner._status.setStringValue_.assert_not_called()
+    owner.refresh_.assert_not_called()
+
+
+def test_force_retry_cancels_before_submitting_recovery_and_keeps_old_generations_out():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from spoke.recording_history_window import RecordingHistoryWindow
+
+    owner = RecordingHistoryWindow.alloc().init()
+    route = {"backend": "local", "model": "recovery"}
+    actions = []
+    owner._selected = lambda: {"capture_id": "capture", "audio_available": True}
+    owner._delegate = SimpleNamespace(_history_model=route,
+        _cancel_transcription_for_recovery=lambda: actions.append("stop") or True)
+    owner._model_routes = [{"route": route, "available": True}]
+    owner._busy, owner._replay_generation = {"capture"}, 0
+    owner._start_retranscription = lambda: actions.append("retry")
+    owner.forceRetranscribe_(None)
+    assert actions == ["stop", "retry"]
+    assert owner._replay_generation == 1 and not owner._busy
 
 
 @pytest.mark.parametrize("content_width", [980, 860])

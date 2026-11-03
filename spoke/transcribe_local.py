@@ -260,6 +260,7 @@ class LocalTranscriptionClient:
         decode_timeout: float | None = _DEFAULT_DECODE_TIMEOUT,
         eager_eval: bool = _DEFAULT_EAGER_EVAL,
         prompt_provider: TranscriptionPromptProvider | None = None,
+        isolated: bool = False,
     ) -> None:
         self._model = model
         self._decode_timeout = decode_timeout
@@ -272,6 +273,43 @@ class LocalTranscriptionClient:
         self._loaded = False
         self._model_instance = None
         self._warned_eager_eval_unsupported = False
+        self._worker = None
+        if isolated:
+            from .inference_process import InferenceProcess
+            self._worker = InferenceProcess(__name__, type(self).__name__, {
+                "model": model, "decode_timeout": decode_timeout, "eager_eval": eager_eval,
+                "prompt_provider": self._prompt_provider,
+            })
+
+    @property
+    def supports_cancellation(self):
+        return self._worker is not None
+
+    def cancel(self):
+        if self._worker is None:
+            return False
+        self._loaded = False
+        return self._worker.cancel()
+
+    def _worker_call(self, method, *args):
+        from .inference_process import InferenceCancelled
+        if method == "transcribe":
+            self._last_receipt = self._last_prompt_receipt = None
+            self._worker_receipt = None
+        try:
+            response = self._worker.call(method, *args)
+        except InferenceCancelled:
+            self._loaded = False
+            self._last_receipt = {"status": "cancelled", "model": self._model}
+            raise
+        effective = response["effective"]
+        self._last_receipt = effective.get("last_receipt")
+        self._last_prompt_receipt = effective.get("last_prompt_receipt")
+        self._worker_receipt = {**response["worker"], "effective": effective}
+        self._loaded = response["loaded"]
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+        return response["value"]
 
     def _ensure_model(self) -> None:
         """Trigger model download if not cached."""
@@ -292,6 +330,9 @@ class LocalTranscriptionClient:
 
     def prepare(self) -> None:
         """Warm the Whisper model cache without running a transcription."""
+        if self._worker is not None:
+            self._worker_call("prepare")
+            return
         if self._loaded:
             self._install_model_holder()
             return
@@ -311,6 +352,8 @@ class LocalTranscriptionClient:
         Decodes WAV to numpy float32 array in-process (no ffmpeg needed),
         then passes directly to mlx_whisper.transcribe().
         """
+        if self._worker is not None:
+            return self._worker_call("transcribe", wav_bytes)
         self._last_prompt_receipt = None
         receipt = self._last_receipt = {
             "schema": "spoke.local_whisper_timing.v1",
@@ -443,6 +486,9 @@ class LocalTranscriptionClient:
 
     def unload(self) -> None:
         """Release the loaded Whisper model to free memory."""
+        if self._worker is not None:
+            self.cancel()
+            return
         if not self._loaded:
             return
         logger.info("Unloading Whisper model %s", self._model)

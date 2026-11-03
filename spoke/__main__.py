@@ -234,6 +234,7 @@ from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
+from .inference_process import InferenceCancelled, InferenceControl
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_whisper_cpp import (
     WhisperCppCoreMLClient,
@@ -1233,6 +1234,7 @@ class SpokeAppDelegate(NSObject):
         self._preview_done.set()
         self._preview_session_token = 0
         self._local_inference_lock = threading.Lock()
+        self._inference_control = InferenceControl()
         self._record_start_time: float = 0.0
         self._cap_fired = False
         self._last_preview_text = ""
@@ -3221,6 +3223,30 @@ class SpokeAppDelegate(NSObject):
                     or self._dictation_delivery_records()
                     or getattr(self, "_dictation_paste_in_flight", False))
 
+    def _history_can_take_over(self) -> bool:
+        control = getattr(self, "_inference_control", None)
+        return bool(control is not None and control.can_cancel
+                    and (not self._transcribing
+                         or getattr(self._client, "supports_cancellation", False) is True)
+                    and not self._capture.is_recording
+                    and not self._dictation_delivery_records()
+                    and not getattr(self, "_dictation_paste_in_flight", False))
+
+    def _cancel_transcription_for_recovery(self) -> bool:
+        if not self._history_can_take_over() or not self._inference_control.cancel():
+            return False
+        self._transcription_token += 1
+        self._parallel_insert_token += 1
+        self._preview_session_token += 1
+        self._preview_active = False
+        self._transcribing = False
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+        logger.info("User stopped transcription work for History recovery; old delivery tokens invalidated")
+        return True
+
     def _show_recording_history(self) -> None:
         from .recording_history_window import RecordingHistoryWindow
         if getattr(self, "_recording_history", None) is None:
@@ -3410,11 +3436,16 @@ class SpokeAppDelegate(NSObject):
             trace = self._history_trace = threading.local()
         trace.routes = []
         trace.inference_timings = []
+        control = getattr(self, "_inference_control", None)
+        trace.inference_epoch = control.epoch if control is not None else None
         started = time.monotonic()
-        text, error = None, None
+        text, error, cancelled = None, None, False
         try:
             text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
             return text
+        except InferenceCancelled as exc:
+            cancelled, error = True, str(exc)
+            raise
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             raise
@@ -3428,11 +3459,13 @@ class SpokeAppDelegate(NSObject):
                         wall_seconds=time.monotonic() - started,
                         evidence={"routes": routes, "delivery": "not_verified",
                                   "local_inference": trace.inference_timings},
+                        cancelled=cancelled,
                     )
                 except Exception:
                     logger.exception("Could not finish recording history attempt %s", attempt_id)
             trace.routes = None
             trace.inference_timings = None
+            trace.inference_epoch = None
 
     def _record_history_delivery(self, history, state, detail="") -> None:
         if not history:
@@ -3644,6 +3677,8 @@ class SpokeAppDelegate(NSObject):
             if not text.strip():
                 raise RuntimeError("Local Whisper returned a blank final transcript")
             return text
+        except InferenceCancelled:
+            raise
         except Exception as local_error:
             logger.warning(
                 "Local Whisper finalization failed; crossing to independent ASR recovery",
@@ -3658,10 +3693,13 @@ class SpokeAppDelegate(NSObject):
                 recovery_client = WhisperKitRecoveryClient()
                 self._asr_recovery_client = recovery_client
             try:
-                try:
-                    return recovery_client.transcribe(wav_bytes)
-                finally:
-                    self._history_route_receipt(recovery_client)
+                with self._local_inference_context(recovery_client):
+                    try:
+                        return recovery_client.transcribe(wav_bytes)
+                    finally:
+                        self._history_route_receipt(recovery_client)
+            except InferenceCancelled:
+                raise
             except Exception as recovery_error:
                 logger.exception("Independent ASR recovery failed")
                 raise RuntimeError(
@@ -3684,6 +3722,9 @@ class SpokeAppDelegate(NSObject):
         # the final route own recovery from the stopped capture.
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
+        if (getattr(self, "_inference_control", None) is not None
+                and token != self._transcription_token):
+            return
         history = {}
         try:
             text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
@@ -3725,6 +3766,9 @@ class SpokeAppDelegate(NSObject):
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
+        if (getattr(self, "_inference_control", None) is not None
+                and token != self._parallel_insert_token):
+            return
         history = {}
         try:
             text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
@@ -4366,6 +4410,9 @@ class SpokeAppDelegate(NSObject):
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
+        if (getattr(self, "_inference_control", None) is not None
+                and token != self._transcription_token):
+            return
         history = {}
         try:
             text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
@@ -5476,6 +5523,9 @@ class SpokeAppDelegate(NSObject):
         self._wait_for_preview_finalization(release_cutover=release_cutover)
 
         # Step 1: Transcribe the audio
+        if (getattr(self, "_inference_control", None) is not None
+                and token != self._transcription_token):
+            return
         history = {}
         try:
             utterance = self._transcribe_with_history(
@@ -7324,6 +7374,7 @@ class SpokeAppDelegate(NSObject):
         logger.info("Using local transcription: %s", model_id)
         return LocalTranscriptionClient(
             model=model_id,
+            isolated=True,
             decode_timeout=getattr(
                 self,
                 "_local_whisper_decode_timeout",
@@ -8206,6 +8257,10 @@ class SpokeAppDelegate(NSObject):
         self._touch_model(client)
         from .recording_history import timed_inference_context
         timings = getattr(getattr(self, "_history_trace", None), "inference_timings", None)
+        control = getattr(self, "_inference_control", None)
+        if control is not None:
+            epoch = getattr(getattr(self, "_history_trace", None), "inference_epoch", None)
+            return control.context(lock, client, epoch=epoch, timings=timings)
         return timed_inference_context(lock, timings)
 
     def _inject_result_text(

@@ -97,6 +97,51 @@ def _make_delegate(main_module, monkeypatch):
 
 
 class TestRecordingHistory:
+    def test_explicit_recovery_invalidates_both_delivery_lanes(self, main_module, monkeypatch):
+        from spoke.inference_process import InferenceControl
+        d = _make_delegate(main_module, monkeypatch)
+        d._inference_control = InferenceControl()
+        d._capture.is_recording = False
+        d._client.supports_cancellation = True
+        d._transcribing = True
+        d._preview_session_token = 5
+        assert d._cancel_transcription_for_recovery() is True
+        assert d._transcription_token == d._parallel_insert_token == 1
+        assert d._preview_session_token == 6
+        assert d._transcribing is False
+        d._schedule_dictation_delivery = MagicMock()
+        d.transcriptionComplete_({"token": 0, "text": "Late original"})
+        d.parallelTranscriptionComplete_({"token": 0, "text": "Late parallel"})
+        d._schedule_dictation_delivery.assert_not_called()
+
+    @pytest.mark.parametrize("protected", ["capture", "paste"])
+    def test_recovery_does_not_interrupt_recording_or_committed_paste(self, main_module, monkeypatch, protected):
+        from spoke.inference_process import InferenceControl
+        d = _make_delegate(main_module, monkeypatch)
+        d._inference_control = InferenceControl()
+        d._capture.is_recording = protected == "capture"
+        d._dictation_paste_in_flight = protected == "paste"
+        assert d._cancel_transcription_for_recovery() is False
+        assert d._inference_control.epoch == 0
+        assert d._transcription_token == 0
+
+    def test_cancelled_live_whisper_is_retained_without_fallback(self, main_module, monkeypatch, tmp_path):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+        from spoke.inference_process import InferenceCancelled
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        d._client = main_module.LocalTranscriptionClient(model="test-model")
+        d._client.transcribe = MagicMock(side_effect=InferenceCancelled())
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        d._vad_active_for_hold = False
+        with pytest.raises(InferenceCancelled):
+            d._transcribe_with_history(wav, capture_id=capture.capture_id)
+        result = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert result["status"] == "cancelled"
+        assert capture.wav_path.read_bytes() == wav
+        d._asr_recovery_client.transcribe.assert_not_called()
+
     @pytest.mark.parametrize("parallel", [False, True])
     @pytest.mark.parametrize("outcome", ["focus", "paste_error", "restored", "preserved", "switcher", "stale"])
     def test_live_delivery_receipts_preserve_audio_and_original(
@@ -3829,6 +3874,7 @@ class TestDualModelConfiguration:
         assert d._preview_client is shared_client
         MockLocal.assert_called_once_with(
             model="mlx-community/whisper-medium.en-mlx-8bit",
+            isolated=True,
             decode_timeout=30.0,
             eager_eval=False,
         )

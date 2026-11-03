@@ -58,6 +58,7 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._focus_return = None
         self._replays = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spoke-history")
         self._busy = set()
+        self._replay_generation = 0
         return self
 
     def setup(self):
@@ -141,18 +142,28 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._route.setAutoresizingMask_(2)
         content.addSubview_(self._route)
         content.addSubview_(_label("Re-transcription model", NSMakeRect(350, 113, 290, 20), 12, True))
-        self._models = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 75, 454, 32), False)
+        self._models = AK.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(350, 75, 320, 32), False)
         self._models.setAutoresizingMask_(2)
         self._models.setTarget_(self)
         self._models.setAction_("selectModel:")
         content.addSubview_(self._models)
         self._retry = AK.NSButton.buttonWithTitle_target_action_("Re-transcribe", self, "retranscribe:")
-        self._retry.setFrame_(NSMakeRect(818, 76, 142, 32))
+        self._retry.setFrame_(NSMakeRect(684, 76, 142, 32))
         self._retry.setAutoresizingMask_(1)
         self._retry.setImage_(AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_("arrow.clockwise", "Re-transcribe"))
         self._retry.setImagePosition_(2)
         self._retry.setToolTip_("Re-transcribe original audio with the selected recovery model")
         content.addSubview_(self._retry)
+        image = AK.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+            "stop.circle", "Stop current work and re-transcribe",
+        )
+        self._force_retry = AK.NSButton.buttonWithTitle_target_action_("Stop & Retry", self, "forceRetranscribe:")
+        self._force_retry.setImage_(image)
+        self._force_retry.setImagePosition_(2)
+        self._force_retry.setFrame_(NSMakeRect(838, 76, 122, 32))
+        self._force_retry.setAutoresizingMask_(1)
+        self._force_retry.setToolTip_("Stop current transcription work and re-transcribe this recording with the selected model")
+        content.addSubview_(self._force_retry)
         self._status = _label("", NSMakeRect(350, 19, 608, 40), 11, True)
         self._status.setMaximumNumberOfLines_(2)
         self._status.setAutoresizingMask_(2)
@@ -422,6 +433,10 @@ class RecordingHistoryWindow(HouseWindowShell):
         available = any(item["route"] == route and item["available"] for item in self._model_routes)
         self._retry.setEnabled_(bool(record and record["audio_available"] and available and not live_busy
                                     and record["capture_id"] not in self._busy and not record.get("error")))
+        can_take_over = getattr(self._delegate, "_history_can_take_over", lambda: False)()
+        self._force_retry.setEnabled_(bool(record and record["audio_available"] and available
+                                          and can_take_over and (live_busy or self._busy)
+                                          and not record.get("error")))
 
     def selectModel_(self, sender):
         index = int(sender.indexOfSelectedItem())
@@ -431,6 +446,23 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._update_controls()
 
     def retranscribe_(self, sender):
+        self._start_retranscription()
+
+    def forceRetranscribe_(self, sender):
+        record = self._selected()
+        route = self._delegate._history_model
+        available = any(item["route"] == route and item["available"] for item in self._model_routes)
+        if not record or not record["audio_available"] or record.get("error") or not available:
+            return
+        if not self._delegate._cancel_transcription_for_recovery():
+            self._status.setStringValue_("Current work cannot be stopped here; active recording and paste are protected")
+            return
+        self._replay_generation += 1
+        self._busy.clear()
+        self._start_retranscription()
+
+    @objc.python_method
+    def _start_retranscription(self):
         record = self._selected()
         if not record or record["capture_id"] in self._busy or self._delegate._history_live_busy():
             return
@@ -442,22 +474,30 @@ class RecordingHistoryWindow(HouseWindowShell):
             self._status.setStringValue_(str(exc))
             return
         self._attempt_id = attempt_id
+        generation = self._replay_generation
+        control = getattr(self._delegate, "_inference_control", None)
+        epoch = control.epoch if control is not None else None
         self._busy.add(capture_id)
         self._status.setStringValue_("Re-transcription queued")
         def replay():
             try:
                 run_retranscription(self._spool, capture_id, attempt_id, route,
-                                    self._delegate._build_history_client, self._delegate._local_inference_context)
-                payload = {"capture_id": capture_id}
+                                    self._delegate._build_history_client,
+                                    lambda client: control.context(self._delegate._local_inference_lock, client, epoch=epoch)
+                                    if control is not None else self._delegate._local_inference_context(client),
+                                    cancel_check=lambda: generation != self._replay_generation)
+                payload = {"capture_id": capture_id, "generation": generation}
             except Exception as exc:
                 logger.exception("Could not persist re-transcription result")
-                payload = {"capture_id": capture_id, "error": str(exc)}
+                payload = {"capture_id": capture_id, "generation": generation, "error": str(exc)}
             self.performSelectorOnMainThread_withObject_waitUntilDone_("replayFinished:", payload, False)
         self._replays.submit(replay)
         self.refresh_(None)
         self._update_controls()
 
     def replayFinished_(self, payload):
+        if payload.get("generation", 0) != self._replay_generation:
+            return
         self._busy.discard(payload["capture_id"])
         self._status.setStringValue_(payload.get("error") or "Re-transcription finished; original retained")
         self.refresh_(None)

@@ -147,6 +147,7 @@ class AudioSpool:
         self, capture_id: str, attempt_id: str, *, text: str | None,
         effective: dict, wall_seconds: float, error: str | None = None,
         evidence: dict | None = None,
+        cancelled: bool = False,
     ) -> None:
         self._capture_path(capture_id)
         self._capture_path(attempt_id)
@@ -158,7 +159,7 @@ class AudioSpool:
             "schema": "spoke.recording_attempt.result.v1",
             "capture_id": capture_id, "attempt_id": attempt_id,
             "completed_at": datetime.now(timezone.utc).isoformat(),
-            "status": "failed" if error is not None else "success" if text and text.strip() else "blank",
+            "status": "cancelled" if cancelled else "failed" if error is not None else "success" if text and text.strip() else "blank",
             "text": text, "error": error, "effective": effective,
             "wall_seconds": wall_seconds, "evidence": evidence or {},
         }
@@ -242,7 +243,7 @@ class AudioSpool:
                     result = _read_json_object(result_path)
                     if (result.get("attempt_id") != attempt_id or result.get("capture_id") != capture_id
                             or result.get("schema") != "spoke.recording_attempt.result.v1"
-                            or result.get("status") not in {"success", "blank", "failed"}
+                            or result.get("status") not in {"success", "blank", "failed", "cancelled"}
                             or not isinstance(result.get("effective"), dict)
                             or (result.get("text") is not None and not isinstance(result.get("text"), str))
                             or (result.get("status") == "success" and not str(result.get("text") or "").strip())):
