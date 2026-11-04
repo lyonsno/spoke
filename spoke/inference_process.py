@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack, contextmanager
 import importlib
+import logging
 import os
 from pathlib import Path
 import signal
@@ -12,6 +13,46 @@ import threading
 import time
 import uuid
 from multiprocessing.connection import Connection
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _request_activity(method):
+    receipt = {"schema": "spoke.inference_activity.v1", "platform": sys.platform,
+               "status": "not_requested"}
+    if method != "transcribe":
+        yield receipt
+        return
+    if sys.platform != "darwin":
+        receipt["status"] = "not_applicable"
+        yield receipt
+        return
+
+    info = token = None
+    try:
+        from Foundation import NSActivityUserInitiatedAllowingIdleSystemSleep, NSProcessInfo
+        info = NSProcessInfo.processInfo()
+        options = NSActivityUserInitiatedAllowingIdleSystemSleep
+        receipt["options"] = int(options)
+        token = info.beginActivityWithOptions_reason_(options, "Transcribing requested dictation")
+        if token is None:
+            raise RuntimeError("macOS returned no activity token")
+        receipt["status"] = "active"
+    except Exception as exc:
+        receipt.update(status="unavailable", error=f"{type(exc).__name__}: {exc}")
+        logger.warning("Inference user activity unavailable: %s", receipt["error"])
+
+    try:
+        yield receipt
+    finally:
+        if token is not None:
+            try:
+                info.endActivity_(token)
+                receipt["status"] = "ended"
+            except Exception as exc:
+                receipt.update(status="end_failed", error=f"{type(exc).__name__}: {exc}")
+                logger.warning("Inference user activity release failed: %s", receipt["error"])
 
 
 class InferenceCancelled(RuntimeError):
@@ -183,12 +224,14 @@ def _serve(fd, parent_pid):
                 "python": sys.executable,
             }}
             try:
-                if client is None:
-                    module, name, kwargs = config
-                    client = getattr(importlib.import_module(module), name)(**kwargs)
                 if method not in {"prepare", "transcribe"}:
                     raise ValueError("Unsupported inference worker operation")
-                response["value"] = getattr(client, method)(*args)
+                with _request_activity(method) as activity:
+                    response["worker"]["activity"] = activity
+                    if client is None:
+                        module, name, kwargs = config
+                        client = getattr(importlib.import_module(module), name)(**kwargs)
+                    response["value"] = getattr(client, method)(*args)
             except Exception as exc:
                 response["error"] = f"{type(exc).__name__}: {exc}"
             finally:
