@@ -131,11 +131,13 @@ class InferenceControl:
         with self._state:
             return self._active is None or getattr(self._active, "supports_cancellation", False) is True
 
-    def cancel(self):
+    def cancel(self, invalidate=None):
         with self._state:
             if not self.can_cancel:
                 return False
             self._epoch += 1
+            if invalidate is not None:
+                invalidate()
             if self._active is not None:
                 self._active.cancel()
             return True

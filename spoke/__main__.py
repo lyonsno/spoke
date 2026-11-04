@@ -2717,6 +2717,7 @@ class SpokeAppDelegate(NSObject):
 
     def _preview_loop_streaming(self, token: int | None = None) -> None:
         """Streaming preview: feed incremental audio chunks, read state.text."""
+        inference_epoch = self._current_inference_epoch()
         _FEED_INTERVAL = 0.15  # feed new audio every 150ms
         token = getattr(self, "_preview_session_token", 0) if token is None else token
         delegated_to_batch = False
@@ -2724,10 +2725,14 @@ class SpokeAppDelegate(NSObject):
         try:
             # Wait for some audio to accumulate before first feed
             time.sleep(0.4)
+            if token != getattr(self, "_preview_session_token", 0):
+                return
 
             try:
-                with self._local_inference_context(self._preview_client):
+                with self._local_inference_context(self._preview_client, inference_epoch=inference_epoch):
                     self._preview_client.start_stream()
+            except InferenceCancelled:
+                return
             except Exception:
                 logger.exception("Failed to start streaming — falling back to batch")
                 delegated_to_batch = True
@@ -2750,8 +2755,10 @@ class SpokeAppDelegate(NSObject):
                 self._force_preview_update = False
 
                 try:
-                    with self._local_inference_context(self._preview_client):
+                    with self._local_inference_context(self._preview_client, inference_epoch=inference_epoch):
                         text = self._preview_client.feed(frames)
+                except InferenceCancelled:
+                    return
                 except Exception:
                     logger.debug("Streaming feed failed", exc_info=True)
                     time.sleep(0.5)
@@ -2810,11 +2817,14 @@ class SpokeAppDelegate(NSObject):
         last segment boundary) is sent to the preview client; cached segment
         text is prepended to the result.
         """
+        inference_epoch = self._current_inference_epoch()
         _MIN_INTERVAL, _INITIAL_DELAY = self._preview_batch_intervals()
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
         try:
             time.sleep(_INITIAL_DELAY)
+            if token != getattr(self, "_preview_session_token", 0):
+                return
 
             while self._preview_active:
                 loop_start = time.monotonic()
@@ -2846,10 +2856,12 @@ class SpokeAppDelegate(NSObject):
 
                 try:
                     if wav_bytes:
-                        with self._local_inference_context(self._preview_client):
+                        with self._local_inference_context(self._preview_client, inference_epoch=inference_epoch):
                             tail_text = self._preview_client.transcribe(wav_bytes)
                     else:
                         tail_text = ""
+                except InferenceCancelled:
+                    return
                 except Exception:
                     logger.debug("Preview transcription failed", exc_info=True)
                     time.sleep(0.5)
@@ -3229,15 +3241,18 @@ class SpokeAppDelegate(NSObject):
                     and (not self._transcribing
                          or getattr(self._client, "supports_cancellation", False) is True)
                     and not self._capture.is_recording
+                    and not getattr(self, "_vad_active_for_hold", False)
                     and not self._dictation_delivery_records()
                     and not getattr(self, "_dictation_paste_in_flight", False))
 
     def _cancel_transcription_for_recovery(self) -> bool:
-        if not self._history_can_take_over() or not self._inference_control.cancel():
+        def invalidate():
+            self._transcription_token += 1
+            self._parallel_insert_token += 1
+            self._preview_session_token += 1
+        if (not self._history_can_take_over()
+                or not self._inference_control.cancel(invalidate=invalidate)):
             return False
-        self._transcription_token += 1
-        self._parallel_insert_token += 1
-        self._preview_session_token += 1
         self._preview_active = False
         self._transcribing = False
         if self._overlay is not None:
@@ -3417,30 +3432,31 @@ class SpokeAppDelegate(NSObject):
             raise ValueError(f"Recovery backend is not configured: {backend}")
         return self._build_client(url, model, api_key=key)
 
-    def _transcribe_with_history(self, wav_bytes, *, capture_id=None, release_cutover=False, history_ref=None):
-        if not capture_id:
-            return self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
+    def _transcribe_with_history(self, wav_bytes, *, capture_id=None, release_cutover=False,
+                                history_ref=None, inference_epoch=None):
         from .recording_history import client_receipt
 
-        requested = {"backend": self._whisper_backend, "model": self._transcription_model_id}
-        spool = self._audio_spool
-        attempt_id = None
-        try:
-            attempt_id = spool.start_attempt(capture_id, requested=requested)
-            if history_ref is not None:
-                history_ref.update(capture_id=capture_id, attempt_id=attempt_id)
-        except Exception:
-            logger.exception("Could not start recording history attempt for %s", capture_id)
         trace = getattr(self, "_history_trace", None)
         if trace is None:
             trace = self._history_trace = threading.local()
         trace.routes = []
         trace.inference_timings = []
         control = getattr(self, "_inference_control", None)
-        trace.inference_epoch = control.epoch if control is not None else None
+        trace.inference_epoch = (control.epoch if inference_epoch is None and control is not None
+                                 else inference_epoch)
         started = time.monotonic()
+        spool, attempt_id = None, None
         text, error, cancelled = None, None, False
         try:
+            if capture_id:
+                spool = self._audio_spool
+                requested = {"backend": self._whisper_backend, "model": self._transcription_model_id}
+                try:
+                    attempt_id = spool.start_attempt(capture_id, requested=requested)
+                    if history_ref is not None:
+                        history_ref.update(capture_id=capture_id, attempt_id=attempt_id)
+                except Exception:
+                    logger.exception("Could not start recording history attempt for %s", capture_id)
             text = self._transcribe_final_buffer(wav_bytes, release_cutover=release_cutover)
             return text
         except InferenceCancelled as exc:
@@ -3455,7 +3471,7 @@ class SpokeAppDelegate(NSObject):
                     routes = trace.routes
                     spool.finish_attempt(
                         capture_id, attempt_id, text=text, error=error,
-                        effective=routes[-1] if routes else client_receipt(self._client),
+                        effective=routes[-1] if routes else {} if cancelled else client_receipt(self._client),
                         wall_seconds=time.monotonic() - started,
                         evidence={"routes": routes, "delivery": "not_verified",
                                   "local_inference": trace.inference_timings},
@@ -3715,6 +3731,7 @@ class SpokeAppDelegate(NSObject):
         *, capture_id: str | None = None, switcher_intent: bool = False,
     ) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
+        inference_epoch = self._current_inference_epoch()
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
         # Normally we wait for preview shutdown before the final pass. On release
@@ -3727,7 +3744,8 @@ class SpokeAppDelegate(NSObject):
             return
         history = {}
         try:
-            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover,
+                                                 history_ref=history, inference_epoch=inference_epoch)
         except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3762,6 +3780,7 @@ class SpokeAppDelegate(NSObject):
     ) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
+        inference_epoch = self._current_inference_epoch()
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
@@ -3771,7 +3790,8 @@ class SpokeAppDelegate(NSObject):
             return
         history = {}
         try:
-            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover,
+                                                 history_ref=history, inference_epoch=inference_epoch)
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4406,6 +4426,7 @@ class SpokeAppDelegate(NSObject):
 
     def _tray_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None) -> None:
         """Background thread: transcribe audio, then enter tray on main thread."""
+        inference_epoch = self._current_inference_epoch()
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
 
         self._wait_for_preview_finalization(release_cutover=release_cutover)
@@ -4415,7 +4436,8 @@ class SpokeAppDelegate(NSObject):
             return
         history = {}
         try:
-            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover, history_ref=history)
+            text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover,
+                                                 history_ref=history, inference_epoch=inference_epoch)
         except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -5518,6 +5540,7 @@ class SpokeAppDelegate(NSObject):
 
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None) -> None:
         """Background thread: transcribe then send command to OMLX."""
+        inference_epoch = self._current_inference_epoch()
         self._command_tool_used_tts = False
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
         self._wait_for_preview_finalization(release_cutover=release_cutover)
@@ -5533,6 +5556,7 @@ class SpokeAppDelegate(NSObject):
                 capture_id=capture_id,
                 release_cutover=release_cutover,
                 history_ref=history,
+                inference_epoch=inference_epoch,
             )
         except Exception as exc:
             logger.exception("Command transcription failed")
@@ -8248,7 +8272,11 @@ class SpokeAppDelegate(NSObject):
         self._drain_delivery_receipts()
         os.execv(sys.executable, [sys.executable, "-m", "spoke"])
 
-    def _local_inference_context(self, client):
+    def _current_inference_epoch(self):
+        control = getattr(self, "_inference_control", None)
+        return control.epoch if control is not None else None
+
+    def _local_inference_context(self, client, *, inference_epoch=None):
         lock = getattr(self, "_local_inference_lock", None)
         if lock is None or isinstance(client, TranscriptionClient):
             return nullcontext()
@@ -8259,8 +8287,9 @@ class SpokeAppDelegate(NSObject):
         timings = getattr(getattr(self, "_history_trace", None), "inference_timings", None)
         control = getattr(self, "_inference_control", None)
         if control is not None:
-            epoch = getattr(getattr(self, "_history_trace", None), "inference_epoch", None)
-            return control.context(lock, client, epoch=epoch, timings=timings)
+            if inference_epoch is None:
+                inference_epoch = getattr(getattr(self, "_history_trace", None), "inference_epoch", None)
+            return control.context(lock, client, epoch=inference_epoch, timings=timings)
         return timed_inference_context(lock, timings)
 
     def _inject_result_text(

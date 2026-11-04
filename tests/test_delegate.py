@@ -97,6 +97,81 @@ def _make_delegate(main_module, monkeypatch):
 
 
 class TestRecordingHistory:
+    @pytest.mark.parametrize("streaming", [False, True])
+    def test_old_preview_cannot_restart_in_a_replacement_hold(self, main_module, monkeypatch, streaming):
+        from spoke.inference_process import InferenceControl
+        d = _make_delegate(main_module, monkeypatch)
+        d._inference_control = InferenceControl()
+        d._local_inference_lock = threading.Lock()
+        d._preview_session_token = 8
+        d._preview_active = True
+        d._preview_done = threading.Event()
+        d._capture.get_buffer.return_value = _silent_wav(1)
+        d._preview_client.has_active_stream = False
+        def finish(*args):
+            d._preview_active = False
+            return "obsolete preview"
+        d._preview_client.transcribe.side_effect = finish
+        d._preview_client.start_stream.side_effect = finish
+        with patch.object(main_module.time, "sleep"):
+            (d._preview_loop_streaming if streaming else d._preview_loop_batch)(7)
+        assert d._preview_client.transcribe.call_count == 0
+        assert d._preview_client.start_stream.call_count == 0
+
+    @pytest.mark.parametrize("parallel", [False, True])
+    @pytest.mark.parametrize("boundary,has_capture", [("entry", False), ("entry", True), ("attempt", True)])
+    def test_stopped_live_task_cannot_adopt_new_epoch_during_history(
+        self, main_module, monkeypatch, tmp_path, parallel, boundary, has_capture,
+    ):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+        from spoke.inference_process import InferenceControl
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        d._inference_control = InferenceControl()
+        d._local_inference_lock = threading.Lock()
+        d._transcription_token = d._parallel_insert_token = 7
+        d._preview_session_token = 0
+        d._capture.is_recording = False
+        d._transcribing = True
+        d._vad_active_for_hold = False
+        calls = []
+        d._client = SimpleNamespace(supports_cancellation=True,
+            cancellation_scope=nullcontext, cancel=lambda: None,
+            transcribe=lambda audio: calls.append("abandoned") or "Old text")
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav) if has_capture else None
+
+        def stop():
+            assert d._cancel_transcription_for_recovery() is True
+
+        if boundary == "entry":
+            original = d._transcribe_with_history
+            def enter(*args, **kwargs):
+                stop()
+                return original(*args, **kwargs)
+            d._transcribe_with_history = enter
+        else:
+            original = d._audio_spool.start_attempt
+            def persist(*args, **kwargs):
+                result = original(*args, **kwargs)
+                stop()
+                return result
+            d._audio_spool.start_attempt = persist
+
+        worker = d._parallel_insert_worker if parallel else d._transcribe_worker
+        worker(wav, 7, capture_id=capture.capture_id if capture else None)
+        assert calls == [], "Abandoned work acquired the replacement epoch"
+        if capture:
+            assert d._audio_spool.list_recordings()[0]["attempts"][0]["status"] == "cancelled"
+        assert d._local_inference_lock.acquire(blocking=False), "Old task kept the slot"
+        d._local_inference_lock.release()
+        with d._inference_control.context(d._local_inference_lock, object()):
+            calls.append("recovery admitted")
+        assert calls == ["recovery admitted"]
+
     def test_explicit_recovery_invalidates_both_delivery_lanes(self, main_module, monkeypatch):
         from spoke.inference_process import InferenceControl
         d = _make_delegate(main_module, monkeypatch)
@@ -114,13 +189,14 @@ class TestRecordingHistory:
         d.parallelTranscriptionComplete_({"token": 0, "text": "Late parallel"})
         d._schedule_dictation_delivery.assert_not_called()
 
-    @pytest.mark.parametrize("protected", ["capture", "paste"])
+    @pytest.mark.parametrize("protected", ["capture", "paste", "segments"])
     def test_recovery_does_not_interrupt_recording_or_committed_paste(self, main_module, monkeypatch, protected):
         from spoke.inference_process import InferenceControl
         d = _make_delegate(main_module, monkeypatch)
         d._inference_control = InferenceControl()
         d._capture.is_recording = protected == "capture"
         d._dictation_paste_in_flight = protected == "paste"
+        d._vad_active_for_hold = protected == "segments"
         assert d._cancel_transcription_for_recovery() is False
         assert d._inference_control.epoch == 0
         assert d._transcription_token == 0
