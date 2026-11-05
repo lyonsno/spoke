@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -12,6 +13,7 @@ import re
 import subprocess
 from .child_resources import run_measured
 import tempfile
+import threading
 import time
 import wave
 
@@ -412,6 +414,7 @@ class NemotronCPUClient:
         expected_model_sha256: str = _NEMOTRON_EXPECTED_SHA256,
         prompt_provider: TranscriptionPromptProvider | None = None,
         failure_dir: str | os.PathLike[str] | None = None,
+        isolated: bool = False,
     ) -> None:
         self._binary = (
             Path(binary).expanduser()
@@ -438,6 +441,48 @@ class NemotronCPUClient:
             else _configured_path("SPOKE_NEMOTRON_FAILURE_DIR", _DEFAULT_FAILURE_DIR)
         )
         self._last_receipt: dict | None = None
+        self._worker = None
+        self._call_scope = threading.local()
+        if isolated:
+            from .inference_process import InferenceProcess
+            self._worker = InferenceProcess(__name__, type(self).__name__, {
+                "binary": self._binary, "model_path": self._model_path,
+                "timeout": self._timeout, "speech_context_boost": self._speech_context_boost,
+                "joint_batch_frames": self._joint_batch_frames,
+                "expected_model_sha256": self._expected_model_sha256,
+                "prompt_provider": self._prompt_provider, "failure_dir": self._failure_dir,
+            })
+
+    @property
+    def supports_cancellation(self):
+        return self._worker is not None
+
+    def cancel(self):
+        return self._worker.cancel() if self._worker is not None else False
+
+    @contextmanager
+    def cancellation_scope(self):
+        previous = getattr(self._call_scope, "generation", None)
+        self._call_scope.generation = self._worker.generation
+        try:
+            yield
+        finally:
+            self._call_scope.generation = previous
+
+    def _worker_call(self, method, *args):
+        from .inference_process import InferenceCancelled
+        self._last_receipt = self._worker_receipt = None
+        try:
+            response = self._worker.call(method, *args,
+                generation=getattr(self._call_scope, "generation", None))
+        except InferenceCancelled:
+            self._last_receipt = {"status": "cancelled", "requested_model": _NEMOTRON_CPU_MODEL_ID}
+            raise
+        self._last_receipt = response["effective"].get("last_receipt")
+        self._worker_receipt = {**response["worker"], "effective": response["effective"]}
+        if response.get("error"):
+            raise NemotronCPUError(response["error"])
+        return response["value"]
 
     @staticmethod
     def availability_error(
@@ -474,6 +519,8 @@ class NemotronCPUClient:
         ) is None
 
     def prepare(self) -> None:
+        if self._worker is not None:
+            return self._worker_call("prepare")
         availability_error = self.availability_error(
             binary=self._binary,
             model_path=self._model_path,
@@ -501,6 +548,8 @@ class NemotronCPUClient:
             self._verified_model_stat = stat_identity
 
     def transcribe(self, wav_bytes: bytes) -> str:
+        if self._worker is not None:
+            return self._worker_call("transcribe", wav_bytes)
         if not wav_bytes:
             return ""
         self._last_receipt = None
@@ -890,7 +939,8 @@ class NemotronCPUClient:
         return path
 
     def close(self) -> None:
-        return None
+        if self._worker is not None:
+            self._worker.close()
 
 
 def _write_replay_report(path: Path, payload: dict) -> None:

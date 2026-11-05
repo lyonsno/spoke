@@ -3,6 +3,70 @@ import threading
 import pytest
 
 
+def test_isolated_cpu_adapter_keeps_cancellation_and_worker_receipts(tmp_path):
+    from spoke.inference_process import InferenceCancelled, InferenceControl, InferenceProcess
+    from spoke.transcribe_nemotron import NemotronCPUClient
+    client = NemotronCPUClient(isolated=True)
+    client._worker = InferenceProcess("tests.fixtures.inference_client", "FixtureClient", {})
+    control = InferenceControl()
+    errors = []
+    marker = tmp_path / "cpu-entered"
+    def run():
+        try:
+            with control.context(threading.Lock(), client):
+                client.transcribe(str(marker).encode())
+        except Exception as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert _wait_for(marker.exists)
+        assert control.can_cancel
+        assert control.cancel()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert len(errors) == 1 and isinstance(errors[0], InferenceCancelled)
+        assert client._last_receipt["status"] == "cancelled"
+        assert client.transcribe(b"recover") == "recovered"
+        assert client._worker_receipt["effective"]["model"] == "fixture-model"
+    finally:
+        client.close()
+        worker.join(5)
+
+
+def test_cpu_cancellation_kills_native_descendant_not_just_worker(tmp_path):
+    import os
+    import subprocess
+    from spoke.inference_process import InferenceCancelled, InferenceProcess
+    from spoke.transcribe_nemotron import NemotronCPUClient
+    client = NemotronCPUClient(isolated=True)
+    client._worker = InferenceProcess("tests.fixtures.inference_client", "FixtureClient", {})
+    marker = tmp_path / "native-pid"
+    errors = []
+    def run():
+        try:
+            client.transcribe(b"native-child:" + str(marker).encode())
+        except Exception as exc:
+            errors.append(exc)
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert _wait_for(marker.exists)
+        native_pid = int(marker.read_text())
+        assert os.getpgid(native_pid) == client._worker.pid
+        assert client.cancel()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert len(errors) == 1 and isinstance(errors[0], InferenceCancelled)
+        def native_gone():
+            result = subprocess.run(["ps", "-p", str(native_pid), "-o", "stat="], capture_output=True, text=True)
+            return not result.stdout.strip() or result.stdout.strip().startswith("Z")
+        assert _wait_for(native_gone), "Cancelled native CPU compute survived its owned worker"
+    finally:
+        client.close()
+        thread.join(5)
+
+
 def test_owned_process_can_be_cancelled_and_reused_without_old_result(tmp_path):
     from spoke.inference_process import InferenceCancelled, InferenceProcess
 

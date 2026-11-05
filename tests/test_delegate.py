@@ -97,6 +97,88 @@ def _make_delegate(main_module, monkeypatch):
 
 
 class TestRecordingHistory:
+    @pytest.mark.parametrize("reason", ["healthy", "stale", "unavailable", "cpu_missing"])
+    def test_gpu_route_keeps_preferred_model_when_diversion_is_not_supported(
+        self, main_module, monkeypatch, reason,
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._client = main_module.LocalTranscriptionClient(model="preferred")
+        d._client.transcribe = MagicMock(return_value="preferred words")
+        d._vad_active_for_hold = False
+        d._get_client = MagicMock()
+        monkeypatch.setattr(main_module.NemotronCPUClient, "available", lambda: reason != "cpu_missing")
+        d._history_trace = threading.local()
+        stamp = time.monotonic() - (20 if reason == "stale" else 0)
+        d._history_trace.gpu_observation = {"status": "observed", "samples": [
+            {"monotonic": stamp - .5, "device_utilization_percent": 1 if reason == "healthy" else 100},
+            {"monotonic": stamp, "device_utilization_percent": 1 if reason == "healthy" else 100},
+        ]} if reason != "unavailable" else None
+        assert d._transcribe_final_buffer(b"original") == "preferred words"
+        d._get_client.assert_not_called()
+
+    def test_capture_passes_its_own_gpu_observation_to_the_worker(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"original"
+        frozen = {"status": "observed", "samples": ["capture-owned"]}
+        d._gpu_load_for_hold = SimpleNamespace(finish=lambda: frozen)
+        d._spool_stopped_audio_capture = MagicMock(return_value="capture")
+        with patch.object(main_module.threading, "Thread") as thread:
+            d._on_hold_end()
+        assert thread.call_args.kwargs["kwargs"]["gpu_observation"] is frozen
+        assert d._gpu_load_for_hold is None
+
+    def test_saturated_final_buffer_does_not_enter_mlx(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        preferred = main_module.LocalTranscriptionClient(model="mlx-community/whisper-medium.en-mlx")
+        preferred.transcribe = MagicMock(return_value="wrong gpu route")
+        d._client = preferred
+        d._vad_active_for_hold = False
+        cpu = SimpleNamespace(transcribe=MagicMock(return_value="cpu words"))
+        d._get_client = MagicMock(return_value=cpu)
+        monkeypatch.setattr(main_module.NemotronCPUClient, "available", lambda: True)
+        d._history_trace = threading.local()
+        d._history_trace.gpu_observation = {"status": "observed", "samples": [
+            {"monotonic": time.monotonic() - .5, "device_utilization_percent": 100},
+            {"monotonic": time.monotonic(), "device_utilization_percent": 100},
+        ]}
+        assert d._transcribe_final_buffer(b"complete raw audio") == "cpu words"
+        preferred.transcribe.assert_not_called()
+        cpu.transcribe.assert_called_once_with(b"complete raw audio")
+
+    def test_saturated_gpu_selects_cpu_for_this_attempt_without_changing_preferences(
+        self, main_module, monkeypatch, tmp_path,
+    ):
+        from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+        d = _make_delegate(main_module, monkeypatch)
+        preferred = main_module.LocalTranscriptionClient(model="mlx-community/whisper-medium.en-mlx")
+        preferred.transcribe = MagicMock(return_value="wrong gpu route")
+        d._client = preferred
+        d._transcription_model_id = preferred._model
+        d._vad_active_for_hold = False
+        d._audio_spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+        d._save_preferences = MagicMock()
+        cpu = SimpleNamespace(_model=main_module._NEMOTRON_CPU_MODEL_ID,
+                              transcribe=MagicMock(return_value="cpu words"))
+        d._get_client = MagicMock(return_value=cpu)
+        monkeypatch.setattr(main_module.NemotronCPUClient, "available", lambda: True)
+        observation = {"status": "observed", "samples": [
+            {"monotonic": time.monotonic() - .5, "device_utilization_percent": 100},
+            {"monotonic": time.monotonic(), "device_utilization_percent": 100},
+        ]}
+        wav = _silent_wav(1)
+        capture = d._audio_spool.spool_capture(wav)
+        assert d._transcribe_with_history(wav, capture_id=capture.capture_id,
+                                          gpu_observation=observation) == "cpu words"
+        preferred.transcribe.assert_not_called()
+        cpu.transcribe.assert_called_once_with(wav)
+        assert d._client is preferred
+        assert d._transcription_model_id == preferred._model
+        d._save_preferences.assert_not_called()
+        result = d._audio_spool.list_recordings()[0]["attempts"][0]
+        assert result["requested"]["model"] == preferred._model
+        assert result["effective"]["model"] == main_module._NEMOTRON_CPU_MODEL_ID
+        assert result["evidence"]["automatic_routing"]["reason"] == "gpu_saturated"
+
     @pytest.mark.parametrize("streaming", [False, True])
     def test_old_preview_cannot_restart_in_a_replacement_hold(self, main_module, monkeypatch, streaming):
         from spoke.inference_process import InferenceControl
@@ -7902,7 +7984,7 @@ class TestBuildClientRouting:
         with patch.object(main_module, "NemotronCPUClient") as MockClient:
             client = d._build_client("", main_module._NEMOTRON_CPU_MODEL_ID)
 
-        MockClient.assert_called_once_with()
+        MockClient.assert_called_once_with(isolated=True)
         assert client is MockClient.return_value
 
     def test_sidecar_takes_precedence_over_qwen_prefix(self, main_module, monkeypatch):

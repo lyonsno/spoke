@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><array><dict>
+<key>IORegistryEntryName</key><string>AGXAcceleratorG16X</string>
+<key>PerformanceStatistics</key><dict>
+<key>Alloc system memory</key><integer>38400884736</integer>
+<key>Allocated PB Size</key><integer>304611328</integer>
+<key>Device Utilization %</key><integer>0</integer>
+<key>In use system memory</key><integer>2726002688</integer>
+<key>In use system memory (driver)</key><integer>0</integer>
+<key>Renderer Utilization %</key><integer>0</integer>
+<key>SplitSceneCount</key><integer>0</integer>
+<key>TiledSceneBytes</key><integer>0</integer>
+<key>Tiler Utilization %</key><integer>0</integer>
+<key>lastRecoveryTime</key><integer>1614866262351</integer>
+<key>recoveryCount</key><integer>10</integer>
+</dict></dict></array></plist>

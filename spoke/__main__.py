@@ -2572,6 +2572,10 @@ class SpokeAppDelegate(NSObject):
             self._resume_handsfree_after_hold()
             return
         self._suspend_handsfree_for_hold_async()
+        if isinstance(self._client, LocalTranscriptionClient):
+            from .gpu_routing import CaptureGpuLoad
+            self._gpu_load_for_hold = CaptureGpuLoad()
+            self._gpu_load_for_hold.start()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
@@ -2975,6 +2979,9 @@ class SpokeAppDelegate(NSObject):
         self._manual_hold_active = False
         self._preview_active = False
         self._preview_cancelled_on_release = True
+        monitor = getattr(self, "_gpu_load_for_hold", None)
+        self._gpu_load_for_hold = None
+        gpu_observation = monitor.finish() if monitor is not None else None
         self._release_command_overlay_recording_load_shed(
             delay=_RECORDING_LOAD_SHED_RELEASE_DELAY_S
         )
@@ -3107,6 +3114,7 @@ class SpokeAppDelegate(NSObject):
                 args=(wav_bytes, parallel_token, switcher_generation),
                 kwargs={
                     "capture_id": capture_id,
+                    "gpu_observation": gpu_observation,
                     "switcher_intent": getattr(self, "_manual_hold_switcher_intent", False),
                 },
                 daemon=True,
@@ -3128,7 +3136,7 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._command_transcribe_worker,
                 args=(wav_bytes, token),
-                kwargs={"capture_id": capture_id},
+                kwargs={"capture_id": capture_id, "gpu_observation": gpu_observation},
                 daemon=True,
             )
         elif shift_held:
@@ -3141,7 +3149,7 @@ class SpokeAppDelegate(NSObject):
             thread = threading.Thread(
                 target=self._tray_transcribe_worker,
                 args=(wav_bytes, token),
-                kwargs={"capture_id": capture_id},
+                kwargs={"capture_id": capture_id, "gpu_observation": gpu_observation},
                 daemon=True,
             )
         else:
@@ -3176,6 +3184,7 @@ class SpokeAppDelegate(NSObject):
                 args=(wav_bytes, token, switcher_generation),
                 kwargs={
                     "capture_id": capture_id,
+                    "gpu_observation": gpu_observation,
                     "switcher_intent": getattr(self, "_manual_hold_switcher_intent", False),
                 },
                 daemon=True,
@@ -3433,13 +3442,15 @@ class SpokeAppDelegate(NSObject):
         return self._build_client(url, model, api_key=key)
 
     def _transcribe_with_history(self, wav_bytes, *, capture_id=None, release_cutover=False,
-                                history_ref=None, inference_epoch=None):
+                                history_ref=None, inference_epoch=None, gpu_observation=None):
         from .recording_history import client_receipt
 
         trace = getattr(self, "_history_trace", None)
         if trace is None:
             trace = self._history_trace = threading.local()
         trace.routes = []
+        trace.gpu_observation = gpu_observation
+        trace.automatic_routing = None
         trace.inference_timings = []
         control = getattr(self, "_inference_control", None)
         trace.inference_epoch = (control.epoch if inference_epoch is None and control is not None
@@ -3471,15 +3482,20 @@ class SpokeAppDelegate(NSObject):
                     routes = trace.routes
                     spool.finish_attempt(
                         capture_id, attempt_id, text=text, error=error,
-                        effective=routes[-1] if routes else {} if cancelled else client_receipt(self._client),
+                        effective=(routes[-1] if routes else {}
+                                   if cancelled or (trace.automatic_routing or {}).get("cpu_selected")
+                                   else client_receipt(self._client)),
                         wall_seconds=time.monotonic() - started,
                         evidence={"routes": routes, "delivery": "not_verified",
+                                  "automatic_routing": trace.automatic_routing,
                                   "local_inference": trace.inference_timings},
                         cancelled=cancelled,
                     )
                 except Exception:
                     logger.exception("Could not finish recording history attempt %s", attempt_id)
             trace.routes = None
+            trace.gpu_observation = None
+            trace.automatic_routing = None
             trace.inference_timings = None
             trace.inference_epoch = None
 
@@ -3644,6 +3660,19 @@ class SpokeAppDelegate(NSObject):
 
     def _transcribe_final_buffer(self, wav_bytes: bytes, *, release_cutover: bool = False) -> str:
         """Choose the final transcription route for all hold-release pathways."""
+        if isinstance(self._client, LocalTranscriptionClient):
+            from .gpu_routing import cpu_route_decision
+            trace = getattr(self, "_history_trace", None)
+            decision = cpu_route_decision(getattr(trace, "gpu_observation", None))
+            decision["preferred_model"] = getattr(self._client, "_model", None)
+            if decision["cpu_selected"] and not NemotronCPUClient.available():
+                decision.update(cpu_selected=False, reason="cpu_unavailable")
+            if trace is not None:
+                trace.automatic_routing = decision
+            if decision["cpu_selected"]:
+                client = self._get_client("", _NEMOTRON_CPU_MODEL_ID)
+                logger.info("Automatic ASR route: GPU saturated, using Nemotron CPU for this dictation")
+                return self._transcribe_full_buffer(wav_bytes, client)
         raw_full_buffer_required = not getattr(
             self, "_vad_active_for_hold", vad_enabled()
         )
@@ -3728,7 +3757,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes: bytes,
         token: int,
         switcher_generation: int | None = None,
-        *, capture_id: str | None = None, switcher_intent: bool = False,
+        *, capture_id: str | None = None, switcher_intent: bool = False, gpu_observation=None,
     ) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         inference_epoch = self._current_inference_epoch()
@@ -3745,7 +3774,8 @@ class SpokeAppDelegate(NSObject):
         history = {}
         try:
             text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover,
-                                                 history_ref=history, inference_epoch=inference_epoch)
+                                                 history_ref=history, inference_epoch=inference_epoch,
+                                                 gpu_observation=gpu_observation)
         except Exception as exc:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3776,7 +3806,7 @@ class SpokeAppDelegate(NSObject):
         wav_bytes: bytes,
         token: int,
         switcher_generation: int | None = None,
-        *, capture_id: str | None = None, switcher_intent: bool = False,
+        *, capture_id: str | None = None, switcher_intent: bool = False, gpu_observation=None,
     ) -> None:
         """Background thread: transcribe a plain-space recording without disturbing
         an active assistant turn."""
@@ -3791,7 +3821,8 @@ class SpokeAppDelegate(NSObject):
         history = {}
         try:
             text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover,
-                                                 history_ref=history, inference_epoch=inference_epoch)
+                                                 history_ref=history, inference_epoch=inference_epoch,
+                                                 gpu_observation=gpu_observation)
         except Exception as exc:
             logger.exception("Parallel insert transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4424,7 +4455,7 @@ class SpokeAppDelegate(NSObject):
 
     # ── tray ───────────────────────────────────────────────
 
-    def _tray_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None) -> None:
+    def _tray_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None, gpu_observation=None) -> None:
         """Background thread: transcribe audio, then enter tray on main thread."""
         inference_epoch = self._current_inference_epoch()
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -4437,7 +4468,8 @@ class SpokeAppDelegate(NSObject):
         history = {}
         try:
             text = self._transcribe_with_history(wav_bytes, capture_id=capture_id, release_cutover=release_cutover,
-                                                 history_ref=history, inference_epoch=inference_epoch)
+                                                 history_ref=history, inference_epoch=inference_epoch,
+                                                 gpu_observation=gpu_observation)
         except Exception as exc:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -5538,7 +5570,7 @@ class SpokeAppDelegate(NSObject):
             )
         return _executor
 
-    def _command_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None) -> None:
+    def _command_transcribe_worker(self, wav_bytes: bytes, token: int, *, capture_id=None, gpu_observation=None) -> None:
         """Background thread: transcribe then send command to OMLX."""
         inference_epoch = self._current_inference_epoch()
         self._command_tool_used_tts = False
@@ -5557,6 +5589,7 @@ class SpokeAppDelegate(NSObject):
                 release_cutover=release_cutover,
                 history_ref=history,
                 inference_epoch=inference_epoch,
+                gpu_observation=gpu_observation,
             )
         except Exception as exc:
             logger.exception("Command transcription failed")
@@ -7391,7 +7424,7 @@ class SpokeAppDelegate(NSObject):
             return WhisperCppCoreMLClient()
         if model_id == _NEMOTRON_CPU_MODEL_ID:
             logger.info("Using Nemotron 3.5 ASR through the explicit CPU route")
-            return NemotronCPUClient()
+            return NemotronCPUClient(isolated=True)
         if model_id.startswith("Qwen/"):
             logger.info("Using local Qwen3 ASR: %s", model_id)
             return LocalQwenClient(model=model_id)
@@ -8042,6 +8075,9 @@ class SpokeAppDelegate(NSObject):
                 )
 
     def _close_clients(self) -> None:
+        monitor = getattr(self, "_gpu_load_for_hold", None)
+        if monitor is not None:
+            monitor.finish()
         seen_clients = []
         for client in list(getattr(self, "_client_cache", {}).values()) + [
             getattr(self, "_client", None),
