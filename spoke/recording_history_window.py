@@ -57,8 +57,11 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._previous_app = None
         self._focus_return = None
         self._replays = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spoke-history")
-        self._busy = set()
+        self._busy = {}
+        self._replay_outcomes = {}
         self._replay_generation = 0
+        self._load_generation = 0
+        self._record_overrides = {}
         return self
 
     def setup(self):
@@ -266,6 +269,8 @@ class RecordingHistoryWindow(HouseWindowShell):
         if self._refreshing:
             return
         self._refreshing = True
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
+        generation = self._load_generation
         first_load = not self._records
         def load():
             try:
@@ -276,19 +281,29 @@ class RecordingHistoryWindow(HouseWindowShell):
                     now = time.monotonic()
                     if first_load and (len(records) == 1 or now - last_publication >= 0.1):
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                            "loaded:", {"records": list(records), "complete": False}, False,
+                            "loaded:", {"records": list(records), "complete": False,
+                                        "load_generation": generation}, False,
                         )
                         last_publication = now
-                payload = {"records": records, "complete": True}
+                payload = {"records": records, "complete": True, "load_generation": generation}
             except Exception as exc:
-                payload = {"error": str(exc)}
+                payload = {"error": str(exc), "load_generation": generation}
             self.performSelectorOnMainThread_withObject_waitUntilDone_("loaded:", payload, False)
-        threading.Thread(target=load, name="spoke-history-list", daemon=True).start()
+        try:
+            threading.Thread(target=load, name="spoke-history-list", daemon=True).start()
+        except Exception as exc:
+            self.loaded_({"error": str(exc), "load_generation": generation})
 
     def loaded_(self, payload):
+        generation = payload.get("load_generation")
+        if generation != getattr(self, "_load_generation", 0):
+            return
+        if "error" not in payload and ("records" not in payload or "complete" not in payload):
+            logger.warning("Ignored incomplete History scan callback")
+            return
         complete = payload.get("complete", True)
         self._refreshing = not complete
-        if payload.get("error"):
+        if "error" in payload:
             self._status.setStringValue_(f"History unavailable: {payload['error']}")
             self._count.setStringValue_(f"History unavailable | {len(self._records)} loaded")
             self._loading_partial = False
@@ -298,8 +313,15 @@ class RecordingHistoryWindow(HouseWindowShell):
                           or getattr(self, "_load_failed", False))
         self._loading_partial = not complete
         self._load_failed = False
-        if payload["records"] != self._records:
-            self._records = payload["records"]
+        records = {r["capture_id"]: r for r in payload["records"]}
+        for capture_id, (observed_generation, record) in list(getattr(self, "_record_overrides", {}).items()):
+            if generation <= observed_generation or not complete:
+                records[capture_id] = record
+            elif complete:
+                self._record_overrides.pop(capture_id, None)
+        records = [self._merge_replay_outcomes(record) for record in records.values()]
+        if records != self._records:
+            self._records = records
             self._filter()
         elif complete and (was_incomplete or not self._records):
             self._filter()
@@ -361,13 +383,78 @@ class RecordingHistoryWindow(HouseWindowShell):
         return next((r for r in self._filtered if r["capture_id"] == self._selected_id), None)
 
     def _attempt(self):
+        return next((a for a in self._selected_attempts() if a["attempt_id"] == self._attempt_id), None)
+
+    def _merge_replay_outcomes(self, record):
+        outcomes = getattr(self, "_replay_outcomes", {}).get(record["capture_id"], {})
+        if not outcomes:
+            return record
+        attempts = list(record["attempts"])
+        for attempt_id, outcome in outcomes.items():
+            if not outcome["metadata_pending"]:
+                continue
+            index = next((i for i, attempt in enumerate(attempts) if attempt["attempt_id"] == attempt_id), None)
+            if index is not None and attempts[index].get("status") in self._replay_terminal_labels:
+                outcome.update(metadata_pending=False, message=self._replay_terminal_labels[attempts[index]["status"]])
+            elif index is None:
+                attempts.append(outcome["unverified_attempt"])
+            else:
+                attempts[index] = outcome["unverified_attempt"]
+        return {**record, "attempts": attempts,
+                "status": "unverified" if attempts and attempts[-1].get("status") == "unverified"
+                else record.get("status", "not_transcribed")}
+
+    def _selected_attempts(self):
         record = self._selected()
-        return next((a for a in record["attempts"] if a["attempt_id"] == self._attempt_id), None) if record else None
+        if record is None:
+            return []
+        attempts = list(self._merge_replay_outcomes(record)["attempts"])
+        job = self._busy.get(record["capture_id"])
+        if job and not any(a["attempt_id"] == job["attempt_id"] for a in attempts):
+            attempts.append({"attempt_id": job["attempt_id"], "kind": "retranscription",
+                             "requested": job["route"], "status": "pending"})
+        return attempts
+
+    def _update_replay_status(self):
+        job = self._busy.get(self._selected_id)
+        outcomes = getattr(self, "_replay_outcomes", {})
+        outcome = outcomes.get(self._selected_id, {}).get(self._attempt_id)
+        if job:
+            self._status.setStringValue_(self._replay_phase_label(job["phase"]))
+        elif outcome and outcome["attempt_id"] == self._attempt_id:
+            self._status.setStringValue_(outcome["message"])
+        elif self._busy:
+            self._status.setStringValue_("Re-transcribing another recording")
+        elif str(self._status.stringValue()) in {
+            "Re-transcription queued", "Re-transcribing another recording",
+            *self._replay_phase_labels.values(),
+            *(outcome["message"] for capture in outcomes.values() for outcome in capture.values()),
+        }:
+            self._status.setStringValue_("Retention: manual")
+
+    _replay_phase_labels = {
+        "queued": "Waiting for the re-transcription worker",
+        "validating": "Checking original audio",
+        "preparing": "Preparing re-transcription backend",
+        "waiting": "Waiting for inference",
+        "transcribing": "Re-transcribing...",
+        "saving": "Saving re-transcription",
+    }
+    _replay_terminal_labels = {
+        "success": "Re-transcription finished; original retained",
+        "failed": "Re-transcription failed; original retained",
+        "cancelled": "Re-transcription stopped; original retained",
+        "blank": "Re-transcription returned no text; original retained",
+    }
+
+    def _replay_phase_label(self, phase):
+        return self._replay_phase_labels.get(phase, "Re-transcription state unavailable")
 
     def _render_detail(self):
         record = self._selected()
         self._attempts.removeAllItems()
         if record is None:
+            self._update_replay_status()
             self._title.setStringValue_("Recordings")
             self._meta.setStringValue_("")
             if getattr(self, "_loading_partial", False):
@@ -384,7 +471,7 @@ class RecordingHistoryWindow(HouseWindowShell):
         pathway = record.get("pathway", "Unverified pathway")
         self._meta.setStringValue_(f"{duration_label(record.get('duration_seconds'))}  |  Pathway: {pathway}")
         self._meta.setToolTip_(record["capture_id"])
-        attempts = record["attempts"]
+        attempts = self._selected_attempts()
         if self._attempt_id not in {a["attempt_id"] for a in attempts}:
             self._attempt_id = attempts[-1]["attempt_id"] if attempts else None
         for index, attempt in enumerate(attempts):
@@ -398,16 +485,21 @@ class RecordingHistoryWindow(HouseWindowShell):
     def selectAttempt_(self, sender):
         record = self._selected()
         index = int(sender.indexOfSelectedItem())
-        if record and 0 <= index < len(record["attempts"]):
-            self._attempt_id = record["attempts"][index]["attempt_id"]
+        attempts = self._selected_attempts()
+        if record and 0 <= index < len(attempts):
+            self._attempt_id = attempts[index]["attempt_id"]
             self._render_attempt()
 
     def _render_attempt(self):
         record, attempt = self._selected(), self._attempt()
+        self._update_replay_status()
         if attempt:
             message = attempt.get("text") or attempt.get("error") or {
                 "pending": "No completed result yet.", "blank": "The model returned an empty transcript.",
             }.get(attempt.get("status"), "No transcript available.")
+            job = self._busy.get(record["capture_id"])
+            if attempt.get("status") == "pending" and job and job["attempt_id"] == attempt["attempt_id"]:
+                message = self._replay_phase_label(job["phase"])
             self._text.setString_(message)
             effective = attempt.get("effective", {})
             model = effective.get("model") or effective.get("model_id") or effective.get("model_path") or "Unverified model"
@@ -446,7 +538,7 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._update_controls()
 
     def retranscribe_(self, sender):
-        self._start_retranscription()
+        self._start_retranscription(origin="retry_action")
 
     def forceRetranscribe_(self, sender):
         record = self._selected()
@@ -459,10 +551,10 @@ class RecordingHistoryWindow(HouseWindowShell):
             return
         self._replay_generation += 1
         self._busy.clear()
-        self._start_retranscription()
+        self._start_retranscription(origin="stop_and_retry_action")
 
     @objc.python_method
-    def _start_retranscription(self):
+    def _start_retranscription(self, *, origin="direct_call"):
         record = self._selected()
         if not record or record["capture_id"] in self._busy or self._delegate._history_live_busy():
             return
@@ -477,29 +569,111 @@ class RecordingHistoryWindow(HouseWindowShell):
         generation = self._replay_generation
         control = getattr(self._delegate, "_inference_control", None)
         epoch = control.epoch if control is not None else None
-        self._busy.add(capture_id)
-        self._status.setStringValue_("Re-transcription queued")
+        self._busy[capture_id] = {"attempt_id": attempt_id, "route": route, "phase": "queued",
+                                  "generation": generation}
+        try:
+            event = AK.NSApp().currentEvent()
+            event_type = int(event.type()) if event is not None else None
+        except Exception:
+            event_type = None
+        logger.info("History replay requested: capture=%s attempt=%s generation=%s origin=%s event_type=%s model=%s",
+                    capture_id, attempt_id, generation, origin, event_type, route.get("model"))
+        self._render_detail()
+        submission_resolved = threading.Event()
+        accepted = False
         def replay():
+            submission_resolved.wait()
+            if not accepted:
+                return
             try:
+                def progress(phase):
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_("replayPhase:", {
+                        "capture_id": capture_id, "attempt_id": attempt_id,
+                        "generation": generation, "phase": phase}, False)
                 run_retranscription(self._spool, capture_id, attempt_id, route,
                                     self._delegate._build_history_client,
                                     lambda client: control.context(self._delegate._local_inference_lock, client, epoch=epoch)
                                     if control is not None else self._delegate._local_inference_context(client),
-                                    cancel_check=lambda: generation != self._replay_generation)
-                payload = {"capture_id": capture_id, "generation": generation}
+                                    cancel_check=lambda: generation != self._replay_generation,
+                                    on_phase=progress)
+                payload = {"capture_id": capture_id, "attempt_id": attempt_id, "generation": generation,
+                           "record": self._spool.read_recording_metadata(capture_id)}
             except Exception as exc:
-                logger.exception("Could not persist re-transcription result")
-                payload = {"capture_id": capture_id, "generation": generation, "error": str(exc)}
+                logger.exception("Could not finish History replay/update")
+                payload = {"capture_id": capture_id, "attempt_id": attempt_id,
+                           "generation": generation, "error": str(exc)}
             self.performSelectorOnMainThread_withObject_waitUntilDone_("replayFinished:", payload, False)
-        self._replays.submit(replay)
+        try:
+            self._replays.submit(replay)
+            accepted = True
+        except Exception as exc:
+            # CPython can enqueue before worker startup raises. That exact
+            # rejected closure must remain inert if a later submit starts it.
+            payload = {"capture_id": capture_id, "attempt_id": attempt_id, "generation": generation,
+                       "error": f"Could not queue re-transcription: {exc}"}
+            try:
+                self._spool.finish_attempt(capture_id, attempt_id, text=None, effective={}, wall_seconds=0,
+                    error=f"Could not queue replay: {exc}", evidence={"phase": "queue_submission"})
+            except Exception:
+                logger.exception("Could not persist History queue failure")
+            try:
+                payload["record"] = self._spool.read_recording_metadata(capture_id)
+            except Exception:
+                logger.exception("Could not read History queue failure")
+            self.replayFinished_(payload)
+            return
+        finally:
+            submission_resolved.set()
         self.refresh_(None)
         self._update_controls()
 
-    def replayFinished_(self, payload):
-        if payload.get("generation", 0) != self._replay_generation:
+    def replayPhase_(self, payload):
+        job = self._busy.get(payload.get("capture_id"))
+        if (payload.get("generation") != self._replay_generation or job is None
+                or payload.get("attempt_id") != job["attempt_id"]
+                or payload.get("phase") not in self._replay_phase_labels):
             return
-        self._busy.discard(payload["capture_id"])
-        self._status.setStringValue_(payload.get("error") or "Re-transcription finished; original retained")
+        job["phase"] = payload["phase"]
+        self._update_replay_status()
+        if self._selected_id == payload["capture_id"] and self._attempt_id == job["attempt_id"]:
+            self._render_attempt()
+
+    def replayFinished_(self, payload):
+        if payload.get("generation") != self._replay_generation:
+            return
+        job = self._busy.get(payload.get("capture_id"))
+        if job is None or payload.get("attempt_id") != job["attempt_id"]:
+            return
+        self._busy.pop(payload["capture_id"], None)
+        record = payload.get("record")
+        valid_record = isinstance(record, dict) and record.get("capture_id") == payload["capture_id"]
+        terminal = next((a for a in record.get("attempts", []) if a["attempt_id"] == payload["attempt_id"]), {}) if valid_record else {}
+        metadata_pending = terminal.get("status") not in self._replay_terminal_labels
+        if metadata_pending:
+            prior = record if valid_record else next((r for r in self._records if r["capture_id"] == payload["capture_id"]), {})
+            record = {**prior, "capture_id": payload["capture_id"], "status": "unverified",
+                      "audio_available": prior.get("audio_available", False),
+                      "attempts": [a for a in prior.get("attempts", []) if a["attempt_id"] != payload["attempt_id"]] + [{
+                          "attempt_id": payload["attempt_id"], "kind": "retranscription", "status": "unverified",
+                          "requested": job["route"], "error": payload.get("error") or "Re-transcription result unavailable"}]}
+        attempt = next((a for a in record.get("attempts", [])
+                        if a["attempt_id"] == payload["attempt_id"]), {})
+        message = self._replay_terminal_labels.get(attempt.get("status"), "Re-transcription result unavailable")
+        if not hasattr(self, "_replay_outcomes"):
+            self._replay_outcomes = {}
+        self._replay_outcomes.setdefault(payload["capture_id"], {})[payload["attempt_id"]] = {
+            "attempt_id": payload["attempt_id"], "metadata_pending": metadata_pending,
+            "unverified_attempt": attempt if metadata_pending else None,
+            "message": payload.get("error") or message}
+        record = self._merge_replay_outcomes(record)
+        overrides = getattr(self, "_record_overrides", None)
+        if overrides is None:
+            overrides = self._record_overrides = {}
+        overrides[payload["capture_id"]] = (getattr(self, "_load_generation", 0), record)
+        records = {r["capture_id"]: r for r in self._records}
+        records[payload["capture_id"]] = record
+        self._records = list(records.values())
+        self._filter()
         self.refresh_(None)
 
     def copyText_(self, sender):

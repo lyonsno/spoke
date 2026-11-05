@@ -61,7 +61,7 @@ def client_receipt(client) -> dict:
 
 
 def run_retranscription(spool, capture_id, attempt_id, route, client_factory, inference_context,
-                        cancel_check=lambda: False):
+                        cancel_check=lambda: False, on_phase=None):
     """Run one exact-route replay. Failures never fall back or replace an attempt."""
     started = time.monotonic()
     phase = "audio_validation"
@@ -70,17 +70,27 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
     timing = None
     cancelled = False
     from .inference_process import InferenceCancelled
+    def notify(value):
+        if on_phase is not None:
+            try:
+                on_phase(value)
+            except Exception:
+                logger.exception("History replay progress observer failed")
     try:
         if cancel_check():
             raise InferenceCancelled()
+        notify("validating")
         wav = spool.read_recording_audio(capture_id)
         phase = "client_creation"
+        notify("preparing")
         client = client_factory(dict(route))
         phase = "inference"
+        notify("waiting")
         with inference_context(client) as timing:
             try:
                 if cancel_check():
                     raise InferenceCancelled()
+                notify("transcribing")
                 text = client.transcribe(wav)
                 if cancel_check():
                     raise InferenceCancelled()
@@ -98,6 +108,7 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         logger.exception("Recording re-transcription failed at %s", phase)
+    notify("saving")
     spool.finish_attempt(
         capture_id, attempt_id, text=text, error=error, effective=effective,
         wall_seconds=time.monotonic() - started,

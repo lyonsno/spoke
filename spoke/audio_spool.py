@@ -182,6 +182,10 @@ class AudioSpool:
         """Read metadata only; opening history never decodes or loads audio."""
         return list(self.iter_recordings())
 
+    def read_recording_metadata(self, capture_id: str) -> dict:
+        """Read one current recording without scanning the library or decoding audio."""
+        return self._read_recording(capture_id, self._capture_path(capture_id))
+
     def iter_recordings(self):
         """Yield newest first, reusing rows only while their files are unchanged."""
         root = self.config.root

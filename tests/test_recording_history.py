@@ -51,6 +51,39 @@ def test_retranscription_failure_before_client_is_durable(tmp_path):
     assert result["effective"] == {}
 
 
+def test_progress_distinguishes_waiting_from_acquired_inference(tmp_path):
+    from contextlib import contextmanager
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    attempt = spool.start_attempt(capture.capture_id, requested={})
+    phases = []
+    class Client:
+        def transcribe(self, audio):
+            assert phases[-1] == "transcribing"
+            return "retained result"
+    @contextmanager
+    def inference(client):
+        assert phases[-1] == "waiting"
+        yield
+    _service()(spool, capture.capture_id, attempt, {}, lambda route: Client(), inference,
+               on_phase=phases.append)
+    assert phases == ["validating", "preparing", "waiting", "transcribing", "saving"]
+
+
+def test_progress_observer_failure_does_not_lose_transcription(tmp_path):
+    spool = AudioSpool(AudioSpoolConfig(root=tmp_path))
+    capture = spool.spool_capture(_wav_bytes())
+    attempt = spool.start_attempt(capture.capture_id, requested={})
+    class Client:
+        def transcribe(self, audio):
+            return "retained result"
+    def observer(phase):
+        raise RuntimeError("view closed")
+    _service()(spool, capture.capture_id, attempt, {}, lambda route: Client(),
+               lambda client: nullcontext(), on_phase=observer)
+    assert spool.read_recording_metadata(capture.capture_id)["attempts"][0]["text"] == "retained result"
+
+
 def test_retranscription_retains_inference_lock_timing(tmp_path):
     from contextlib import contextmanager
     run = _service()
@@ -233,6 +266,7 @@ def test_history_copy_failure_does_not_publish_copied(monkeypatch):
     owner._filtered = [{"capture_id": "capture", "attempts": [
         {"attempt_id": "attempt", "text": "retained transcript"}]}]
     owner._selected_id, owner._attempt_id = "capture", "attempt"
+    owner._busy = {}
     owner._spool = SimpleNamespace(record_delivery=MagicMock())
     owner._status = MagicMock()
     monkeypatch.setattr(inject, "set_pasteboard_only", MagicMock(side_effect=RuntimeError("clipboard refused")))
@@ -252,7 +286,7 @@ def test_history_offers_explicit_takeover_while_live_transcription_is_busy():
     route = {"backend": "local", "model": "recovery"}
     owner._delegate = SimpleNamespace(_history_live_busy=lambda: True,
         _history_can_take_over=lambda: True, _history_model=route)
-    owner._busy = set()
+    owner._busy = {}
     owner._model_routes = [{"route": route, "available": True}]
     for name in ("_copy", "_insert", "_play", "_trash", "_retry", "_force_retry"):
         setattr(owner, name, MagicMock())
@@ -267,11 +301,11 @@ def test_old_replay_completion_does_not_clear_new_replay():
 
     owner = RecordingHistoryWindow.alloc().init()
     owner._replay_generation = 2
-    owner._busy = {"same-recording"}
+    owner._busy = {"same-recording": {"attempt_id": "new"}}
     owner._status = MagicMock()
     owner.refresh_ = MagicMock()
     owner.replayFinished_({"capture_id": "same-recording", "generation": 1})
-    assert owner._busy == {"same-recording"}
+    assert owner._busy == {"same-recording": {"attempt_id": "new"}}
     owner._status.setStringValue_.assert_not_called()
     owner.refresh_.assert_not_called()
 
@@ -288,8 +322,8 @@ def test_force_retry_cancels_before_submitting_recovery_and_keeps_old_generation
     owner._delegate = SimpleNamespace(_history_model=route,
         _cancel_transcription_for_recovery=lambda: actions.append("stop") or True)
     owner._model_routes = [{"route": route, "available": True}]
-    owner._busy, owner._replay_generation = {"capture"}, 0
-    owner._start_retranscription = lambda: actions.append("retry")
+    owner._busy, owner._replay_generation = {"capture": {}}, 0
+    owner._start_retranscription = lambda **kwargs: actions.append("retry")
     owner.forceRetranscribe_(None)
     assert actions == ["stop", "retry"]
     assert owner._replay_generation == 1 and not owner._busy
@@ -337,12 +371,12 @@ def test_history_partial_publication_does_not_finish_or_spawn_another_refresh():
     owner._filter = MagicMock()
     owner._update_controls = MagicMock()
     rows = [{"capture_id": "newest", "attempts": []}]
-    owner.loaded_({"records": rows, "complete": False})
+    owner.loaded_({"records": rows, "complete": False, "load_generation": 0})
     assert owner._records == rows
     owner._filter.assert_called_once_with()
     assert owner._refreshing is True
     assert "Loading" in owner._count.setStringValue_.call_args.args[0]
-    owner.loaded_({"records": rows, "complete": True})
+    owner.loaded_({"records": rows, "complete": True, "load_generation": 0})
     assert owner._refreshing is False
 
 
@@ -373,7 +407,7 @@ def test_history_partial_load_error_keeps_loaded_rows_and_marks_unavailable():
     owner._refreshing = True
     owner._records = [{"capture_id": "retained", "attempts": []}]
     owner._status, owner._count = MagicMock(), MagicMock()
-    owner.loaded_({"error": "older directory unreadable"})
+    owner.loaded_({"error": "older directory unreadable", "load_generation": 0})
     assert owner._refreshing is False
     assert len(owner._records) == 1
     assert "unavailable" in owner._status.setStringValue_.call_args.args[0]
@@ -388,8 +422,8 @@ def test_history_recovers_count_after_error_even_when_rows_are_unchanged():
     owner._records = rows
     owner._status, owner._count = MagicMock(), MagicMock()
     owner._filter, owner._update_controls = MagicMock(), MagicMock()
-    owner.loaded_({"error": "unreadable"})
-    owner.loaded_({"records": rows, "complete": True})
+    owner.loaded_({"error": "unreadable", "load_generation": 0})
+    owner.loaded_({"records": rows, "complete": True, "load_generation": 0})
     owner._filter.assert_called_once_with()
 
 
@@ -405,6 +439,8 @@ def test_history_search_preserves_incomplete_archive_state(partial, failed, labe
     owner._loading_partial, owner._load_failed = partial, failed
     owner._records = [{"capture_id": "newest", "attempts": [{"text": "latest"}], "byte_count": 0}]
     owner._selected_id = None
+    owner._attempt_id = None
+    owner._busy, owner._status = {}, MagicMock()
     owner._search, owner._table, owner._count = MagicMock(), MagicMock(), MagicMock()
     owner._search.stringValue.return_value = "earlier"
     owner._attempts, owner._title, owner._meta = MagicMock(), MagicMock(), MagicMock()
@@ -424,7 +460,7 @@ def test_history_empty_archive_completes_its_initial_loading_state():
     owner._loading_partial = owner._load_failed = False
     owner._status, owner._count = MagicMock(), MagicMock()
     owner._filter, owner._update_controls = MagicMock(), MagicMock()
-    owner.loaded_({"records": [], "complete": True})
+    owner.loaded_({"records": [], "complete": True, "load_generation": 0})
     owner._filter.assert_called_once_with()
     assert owner._refreshing is False
 
@@ -449,7 +485,7 @@ def test_history_trash_is_a_cancelable_child_sheet(monkeypatch):
     owner = mod.RecordingHistoryWindow.alloc().init()
     owner._window, owner._delegate = MagicMock(), MagicMock()
     owner._delegate._history_live_busy.return_value = False
-    owner._busy = set()
+    owner._busy = {}
     owner._selected = lambda: {"capture_id": "retained"}
     owner._stop_audio = MagicMock()
     owner._spool = MagicMock()
