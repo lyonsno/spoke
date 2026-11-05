@@ -839,6 +839,7 @@ def test_throughglass_shell_materialize_shapes_live_carrier_view(
 ):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
+    monkeypatch.setattr(module.time, "perf_counter", lambda: 100.0)
 
     monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
     monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
