@@ -179,7 +179,11 @@ def test_native_footer_click_routes_current_item_without_browser(tmp_path):
 
 
 @pytest.mark.parametrize("field", ["monitor_url", "item"])
-@pytest.mark.parametrize("url", ["http://localhost:bad/", "http://local host/", "http://localhost:65536/"])
+@pytest.mark.parametrize("url", [
+    "http://localhost:bad/", "http://local host/", "http://localhost:65536/",
+    "http://exa%mple.com/", "http://bad\\host/", "http://bad^host/",
+    "http://bad|host/", "http://bad{host/",
+])
 def test_malformed_web_urls_clear_navigation(tmp_path, field, url):
     raw = snapshot()
     if field == "monitor_url": raw[field] = url
@@ -189,6 +193,42 @@ def test_malformed_web_urls_clear_navigation(tmp_path, field, url):
     footer = GreenroomAttentionReader(path).read(instant("2026-11-06T12:00:10Z"))
     assert footer.freshness == "unavailable", "malformed URL is still actionable"
     assert footer.monitor_url is None and footer.attention_url is None
+
+
+@pytest.mark.parametrize("url", ["http://localhost:8768/", "http://[::1]:8768/", "http://localhost:8768/escaped%20path#request"])
+def test_valid_native_urls_remain_actionable(tmp_path, url):
+    from Foundation import NSURL
+    raw = snapshot()
+    raw["monitor_url"] = raw["items"][0]["target_url"] = url
+    path = tmp_path / "valid-native-url.json"
+    path.write_text(json.dumps(raw))
+    footer = GreenroomAttentionReader(path).read(instant("2026-11-06T12:00:10Z"))
+    assert footer.freshness == "fresh"
+    assert footer.monitor_url == footer.attention_url == url
+    assert NSURL.URLWithString_(footer.attention_url) is not None
+
+
+@pytest.mark.parametrize("paused", [True, False])
+def test_queue_pause_state_is_visible(tmp_path, paused):
+    raw = snapshot()
+    raw["queue"]["paused"] = paused
+    path = tmp_path / "paused.json"
+    path.write_text(json.dumps(raw))
+    footer = GreenroomAttentionReader(path).read(instant("2026-11-06T12:00:10Z"))
+    assert ("⏸" if paused else "▶") in footer.queue_text
+    assert ("Queue paused" if paused else "Queue not paused") in footer.tooltip
+    raw["queue"]["paused"] = "true" if paused else "false"
+    path.write_text(json.dumps(raw))
+    assert GreenroomAttentionReader(path).read(instant("2026-11-06T12:00:10Z")).freshness == "unavailable"
+
+
+def test_missing_optional_pause_state_remains_explicitly_unknown(tmp_path):
+    path = tmp_path / "legacy-queue.json"
+    path.write_text(json.dumps(snapshot()))
+    footer = GreenroomAttentionReader(path).read(instant("2026-11-06T12:00:10Z"))
+    assert footer.freshness == "fresh"
+    assert "Pause state unavailable" in footer.tooltip
+    assert "▶" not in footer.queue_text and "⏸" not in footer.queue_text
 
 
 @pytest.mark.parametrize("selection", ["cli", "path-env", "queue-env"])

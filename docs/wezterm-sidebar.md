@@ -43,8 +43,14 @@ working links and its shared monitor deadline. Timestamps require explicit
 timezones; queue counts are nonnegative integers; item IDs are unique. Items
 contain the complete unresolved set in producer priority order. The consumer
 does not interpret status names as state transitions. Unknown additive fields
-remain compatible. Navigation accepts HTTP(S) URLs with valid host/port syntax only; native URL
-construction is checked before dispatch.
+remain compatible. Navigation accepts HTTP(S) URLs with valid host/port syntax
+only. This macOS reader validates with the same Foundation URL constructor used
+for navigation; native construction is also checked before dispatch.
+
+An optional boolean `queue.paused` adds an explicit ⏸ or ▶ indicator and a
+paused/not-paused tooltip beside the running/waiting counts. Missing pause state
+remains unknown; a malformed supplied value makes the snapshot unavailable.
+These indicators navigate to the monitor and do not change queue state.
 
 The reader stats the file on the sidebar's existing visible update cadence
 (approximately 480 ms), reparses only after inode/mtime/size changes, and checks

@@ -26,6 +26,12 @@ def _web_url(value: object) -> str:
     _ = parsed.port
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("expected HTTP(S) monitor URL")
+    # This is a native macOS sidebar. Validate through the exact constructor
+    # used by its click handler rather than maintaining a second URI grammar.
+    from Foundation import NSURL
+
+    if NSURL.URLWithString_(value) is None:
+        raise ValueError("monitor URL cannot be opened by the native sidebar")
     return value
 
 
@@ -75,6 +81,8 @@ class GreenroomAttentionReader:
         for key in ("running", "waiting"):
             if type(queue.get(key)) is not int or queue[key] < 0:
                 raise ValueError("invalid queue counts")
+        if "paused" in queue and not isinstance(queue["paused"], bool):
+            raise ValueError("invalid queue pause state")
         items = raw.get("items")
         if not isinstance(items, list):
             raise ValueError("missing unresolved items")
@@ -114,5 +122,11 @@ class GreenroomAttentionReader:
         queue = raw["queue"]
         items = raw["items"]
         title = f"Greenroom · {queue['running']} running · {queue['waiting']} waiting"
+        if "paused" in queue:
+            symbol = "⏸" if queue["paused"] else "▶"
+            title = f"Greenroom {symbol} · {queue['running']} run · {queue['waiting']} wait"
+            tooltip += "\nQueue paused" if queue["paused"] else "\nQueue not paused"
+        else:
+            tooltip += "\nPause state unavailable"
         attention = f"⚠ {len(items)} · {items[0]['title']}" if items else "✓ No requests"
         return GreenroomFooter(title, attention, attention + "\n" + tooltip, monitor, items[0]["target_url"] if items else None, "fresh")
