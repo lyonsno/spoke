@@ -145,3 +145,63 @@ def test_window_bounds_follow_frontmost_wezterm_window(monkeypatch) -> None:
         CGWindowListCopyWindowInfo=lambda *_args: windows,
     ))
     assert sidebar_mod.query_wezterm_window_bounds() == small
+
+
+def test_native_mask_and_scroll_follow_small_then_large_window(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+    import textwrap
+    import pytest
+    if sys.platform != "darwin":
+        pytest.skip("native AppKit/CoreAnimation contract")
+    result = subprocess.run([sys.executable, "-c", textwrap.dedent("""
+        import spoke.wezterm_lanes_sidebar as sidebar
+        from AppKit import NSApplication
+        from Quartz import CGPathGetBoundingBox
+        NSApplication.sharedApplication()
+        hud = sidebar.build_sidebar_hud_controller()
+        hud.setup()
+        try:
+            sidebar.query_wezterm_window_bounds = lambda: {"X":606.,"Y":224.,"Width":918.,"Height":453.}
+            assert hud._sync_geometry()
+            hud._apply_planes({"phase":"rest","height_frac":1.,"width_frac":1.,"opacity":1.,"text_alpha":1.})
+            lanes = [sidebar.LaneRow(i,i,str(i),f"lane-{i}","done","",i==29) for i in range(1,32)]
+            hud._render_lanes(lanes)
+            sidebar.query_wezterm_window_bounds = lambda: {"X":0.,"Y":38.,"Width":1728.,"Height":1079.}
+            assert hud._sync_geometry()
+            hud._render_lanes(lanes)
+            mask = CGPathGetBoundingBox(hud._text_mask.path())
+            height = hud._foreground.bounds().size.height
+            assert abs(mask.size.height-height)<0.01, f"stale mask clips upper rows: mask={mask.size.height}, foreground={height}"
+            assert hud._header_title.stringValue()=="LANES (31)"
+            assert abs(hud._scroll_view.contentView().bounds().origin.y)<0.01, "fitting list retained a scrolled offset"
+        finally:
+            hud.cleanup()
+    """)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_focused_snapshot_visibility_overrides_legacy_global_flag(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    legacy = tmp_path / "enabled"
+    legacy.write_text("1\n")
+    monkeypatch.setattr(sidebar_mod, "DEFAULT_STATE_PATH", state)
+    monkeypatch.setattr(sidebar_mod, "DEFAULT_ENABLED_PATH", legacy)
+    payload = {"window_id":"1", "sidebar_enabled":False, "lanes":[{"index":1,"pane_id":"101","name":"secondary"}]}
+    state.write_text(json.dumps(payload))
+    assert sidebar_mod.is_wezterm_sidebar_enabled() is False
+    payload.update(window_id="0", sidebar_enabled=True)
+    legacy.write_text("0\n")
+    state.write_text(json.dumps(payload))
+    assert sidebar_mod.is_wezterm_sidebar_enabled() is True
+
+
+def test_invalid_window_visibility_does_not_restore_global_visibility(tmp_path, monkeypatch, caplog):
+    state=tmp_path/"invalid-visibility.json"
+    enabled=tmp_path/"global-enabled"
+    enabled.write_text("1\n")
+    monkeypatch.setattr(sidebar_mod,"DEFAULT_STATE_PATH",state)
+    monkeypatch.setattr(sidebar_mod,"DEFAULT_ENABLED_PATH",enabled)
+    state.write_text(json.dumps({"window_id":"1","sidebar_enabled":"false","lanes":[{"pane_id":"101"}]}))
+    assert sidebar_mod.is_wezterm_sidebar_enabled() is False
+    assert "sidebar_enabled" in caplog.text

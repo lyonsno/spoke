@@ -51,6 +51,7 @@ class LaneRow:
 
 
 _state_cache: dict[str, tuple[int, list[LaneRow], int]] = {}
+_snapshot_enabled: dict[str, bool] = {}
 
 
 def load_wezterm_lanes_state(
@@ -99,6 +100,14 @@ def load_wezterm_lanes_state(
                 active=bool(item.get("active", False)),
             )
         )
+    scoped_enabled = raw.get("sidebar_enabled")
+    if isinstance(scoped_enabled, bool):
+        _snapshot_enabled[key] = scoped_enabled
+    elif "sidebar_enabled" in raw:
+        logger.warning("Invalid sidebar_enabled in window snapshot; hiding sidebar")
+        _snapshot_enabled[key] = False
+    else:
+        _snapshot_enabled.pop(key, None)
     updated_at = int(raw.get("updated_at", 0))
     if not lanes and prev is not None and prev[1]:
         return prev[1], prev[2]
@@ -111,6 +120,13 @@ _enabled_cache: dict[str, tuple[int, bool]] = {}
 
 
 def is_wezterm_sidebar_enabled(enabled_path: Path | None = None) -> bool:
+    if enabled_path is None:
+        # The focused producer supplies rows and window-owned visibility in
+        # one atomic snapshot. Keep the legacy flag for older producers only.
+        load_wezterm_lanes_state()
+        scoped = _snapshot_enabled.get(str(DEFAULT_STATE_PATH))
+        if scoped is not None:
+            return scoped
     path = enabled_path or DEFAULT_ENABLED_PATH
     key = str(path)
     try:
@@ -541,6 +557,7 @@ def build_sidebar_hud_controller() -> Any:
             self._spinner_labels: list[Any] = []
             self._last_agy_scan_mono = 0.0
             self._last_frame_tuple: tuple[float, float, float, float] | None = None
+            self._last_plane_sample: dict[str, float | str] | None = None
             return self
 
         @objc.python_method
@@ -693,12 +710,15 @@ def build_sidebar_hud_controller() -> Any:
                 scroll_h = max(60.0, h - _HEADER_H - _FOOTER_H)
                 self._scroll_view.setFrame_(NSMakeRect(0.0, _FOOTER_H, w, scroll_h))
                 self._last_signature = None
+                if self._last_plane_sample is not None:
+                    self._apply_planes(self._last_plane_sample)
             return True
 
         @objc.python_method
         def _apply_planes(self, sample: dict[str, float | str]) -> None:
             if self._foreground is None or self._body_layer is None:
                 return
+            self._last_plane_sample = dict(sample)
             CATransaction.begin()
             CATransaction.setDisableActions_(True)
             try:
