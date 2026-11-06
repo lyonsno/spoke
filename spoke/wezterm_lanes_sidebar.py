@@ -80,35 +80,42 @@ def load_wezterm_lanes_state(
         if prev is not None:
             return prev[1], prev[2]
         return [], 0
-    raw_lanes = raw.get("lanes")
-    if not isinstance(raw_lanes, list):
-        if prev is not None:
-            return prev[1], prev[2]
-        return [], 0
-    lanes: list[LaneRow] = []
-    for item in raw_lanes:
-        if not isinstance(item, dict):
-            continue
-        lanes.append(
-            LaneRow(
-                index=int(item.get("index", len(lanes) + 1)),
-                tab_id=int(item.get("tab_id", 0)),
-                pane_id=str(item.get("pane_id", "?")),
-                name=str(item.get("name", "untitled")),
-                state=str(item.get("state") or "idle"),
-                badge=str(item.get("badge") or ""),
-                active=bool(item.get("active", False)),
-            )
-        )
     scoped_enabled = raw.get("sidebar_enabled")
     if isinstance(scoped_enabled, bool):
         _snapshot_enabled[key] = scoped_enabled
     elif "sidebar_enabled" in raw:
-        logger.warning("Invalid sidebar_enabled in window snapshot; hiding sidebar")
+        if _snapshot_enabled.get(key) is not False:
+            logger.warning("Invalid sidebar_enabled in window snapshot; hiding sidebar")
         _snapshot_enabled[key] = False
-    else:
+    raw_lanes = raw.get("lanes")
+    if not isinstance(raw_lanes, list):
+        if "sidebar_enabled" in raw:
+            _snapshot_enabled[key] = False
+        return (prev[1], prev[2]) if prev is not None else ([], 0)
+    try:
+        lanes: list[LaneRow] = []
+        for item in raw_lanes:
+            if not isinstance(item, dict):
+                continue
+            lanes.append(
+                LaneRow(
+                    index=int(item.get("index", len(lanes) + 1)),
+                    tab_id=int(item.get("tab_id", 0)),
+                    pane_id=str(item.get("pane_id", "?")),
+                    name=str(item.get("name", "untitled")),
+                    state=str(item.get("state") or "idle"),
+                    badge=str(item.get("badge") or ""),
+                    active=bool(item.get("active", False)),
+                )
+            )
+        updated_at = int(raw.get("updated_at", 0))
+    except (TypeError, ValueError, OverflowError):
+        if "sidebar_enabled" in raw:
+            _snapshot_enabled[key] = False
+        return (prev[1], prev[2]) if prev is not None else ([], 0)
+    if "sidebar_enabled" not in raw:
         _snapshot_enabled.pop(key, None)
-    updated_at = int(raw.get("updated_at", 0))
+
     if not lanes and prev is not None and prev[1]:
         return prev[1], prev[2]
     if lanes:

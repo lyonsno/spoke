@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import spoke.wezterm_lanes_sidebar as sidebar_mod
 from spoke.wezterm_lanes_sidebar import (
     LaneRow,
@@ -205,3 +207,24 @@ def test_invalid_window_visibility_does_not_restore_global_visibility(tmp_path, 
     state.write_text(json.dumps({"window_id":"1","sidebar_enabled":"false","lanes":[{"pane_id":"101"}]}))
     assert sidebar_mod.is_wezterm_sidebar_enabled() is False
     assert "sidebar_enabled" in caplog.text
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("row_shape", ["missing", "null", "object", "bad-index"])
+@pytest.mark.parametrize("scoped", [False, "false"])
+def test_scoped_visibility_is_checked_before_malformed_rows(tmp_path, monkeypatch, warm, row_shape, scoped):
+    state=tmp_path/"malformed-rows.json"
+    legacy=tmp_path/"enabled"
+    legacy.write_text("1\n")
+    monkeypatch.setattr(sidebar_mod,"DEFAULT_STATE_PATH",state)
+    monkeypatch.setattr(sidebar_mod,"DEFAULT_ENABLED_PATH",legacy)
+    if warm:
+        state.write_text(json.dumps({"updated_at":3,"window_id":"0","sidebar_enabled":True,"lanes":[{"pane_id":"1"}]}))
+        assert sidebar_mod.is_wezterm_sidebar_enabled() is True
+    raw={"window_id":"1","sidebar_enabled":scoped}
+    if row_shape!="missing":raw["lanes"] = ([{"index":[],"pane_id":"2"}] if row_shape=="bad-index" else None if row_shape=="null" else {})
+    state.write_text(json.dumps(raw))
+    assert sidebar_mod.is_wezterm_sidebar_enabled() is False
+    rows,updated=sidebar_mod.load_wezterm_lanes_state()
+    assert len(rows)==(1 if warm else 0), "retain row evidence independently of visibility"
+    if warm:assert rows[0].pane_id=="1" and updated==3
