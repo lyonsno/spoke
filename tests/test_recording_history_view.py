@@ -26,6 +26,7 @@ def view(record):
     owner._selected_id = record["capture_id"]
     owner._attempt_id = record["attempts"][0]["attempt_id"]
     owner._busy, owner._replay_generation = {}, 0
+    owner._sound = None
     owner._replay_outcomes = {}
     owner._loading_partial = owner._load_failed = False
     owner._load_generation, owner._record_overrides = 7, {}
@@ -47,6 +48,114 @@ def original():
     return {"capture_id": "capture", "audio_available": True, "pathway": "text",
         "attempts": [{"attempt_id": "original", "kind": "live", "status": "cancelled",
                       "error": "Stopped", "requested": {"model": "preferred"}}]}
+
+
+def test_scan_coalesces_a_blocked_ui_queue_without_losing_records(monkeypatch):
+    from spoke import recording_history_window as mod
+    owner = view(original())
+    owner._records = []
+    rows = [{**original(), "capture_id": f"capture-{i}"} for i in range(40)]
+    owner._spool.iter_recordings = lambda: iter(rows)
+    queued = []
+    owner.performSelectorOnMainThread_withObject_waitUntilDone_ = lambda *args: queued.append(args)
+    ticks = iter(i / 5 for i in range(100))
+    monkeypatch.setattr(mod.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(mod.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
+    mod.RecordingHistoryWindow.refresh_(owner, None)
+    assert len(queued) == 1, "Every obsolete archive prefix queued another native list redraw"
+    selector, payload, wait = queued.pop()
+    getattr(owner, selector.replace(":", "_"))(payload)
+    assert owner._records == rows
+    assert not owner._refreshing
+
+
+def test_warm_refresh_exposes_new_rows_before_older_metadata_finishes(monkeypatch):
+    from spoke import recording_history_window as mod
+    owner = view(original())
+    newest = {**original(), "capture_id": "newest"}
+    observed = []
+    def iterate():
+        yield newest
+        observed.append([r["capture_id"] for r in owner._records])
+        yield original()
+    owner._spool.iter_recordings = iterate
+    monkeypatch.setattr(mod.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
+    mod.RecordingHistoryWindow.refresh_(owner, None)
+    assert observed == [["newest", "capture"]]
+    assert owner._selected_id == "capture"
+
+
+def test_partial_warm_snapshot_retains_selection_until_full_scan_confirms_removal():
+    owner = view(original())
+    newest = {**original(), "capture_id": "newest"}
+    owner.loaded_({"records": [newest], "complete": False, "load_generation": 7})
+    assert owner._selected_id == "capture"
+    assert {r["capture_id"] for r in owner._records} == {"newest", "capture"}
+    owner.loaded_({"records": [newest], "complete": True, "load_generation": 7})
+    assert [r["capture_id"] for r in owner._records] == ["newest"]
+    assert owner._selected_id == "newest"
+
+
+def test_archive_change_does_not_rebuild_unchanged_selected_detail():
+    owner = view(original())
+    owner._render_detail()
+    owner._text.reset_mock()
+    owner._attempts.reset_mock()
+    newest = {**original(), "capture_id": "newest"}
+    owner.loaded_({"records": [newest, original()], "complete": True, "load_generation": 7})
+    owner._text.setString_.assert_not_called()
+    owner._attempts.removeAllItems.assert_not_called()
+    assert owner._selected_id == "capture"
+
+
+def test_programmatic_table_reload_cannot_steal_selected_capture():
+    owner = view(original())
+    owner._records = [{**original(), "capture_id": "newest"}, original()]
+    owner._table.selectedRow.return_value = 0
+    owner._table.reloadData.side_effect = lambda: owner.tableViewSelectionDidChange_(None)
+    owner._filter()
+    assert owner._selected_id == "capture"
+
+
+def test_filter_selection_change_stops_playback_of_previous_capture():
+    owner = view(original())
+    sound = owner._sound = MagicMock()
+    owner._records = [original(), {**original(), "capture_id": "different"}]
+    owner._search.setStringValue_("different")
+    owner._filter()
+    sound.stop.assert_called_once_with()
+    assert owner._selected_id == "different" and owner._sound is None
+
+
+def test_empty_detail_distinguishes_no_match_from_no_retained_recordings():
+    owner = view(original())
+    owner._search.setStringValue_("missing")
+    owner._filter()
+    assert owner._text.setString_.call_args.args[0] == "No matching recordings"
+    owner.loaded_({"records": [], "complete": True, "load_generation": 7})
+    assert owner._text.setString_.call_args.args[0] == "No recordings"
+
+
+def test_coalesced_error_preserves_rows_discovered_before_failure(monkeypatch):
+    from spoke import recording_history_window as mod
+    owner = view(original())
+    owner._records = []
+    def iterate():
+        yield original()
+        yield {**original(), "capture_id": "second"}
+        raise OSError("older metadata unavailable")
+    owner._spool.iter_recordings = iterate
+    queued = []
+    owner.performSelectorOnMainThread_withObject_waitUntilDone_ = lambda *args: queued.append(args)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(mod.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
+    mod.RecordingHistoryWindow.refresh_(owner, None)
+    assert len(queued) == 1
+    selector, payload, wait = queued.pop()
+    getattr(owner, selector.replace(":", "_"))(payload)
+    assert owner._records == [original(), {**original(), "capture_id": "second"}]
+    assert owner._load_failed and not owner._refreshing
+    assert "older metadata unavailable" in owner._status.stringValue()
 
 
 def test_starting_replay_cannot_render_back_to_cancelled_original():

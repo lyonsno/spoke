@@ -393,7 +393,9 @@ def test_history_loader_publishes_first_row_before_traversal_finishes(monkeypatc
         assert emitted[0]["complete"] is False
         yield {"capture_id": "oldest", "attempts": []}
     owner._spool = SimpleNamespace(iter_recordings=iterate)
-    owner.performSelectorOnMainThread_withObject_waitUntilDone_ = lambda selector, payload, wait: emitted.append(payload)
+    owner.loaded_ = emitted.append
+    owner.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+        lambda selector, payload, wait: getattr(owner, selector.replace(":", "_"))(payload))
     monkeypatch.setattr(mod.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
     owner.refresh_(None)
     assert [r["capture_id"] for r in emitted[-1]["records"]] == ["newest", "oldest"]

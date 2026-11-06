@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime
 import json
 import logging
@@ -271,28 +272,46 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._refreshing = True
         self._load_generation = getattr(self, "_load_generation", 0) + 1
         generation = self._load_generation
-        first_load = not self._records
+        mailbox = {"lock": threading.Lock(), "payload": None, "error": None, "queued": False}
+
+        def publish(payload):
+            # Superseded prefixes must not queue archive-sized UI rebuilds.
+            with mailbox["lock"]:
+                mailbox["error" if "error" in payload else "payload"] = payload
+                if mailbox["queued"]:
+                    return
+                mailbox["queued"] = True
+            self.performSelectorOnMainThread_withObject_waitUntilDone_("drainLoad:", mailbox, False)
+
         def load():
+            records = []
             try:
-                records = []
                 last_publication = time.monotonic()
                 for record in self._spool.iter_recordings():
                     records.append(record)
                     now = time.monotonic()
-                    if first_load and (len(records) == 1 or now - last_publication >= 0.1):
-                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                            "loaded:", {"records": list(records), "complete": False,
-                                        "load_generation": generation}, False,
-                        )
+                    if len(records) == 1 or now - last_publication >= 0.1:
+                        publish({"records": list(records), "complete": False,
+                                 "load_generation": generation})
                         last_publication = now
                 payload = {"records": records, "complete": True, "load_generation": generation}
             except Exception as exc:
+                publish({"records": records, "complete": False, "load_generation": generation})
                 payload = {"error": str(exc), "load_generation": generation}
-            self.performSelectorOnMainThread_withObject_waitUntilDone_("loaded:", payload, False)
+            publish(payload)
         try:
             threading.Thread(target=load, name="spoke-history-list", daemon=True).start()
         except Exception as exc:
             self.loaded_({"error": str(exc), "load_generation": generation})
+
+    def drainLoad_(self, mailbox):
+        with mailbox["lock"]:
+            payload, error = mailbox["payload"], mailbox["error"]
+            mailbox.update(payload=None, error=None, queued=False)
+        if payload is not None:
+            self.loaded_(payload)
+        if error is not None:
+            self.loaded_(error)
 
     def loaded_(self, payload):
         generation = payload.get("load_generation")
@@ -314,6 +333,10 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._loading_partial = not complete
         self._load_failed = False
         records = {r["capture_id"]: r for r in payload["records"]}
+        if not complete:
+            # A checked prefix is not evidence that older cached rows vanished.
+            records.update((r["capture_id"], r) for r in self._records
+                           if r["capture_id"] not in records)
         for capture_id, (observed_generation, record) in list(getattr(self, "_record_overrides", {}).items()):
             if generation <= observed_generation or not complete:
                 records[capture_id] = record
@@ -339,13 +362,20 @@ class RecordingHistoryWindow(HouseWindowShell):
         self._filtered = [r for r in self._records if not query or query in (
             r["capture_id"] + " " + " ".join(str(a.get("text") or "") for a in r["attempts"])
         ).casefold()]
-        self._table.reloadData()
         index = next((i for i, r in enumerate(self._filtered) if r["capture_id"] == self._selected_id), 0)
-        if self._filtered:
-            self._table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(index), False)
-            self._selected_id = self._filtered[index]["capture_id"]
-        else:
-            self._selected_id = None
+        selected = self._filtered[index]["capture_id"] if self._filtered else None
+        if selected != self._selected_id:
+            self._attempt_id = None
+            if getattr(self, "_sound", None) is not None:
+                self._stop_audio()
+        self._selected_id = selected
+        self._reloading_table = True
+        try:
+            self._table.reloadData()
+            if self._filtered:
+                self._table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(index), False)
+        finally:
+            self._reloading_table = False
         size = sum(r.get("byte_count", 0) or 0 for r in self._records)
         if getattr(self, "_loading_partial", False):
             count = f"Loading recordings | {len(self._records)} loaded"
@@ -370,6 +400,8 @@ class RecordingHistoryWindow(HouseWindowShell):
         return view
 
     def tableViewSelectionDidChange_(self, notification):
+        if getattr(self, "_reloading_table", False):
+            return
         index = int(self._table.selectedRow())
         if 0 <= index < len(self._filtered):
             selected = self._filtered[index]["capture_id"]
@@ -452,6 +484,19 @@ class RecordingHistoryWindow(HouseWindowShell):
 
     def _render_detail(self):
         record = self._selected()
+        attempts = self._selected_attempts() if record else []
+        if self._attempt_id not in {a["attempt_id"] for a in attempts}:
+            self._attempt_id = attempts[-1]["attempt_id"] if attempts else None
+        job = self._busy.get(self._selected_id)
+        snapshot = (record, attempts, self._attempt_id, job.get("phase") if job else None,
+                    getattr(self, "_loading_partial", False) if record is None else None,
+                    getattr(self, "_load_failed", False) if record is None else None,
+                    bool(self._records) if record is None else None)
+        if snapshot == getattr(self, "_detail_snapshot", None):
+            self._update_replay_status()
+            self._update_controls()
+            return
+        self._detail_snapshot = deepcopy(snapshot)
         self._attempts.removeAllItems()
         if record is None:
             self._update_replay_status()
@@ -471,9 +516,6 @@ class RecordingHistoryWindow(HouseWindowShell):
         pathway = record.get("pathway", "Unverified pathway")
         self._meta.setStringValue_(f"{duration_label(record.get('duration_seconds'))}  |  Pathway: {pathway}")
         self._meta.setToolTip_(record["capture_id"])
-        attempts = self._selected_attempts()
-        if self._attempt_id not in {a["attempt_id"] for a in attempts}:
-            self._attempt_id = attempts[-1]["attempt_id"] if attempts else None
         for index, attempt in enumerate(attempts):
             kind = "Original" if attempt.get("kind") == "live" else "Re-transcription"
             label = f"{kind} {index + 1}  |  {attempt.get('requested', {}).get('model', 'Unknown model')}"
