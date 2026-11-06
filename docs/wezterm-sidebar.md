@@ -16,7 +16,8 @@ Choose the snapshot with `--greenroom-attention-path /absolute/path.json`,
 or `SPOKE_GREENROOM_ATTENTION_PATH`. The default is
 `$GPU_GREENROOM_DIR/operator-attention.json`, falling back to
 `~/.local/state/gpu-greenroom/operator-attention.json`. An explicit CLI path
-is forwarded when `--ensure-daemon` spawns the helper. Changing a running
+and supported environment selection are resolved against the caller's working
+directory before `--ensure-daemon` changes directory and spawns the helper. Changing a running
 helper's configuration requires restarting that helper.
 
 The agreed producer schema is `gpu-greenroom.operator-attention.v1`:
@@ -42,7 +43,8 @@ working links and its shared monitor deadline. Timestamps require explicit
 timezones; queue counts are nonnegative integers; item IDs are unique. Items
 contain the complete unresolved set in producer priority order. The consumer
 does not interpret status names as state transitions. Unknown additive fields
-remain compatible. Navigation accepts HTTP(S) URLs only.
+remain compatible. Navigation accepts HTTP(S) URLs with valid host/port syntax only; native URL
+construction is checked before dispatch.
 
 The reader stats the file on the sidebar's existing visible update cadence
 (approximately 480 ms), reparses only after inode/mtime/size changes, and checks

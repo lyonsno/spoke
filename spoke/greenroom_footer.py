@@ -11,14 +11,19 @@ from urllib.parse import urlsplit
 def attention_snapshot_path(override: str | Path | None = None) -> Path:
     explicit = override or os.environ.get("SPOKE_GREENROOM_ATTENTION_PATH")
     if explicit:
-        return Path(explicit).expanduser()
-    return Path(os.environ.get("GPU_GREENROOM_DIR", "~/.local/state/gpu-greenroom")).expanduser() / "operator-attention.json"
+        return Path(explicit).expanduser().resolve()
+    queue = Path(os.environ.get("GPU_GREENROOM_DIR", "~/.local/state/gpu-greenroom"))
+    return (queue.expanduser() / "operator-attention.json").resolve()
 
 
 def _web_url(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("missing monitor URL")
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("invalid whitespace or control character in monitor URL")
     parsed = urlsplit(value)
+    # Accessing port validates numeric form and the URI's port range.
+    _ = parsed.port
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("expected HTTP(S) monitor URL")
     return value

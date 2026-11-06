@@ -176,3 +176,72 @@ def test_native_footer_click_routes_current_item_without_browser(tmp_path):
     '''
     result = subprocess.run([sys.executable, "-c", textwrap.dedent(script), str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("field", ["monitor_url", "item"])
+@pytest.mark.parametrize("url", ["http://localhost:bad/", "http://local host/", "http://localhost:65536/"])
+def test_malformed_web_urls_clear_navigation(tmp_path, field, url):
+    raw = snapshot()
+    if field == "monitor_url": raw[field] = url
+    else: raw["items"][0]["target_url"] = url
+    path = tmp_path / "malformed-url.json"
+    path.write_text(json.dumps(raw))
+    footer = GreenroomAttentionReader(path).read(instant("2026-11-06T12:00:10Z"))
+    assert footer.freshness == "unavailable", "malformed URL is still actionable"
+    assert footer.monitor_url is None and footer.attention_url is None
+
+
+@pytest.mark.parametrize("selection", ["cli", "path-env", "queue-env"])
+def test_daemon_keeps_caller_relative_snapshot_path(tmp_path, monkeypatch, selection):
+    import spoke.wezterm_lanes_sidebar as sidebar
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sidebar, "DAEMON_LOCK_PATH", tmp_path / "helper.lock")
+    monkeypatch.delenv("SPOKE_GREENROOM_ATTENTION_PATH", raising=False)
+    expected = tmp_path / "relative" / "operator-attention.json"
+    if selection == "cli":
+        selected = "relative/operator-attention.json"
+    elif selection == "path-env":
+        selected = None
+        monkeypatch.setenv("SPOKE_GREENROOM_ATTENTION_PATH", "relative/operator-attention.json")
+    else:
+        selected = None
+        monkeypatch.setenv("GPU_GREENROOM_DIR", "relative")
+    calls = []
+    monkeypatch.setattr(sidebar.subprocess, "Popen", lambda cmd, **kwargs: calls.append((cmd, kwargs)))
+    sidebar.ensure_daemon_running(selected)
+    command, options = calls[0]
+    assert "--greenroom-attention-path" in command, "spawn lost caller's snapshot selection"
+    actual = command[command.index("--greenroom-attention-path") + 1]
+    assert Path(actual).is_absolute(), "daemon changes cwd before resolving caller's relative path"
+    assert Path(actual) == expected
+
+
+def test_native_queue_text_contrast_survives_light_appearance(tmp_path):
+    if sys.platform != "darwin": pytest.skip("native sidebar raster")
+    script = '''
+        from AppKit import NSApplication, NSAppearance
+        from Foundation import NSMakeRect
+        import spoke.wezterm_lanes_sidebar as sidebar
+        app=NSApplication.sharedApplication()
+        app.setAppearance_(NSAppearance.appearanceNamed_("NSAppearanceNameAqua"))
+        hud=sidebar.build_sidebar_hud_controller()
+        hud.setup()
+        try:
+            hud._apply_planes({"phase":"rest","height_frac":1.,"width_frac":1.,"opacity":1.,"text_alpha":1.})
+            # Both enabled and unavailable/disabled queue text must be readable.
+            for enabled in (True,False):
+                hud._greenroom_button.setEnabled_(enabled)
+                rect=NSMakeRect(10.,48.,232.,20.)
+                view=hud._panel.contentView()
+                rep=view.bitmapImageRepForCachingDisplayInRect_(rect)
+                view.cacheDisplayInRect_toBitmapImageRep_(rect,rep)
+                bright=0
+                for y in range(rep.pixelsHigh()):
+                    for x in range(rep.pixelsWide()):
+                        color=rep.colorAtX_y_(x,y)
+                        if min(color.redComponent(),color.greenComponent(),color.blueComponent())>0.4: bright+=1
+                assert bright>40, f"queue status disappears against dark sidebar in Aqua; enabled={enabled}, bright pixels={bright}"
+        finally: hud.cleanup()
+    '''
+    result=subprocess.run([sys.executable,"-c",textwrap.dedent(script)],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr

@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from . import house_optical_primitive as house
-from .greenroom_footer import GreenroomAttentionReader
+from .greenroom_footer import GreenroomAttentionReader, attention_snapshot_path
 from .optical_lifecycle import retarget_progress_for_dismiss
 
 logger = logging.getLogger(__name__)
@@ -557,6 +557,8 @@ def build_sidebar_hud_controller(attention_path: str | Path | None = None) -> An
             self._footer_label: Any = None
             self._greenroom_button: Any = None
             self._attention_button: Any = None
+            self._greenroom_label: Any = None
+            self._attention_label: Any = None
             self._greenroom_reader = GreenroomAttentionReader(attention_path)
             self._greenroom_footer = None
             self._transition = SidebarHouseTransition()
@@ -671,9 +673,19 @@ def build_sidebar_hud_controller(attention_path: str | Path | None = None) -> An
                 ("_greenroom_button", 48.0, "openGreenroom:"),
                 ("_attention_button", 27.0, "openAttention:"),
             ):
+                label = _make_label(
+                    "", NSMakeRect(_PAD_X, y + 2.0, w - 2 * _PAD_X, 16.0),
+                    size=10.0, bold=True,
+                    color=NSColor.colorWithSRGBRed_green_blue_alpha_(0.70, 0.78, 0.85, 1.0),
+                )
+                fg.addSubview_(label)
+                setattr(self, name.replace("_button", "_label"), label)
                 button = NSButton.buttonWithTitle_target_action_("", self, action)
                 button.setFrame_(NSMakeRect(_PAD_X, y, w - 2 * _PAD_X, 20.0))
                 button.setBordered_(False)
+                # As with lane hit targets, render text separately so AppKit's
+                # disabled/Aqua control colors cannot darken status text.
+                button.setTransparent_(True)
                 button.setAlignment_(0)
                 button.setFont_(NSFont.monospacedSystemFontOfSize_weight_(10.0, 0.3))
                 button.cell().setLineBreakMode_(4)
@@ -855,12 +867,14 @@ def build_sidebar_hud_controller(attention_path: str | Path | None = None) -> An
             self._greenroom_footer = footer
             self._greenroom_button.setTitle_(footer.queue_text)
             self._greenroom_button.setEnabled_(footer.monitor_url is not None)
+            self._greenroom_label.setStringValue_(footer.queue_text)
             self._attention_button.setTitle_(footer.attention_text)
             self._attention_button.setEnabled_(footer.attention_url is not None)
+            self._attention_label.setStringValue_(footer.attention_text)
             for button in (self._greenroom_button, self._attention_button):
                 button.setToolTip_(footer.tooltip)
                 button.setAccessibilityLabel_(str(button.title()))
-            self._attention_button.setContentTintColor_(
+            self._attention_label.setTextColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(0.96, 0.68, 0.22, 1.0)
                 if footer.attention_url else
                 NSColor.colorWithSRGBRed_green_blue_alpha_(0.55, 0.64, 0.71, 1.0)
@@ -879,7 +893,9 @@ def build_sidebar_hud_controller(attention_path: str | Path | None = None) -> An
             # Do not navigate to a new request the user has not yet seen, or
             # to an old item after its producer deadline or resolution.
             if target and target == getattr(previous, field, None):
-                NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(target))
+                url = NSURL.URLWithString_(target)
+                if url is not None:
+                    NSWorkspace.sharedWorkspace().openURL_(url)
 
         def openGreenroom_(self, _sender: Any) -> None:
             self._open_greenroom_link(False)
@@ -1047,9 +1063,10 @@ def ensure_daemon_running(attention_path: str | Path | None = None) -> None:
     except Exception:
         return
 
-    command = [sys.executable, "-m", "spoke.wezterm_lanes_sidebar"]
-    if attention_path is not None:
-        command.extend(["--greenroom-attention-path", str(attention_path)])
+    # Capture relative CLI/env selection in the caller before changing cwd.
+    selected_path = attention_snapshot_path(attention_path)
+    command = [sys.executable, "-m", "spoke.wezterm_lanes_sidebar",
+               "--greenroom-attention-path", str(selected_path)]
     subprocess.Popen(
         command,
         cwd=str(Path(__file__).resolve().parents[1]),
