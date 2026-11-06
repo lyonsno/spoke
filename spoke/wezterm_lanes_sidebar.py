@@ -21,6 +21,7 @@ import time
 from typing import Any
 
 from . import house_optical_primitive as house
+from .greenroom_footer import GreenroomAttentionReader
 from .optical_lifecycle import retarget_progress_for_dismiss
 
 logger = logging.getLogger(__name__)
@@ -477,7 +478,7 @@ def is_wezterm_frontmost() -> bool:
         return True
 
 
-def build_sidebar_hud_controller() -> Any:
+def build_sidebar_hud_controller(attention_path: str | Path | None = None) -> Any:
     """Build the AppKit WezTermLanesSidebarHUD NSObject controller."""
     import objc
     from AppKit import (
@@ -506,7 +507,7 @@ def build_sidebar_hud_controller() -> Any:
     _NSWindowStyleMaskBorderless = 0
     _WINDOW_LEVEL_ACTIVE = 26
     _HEADER_H = 44.0
-    _FOOTER_H = 26.0
+    _FOOTER_H = 72.0
     _ROW_H = 28.0
     _PAD_X = 10.0
 
@@ -554,6 +555,10 @@ def build_sidebar_hud_controller() -> Any:
             self._scroll_view: Any = None
             self._document_view: Any = None
             self._footer_label: Any = None
+            self._greenroom_button: Any = None
+            self._attention_button: Any = None
+            self._greenroom_reader = GreenroomAttentionReader(attention_path)
+            self._greenroom_footer = None
             self._transition = SidebarHouseTransition()
             self._anim_timer: Any = None
             self._poll_timer: Any = None
@@ -661,6 +666,20 @@ def build_sidebar_hud_controller() -> Any:
                 ),
             )
             fg.addSubview_(self._footer_label)
+
+            for name, y, action in (
+                ("_greenroom_button", 48.0, "openGreenroom:"),
+                ("_attention_button", 27.0, "openAttention:"),
+            ):
+                button = NSButton.buttonWithTitle_target_action_("", self, action)
+                button.setFrame_(NSMakeRect(_PAD_X, y, w - 2 * _PAD_X, 20.0))
+                button.setBordered_(False)
+                button.setAlignment_(0)
+                button.setFont_(NSFont.monospacedSystemFontOfSize_weight_(10.0, 0.3))
+                button.cell().setLineBreakMode_(4)
+                fg.addSubview_(button)
+                setattr(self, name, button)
+            self._render_greenroom()
 
             self._panel = panel
             self._apply_planes(
@@ -795,6 +814,7 @@ def build_sidebar_hud_controller() -> Any:
                     )
                     lanes, _updated = load_wezterm_lanes_state()
                     self._render_lanes(lanes)
+                    self._render_greenroom()
                     self._panel.setIgnoresMouseEvents_(False)
                     self._panel.orderFrontRegardless()
                 return
@@ -825,6 +845,47 @@ def build_sidebar_hud_controller() -> Any:
                 ).start()
 
             self._render_lanes(lanes)
+            self._render_greenroom()
+
+        @objc.python_method
+        def _render_greenroom(self) -> None:
+            footer = self._greenroom_reader.read()
+            if footer == self._greenroom_footer:
+                return
+            self._greenroom_footer = footer
+            self._greenroom_button.setTitle_(footer.queue_text)
+            self._greenroom_button.setEnabled_(footer.monitor_url is not None)
+            self._attention_button.setTitle_(footer.attention_text)
+            self._attention_button.setEnabled_(footer.attention_url is not None)
+            for button in (self._greenroom_button, self._attention_button):
+                button.setToolTip_(footer.tooltip)
+                button.setAccessibilityLabel_(str(button.title()))
+            self._attention_button.setContentTintColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.96, 0.68, 0.22, 1.0)
+                if footer.attention_url else
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.55, 0.64, 0.71, 1.0)
+            )
+
+        @objc.python_method
+        def _open_greenroom_link(self, attention: bool) -> None:
+            from AppKit import NSWorkspace
+            from Foundation import NSURL
+
+            previous = self._greenroom_footer
+            self._render_greenroom()
+            current = self._greenroom_footer
+            field = "attention_url" if attention else "monitor_url"
+            target = getattr(current, field, None)
+            # Do not navigate to a new request the user has not yet seen, or
+            # to an old item after its producer deadline or resolution.
+            if target and target == getattr(previous, field, None):
+                NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(target))
+
+        def openGreenroom_(self, _sender: Any) -> None:
+            self._open_greenroom_link(False)
+
+        def openAttention_(self, _sender: Any) -> None:
+            self._open_greenroom_link(True)
 
         @objc.python_method
         def _render_lanes(self, lanes: list[LaneRow]) -> None:
@@ -972,7 +1033,7 @@ def build_sidebar_hud_controller() -> Any:
     return WezTermLanesSidebarHUD.alloc().init()
 
 
-def ensure_daemon_running() -> None:
+def ensure_daemon_running(attention_path: str | Path | None = None) -> None:
     """Spawn the single-instance WezTermLanesSidebarHUD daemon if not already running."""
     try:
         fd = os.open(str(DAEMON_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
@@ -986,8 +1047,11 @@ def ensure_daemon_running() -> None:
     except Exception:
         return
 
+    command = [sys.executable, "-m", "spoke.wezterm_lanes_sidebar"]
+    if attention_path is not None:
+        command.extend(["--greenroom-attention-path", str(attention_path)])
     subprocess.Popen(
-        [sys.executable, "-m", "spoke.wezterm_lanes_sidebar"],
+        command,
         cwd=str(Path(__file__).resolve().parents[1]),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -996,8 +1060,14 @@ def ensure_daemon_running() -> None:
 
 
 def main() -> int:
-    if "--ensure-daemon" in sys.argv:
-        ensure_daemon_running()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ensure-daemon", action="store_true")
+    parser.add_argument("--greenroom-attention-path", type=Path)
+    args = parser.parse_args()
+    if args.ensure_daemon:
+        ensure_daemon_running(args.greenroom_attention_path)
         return 0
 
     lock_fd = os.open(str(DAEMON_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
@@ -1010,7 +1080,7 @@ def main() -> int:
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    hud = build_sidebar_hud_controller()
+    hud = build_sidebar_hud_controller(args.greenroom_attention_path)
     hud.start()
     app.run()
     return 0
