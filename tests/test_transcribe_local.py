@@ -191,6 +191,96 @@ class TestLocalTranscriptionClient:
         assert call_kwargs.kwargs["eager_eval"] is True
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_retries_rejected_prompted_decode_without_prompt_on_same_full_audio(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcription_prompt import TranscriptionPromptProvider
+
+        rejected = {"text": "Opening only.", "segments": [
+            {"start": 0.0, "end": 7.0}, {"start": 30.0, "end": 37.0},
+            {"start": 60.0, "end": 65.0}]}
+        complete = {"text": "The whole thought survived.", "segments": [{"start": 0.0, "end": 65.0}]}
+        runtime.transcribe.side_effect = [rejected, complete, complete]
+        provider = TranscriptionPromptProvider(inline="Technical vocabulary", include_builtin=False)
+        client = LocalTranscriptionClient(model="test/model", prompt_provider=provider)
+        audio = _make_wav_bytes(samples=np.full(16000 * 65, 0.1, dtype=np.float32))
+        assert client.transcribe(audio) == complete["text"]
+        first, second = runtime.transcribe.call_args_list
+        assert first.args[0] is second.args[0]
+        assert "initial_prompt" in first.kwargs and "initial_prompt" not in second.kwargs
+        assert client._last_prompt_receipt["payload_constructed"] is False
+        assert client._last_prompt_receipt["omission_reason"] == "incomplete_segment_coverage"
+        assert client._last_receipt["rejected_decode_evidence"]["text"] == "Opening only."
+        assert client.transcribe(audio) == complete["text"]
+        assert runtime.transcribe.call_args.kwargs["initial_prompt"] == "Technical vocabulary"
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_prompt_free_retry_still_rejects_uncovered_speech(self, runtime):
+        from spoke.transcribe_local import IncompleteLocalTranscriptionError, LocalTranscriptionClient
+        from spoke.transcription_prompt import TranscriptionPromptProvider
+
+        runtime.transcribe.return_value = {"text": "Opening only.", "segments": [
+            {"start": 0.0, "end": 7.0}, {"start": 60.0, "end": 65.0}]}
+        client = LocalTranscriptionClient(model="test/model", prompt_provider=
+            TranscriptionPromptProvider(inline="Technical vocabulary", include_builtin=False))
+        with pytest.raises(IncompleteLocalTranscriptionError):
+            client.transcribe(_make_wav_bytes(samples=np.full(16000 * 65, 0.1, dtype=np.float32)))
+        assert runtime.transcribe.call_count == 2
+        assert client._last_receipt["failed_phase"] == "result_processing_retry"
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_rejects_internal_speech_gaps_even_when_last_segment_reaches_end(self, runtime):
+        from spoke.transcribe_local import IncompleteLocalTranscriptionError, LocalTranscriptionClient
+
+        # Observed SDK geometry: three short results in consecutive 30s windows.
+        runtime.transcribe.return_value = {"text": "A repeated first sentence.", "segments": [
+            {"start": 0.0, "end": 7.0}, {"start": 30.0, "end": 37.0},
+            {"start": 60.0, "end": 65.0},
+        ]}
+        client = LocalTranscriptionClient(model="test/model")
+        with pytest.raises(IncompleteLocalTranscriptionError):
+            client.transcribe(_make_wav_bytes(samples=np.full(16000 * 65, 0.1, dtype=np.float32)))
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_accepts_real_silence_between_segments(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        runtime.transcribe.return_value = {"text": "A repeated first sentence.", "segments": [
+            {"start": 0.0, "end": 7.0}, {"start": 30.0, "end": 37.0},
+            {"start": 60.0, "end": 65.0},
+        ]}
+        samples = np.zeros(16000 * 65, dtype=np.float32)
+        for start, end in ((0, 7), (30, 37), (60, 65)):
+            samples[start * 16000:end * 16000] = 0.1
+        assert LocalTranscriptionClient(model="test/model").transcribe(_make_wav_bytes(samples=samples))
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_overlapping_out_of_order_segments_cover_audio_without_double_counting(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        runtime.transcribe.return_value = {"text": "Complete speech.", "segments": [
+            {"start": 50.0, "end": 65.0}, {"start": 0.0, "end": 25.0},
+            {"start": 20.0, "end": 50.0},
+        ]}
+        audio = _make_wav_bytes(samples=np.full(16000 * 65, 0.1, dtype=np.float32))
+        assert LocalTranscriptionClient(model="test/model").transcribe(audio) == "Complete speech."
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_preserves_decode_text_and_all_segment_quality_evidence(self, runtime):
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        result = {"text": "hello world", "segments": [
+            {"start": 0.0, "end": 1.0, "no_speech_prob": 0.2}],
+            "future_sdk_field": {"verified": False}}
+        runtime.transcribe.return_value = result
+        client = LocalTranscriptionClient(model="test/model")
+        assert client.transcribe(_make_wav_bytes()) == "hello world"
+        evidence = client._last_receipt["decode_evidence"]
+        assert evidence["text"] == "hello world"
+        assert len(evidence["segments"]) == 1
+        assert evidence["segments"][0]["no_speech_prob"] == 0.2
+        assert evidence["segments"][0]["end"] == 1.0
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_rejects_partial_segment_coverage_for_long_capture(
         self, mock_mlx_whisper
     ):
@@ -672,11 +762,13 @@ class TestLocalTimingReceipt:
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_partial_output_failure_is_processing_not_inference(self, runtime):
         from spoke.transcribe_local import IncompleteLocalTranscriptionError, LocalTranscriptionClient
+        from spoke.transcription_prompt import TranscriptionPromptProvider
 
         runtime.transcribe.return_value = {
             "text": "Just the beginning.", "segments": [{"end": 2.0}],
         }
-        client = LocalTranscriptionClient(model="test/model")
+        client = LocalTranscriptionClient(model="test/model", prompt_provider=
+            TranscriptionPromptProvider(include_builtin=False))
         with pytest.raises(IncompleteLocalTranscriptionError):
             client.transcribe(_make_wav_bytes(samples=np.full(16000 * 20, 0.1)))
         assert client._last_receipt["status"] == "failed"

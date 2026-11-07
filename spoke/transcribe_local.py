@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import inspect
 import io
 import logging
+import math
 import os
 from pathlib import Path
 import time
@@ -84,10 +85,19 @@ class IncompleteLocalTranscriptionError(RuntimeError):
         duration_seconds: float,
         coverage_end_seconds: float,
         text_preview: str,
+        uncovered_ranges: list[tuple[float, float]] | None = None,
     ) -> None:
         self.duration_seconds = duration_seconds
         self.coverage_end_seconds = coverage_end_seconds
         self.text_preview = text_preview
+        self.uncovered_ranges = uncovered_ranges or []
+        if self.uncovered_ranges:
+            ranges = ", ".join(f"{start:.2f}-{end:.2f}s" for start, end in self.uncovered_ranges)
+            super().__init__(
+                f"Local Whisper left speech-like audio untranscribed at {ranges} "
+                f"of {duration_seconds:.2f}s: {text_preview!r}"
+            )
+            return
         missing_seconds = max(0.0, duration_seconds - coverage_end_seconds)
         super().__init__(
             "Local Whisper left speech-like audio after "
@@ -233,17 +243,50 @@ def _local_transcription_looks_incomplete(
     ):
         return False
 
-    tail_start = max(0, int(coverage_end_seconds * _WHISPER_SAMPLE_RATE))
-    uncovered_tail = audio[tail_start:]
+    return _interval_has_speech_like_energy(audio, coverage_end_seconds, duration_seconds)
+
+
+def _interval_has_speech_like_energy(audio: np.ndarray, start: float, end: float) -> bool:
+    uncovered = audio[max(0, int(start * _WHISPER_SAMPLE_RATE)):int(end * _WHISPER_SAMPLE_RATE)]
     frame_size = max(1, int(_TAIL_ENERGY_FRAME_SECONDS * _WHISPER_SAMPLE_RATE))
-    for start in range(0, len(uncovered_tail), frame_size):
-        frame = uncovered_tail[start : start + frame_size]
+    for offset in range(0, len(uncovered), frame_size):
+        frame = uncovered[offset : offset + frame_size]
         if not len(frame):
             continue
         rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64))))
         if rms > _SPEECH_LIKE_RMS_THRESHOLD:
             return True
     return False
+
+
+def _uncovered_speech_ranges(result: dict, audio: np.ndarray, duration: float) -> list[tuple[float, float]]:
+    if duration < _MIN_DURATION_FOR_COVERAGE_GUARD_SECONDS:
+        return []
+    segments = result.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return []
+    intervals = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            return []
+        start, end = segment.get("start"), segment.get("end")
+        if (not isinstance(start, (int, float)) or not isinstance(end, (int, float))
+                or not math.isfinite(start) or not math.isfinite(end) or end < start):
+            return []
+        intervals.append((max(0.0, min(duration, start)), max(0.0, min(duration, end))))
+    cursor, gaps = 0.0, []
+    for start, end in sorted(intervals):
+        if start > cursor:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < duration:
+        gaps.append((cursor, duration))
+    missing = sum(end - start for start, end in gaps)
+    if 1.0 - missing / duration >= _MIN_COVERAGE_RATIO:
+        return []
+    return [(start, end) for start, end in gaps
+            if end - start >= _MIN_MISSING_TAIL_FOR_COVERAGE_GUARD_SECONDS
+            and _interval_has_speech_like_energy(audio, start, end)]
 
 
 class LocalTranscriptionClient:
@@ -454,28 +497,59 @@ class LocalTranscriptionClient:
         timing.receipt["effective_decode_controls"] = {
             key: kwargs[key] for key in ("decode_timeout", "eager_eval") if key in kwargs
         }
-        timing.advance("mlx_inference")
-        result = runtime_whisper.transcribe(audio, **kwargs)
-        timing.advance("result_processing")
-        if prompt_effective:
-            self._last_prompt_receipt["runtime_accepted"] = True
+        def decode(options, processing_phase):
+            result = runtime_whisper.transcribe(audio, **options)
+            reported_segments = result.get("segments")
+            timing.receipt["decode_evidence"] = {
+                "text": result.get("text"),
+                "segments": [{key: segment[key] for key in (
+                    "start", "end", "seek", "avg_logprob", "no_speech_prob",
+                    "compression_ratio", "temperature",
+                ) if key in segment} for segment in reported_segments
+                    if isinstance(segment, dict)] if isinstance(reported_segments, list) else None,
+            }
+            timing.advance(processing_phase)
+            if "initial_prompt" in options:
+                self._last_prompt_receipt["runtime_accepted"] = True
 
-        text = result.get("text", "").strip()
-        duration_seconds = float(len(audio)) / _WHISPER_SAMPLE_RATE
-        coverage_end_seconds = _segment_coverage_end_seconds(result)
-        if _local_transcription_looks_incomplete(
-            audio=audio,
-            duration_seconds=duration_seconds,
-            coverage_end_seconds=coverage_end_seconds,
-            text=text,
-        ):
-            raise IncompleteLocalTranscriptionError(
+            text = result.get("text", "").strip()
+            duration_seconds = float(len(audio)) / _WHISPER_SAMPLE_RATE
+            coverage_end_seconds = _segment_coverage_end_seconds(result)
+            uncovered_ranges = _uncovered_speech_ranges(result, audio, duration_seconds) if text else []
+            timing.receipt["decode_evidence"]["uncovered_speech_ranges"] = uncovered_ranges
+            if uncovered_ranges or _local_transcription_looks_incomplete(
+                audio=audio,
                 duration_seconds=duration_seconds,
-                coverage_end_seconds=coverage_end_seconds
-                if coverage_end_seconds is not None
-                else 0.0,
-                text_preview=text[:120],
+                coverage_end_seconds=coverage_end_seconds,
+                text=text,
+            ):
+                raise IncompleteLocalTranscriptionError(
+                    duration_seconds=duration_seconds,
+                    coverage_end_seconds=coverage_end_seconds
+                    if coverage_end_seconds is not None
+                    else 0.0,
+                    text_preview=text[:120],
+                    uncovered_ranges=uncovered_ranges,
+                )
+            return text
+
+        timing.advance("mlx_inference")
+        try:
+            text = decode(kwargs, "result_processing")
+        except IncompleteLocalTranscriptionError:
+            if not prompt_effective:
+                raise
+            timing.receipt["rejected_decode_evidence"] = timing.receipt.pop("decode_evidence")
+            timing.receipt["rejected_prompt_receipt"] = self._last_prompt_receipt
+            self._last_prompt_receipt = prompt.receipt(
+                supported=prompt_supported, payload_constructed=False,
+                submission_attempted=False, runtime_accepted=None,
             )
+            self._last_prompt_receipt["omission_reason"] = "incomplete_segment_coverage"
+            retry_kwargs = {key: value for key, value in kwargs.items() if key != "initial_prompt"}
+            logger.warning("Incomplete prompted Whisper result; retrying the full audio without context")
+            timing.advance("mlx_inference_without_prompt")
+            text = decode(retry_kwargs, "result_processing_retry")
         text = truncate_repetition(text)
         text = repair_ontology_terms(text)
         if is_hallucination(text):
