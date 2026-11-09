@@ -338,8 +338,7 @@ class AudioCapture:
                 raise CaptureBusyError("Microphone recording is awaiting release")
             if self._stream_closing and self._teardown_complete.is_set():
                 raise CaptureBusyError("Previous microphone stream did not close")
-            if (not self._teardown_complete.is_set()
-                    or self._start_future is not None and not self._start_future.done()):
+            if self._start_future is not None and not self._start_future.done():
                 raise CaptureBusyError("Microphone is still opening or closing")
             cancelled = self._start_cancel = threading.Event()
             future = self._start_future = Future()
@@ -364,7 +363,9 @@ class AudioCapture:
     def start(self, amplitude_callback=None, segment_callback=None, vad_state_callback=None,
               *, _cancel_event=None) -> None:
         """Synchronous route for existing background consumers."""
-        self._teardown_complete.wait()
+        while not self._teardown_complete.wait(0.05):
+            if _cancel_event is not None and _cancel_event.is_set():
+                raise CaptureStartCancelled("Microphone start cancelled")
         with self._native_lifecycle_lock:
             if self._stream_closing:
                 raise CaptureBusyError("Previous microphone stream did not close")

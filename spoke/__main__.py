@@ -2006,6 +2006,7 @@ class SpokeAppDelegate(NSObject):
 
     def _on_handsfree_state_change(self, state: HandsFreeState) -> None:
         """Update UI when hands-free state changes."""
+        self._update_history_capture_controls()
         if self._menubar is None:
             return
 
@@ -2030,6 +2031,11 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_recording(True)
             if self._glow is not None:
                 self._glow.show()
+
+    def handsFreeCaptureStarted_(self, completion) -> None:
+        controller, future = completion
+        if controller is getattr(self, "_handsfree", None):
+            controller.capture_started(future)
 
     def _suspend_handsfree_for_hold(self) -> None:
         """Temporarily clear hands-free audio streams before a manual hold."""
@@ -2543,7 +2549,9 @@ class SpokeAppDelegate(NSObject):
         start_generation = self._manual_capture_start_generation
         self._manual_capture_start_pending = True
         self._manual_capture_start_failed = False
+        self._update_history_capture_controls()
         self._record_start_time = time.monotonic()
+        self._manual_capture_owned = False
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -2551,11 +2559,14 @@ class SpokeAppDelegate(NSObject):
                         "updateVadState:", is_speech, False
                     )
             vad_state_cb = on_vad_state if use_segments else None
+            if getattr(getattr(self, "_handsfree", None), "is_dictating", False):
+                self._suspend_handsfree_for_hold_async()
             future = self._capture.start_async(
                 amplitude_callback=self._on_amplitude,
                 vad_state_callback=vad_state_cb,
                 segment_callback=segment_cb,
             )
+            self._manual_capture_owned = True
         except Exception as exc:
             future = Future()
             future.set_exception(exc)
@@ -2573,8 +2584,16 @@ class SpokeAppDelegate(NSObject):
             future.result()
         except Exception as exc:
             logger.exception("Audio capture failed to start")
+            if getattr(self, "_manual_capture_owned", False):
+                self._manual_capture_owned = False
+                wav_bytes = self._capture.stop()
+                self._spool_stopped_audio_capture(
+                    wav_bytes, pathway="capture_start_failed", shift_held=False,
+                    enter_held=False, elapsed_seconds=time.monotonic() - self._record_start_time,
+                    discarded_for_short_shift_hold=False)
             self._manual_capture_start_failed = True
             self._manual_hold_active = False
+            self._update_history_capture_controls()
             self._release_command_overlay_recording_load_shed()
             if self._glow is not None:
                 self._glow.hide()
@@ -2594,7 +2613,8 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
-        self._suspend_handsfree_for_hold_async()
+        if not getattr(self, "_handsfree_paused_for_hold", False):
+            self._suspend_handsfree_for_hold_async()
         self._cap_fired = False
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
@@ -3000,6 +3020,7 @@ class SpokeAppDelegate(NSObject):
         self._manual_capture_start_generation = getattr(self, "_manual_capture_start_generation", 0) + 1
         self._manual_capture_start_pending = False
         self._manual_hold_active = False
+        self._update_history_capture_controls()
         self._preview_active = False
         self._preview_cancelled_on_release = True
         self._release_command_overlay_recording_load_shed(
@@ -3027,7 +3048,8 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
-        wav_bytes = self._capture.stop()
+        wav_bytes = self._capture.stop() if getattr(self, "_manual_capture_owned", True) else b""
+        self._manual_capture_owned = False
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
         discarded_for_short_shift_hold = bool(shift_held and elapsed < 0.8)
         capture_id = self._spool_stopped_audio_capture(
@@ -3229,6 +3251,7 @@ class SpokeAppDelegate(NSObject):
         enter_held: bool,
         elapsed_seconds: float,
         discarded_for_short_shift_hold: bool,
+        source: str = "manual_hold",
     ) -> str | None:
         if not wav_bytes:
             return
@@ -3240,7 +3263,7 @@ class SpokeAppDelegate(NSObject):
                 wav_bytes,
                 metadata={
                     "preserve_audio": True,
-                    "source": "manual_hold",
+                    "source": source,
                     "pathway": pathway,
                     "shift_held": shift_held,
                     "enter_held": enter_held,
@@ -3269,13 +3292,24 @@ class SpokeAppDelegate(NSObject):
         self._history_model = route
 
     def _history_live_busy(self) -> bool:
-        return bool(self._capture.is_recording or self._transcribing
+        return bool(getattr(self, "_manual_hold_active", False)
+                    or getattr(self, "_manual_capture_start_pending", False)
+                    or getattr(getattr(self, "_handsfree", None), "is_dictating", False) is True
+                    or self._capture.is_recording or self._transcribing
                     or self._dictation_delivery_records()
                     or getattr(self, "_dictation_paste_in_flight", False))
+
+    def _update_history_capture_controls(self) -> None:
+        history = getattr(self, "_recording_history", None)
+        if history is not None and getattr(history, "_window", None) is not None:
+            history._update_controls()
 
     def _history_can_take_over(self) -> bool:
         control = getattr(self, "_inference_control", None)
         return bool(control is not None and control.can_cancel
+                    and not getattr(self, "_manual_hold_active", False)
+                    and not getattr(self, "_manual_capture_start_pending", False)
+                    and getattr(getattr(self, "_handsfree", None), "is_dictating", False) is not True
                     and (not self._transcribing
                          or getattr(self._client, "supports_cancellation", False) is True)
                     and not self._capture.is_recording

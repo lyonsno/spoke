@@ -110,6 +110,9 @@ class HandsFreeController:
         self._state = HandsFreeState.DORMANT
         self._wakeword = None
         self._saved_clipboard = None  # saved at dictation start, restored at stop
+        self._capture_owned = False
+        self._capture_start_future = None
+        self._capture_start_time = 0.0
 
         # One-shot routing: if set, the next segment routes here then resets.
         # Values: None (normal cursor inject), "tray"
@@ -331,7 +334,10 @@ class HandsFreeController:
 
     def _start_dictating(self) -> None:
         """Begin continuous dictation. LISTENING → DICTATING."""
+        if getattr(self._delegate, "_manual_hold_active", False) is True:
+            return
         logger.info("Starting hands-free dictation")
+        self._capture_start_time = time.monotonic()
 
         # Save clipboard once at dictation start — restored when dictation stops.
         # Individual segment injections use inject_text_raw() to avoid
@@ -356,16 +362,41 @@ class HandsFreeController:
                 )
 
         try:
-            capture.start(
+            future = capture.start_async(
                 amplitude_callback=delegate._on_amplitude,
                 vad_state_callback=on_vad_state,
                 segment_callback=on_segment,
             )
+            self._capture_owned = True
+            self._capture_start_future = future
         except Exception:
             logger.exception("Failed to start audio capture for hands-free")
+            self._stop_dictation_capture()
             self._set_state(HandsFreeState.LISTENING)
             return
 
+        if delegate._menubar is not None:
+            delegate._menubar.set_recording(False)
+            delegate._menubar.set_status_text("Starting microphone...")
+        future.add_done_callback(lambda completed:
+            delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "handsFreeCaptureStarted:", (self, completed), False))
+
+    def capture_started(self, future) -> None:
+        if (future is not self._capture_start_future
+                or self._state != HandsFreeState.DICTATING
+                or getattr(self._delegate, "_manual_hold_active", False) is True):
+            return
+        try:
+            future.result()
+        except Exception:
+            logger.exception("Hands-free microphone startup failed")
+            self._stop_dictation_capture()
+            self._set_state(HandsFreeState.LISTENING)
+            return
+        self._capture_start_future = None
+        self._set_state(HandsFreeState.DICTATING)
+        delegate = self._delegate
         if delegate._glow is not None:
             delegate._glow.show()
         if delegate._menubar is not None:
@@ -391,8 +422,15 @@ class HandsFreeController:
         delegate = self._delegate
         capture = delegate._capture
 
-        if capture.is_recording:
-            capture.stop()
+        self._capture_start_future = None
+        if self._capture_owned:
+            self._capture_owned = False
+            wav_bytes = capture.stop()
+            delegate._spool_stopped_audio_capture(
+                wav_bytes, pathway="handsfree", source="handsfree",
+                shift_held=False, enter_held=False,
+                elapsed_seconds=time.monotonic() - self._capture_start_time,
+                discarded_for_short_shift_hold=False)
 
         # Restore clipboard saved at dictation start (M1 fix).
         if self._saved_clipboard is not None:

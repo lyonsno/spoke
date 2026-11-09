@@ -112,6 +112,54 @@ def _make_delegate(main_module, monkeypatch):
 
 
 class TestRecordingHistory:
+    def test_pending_microphone_blocks_history_takeover(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording = False
+        d._manual_hold_active = True
+        d._manual_capture_start_pending = True
+        d._inference_control = MagicMock(can_cancel=True)
+        assert d._history_live_busy()
+        assert not d._history_can_take_over()
+
+    def test_pending_handsfree_microphone_also_blocks_history_takeover(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.is_recording = False
+        d._handsfree = MagicMock(is_dictating=True)
+        d._inference_control = MagicMock(can_cancel=True)
+        assert d._history_live_busy()
+        assert not d._history_can_take_over()
+
+    def test_failed_start_finalizes_owned_audio_without_transcribing(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        pending = Future()
+        d._capture.start_async.side_effect = None
+        d._capture.start_async.return_value = pending
+        d._spool_stopped_audio_capture = MagicMock()
+        d._capture.stop.return_value = b"received startup audio"
+        d._on_hold_start()
+        pending.set_exception(RuntimeError("native open failed"))
+        d._capture.stop.assert_called_once_with()
+        d._spool_stopped_audio_capture.assert_called_once()
+        d._on_hold_end()
+        d._capture.stop.assert_called_once_with()
+
+    def test_manual_preempts_dictating_before_requesting_shared_capture(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock(state=main_module.HandsFreeState.DICTATING, is_dictating=True)
+        order = []
+        d._handsfree._stop_dictation_capture.side_effect = lambda: order.append("stop_handsfree")
+        d._capture.start.side_effect = lambda **kw: order.append("start_manual")
+        d._preview_loop = lambda token: None
+        d._on_hold_start()
+        assert order == ["stop_handsfree", "start_manual"]
+
+    def test_unowned_failed_hold_does_not_stop_another_capture(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.start_async.side_effect = RuntimeError("capture owned elsewhere")
+        d._on_hold_start()
+        d._on_hold_end()
+        d._capture.stop.assert_not_called()
+
     @pytest.mark.parametrize("streaming", [False, True])
     def test_old_preview_cannot_restart_in_a_replacement_hold(self, main_module, monkeypatch, streaming):
         from spoke.inference_process import InferenceControl
@@ -1242,10 +1290,12 @@ class TestTranscriptionToken:
         assert d._transcription_token == 0
 
         with patch.object(main_module.threading, "Thread"):
+            d._on_hold_start()
             d._on_hold_end()
         assert d._transcription_token == 1
 
         with patch.object(main_module.threading, "Thread"):
+            d._on_hold_start()
             d._on_hold_end()
         assert d._transcription_token == 1
         assert d._parallel_insert_token == 1

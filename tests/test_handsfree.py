@@ -1,10 +1,52 @@
 import logging
+import sys
+from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from spoke.handsfree import HandsFreeController, HandsFreeState, handsfree_env_ready
 
 
 class TestHandsFreeControllerWakeWords:
+    def test_dictation_start_requests_async_capture_and_rejects_stale_completion(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "spoke.inject",
+                            SimpleNamespace(save_pasteboard=lambda: None))
+        delegate = MagicMock()
+        delegate._manual_hold_active = False
+        future = Future()
+        delegate._capture.start_async.return_value = future
+        delegate._capture.stop.return_value = b"startup samples"
+        controller = HandsFreeController(delegate)
+        controller._state = HandsFreeState.LISTENING
+        controller._start_dictating()
+        delegate._capture.start_async.assert_called_once()
+        delegate._capture.start.assert_not_called()
+        delegate._menubar.set_recording.assert_called_with(False)
+        controller._stop_dictation_capture()
+        future.set_result(None)
+        controller.capture_started(future)
+        delegate._menubar.set_recording.assert_called_with(False)
+
+    def test_failed_start_finalizes_handsfree_capture_and_allows_next_request(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "spoke.inject",
+                            SimpleNamespace(save_pasteboard=lambda: None))
+        delegate = MagicMock()
+        delegate._manual_hold_active = False
+        future = Future()
+        delegate._capture.start_async.return_value = future
+        delegate._capture.stop.return_value = b"startup samples"
+        controller = HandsFreeController(delegate)
+        controller._start_dictating()
+        future.set_exception(RuntimeError("native open failed"))
+        controller.capture_started(future)
+        delegate._capture.stop.assert_called_once_with()
+        assert controller.state == HandsFreeState.LISTENING
+        assert delegate._spool_stopped_audio_capture.call_args.kwargs["source"] == "handsfree"
+        assert delegate._spool_stopped_audio_capture.call_args.args == (b"startup samples",)
+        delegate._capture.start_async.return_value = Future()
+        controller._start_dictating()
+        assert delegate._capture.start_async.call_count == 2
+
     def test_handsfree_env_ready_accepts_openwakeword_models(self, monkeypatch):
         monkeypatch.delenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", raising=False)
         monkeypatch.setenv("SPOKE_WAKEWORD_BACKEND", "openwakeword")

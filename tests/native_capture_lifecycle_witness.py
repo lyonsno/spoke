@@ -22,7 +22,7 @@ def main():
     release = threading.Event()
     cap = None
     try:
-        sources = [root / "spoke/__main__.py", root / "spoke/capture.py"]
+        sources = [root / p for p in ("spoke/__main__.py", "spoke/capture.py", "spoke/handsfree.py")]
         report["source_digest"] = hashlib.sha256(b"".join(p.read_bytes() for p in sources)).hexdigest()
         assert report["source_digest"] == args.expected_digest, "capture source digest mismatch"
         sys.path.insert(0, str(root))
@@ -32,8 +32,8 @@ def main():
         report["phase"] = "bridge"
         import objc
         from Foundation import NSDate, NSRunLoop
-        from spoke import __main__ as mod, capture
-        assert [Path(m.__file__).resolve() for m in (mod, capture)] == sources
+        from spoke import __main__ as mod, capture, handsfree
+        assert [Path(m.__file__).resolve() for m in (mod, capture, handsfree)] == sources
         report["bridge_version"] = objc.__version__
         report["effective_modules"] = [str(p) for p in sources]
         d = objc.super(mod.SpokeAppDelegate, mod.SpokeAppDelegate.alloc()).init()
@@ -93,6 +93,18 @@ def main():
             worker.join()
             assert d._menubar.set_recording.call_args_list == before
             report["stale_completion_ignored"] = True
+            cap.stop()
+            assert cap._teardown_complete.wait(10)
+            report["phase"] = "handsfree_completion"
+            hf = d._handsfree = handsfree.HandsFreeController(d)
+            hf.on_state_change = d._on_handsfree_state_change
+            with patch("spoke.inject.save_pasteboard", return_value=None):
+                hf._start_dictating()
+            run_until(lambda: hf._capture_start_future is None)
+            assert hf.is_dictating and cap.is_recording
+            assert d._menubar.set_recording.call_args.args == (True,)
+            hf._stop_dictation_capture()
+            report["handsfree_completion_passed"] = True
         report.update(passed=True, phase="complete")
     except BaseException as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"

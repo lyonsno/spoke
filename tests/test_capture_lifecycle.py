@@ -62,7 +62,7 @@ def test_async_open_is_off_caller_and_cancelled_release_never_starts_stream(cap)
     assert not cap.is_recording
 
 
-def test_async_start_refuses_to_overlap_blocked_teardown(cap):
+def test_async_start_waits_off_caller_for_blocked_teardown(cap):
     entered, release, closed = threading.Event(), threading.Event(), threading.Event()
     stream = MagicMock()
     stream.stop.side_effect = lambda: (entered.set(), release.wait())
@@ -73,12 +73,34 @@ def test_async_start_refuses_to_overlap_blocked_teardown(cap):
             cap.stop()
             assert entered.wait(1)
             assert callable(getattr(cap, "start_async", None)), "Capture has no nonblocking start route"
-            with pytest.raises(capture.CaptureBusyError):
-                cap.start_async()
+            future = cap.start_async()
+            assert not future.done()
             assert opened.call_count == 1
         finally:
             release.set()
             assert closed.wait(1)
+        future.result(timeout=1)
+        cap.stop()
+        assert cap._teardown_complete.wait(1)
+
+
+def test_release_cancels_queued_start_without_waiting_for_teardown(cap):
+    entered, release = threading.Event(), threading.Event()
+    stream = MagicMock()
+    stream.stop.side_effect = lambda: (entered.set(), release.wait())
+    with patch.object(capture.sd, "InputStream", return_value=stream) as opened:
+        cap.start()
+        cap.stop()
+        try:
+            assert entered.wait(1)
+            future = cap.start_async()
+            cap.stop()
+            with pytest.raises(capture.CaptureStartCancelled):
+                future.result(timeout=1)
+            assert opened.call_count == 1
+        finally:
+            release.set()
+            assert cap._teardown_complete.wait(1)
 
 
 def test_start_thread_failure_does_not_leave_capture_permanently_busy(cap):
@@ -159,6 +181,23 @@ def test_frames_delivered_inside_native_start_are_retained(cap):
         finally:
             cap.stop()
             assert cap._teardown_complete.wait(1)
+
+def test_failed_start_finalization_preserves_samples_and_releases_the_next_request(cap):
+    stream = MagicMock()
+    def opened(**kwargs):
+        def started():
+            kwargs["callback"](np.ones((1024, 1), dtype=np.float32) * 0.2, 1024, None, None)
+            raise RuntimeError("native start failed")
+        stream.start.side_effect = started
+        return stream
+    with patch.object(capture.sd, "InputStream", side_effect=opened), patch.object(cap, "_reset_portaudio"):
+        with pytest.raises(RuntimeError, match="native start failed"):
+            cap.start_async().result(timeout=1)
+        assert len(cap.stop()) == 44 + 4096
+    with patch.object(capture.sd, "InputStream", return_value=MagicMock()):
+        cap.start_async().result(timeout=1)
+        cap.stop()
+        assert cap._teardown_complete.wait(1)
 
 
 def test_release_while_native_start_is_returning_keeps_received_audio(cap):
