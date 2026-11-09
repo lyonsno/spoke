@@ -338,7 +338,8 @@ class AudioCapture:
                 raise CaptureBusyError("Microphone recording is awaiting release")
             if self._stream_closing and self._teardown_complete.is_set():
                 raise CaptureBusyError("Previous microphone stream did not close")
-            if self._start_future is not None and not self._start_future.done():
+            if (self._start_future is not None and not self._start_future.done()
+                    and (self._start_cancel is None or not self._start_cancel.is_set())):
                 raise CaptureBusyError("Microphone is still opening or closing")
             cancelled = self._start_cancel = threading.Event()
             future = self._start_future = Future()
@@ -366,13 +367,18 @@ class AudioCapture:
         while not self._teardown_complete.wait(0.05):
             if _cancel_event is not None and _cancel_event.is_set():
                 raise CaptureStartCancelled("Microphone start cancelled")
-        with self._native_lifecycle_lock:
+        while not self._native_lifecycle_lock.acquire(timeout=0.05):
+            if _cancel_event is not None and _cancel_event.is_set():
+                raise CaptureStartCancelled("Microphone start cancelled")
+        try:
             if self._stream_closing:
                 raise CaptureBusyError("Previous microphone stream did not close")
             if _cancel_event is not None and _cancel_event.is_set():
                 raise CaptureStartCancelled("Microphone start cancelled")
             self._start_stream(amplitude_callback, segment_callback, vad_state_callback,
                                _cancel_event=_cancel_event)
+        finally:
+            self._native_lifecycle_lock.release()
 
     def _start_stream(
         self, 
@@ -473,7 +479,16 @@ class AudioCapture:
                 return
             except CaptureStartCancelled:
                 if stream is not None:
-                    self._stream_closing = not self._teardown_stream(stream)
+                    with self._start_state_lock:
+                        self._stream_closing = True
+                        self._teardown_complete.clear()
+                    closed = False
+                    try:
+                        closed = self._teardown_stream(stream)
+                    finally:
+                        with self._start_state_lock:
+                            self._stream_closing = not closed
+                            self._teardown_complete.set()
                 self._amplitude_cb = self._segment_cb = self._vad_cb = None
                 self._stop_callback_dispatch()
                 if self._encode_queue is not None:

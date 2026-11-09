@@ -102,6 +102,64 @@ def test_release_cancels_queued_start_without_waiting_for_teardown(cap):
             release.set()
             assert cap._teardown_complete.wait(1)
 
+@pytest.mark.parametrize("cancel_second", [False, True])
+@pytest.mark.parametrize("queue_during_open", [False, True])
+def test_new_hold_queues_behind_cancelled_start_cleanup(cap, cancel_second, queue_during_open):
+    opened, finish_start, closing, finish_close = (threading.Event() for _ in range(4))
+    first_stream, second_stream = MagicMock(), MagicMock()
+    def first_open(**kwargs):
+        def started():
+            kwargs["callback"](np.ones((1024, 1), dtype=np.float32) * 0.2, 1024, None, None)
+            opened.set()
+            finish_start.wait()
+        first_stream.start.side_effect = started
+        first_stream.stop.side_effect = lambda: (closing.set(), finish_close.wait())
+        return first_stream
+    def second_open(**kwargs):
+        second_stream.start.side_effect = lambda: kwargs["callback"](
+            np.ones((1024, 1), dtype=np.float32) * 0.3, 1024, None, None)
+        return second_stream
+    with patch.object(capture.sd, "InputStream") as factory:
+        factory.side_effect = lambda **kw: (first_open if factory.call_count == 1 else second_open)(**kw)
+        first = cap.start_async()
+        second = None
+        try:
+            assert opened.wait(1)
+            assert len(cap.stop()) == 44 + 2048
+            if not queue_during_open:
+                finish_start.set()
+                assert closing.wait(1)
+            second = cap.start_async()
+            assert not second.done()
+            assert factory.call_count == 1
+            if cancel_second:
+                assert cap.stop() == b""
+                with pytest.raises(capture.CaptureStartCancelled):
+                    second.result(timeout=1)
+            finish_start.set()
+            assert closing.wait(1)
+            finish_close.set()
+            with pytest.raises(capture.CaptureStartCancelled):
+                first.result(timeout=1)
+            if not cancel_second:
+                second.result(timeout=1)
+                assert len(cap.stop()) == 44 + 2048
+                assert factory.call_count == 2
+        finally:
+            finish_start.set()
+            finish_close.set()
+            try:
+                first.result(timeout=1)
+            except capture.CaptureStartCancelled:
+                pass
+            cap.stop()
+            if second is not None:
+                try:
+                    second.result(timeout=1)
+                except capture.CaptureStartCancelled:
+                    pass
+            assert cap._teardown_complete.wait(1)
+
 
 def test_start_thread_failure_does_not_leave_capture_permanently_busy(cap):
     with patch.object(capture.threading, "Thread") as worker:
