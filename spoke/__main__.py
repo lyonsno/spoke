@@ -15,7 +15,7 @@ Configure via environment variables:
 from __future__ import annotations
 
 from contextlib import nullcontext
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import faulthandler
@@ -2504,8 +2504,8 @@ class SpokeAppDelegate(NSObject):
             switcher is not None and switcher.accepts_dictation()
         )
         if self._menubar is not None:
-            self._menubar.set_recording(True)
-            self._menubar.set_status_text("Recording…")
+            self._menubar.set_recording(False)
+            self._menubar.set_status_text("Starting microphone...")
         # Set up opportunistic segment transcription for remote backends.
         # Each silence-bounded segment is dispatched to the final client as it
         # arrives, so that on release we only need to transcribe the tail.
@@ -2539,6 +2539,11 @@ class SpokeAppDelegate(NSObject):
                 summon_stack_body=False,
             )
 
+        self._manual_capture_start_generation = getattr(self, "_manual_capture_start_generation", 0) + 1
+        start_generation = self._manual_capture_start_generation
+        self._manual_capture_start_pending = True
+        self._manual_capture_start_failed = False
+        self._record_start_time = time.monotonic()
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -2546,33 +2551,50 @@ class SpokeAppDelegate(NSObject):
                         "updateVadState:", is_speech, False
                     )
             vad_state_cb = on_vad_state if use_segments else None
-            self._capture.start(
+            future = self._capture.start_async(
                 amplitude_callback=self._on_amplitude,
                 vad_state_callback=vad_state_cb,
                 segment_callback=segment_cb,
             )
-        except Exception:
+        except Exception as exc:
+            future = Future()
+            future.set_exception(exc)
+        future.add_done_callback(lambda completed:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "manualCaptureStarted:", (start_generation, completed), False))
+
+    def manualCaptureStarted_(self, completion) -> None:
+        start_generation, future = completion
+        if (start_generation != getattr(self, "_manual_capture_start_generation", None)
+                or not getattr(self, "_manual_hold_active", False)):
+            return
+        self._manual_capture_start_pending = False
+        try:
+            future.result()
+        except Exception as exc:
             logger.exception("Audio capture failed to start")
+            self._manual_capture_start_failed = True
             self._manual_hold_active = False
             self._release_command_overlay_recording_load_shed()
             if self._glow is not None:
                 self._glow.hide()
             if self._overlay is not None:
                 self._overlay.flash_notice(
-                    "Audio unavailable — system under memory pressure.\n"
-                    "Free memory or use sidecar for transcription.",
+                    f"Microphone unavailable: {exc}",
                     hold=4.0,
                     fade=2.0,
                 )
             if self._menubar is not None:
                 self._menubar.set_recording(False)
                 self._menubar.set_status_text(
-                    "Audio unavailable — memory pressure"
+                    "Microphone unavailable"
                 )
             self._resume_handsfree_after_hold()
             return
+        if self._menubar is not None:
+            self._menubar.set_recording(True)
+            self._menubar.set_status_text("Recording…")
         self._suspend_handsfree_for_hold_async()
-        self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
@@ -2972,6 +2994,11 @@ class SpokeAppDelegate(NSObject):
 
         # ── Normal recording end ──
         logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
+        capture_start_pending = getattr(self, "_manual_capture_start_pending", False)
+        capture_start_failed = getattr(self, "_manual_capture_start_failed", False)
+        self._manual_capture_start_failed = False
+        self._manual_capture_start_generation = getattr(self, "_manual_capture_start_generation", 0) + 1
+        self._manual_capture_start_pending = False
         self._manual_hold_active = False
         self._preview_active = False
         self._preview_cancelled_on_release = True
@@ -3027,6 +3054,17 @@ class SpokeAppDelegate(NSObject):
             wav_bytes = b""  # force the empty-audio path
 
         if not wav_bytes:
+            if capture_start_pending or capture_start_failed:
+                logger.info("Hold ended without microphone startup; no recording or tray action")
+                if self._overlay is not None:
+                    self._overlay.hide()
+                if self._glow is not None:
+                    self._glow.hide()
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Microphone did not start" if capture_start_pending
+                                                  else "Microphone unavailable")
+                self._resume_handsfree_after_hold()
+                return
             logger.info(
                 "No audio — instant path (shift=%s, enter=%s)",
                 shift_held,
@@ -8641,6 +8679,7 @@ class SpokeAppDelegate(NSObject):
 def _acquire_instance_lock() -> None:
     """Single-instance guard — kill any stuck old instance and take the lock."""
     import fcntl
+    import errno
     import signal as sig
     import time
 
@@ -8659,7 +8698,10 @@ def _acquire_instance_lock() -> None:
     old_pid: int | None = None
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as exc:
+        if exc.errno not in (None, errno.EAGAIN, errno.EACCES):
+            lock_file.close()
+            raise
         logger.info(
             "Single-instance guard found an existing lock holder (pid=%d lock=%s)",
             current_pid,
@@ -8667,7 +8709,10 @@ def _acquire_instance_lock() -> None:
         )
         try:
             lock_file.seek(0)
-            old_pid = int(lock_file.read().strip())
+            candidate_pid = int(lock_file.read().strip())
+            if candidate_pid <= 0 or candidate_pid == current_pid:
+                raise ValueError("Invalid predecessor pid")
+            old_pid = candidate_pid
             logger.warning(
                 "Single-instance guard sending SIGTERM to prior pid=%d from pid=%d",
                 old_pid,
@@ -8676,23 +8721,39 @@ def _acquire_instance_lock() -> None:
             os.kill(old_pid, sig.SIGTERM)
         except (ValueError, ProcessLookupError, PermissionError):
             pass
-        for _attempt in range(10):
+        _attempt = 0
+        while True:
             time.sleep(0.2)
             try:
                 fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
-                if _attempt == 4:
+            except OSError as exc:
+                if exc.errno not in (None, errno.EAGAIN, errno.EACCES):
+                    lock_file.close()
+                    raise
+                lock_file.seek(0)
+                try:
+                    observed_pid = int(lock_file.read().strip())
+                except ValueError:
+                    observed_pid = None
+                if observed_pid is not None and observed_pid > 0 and observed_pid != old_pid:
+                    logger.info("Another replacement acquired the instance lock (pid=%d)", observed_pid)
+                    _record_runtime_phase("instance_lock.exit_replaced", lock_path=lock_path,
+                                          owner_pid=observed_pid)
+                    lock_file.close()
+                    sys.exit(0)
+                if _attempt == 4 and old_pid is not None:
                     try:
                         os.kill(old_pid, sig.SIGKILL)
                         logger.info("Escalated to SIGKILL (pid=%d)", old_pid)
                     except (ProcessLookupError, PermissionError, NameError):
                         pass
+                _attempt += 1
+                if _attempt % 25 == 0:
+                    logger.warning("Waiting for predecessor instance lock release (pid=%s)", old_pid)
+                    _record_runtime_phase("instance_lock.waiting_release", lock_path=lock_path,
+                                          predecessor_pid=old_pid)
                 continue
-        else:
-            logger.warning("Another instance is running — exiting")
-            _record_runtime_phase("instance_lock.exit_existing_instance", lock_path=lock_path)
-            sys.exit(0)
 
     # Lock acquired — but a predecessor can release the flock before it has
     # fully exited. Treat unreaped zombies as already dead rather than as live

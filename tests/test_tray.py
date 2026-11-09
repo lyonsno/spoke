@@ -760,8 +760,8 @@ class TestTrayGestures:
 
         d._on_hold_start()
 
-        # Should dismiss tray and start recording
-        d._capture.start.assert_called_once()
+        # Dismiss the tray and request asynchronous microphone startup.
+        d._capture.start_async.assert_called_once()
         assert d._tray_active is False
 
     def test_shift_spacebar_hold_from_tray_navigates(self, main_module, monkeypatch):

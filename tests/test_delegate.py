@@ -12,6 +12,7 @@ import time
 import threading
 import urllib.error
 import wave
+from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -37,6 +38,16 @@ def _make_delegate(main_module, monkeypatch):
 
     delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
     delegate._capture = MagicMock()
+    def complete_start(**kwargs):
+        future = Future()
+        try:
+            delegate._capture.start(**kwargs)
+        except Exception as exc:
+            future.set_exception(exc)
+        else:
+            future.set_result(None)
+        return future
+    delegate._capture.start_async.side_effect = complete_start
     delegate._client = MagicMock(supports_streaming=False)
     delegate._detector = MagicMock()
     delegate._detector.command_overlay_active = False
@@ -93,6 +104,10 @@ def _make_delegate(main_module, monkeypatch):
     delegate._prepare_diaulos_switcher = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
+    def dispatch_capture_completion(selector, obj, wait):
+        if selector == "manualCaptureStarted:":
+            delegate.manualCaptureStarted_(obj)
+    delegate.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = dispatch_capture_completion
     return delegate
 
 
@@ -757,6 +772,46 @@ class TestDiaulosCardStackHook:
 class TestHoldCallbacks:
     """Test _on_hold_start and _on_hold_end orchestration."""
 
+    def test_pending_microphone_does_not_block_or_claim_recording(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        pending = Future()
+        d._capture.start_async.side_effect = None
+        d._capture.start_async.return_value = pending
+        d._on_hold_start()
+        d._capture.start.assert_not_called()
+        assert d._preview_active is False
+        assert call(True) not in d._menubar.set_recording.call_args_list
+        assert d._manual_capture_start_pending is True
+
+    def test_released_pending_start_cannot_reactivate_recording(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        pending = Future()
+        d._capture.start_async.side_effect = None
+        d._capture.start_async.return_value = pending
+        d._capture.stop.return_value = b""
+        d._on_hold_start()
+        token = getattr(d, "_manual_capture_start_generation", 0)
+        d._on_hold_end()
+        pending.set_result(None)
+        assert callable(getattr(d, "manualCaptureStarted_", None)), "No main-thread startup completion route"
+        d.manualCaptureStarted_((token, pending))
+        assert d._manual_hold_active is False
+        assert d._preview_active is False
+        assert call(True) not in d._menubar.set_recording.call_args_list
+
+    def test_failed_start_belongs_only_to_its_own_hold(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.start.side_effect = RuntimeError("native open failed")
+        d._capture.stop.return_value = b""
+        d._on_hold_start()
+        d._on_hold_end()
+        assert d._manual_capture_start_failed is False
+        d._latest_tray_index_for_deck = MagicMock(return_value=0)
+        d._tray_stack = ["prior transcript"]
+        d._show_tray_current = MagicMock()
+        d._on_hold_end(shift_held=True)
+        d._show_tray_current.assert_called_once_with(acknowledge=True)
+
     def test_hold_start_begins_recording(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._on_hold_start()
@@ -795,10 +850,10 @@ class TestHoldCallbacks:
 
         d._glow.hide.assert_called_once_with()
         d._overlay.flash_notice.assert_called_once()
-        d._menubar.set_recording.assert_any_call(True)
+        assert call(True) not in d._menubar.set_recording.call_args_list
         d._menubar.set_recording.assert_any_call(False)
         d._menubar.set_status_text.assert_called_with(
-            "Audio unavailable — memory pressure"
+            "Microphone unavailable"
         )
         assert d._preview_active is False
 
@@ -7029,7 +7084,7 @@ class TestMicNotReady:
 
 
 class TestCaptureStartFailure:
-    """Capture failure at hold time shows memory-pressure guidance."""
+    """Capture failure reports the observed failure, not guessed memory pressure."""
 
     def test_capture_failure_shows_overlay_notice(self, main_module, monkeypatch):
         """When capture.start() throws, the overlay should flash a notice
@@ -7044,7 +7099,7 @@ class TestCaptureStartFailure:
         d._overlay.flash_notice.assert_called_once()
         msg = d._overlay.flash_notice.call_args[0][0]
         assert "audio" in msg.lower() or "microphone" in msg.lower()
-        assert "memory" in msg.lower() or "pressure" in msg.lower()
+        assert "PortAudio error -9986" in msg
 
     def test_capture_failure_updates_menubar(self, main_module, monkeypatch):
         """Menubar status should mention memory pressure on capture failure."""
@@ -7057,7 +7112,7 @@ class TestCaptureStartFailure:
 
         d._menubar.set_recording.assert_called_with(False)
         status_text = d._menubar.set_status_text.call_args[0][0]
-        assert "memory" in status_text.lower() or "pressure" in status_text.lower()
+        assert status_text == "Microphone unavailable"
 
 
 class TestMicPermissionProbe:

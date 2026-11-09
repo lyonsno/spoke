@@ -18,6 +18,7 @@ import threading
 import time
 import wave
 from collections import deque
+from concurrent.futures import Future
 from typing import Callable
 
 import numpy as np
@@ -40,6 +41,14 @@ MAX_SEGMENT_CHUNKS = 468      # ~30s maximum segment duration (in BLOCKSIZE chun
 VAD_GRACE_PERIOD_SECS = 5.0
 NON_SILENT_SAMPLE_THRESHOLD = 1e-4
 RAW_FALLBACK_SPEECH_RMS_THRESHOLD = 0.01
+
+
+class CaptureBusyError(RuntimeError):
+    """The prior native microphone operation has not finished."""
+
+
+class CaptureStartCancelled(RuntimeError):
+    """The hold ended before native startup completed."""
 
 # Path to cached Silero VAD JIT model
 _SILERO_VAD_JIT_PATHS = [
@@ -167,6 +176,14 @@ class AudioCapture:
         self._callback_generation = 0
         self._stream_closing = False
         self._stream_generation = 0
+        self._native_lifecycle_lock = threading.RLock()
+        self._start_state_lock = threading.Lock()
+        self._start_cancel = None
+        self._start_future = None
+        self._session_live = False
+        self._teardown_complete = threading.Event()
+        self._teardown_complete.set()
+        self._failed_teardown_stream = None
 
     def warmup(self) -> None:
         """Pre-initialize PortAudio so first start() is fast."""
@@ -176,8 +193,12 @@ class AudioCapture:
         except Exception:
             logger.debug("PortAudio warmup failed", exc_info=True)
 
-    def _teardown_stream(self, stream: sd.InputStream) -> None:
+    def _teardown_stream(self, stream: sd.InputStream) -> bool:
         """Best-effort blocking PortAudio stream teardown."""
+        with self._native_lifecycle_lock:
+            return self._teardown_native_stream(stream)
+
+    def _teardown_native_stream(self, stream: sd.InputStream) -> bool:
         try:
             stream.stop()
         except Exception:
@@ -186,6 +207,9 @@ class AudioCapture:
             stream.close()
         except Exception:
             logger.debug("Audio stream close failed during teardown", exc_info=True)
+            self._failed_teardown_stream = stream
+            return False
+        return True
 
     def _close_stream(self) -> None:
         """Best-effort synchronous stream teardown for failed starts/restarts."""
@@ -196,28 +220,42 @@ class AudioCapture:
         if stream is None:
             self._stream_closing = False
             return
+        closed = False
         try:
-            self._teardown_stream(stream)
+            closed = self._teardown_stream(stream)
         finally:
-            self._stream_closing = False
+            self._stream_closing = not closed
+        if not closed:
+            raise CaptureBusyError("Previous microphone stream did not close")
 
     def _close_stream_async(self) -> None:
         """Detach stream teardown so CoreAudio cannot block the caller thread."""
         stream = self._stream
+        if stream is None:
+            return
         self._stream_closing = True
         self._stream = None
         self._stream_generation += 1
-        if stream is None:
-            self._stream_closing = False
-            return
 
-        threading.Thread(
-            target=self._teardown_stream,
-            args=(stream,),
-            daemon=True,
-            name="audio-stream-teardown",
-        ).start()
-        self._stream_closing = False
+        self._teardown_complete.clear()
+        def finish_teardown():
+            closed = False
+            try:
+                closed = self._teardown_stream(stream)
+            finally:
+                self._stream_closing = not closed
+                self._teardown_complete.set()
+
+        try:
+            threading.Thread(
+                target=finish_teardown,
+                daemon=True,
+                name="audio-stream-teardown",
+            ).start()
+        except Exception:
+            self._failed_teardown_stream = stream
+            self._teardown_complete.set()
+            logger.exception("Microphone teardown worker unavailable; retaining stopped audio")
 
     def _reset_portaudio(self) -> None:
         """Best-effort PortAudio reset after a dead input stream."""
@@ -293,11 +331,54 @@ class AudioCapture:
             except Exception:
                 logger.error("Error in callback dispatch worker", exc_info=True)
 
-    def start(
+    def start_async(self, **kwargs) -> Future:
+        """Start off the caller thread; stop() cancels an unfinished start."""
+        with self._start_state_lock:
+            if self._session_live:
+                raise CaptureBusyError("Microphone recording is awaiting release")
+            if self._stream_closing and self._teardown_complete.is_set():
+                raise CaptureBusyError("Previous microphone stream did not close")
+            if (not self._teardown_complete.is_set()
+                    or self._start_future is not None and not self._start_future.done()):
+                raise CaptureBusyError("Microphone is still opening or closing")
+            cancelled = self._start_cancel = threading.Event()
+            future = self._start_future = Future()
+
+        def open_stream():
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                self.start(_cancel_event=cancelled, **kwargs)
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(None)
+
+        try:
+            threading.Thread(target=open_stream, daemon=True, name="audio-stream-start").start()
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        return future
+
+    def start(self, amplitude_callback=None, segment_callback=None, vad_state_callback=None,
+              *, _cancel_event=None) -> None:
+        """Synchronous route for existing background consumers."""
+        self._teardown_complete.wait()
+        with self._native_lifecycle_lock:
+            if self._stream_closing:
+                raise CaptureBusyError("Previous microphone stream did not close")
+            if _cancel_event is not None and _cancel_event.is_set():
+                raise CaptureStartCancelled("Microphone start cancelled")
+            self._start_stream(amplitude_callback, segment_callback, vad_state_callback,
+                               _cancel_event=_cancel_event)
+
+    def _start_stream(
         self, 
         amplitude_callback: Callable[[float], None] | None = None,
         segment_callback: Callable[[bytes], None] | None = None,
-        vad_state_callback: Callable[[bool], None] | None = None
+        vad_state_callback: Callable[[bool], None] | None = None,
+        *, _cancel_event=None,
     ) -> None:
         """Begin recording.
 
@@ -317,9 +398,14 @@ class AudioCapture:
 
         self._stop_callback_dispatch()
         self._callback_generation += 1
-        self._stream_generation += 1
-        stream_generation = self._stream_generation
-        self._frames = []
+        with self._start_state_lock:
+            if _cancel_event is not None and _cancel_event.is_set():
+                raise CaptureStartCancelled("Microphone start cancelled")
+            with self._lock:
+                self._stream_generation += 1
+                stream_generation = self._stream_generation
+                self._frames = []
+                self._session_live = True
         self._read_cursor = 0
         self._stream_closing = False
         self._amplitude_cb = amplitude_callback
@@ -357,6 +443,8 @@ class AudioCapture:
         for attempt in range(2):
             stream = None
             try:
+                if _cancel_event is not None and _cancel_event.is_set():
+                    raise CaptureStartCancelled("Microphone start cancelled")
                 if attempt:
                     logger.warning("Retrying audio capture start after PortAudio reset")
                     self._reset_portaudio()
@@ -373,10 +461,24 @@ class AudioCapture:
                         generation=stream_generation,
                     ),
                 )
+                if _cancel_event is not None and _cancel_event.is_set():
+                    raise CaptureStartCancelled("Microphone start cancelled")
                 stream.start()
-                self._stream = stream
+                with self._start_state_lock:
+                    if _cancel_event is not None and _cancel_event.is_set():
+                        raise CaptureStartCancelled("Microphone start cancelled")
+                    self._stream = stream
                 logger.info("Audio capture started")
                 return
+            except CaptureStartCancelled:
+                if stream is not None:
+                    self._stream_closing = not self._teardown_stream(stream)
+                self._amplitude_cb = self._segment_cb = self._vad_cb = None
+                self._stop_callback_dispatch()
+                if self._encode_queue is not None:
+                    self._encode_queue.put(None)
+                    self._encode_queue = None
+                raise
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
@@ -385,13 +487,10 @@ class AudioCapture:
                     exc_info=True,
                 )
                 if stream is not None:
-                    try:
-                        stream.close()
-                    except Exception:
-                        logger.debug(
-                            "Audio stream close failed after start error",
-                            exc_info=True,
-                        )
+                    if not self._teardown_stream(stream):
+                        self._stream_closing = True
+                        last_exc = CaptureBusyError("Previous microphone stream did not close")
+                        break
                 self._stream = None
         
         self._amplitude_cb = None
@@ -408,7 +507,15 @@ class AudioCapture:
 
     def stop(self) -> bytes:
         """Stop recording and return the complete audio as WAV bytes."""
-        if self._stream is not None:
+        with self._start_state_lock:
+            if self._start_cancel is not None:
+                self._start_cancel.set()
+            session_live = self._session_live
+            self._session_live = False
+            if self._stream is None and session_live:
+                with self._lock:
+                    self._stream_generation += 1
+        if self._stream is not None or session_live:
             self._close_stream_async()
             chunk_count = len(self._frames)
             logger.info("Audio capture stopped (%d chunks)", chunk_count)
@@ -577,7 +684,7 @@ class AudioCapture:
         """Called by PortAudio on its own thread. Must be fast."""
         if generation is not None and generation != self._stream_generation:
             return
-        if self._stream is None or self._stream_closing:
+        if (self._stream is None and not self._session_live) or self._stream_closing:
             return
         tick_start = time.perf_counter()
         if status:
@@ -586,6 +693,9 @@ class AudioCapture:
             chunk = indata[:, 0].copy()  # mono, float32
 
             with self._lock:
+                if (generation is not None and generation != self._stream_generation
+                        or (self._stream is None and not self._session_live) or self._stream_closing):
+                    return
                 self._frames.append(chunk)
 
             rms = float(np.sqrt(np.mean(chunk ** 2)))

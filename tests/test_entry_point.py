@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import signal
+import errno
 import types
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,68 @@ class TestSingleInstanceGuard:
         assert lock_path.read_text(encoding="utf-8") == "12345"
         main_module._acquire_instance_lock._lock_file.close()
         delattr(main_module._acquire_instance_lock, "_lock_file")
+
+    def test_replacement_waits_for_actual_release_after_old_retry_window(self, main_module, tmp_path):
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("111", encoding="utf-8")
+        fake_fcntl = types.SimpleNamespace(LOCK_EX=1, LOCK_NB=2,
+            flock=MagicMock(side_effect=[OSError("busy")] * 15 + [None]))
+        with patch.dict("sys.modules", {"fcntl": fake_fcntl}), \
+                patch.object(main_module, "_LOCK_PATH", str(lock_path)), \
+                patch.object(main_module.os, "getpid", return_value=444), \
+                patch.object(main_module.os, "kill") as killed, \
+                patch.object(main_module, "_is_process_alive", return_value=False), \
+                patch("time.sleep"):
+            main_module._acquire_instance_lock()
+        assert killed.call_args_list.count(((111, signal.SIGKILL),)) == 1
+        assert lock_path.read_text() == "444"
+        main_module._acquire_instance_lock._lock_file.close()
+        delattr(main_module._acquire_instance_lock, "_lock_file")
+
+    def test_waiter_leaves_a_new_replacement_owner_alone(self, main_module, tmp_path):
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("111", encoding="utf-8")
+        fake_fcntl = types.SimpleNamespace(LOCK_EX=1, LOCK_NB=2,
+            flock=MagicMock(side_effect=OSError("busy")))
+        with patch.dict("sys.modules", {"fcntl": fake_fcntl}), \
+                patch.object(main_module, "_LOCK_PATH", str(lock_path)), \
+                patch.object(main_module.os, "getpid", return_value=444), \
+                patch.object(main_module.os, "kill") as killed, \
+                patch("time.sleep", side_effect=lambda _: lock_path.write_text("222")):
+            import pytest
+            with pytest.raises(SystemExit) as exited:
+                main_module._acquire_instance_lock()
+        assert exited.value.code == 0
+        assert killed.call_args_list == [((111, signal.SIGTERM),)]
+        assert lock_path.read_text() == "222"
+
+    def test_invalid_owner_pid_never_signals_a_process_group(self, main_module, tmp_path):
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("0")
+        fake_fcntl = types.SimpleNamespace(LOCK_EX=1, LOCK_NB=2,
+            flock=MagicMock(side_effect=[OSError("busy"), None]))
+        with patch.dict("sys.modules", {"fcntl": fake_fcntl}), \
+                patch.object(main_module, "_LOCK_PATH", str(lock_path)), \
+                patch.object(main_module.os, "getpid", return_value=444), \
+                patch.object(main_module.os, "kill") as killed, patch("time.sleep"):
+            main_module._acquire_instance_lock()
+        killed.assert_not_called()
+        main_module._acquire_instance_lock._lock_file.close()
+        delattr(main_module._acquire_instance_lock, "_lock_file")
+
+    def test_flock_error_is_not_treated_as_a_live_predecessor(self, main_module, tmp_path):
+        import pytest
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("111")
+        fake_fcntl = types.SimpleNamespace(LOCK_EX=1, LOCK_NB=2,
+            flock=MagicMock(side_effect=[OSError(errno.EBADF, "invalid descriptor"),
+                                         RuntimeError("unexpected retry")]))
+        with patch.dict("sys.modules", {"fcntl": fake_fcntl}), \
+                patch.object(main_module, "_LOCK_PATH", str(lock_path)), \
+                patch.object(main_module.os, "kill") as killed, patch("time.sleep"):
+            with pytest.raises(OSError, match="invalid descriptor"):
+                main_module._acquire_instance_lock()
+        killed.assert_not_called()
 
     def test_second_instance_kills_first_and_takes_lock(self, main_module, tmp_path):
         lock_path = tmp_path / ".spoke.lock"

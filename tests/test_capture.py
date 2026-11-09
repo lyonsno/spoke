@@ -389,10 +389,13 @@ class TestStartStop:
         stream.close.assert_not_called()
         MockThread.assert_called_once()
         kwargs = MockThread.call_args.kwargs
-        assert kwargs["target"] == cap._teardown_stream
-        assert kwargs["args"] == (stream,)
+        assert cap._stream_closing
         assert kwargs["daemon"] is True
         MockThread.return_value.start.assert_called_once()
+        kwargs["target"]()
+        stream.stop.assert_called_once()
+        stream.close.assert_called_once()
+        assert not cap._stream_closing
 
     @patch("spoke.capture.sd")
     def test_stop_with_no_frames_returns_empty(self, mock_sd):
