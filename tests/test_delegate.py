@@ -883,6 +883,7 @@ class TestHoldCallbacks:
 
     def test_hold_start_admits_capture_before_visual_setup(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
+        d._preview_loop = lambda *_: None
         call_order: list[str] = []
         d._glow.show.side_effect = lambda: call_order.append("glow")
         d._overlay.show.side_effect = lambda: call_order.append("overlay")
@@ -897,6 +898,7 @@ class TestHoldCallbacks:
         self, main_module, monkeypatch, broken_feedback
     ):
         d = _make_delegate(main_module, monkeypatch)
+        d._preview_loop = lambda *_: None
         getattr(d, f"_{broken_feedback}").show.side_effect = RuntimeError("visual setup failed")
 
         d._on_hold_start()
@@ -911,6 +913,7 @@ class TestHoldCallbacks:
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
+        d._preview_loop = lambda *_: None
         now = [100.0]
         monkeypatch.setattr(main_module.time, "perf_counter", lambda: now[0])
         def elapsed(seconds):
@@ -933,6 +936,7 @@ class TestHoldCallbacks:
 
     def test_failed_feedback_does_not_report_prior_pill_timings(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
+        d._preview_loop = lambda *_: None
         d._overlay._last_show_timing = {"optics_ms": 90000, "optics_status": "published"}
         d._overlay.set_brightness.side_effect = RuntimeError("feedback not reached")
         with patch.object(main_module.logger, "info") as log:
