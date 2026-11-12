@@ -634,7 +634,9 @@ class RecordingHistoryWindow(HouseWindowShell):
                         "generation": generation, "phase": phase}, False)
                 run_retranscription(self._spool, capture_id, attempt_id, route,
                                     self._delegate._build_history_client,
-                                    lambda client: control.context(self._delegate._local_inference_lock, client, epoch=epoch)
+                                    lambda client: control.context(
+                                        None if route["backend"] in {"cloud", "sidecar"} else self._delegate._local_inference_lock,
+                                        client, epoch=epoch)
                                     if control is not None else self._delegate._local_inference_context(client),
                                     cancel_check=lambda: generation != self._replay_generation,
                                     on_phase=progress)

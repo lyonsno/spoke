@@ -7,6 +7,8 @@ the transcribed text.
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import contextmanager
 
 import httpx
 
@@ -38,6 +40,7 @@ class TranscriptionClient:
         timeout: float = 60.0,
         api_key: str = "",
         prompt_provider: TranscriptionPromptProvider | None = None,
+        isolated: bool = False,
     ) -> None:
         self._url = f"{base_url.rstrip('/')}/v1/audio/transcriptions"
         self._model = model
@@ -45,10 +48,30 @@ class TranscriptionClient:
             prompt_provider or TranscriptionPromptProvider.from_environment()
         )
         self._last_prompt_receipt: dict | None = None
+        self._worker = None
+        self._call_scope = threading.local()
+        self.supports_cancellation = isolated
+        if isolated:
+            from .inference_process import InferenceProcess
+            self._worker = InferenceProcess(__name__, type(self).__name__, {
+                "base_url": base_url, "model": model, "timeout": timeout,
+                "api_key": api_key, "prompt_provider": self._prompt_provider})
         headers = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.Client(timeout=timeout, headers=headers)
+        self._client = None if isolated else httpx.Client(timeout=timeout, headers=headers)
+
+    @contextmanager
+    def cancellation_scope(self):
+        previous = getattr(self._call_scope, "generation", None)
+        self._call_scope.generation = self._worker.generation if self._worker is not None else None
+        try:
+            yield
+        finally:
+            self._call_scope.generation = previous
+
+    def cancel(self):
+        return self._worker.cancel() if self._worker is not None else False
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """Send WAV audio and return transcribed text.
@@ -57,6 +80,15 @@ class TranscriptionClient:
         """
         if not wav_bytes:
             return ""
+        if self._worker is not None:
+            self._worker_receipt = self._last_prompt_receipt = None
+            response = self._worker.call("transcribe", wav_bytes,
+                generation=getattr(self._call_scope, "generation", None))
+            self._worker_receipt = {**response["worker"], "effective": response["effective"]}
+            self._last_prompt_receipt = response["effective"].get("last_prompt_receipt")
+            if response.get("error"):
+                raise RuntimeError(response["error"])
+            return response["value"]
 
         prompt = self._prompt_provider.resolve()
         data = {"model": self._model}
@@ -101,4 +133,7 @@ class TranscriptionClient:
         return None
 
     def close(self) -> None:
-        self._client.close()
+        if self._worker is not None:
+            self._worker.close()
+        elif self._client is not None:
+            self._client.close()

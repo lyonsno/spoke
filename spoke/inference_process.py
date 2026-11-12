@@ -16,6 +16,16 @@ from multiprocessing.connection import Connection
 
 logger = logging.getLogger(__name__)
 
+def _reap(process, connection=None):
+    """Reaping a killed native worker must not retain inference or AppKit."""
+    def finish():
+        try:
+            process.wait()
+        finally:
+            if connection is not None:
+                connection.close()
+    threading.Thread(target=finish, daemon=True, name="spoke-inference-reap").start()
+
 
 @contextmanager
 def _request_activity(method):
@@ -100,9 +110,27 @@ class InferenceProcess:
                         child.close()
                 process, connection = self._process, self._connection
             request_id = uuid.uuid4().hex
+            transferred = threading.Event()
+            reply = {}
+            def exchange():
+                try:
+                    connection.send((request_id, self._config, method, args))
+                    reply["response"] = connection.recv()
+                except BaseException as exc:
+                    reply["error"] = exc
+                finally:
+                    transferred.set()
             try:
-                connection.send((request_id, self._config, method, args))
-                response = connection.recv()
+                threading.Thread(target=exchange, daemon=True,
+                                 name="spoke-inference-transfer").start()
+                while not transferred.wait(0.05):
+                    if generation != self.generation:
+                        raise InferenceCancelled()
+                if generation != self.generation:
+                    raise InferenceCancelled()
+                if "error" in reply:
+                    raise reply["error"]
+                response = reply["response"]
                 with self._state:
                     if generation != self._generation:
                         raise InferenceCancelled()
@@ -128,8 +156,11 @@ class InferenceProcess:
                     if dead and not detached:
                         self._process = self._connection = None
                 if detached or dead:
-                    connection.close()
-                    process.wait()
+                    if transferred.is_set():
+                        connection.close()
+                        _reap(process)
+                    else:
+                        _reap(process, connection)
 
     def cancel(self):
         with self._state:
@@ -146,7 +177,7 @@ class InferenceProcess:
         if self._calls.acquire(blocking=False):
             try:
                 connection.close()
-                process.wait()
+                _reap(process)
             finally:
                 self._calls.release()
         return True
@@ -160,7 +191,7 @@ class InferenceControl:
     def __init__(self):
         self._state = threading.RLock()
         self._epoch = 0
-        self._active = None
+        self._active = {}
 
     @property
     def epoch(self):
@@ -170,7 +201,8 @@ class InferenceControl:
     @property
     def can_cancel(self):
         with self._state:
-            return self._active is None or getattr(self._active, "supports_cancellation", False) is True
+            return all(getattr(client, "supports_cancellation", False) is True
+                       for client in self._active.values())
 
     def cancel(self, invalidate=None):
         with self._state:
@@ -179,8 +211,8 @@ class InferenceControl:
             self._epoch += 1
             if invalidate is not None:
                 invalidate()
-            if self._active is not None:
-                self._active.cancel()
+            for client in {id(c): c for c in self._active.values()}.values():
+                client.cancel()
             return True
 
     @contextmanager
@@ -188,20 +220,22 @@ class InferenceControl:
         from .recording_history import timed_inference_context
         if epoch is None:
             epoch = self.epoch
-        with timed_inference_context(lock, timings) as timing, ExitStack() as scope:
+        with timed_inference_context(lock, timings,
+                cancel_check=lambda: epoch != self.epoch) as timing, ExitStack() as scope:
             with self._state:
                 if epoch != self._epoch:
                     raise InferenceCancelled()
                 if getattr(client, "supports_cancellation", False) is True:
                     scope.enter_context(client.cancellation_scope())
-                self._active = client
+                reservation = object()
+                self._active[reservation] = client
             try:
                 yield timing
                 if epoch != self.epoch:
                     raise InferenceCancelled()
             finally:
                 with self._state:
-                    self._active = None
+                    self._active.pop(reservation, None)
 
 
 def _serve(fd, parent_pid):

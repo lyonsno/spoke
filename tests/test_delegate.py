@@ -2563,7 +2563,8 @@ class TestConcurrencyContract:
         with patch.object(main_module.time, "sleep"):
             d._preview_loop_batch()
 
-        d._local_inference_lock.__enter__.assert_called_once()
+        d._local_inference_lock.acquire.assert_called_once_with(timeout=0.05)
+        d._local_inference_lock.release.assert_called_once_with()
         d._preview_done.set.assert_called_once_with()
 
     def test_preview_loop_batch_signals_done_when_transcription_raises(
@@ -2602,7 +2603,8 @@ class TestConcurrencyContract:
         d._transcribe_worker(b"wav", token=3)
 
         d._preview_done.wait.assert_called_once_with(timeout=2.0)
-        d._local_inference_lock.__enter__.assert_called_once()
+        d._local_inference_lock.acquire.assert_called_once_with(timeout=0.05)
+        d._local_inference_lock.release.assert_called_once_with()
         d._client.transcribe.assert_called_once_with(b"wav")
 
 
@@ -5904,10 +5906,11 @@ def test_live_history_separates_inference_lock_wait_from_client_work(
     monkeypatch.setattr(main_module.time, "monotonic", lambda: now[0])
 
     class WaitingLock:
-        def __enter__(self):
+        def acquire(self, timeout):
             now[0] += 5.0
-        def __exit__(self, *args):
-            return False
+            return True
+        def release(self):
+            pass
 
     def transcribe(audio):
         now[0] += 2.0
@@ -7960,6 +7963,7 @@ class TestBuildClientRouting:
             base_url="http://localhost:8000",
             model="any-model",
             api_key="",
+            isolated=True,
             timeout=1.25,
         )
 

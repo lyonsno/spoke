@@ -12,18 +12,30 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def timed_inference_context(lock, timings=None):
+def timed_inference_context(lock, timings=None, cancel_check=lambda: False):
     """Separate shared-client queueing from time spent owning the client."""
     started = time.monotonic()
     timing = {}
     try:
-        with lock:
+        acquired_lock = False
+        try:
+            while lock is not None and not lock.acquire(timeout=0.05):
+                if cancel_check():
+                    from .inference_process import InferenceCancelled
+                    raise InferenceCancelled()
+            acquired_lock = lock is not None
+            if cancel_check():
+                from .inference_process import InferenceCancelled
+                raise InferenceCancelled()
             acquired = time.monotonic()
             timing["lock_wait_seconds"] = acquired - started
             try:
                 yield timing
             finally:
                 timing["lock_held_seconds"] = time.monotonic() - acquired
+        finally:
+            if acquired_lock:
+                lock.release()
     finally:
         if timing:
             if timings is not None:

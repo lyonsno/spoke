@@ -2550,6 +2550,8 @@ class SpokeAppDelegate(NSObject):
         self._manual_capture_start_pending = True
         self._manual_capture_start_failed = False
         self._update_history_capture_controls()
+        if self._overlay is not None:
+            self._overlay.set_text("Starting microphone - not recording yet")
         self._record_start_time = time.monotonic()
         self._manual_capture_owned = False
         try:
@@ -2613,6 +2615,8 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
+        if self._overlay is not None:
+            self._overlay.set_text("")
         if not getattr(self, "_handsfree_paused_for_hold", False):
             self._suspend_handsfree_for_hold_async()
         self._cap_fired = False
@@ -3082,6 +3086,9 @@ class SpokeAppDelegate(NSObject):
                     self._overlay.hide()
                 if self._glow is not None:
                     self._glow.hide()
+                if self._overlay is not None and capture_start_pending:
+                    self._overlay.flash_notice(
+                        "Microphone never started. No audio was recorded.", hold=4.0, fade=1.0)
                 if self._menubar is not None:
                     self._menubar.set_status_text("Microphone did not start" if capture_start_pending
                                                   else "Microphone unavailable")
@@ -7452,6 +7459,7 @@ class SpokeAppDelegate(NSObject):
                 base_url=whisper_url,
                 model=model_id,
                 api_key=api_key,
+                isolated=True,
                 **kwargs,
             )
         if model_id == _PARAKEET_MODEL_ID:
@@ -8350,18 +8358,22 @@ class SpokeAppDelegate(NSObject):
 
     def _local_inference_context(self, client, *, inference_epoch=None):
         lock = getattr(self, "_local_inference_lock", None)
-        if lock is None or isinstance(client, TranscriptionClient):
+        if lock is None:
             return nullcontext()
+        remote = isinstance(client, TranscriptionClient)
         # Touch the model on each local inference so TTL doesn't expire
         # while the model is actively in use.
-        self._touch_model(client)
+        if not remote:
+            self._touch_model(client)
         from .recording_history import timed_inference_context
         timings = getattr(getattr(self, "_history_trace", None), "inference_timings", None)
         control = getattr(self, "_inference_control", None)
         if control is not None:
             if inference_epoch is None:
                 inference_epoch = getattr(getattr(self, "_history_trace", None), "inference_epoch", None)
-            return control.context(lock, client, epoch=inference_epoch, timings=timings)
+            return control.context(None if remote else lock, client, epoch=inference_epoch, timings=timings)
+        if remote:
+            return nullcontext()
         return timed_inference_context(lock, timings)
 
     def _inject_result_text(
