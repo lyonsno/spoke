@@ -23,7 +23,8 @@ def main():
     cap = None
     pill = None
     try:
-        sources = [root / p for p in ("spoke/__main__.py", "spoke/capture.py", "spoke/handsfree.py")]
+        sources = [root / p for p in ("spoke/__main__.py", "spoke/capture.py", "spoke/handsfree.py",
+                                     "spoke/glow.py")]
         report["source_digest"] = hashlib.sha256(b"".join(p.read_bytes() for p in sources)).hexdigest()
         assert report["source_digest"] == args.expected_digest, "capture source digest mismatch"
         sys.path.insert(0, str(root))
@@ -33,8 +34,8 @@ def main():
         report["phase"] = "bridge"
         import objc
         from Foundation import NSDate, NSRunLoop
-        from spoke import __main__ as mod, capture, handsfree
-        assert [Path(m.__file__).resolve() for m in (mod, capture, handsfree)] == sources
+        from spoke import __main__ as mod, capture, handsfree, glow
+        assert [Path(m.__file__).resolve() for m in (mod, capture, handsfree, glow)] == sources
         report["bridge_version"] = objc.__version__
         report["effective_modules"] = [str(p) for p in sources]
         d = objc.super(mod.SpokeAppDelegate, mod.SpokeAppDelegate.alloc()).init()
@@ -111,6 +112,48 @@ def main():
             assert d._menubar.set_recording.call_args.args == (True,)
             hf._stop_dictation_capture()
             report["handsfree_completion_passed"] = True
+            report["phase"] = "persistent_glow_release"
+            import numpy as np
+            from spoke.audio_spool import AudioSpool, AudioSpoolConfig
+            spool = d._audio_spool = AudioSpool(AudioSpoolConfig(root=args.out.parent / "fixture-audio"))
+            d._handsfree = None
+            d._local_mode = False
+            d._transcription_token = d._parallel_insert_token = 0
+            d._transcribe_worker = d._parallel_insert_worker = lambda *args, **kwargs: None
+            broken = d._glow = glow.GlowOverlay.alloc().initWithScreen_(None)
+            broken._window = MagicMock()
+            broken._glow_layer = MagicMock()
+            broken._glow_layer.presentationLayer.return_value = None
+            broken._glow_layer.opacity.return_value = 0.0
+            broken._glow_layer.setOpacity_.side_effect = RuntimeError("persistent native glow-layer failure")
+            broken._dim_layer = None
+            samples = np.linspace(-0.2, 0.2, 1024, dtype=np.float32).reshape(-1, 1)
+            retained = []
+            with patch.object(glow, "_sample_screen_brightness", return_value=0.5):
+                for _ in range(2):
+                    prior = {r["capture_id"] for r in spool.list_recordings()}
+                    d._on_hold_start()
+                    run_until(lambda: not d._manual_capture_start_pending)
+                    assert cap.is_recording and d._manual_capture_owned
+                    broken._fade_in_until = 0
+                    d.amplitudeUpdate_(0.1)
+                    cap._audio_callback(samples, len(samples), None, None)
+                    expected_audio = cap.get_buffer()
+                    assert len(expected_audio) > 44
+                    d._on_hold_end()
+                    assert not cap.is_recording and not d._manual_capture_owned
+                    assert not d._manual_hold_active
+                    assert cap._teardown_complete.wait(10)
+                    added = [r for r in spool.list_recordings() if r["capture_id"] not in prior]
+                    assert len(added) == 1
+                    capture_id = added[0]["capture_id"]
+                    actual_audio = spool.read_recording_audio(capture_id)
+                    assert actual_audio == expected_audio
+                    assert added[0]["preserve_audio"] is True
+                    retained.append({"capture_id": capture_id, "bytes": len(actual_audio),
+                                     "sha256": hashlib.sha256(actual_audio).hexdigest()})
+            report["persistent_glow_release_and_retry_passed"] = True
+            report["retained_fixture_audio"] = retained
         report["phase"] = "pill_timer_bridge"
         from Foundation import NSTimer
         from spoke.overlay import TranscriptionOverlay
@@ -133,9 +176,9 @@ def main():
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         release.set()
-        if pill is not None:
-            pill._cancel_fade()
         try:
+            if pill is not None:
+                pill._cancel_fade()
             if cap is not None:
                 cap.stop()
                 assert cap._teardown_complete.wait(10), "fixture teardown did not finish"

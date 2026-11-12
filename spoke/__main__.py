@@ -2566,13 +2566,16 @@ class SpokeAppDelegate(NSObject):
 
         # Native open can progress while optional graphics perform their setup.
         startup["glow_status"] = "not_requested"
+        self._recording_glow_failed = False
         if self._glow is not None:
             try:
                 self._glow.show()
                 startup["glow_status"] = "completed"
             except Exception:
+                self._recording_glow_failed = True
                 startup["glow_status"] = "failed"
                 logger.exception("Recording glow unavailable; continuing capture startup handling")
+                self._hide_recording_glow()
         glow_shown = time.perf_counter()
         startup["glow_ms"] = (glow_shown - capture_requested) * 1000.0
         startup["overlay_status"] = "not_requested"
@@ -2604,6 +2607,13 @@ class SpokeAppDelegate(NSObject):
                 "manualCaptureStarted:", (start_generation, completed), False))
         logger.info("Hold startup timing %s", startup)
 
+    def _hide_recording_glow(self) -> None:
+        try:
+            if self._glow is not None:
+                self._glow.hide()
+        except Exception:
+            logger.exception("Recording glow cleanup failed; continuing audio finalization")
+
     def manualCaptureStarted_(self, completion) -> None:
         start_generation, future = completion
         if (start_generation != getattr(self, "_manual_capture_start_generation", None)
@@ -2625,8 +2635,7 @@ class SpokeAppDelegate(NSObject):
             self._manual_hold_active = False
             self._update_history_capture_controls()
             self._release_command_overlay_recording_load_shed()
-            if self._glow is not None:
-                self._glow.hide()
+            self._hide_recording_glow()
             if self._overlay is not None:
                 self._overlay.flash_notice(
                     f"Microphone unavailable: {exc}",
@@ -2717,7 +2726,8 @@ class SpokeAppDelegate(NSObject):
 
         # Visibility guard: skip all overlay state updates when nothing is
         # shown. At 20-50 Hz this saves 5-6 CA/attribute ops per tick.
-        glow_visible = self._glow is not None and getattr(self._glow, "_visible", False)
+        glow_usable = self._glow is not None and not getattr(self, "_recording_glow_failed", False)
+        glow_visible = glow_usable and getattr(self._glow, "_visible", False)
         overlay_visible = self._overlay is not None and getattr(self._overlay, "_visible", False)
         command_overlay = getattr(self, "_command_overlay", None)
         command_overlay_visible = (
@@ -2756,9 +2766,9 @@ class SpokeAppDelegate(NSObject):
                 self._detector.force_end()
                 return
 
-        if self._glow is not None:
+        if glow_usable:
             self._glow.update_amplitude(rms)
-        if self._glow is not None:
+        if glow_usable:
             # Single brightness read — reuse for both overlay and command_overlay
             glow_brightness = getattr(self._glow, "_brightness", 0.0)
             if self._overlay is not None:
@@ -3075,8 +3085,8 @@ class SpokeAppDelegate(NSObject):
         # Start visible release feedback before synchronous capture teardown
         # and WAV assembly. Even small stop/encode hiccups are felt as a
         # frozen release if the animation is queued afterward.
-        if not shift_held and not enter_held and self._glow is not None:
-            self._glow.hide()
+        if not shift_held and not enter_held:
+            self._hide_recording_glow()
         if self._menubar is not None:
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
@@ -3112,8 +3122,7 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Hold ended without microphone startup; no recording or tray action")
                 if self._overlay is not None:
                     self._overlay.hide()
-                if self._glow is not None:
-                    self._glow.hide()
+                self._hide_recording_glow()
                 if self._overlay is not None and capture_start_pending:
                     self._overlay.flash_notice(
                         "Microphone never started. No audio was recorded.", hold=4.0, fade=1.0)
@@ -3129,8 +3138,7 @@ class SpokeAppDelegate(NSObject):
             )
             if self._overlay is not None:
                 self._overlay.hide()
-            if self._glow is not None:
-                self._glow.hide()
+            self._hide_recording_glow()
             if shift_held:
                 recall_index = self._latest_tray_index_for_deck()
                 if recall_index is not None:
@@ -3195,8 +3203,7 @@ class SpokeAppDelegate(NSObject):
             )
             if self._overlay is not None:
                 self._overlay.hide()
-            if self._glow is not None:
-                self._glow.hide()
+            self._hide_recording_glow()
             thread = threading.Thread(
                 target=self._parallel_insert_worker,
                 args=(wav_bytes, parallel_token, switcher_generation),

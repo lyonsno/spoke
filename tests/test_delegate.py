@@ -958,6 +958,62 @@ class TestHoldCallbacks:
         assert timing["capture_request_status"] == "failed"
         assert timing["overlay_status"] == "failed"
 
+    def test_persistent_glow_failure_cannot_keep_audio_owned_after_release(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._glow.show.side_effect = RuntimeError("persistent glow failure")
+        d._glow.hide.side_effect = RuntimeError("persistent glow failure")
+        d._preview_loop = lambda *_: None
+        d._transcribe_worker = lambda *args, **kwargs: None
+        d._parallel_insert_worker = lambda *args, **kwargs: None
+        d._spool_stopped_audio_capture = MagicMock(return_value="retained")
+        audio = _silent_wav(1)
+        d._capture.stop.return_value = audio
+
+        d._on_hold_start()
+        assert d._manual_capture_owned is True
+        d._on_hold_end()
+
+        d._capture.stop.assert_called_once_with()
+        assert d._spool_stopped_audio_capture.call_args.args[0] == audio
+        assert d._manual_capture_owned is False
+        assert d._manual_hold_active is False
+        d._on_hold_start()
+        assert d._capture.start_async.call_count == 2
+        assert d._manual_capture_owned is True
+        d._on_hold_end()
+        assert d._capture.stop.call_count == 2
+
+    def test_failed_start_with_broken_glow_still_restores_idle_feedback(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._glow.show.side_effect = RuntimeError("persistent glow failure")
+        d._glow.hide.side_effect = RuntimeError("persistent glow failure")
+        d._capture.start.side_effect = RuntimeError("native open failed")
+        d._capture.stop.return_value = b"partial startup audio"
+        d._spool_stopped_audio_capture = MagicMock()
+        d._resume_handsfree_after_hold = MagicMock()
+        d._on_hold_start()
+        assert d._spool_stopped_audio_capture.call_args.args[0] == b"partial startup audio"
+        assert d._manual_capture_owned is False
+        assert d._manual_hold_active is False
+        d._menubar.set_status_text.assert_called_with("Microphone unavailable")
+        d._resume_handsfree_after_hold.assert_called_once_with()
+
+    def test_failed_glow_is_not_reentered_by_amplitude_feedback(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._glow.show.side_effect = RuntimeError("persistent glow failure")
+        d._glow.update_amplitude.side_effect = RuntimeError("same broken layer")
+        d._preview_loop = lambda *_: None
+        d._overlay._visible = True
+        d._on_hold_start()
+        d.amplitudeUpdate_(0.1)
+        d._glow.update_amplitude.assert_not_called()
+
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.start.side_effect = RuntimeError("audio dead")

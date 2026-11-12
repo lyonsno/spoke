@@ -12,7 +12,8 @@ import pytest
 def test_native_capture_completion_and_source_identity(tmp_path, matching_source):
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256(b"".join((root / p).read_bytes()
-        for p in ("spoke/__main__.py", "spoke/capture.py", "spoke/handsfree.py"))).hexdigest()
+        for p in ("spoke/__main__.py", "spoke/capture.py", "spoke/handsfree.py",
+                  "spoke/glow.py"))).hexdigest()
     out = tmp_path / "capture-report.json"
     result = subprocess.run([sys.executable, str(root / "tests/native_capture_lifecycle_witness.py"),
         "--repo-root", str(root), "--expected-digest", digest if matching_source else "wrong",
@@ -28,6 +29,8 @@ def test_native_capture_completion_and_source_identity(tmp_path, matching_source
         assert report["stale_completion_ignored"]
         assert report["handsfree_completion_passed"]
         assert report["installed_pill_timer_clock_passed"]
+        assert report["persistent_glow_release_and_retry_passed"]
+        assert len(report["retained_fixture_audio"]) == 2
     else:
         assert report["phase"] == "source"
         assert "digest mismatch" in report["error"]
