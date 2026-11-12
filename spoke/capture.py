@@ -22,6 +22,10 @@ from concurrent.futures import Future
 from typing import Callable
 
 import numpy as np
+
+from .audio_runtime import audio_runtime_receipt, seat_audio_runtime
+
+seat_audio_runtime()
 import sounddevice as sd
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,7 @@ class CaptureBusyError(RuntimeError):
 
 class CaptureStartCancelled(RuntimeError):
     """The hold ended before native startup completed."""
+
 
 # Path to cached Silero VAD JIT model
 _SILERO_VAD_JIT_PATHS = [
@@ -139,6 +144,8 @@ class AudioCapture:
     """
 
     def __init__(self, sample_rate: int = SAMPLE_RATE, metrics=None) -> None:
+        self._audio_runtime = audio_runtime_receipt(sd)
+        logger.info("Capture PortAudio runtime: %s", self._audio_runtime)
         self._sample_rate = sample_rate
         self._stream: sd.InputStream | None = None
         self._frames: list[np.ndarray] = []

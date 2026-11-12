@@ -3320,7 +3320,7 @@ class SpokeAppDelegate(NSObject):
                     and (not self._transcribing
                          or getattr(self._client, "supports_cancellation", False) is True)
                     and not self._capture.is_recording
-                    and not getattr(self, "_vad_active_for_hold", False)
+                    and not (self._transcribing and getattr(self, "_vad_active_for_hold", False))
                     and not self._dictation_delivery_records()
                     and not getattr(self, "_dictation_paste_in_flight", False))
 

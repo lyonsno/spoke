@@ -81,6 +81,7 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
     effective = {}
     timing = None
     cancelled = False
+    client_closed = False
     from .inference_process import InferenceCancelled
     def notify(value):
         if on_phase is not None:
@@ -98,17 +99,25 @@ def run_retranscription(spool, capture_id, attempt_id, route, client_factory, in
         client = client_factory(dict(route))
         phase = "inference"
         notify("waiting")
-        with inference_context(client) as timing:
-            try:
-                if cancel_check():
-                    raise InferenceCancelled()
-                notify("transcribing")
-                text = client.transcribe(wav)
-                if cancel_check():
-                    raise InferenceCancelled()
-                if not isinstance(text, str):
-                    raise TypeError("Transcription backend returned non-text output")
-            finally:
+        try:
+            with inference_context(client) as timing:
+                try:
+                    if cancel_check():
+                        raise InferenceCancelled()
+                    notify("transcribing")
+                    text = client.transcribe(wav)
+                    if cancel_check():
+                        raise InferenceCancelled()
+                    if not isinstance(text, str):
+                        raise TypeError("Transcription backend returned non-text output")
+                finally:
+                    effective = client_receipt(client)
+                    client_closed = True
+                    close = getattr(client, "close", None)
+                    if callable(close):
+                        close()
+        finally:
+            if not client_closed:
                 effective = client_receipt(client)
                 close = getattr(client, "close", None)
                 if callable(close):

@@ -260,6 +260,8 @@ class TestRecordingHistory:
         d._capture.is_recording = protected == "capture"
         d._dictation_paste_in_flight = protected == "paste"
         d._vad_active_for_hold = protected == "segments"
+        d._transcribing = protected == "segments"
+        d._client.supports_cancellation = True
         assert d._cancel_transcription_for_recovery() is False
         assert d._inference_control.epoch == 0
         assert d._transcription_token == 0

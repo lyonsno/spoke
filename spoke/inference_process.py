@@ -16,15 +16,12 @@ from multiprocessing.connection import Connection
 
 logger = logging.getLogger(__name__)
 
-def _reap(process, connection=None):
+def _reap(process):
     """Reaping a killed native worker must not retain inference or AppKit."""
-    def finish():
-        try:
-            process.wait()
-        finally:
-            if connection is not None:
-                connection.close()
-    threading.Thread(target=finish, daemon=True, name="spoke-inference-reap").start()
+    try:
+        threading.Thread(target=process.wait, daemon=True, name="spoke-inference-reap").start()
+    except RuntimeError:
+        logger.warning("Worker reaper unavailable; cancellation ownership released", exc_info=True)
 
 
 @contextmanager
@@ -77,6 +74,7 @@ class InferenceProcess:
         self._state = threading.Lock()
         self._generation = 0
         self._process = self._connection = None
+        self._exchange = None
 
     @property
     def pid(self):
@@ -95,34 +93,66 @@ class InferenceProcess:
             with self._state:
                 if generation != self._generation:
                     raise InferenceCancelled()
-                if self._process is None:
-                    parent, child = socket.socketpair()
-                    try:
-                        root = Path(__file__).resolve().parents[1]
-                        process = subprocess.Popen(
-                            [sys.executable, "-m", "spoke.inference_process", str(child.fileno()), str(os.getpid())],
-                            cwd=root, pass_fds=(child.fileno(),), start_new_session=True,
-                        )
-                        connection = Connection(parent.detach())
-                        self._process, self._connection = process, connection
-                    finally:
-                        parent.close()
-                        child.close()
-                process, connection = self._process, self._connection
+                request = {"process": self._process, "connection": self._connection,
+                           "reaper_started": False}
+                self._exchange = request
             request_id = uuid.uuid4().hex
             transferred = threading.Event()
             reply = {}
             def exchange():
+                process, connection = request["process"], request["connection"]
                 try:
+                    with self._state:
+                        if generation != self._generation:
+                            raise InferenceCancelled()
+                    if process is None:
+                        parent, child = socket.socketpair()
+                        try:
+                            root = Path(__file__).resolve().parents[1]
+                            process = subprocess.Popen(
+                                [sys.executable, "-m", "spoke.inference_process", str(child.fileno()), str(os.getpid())],
+                                cwd=root, pass_fds=(child.fileno(),), start_new_session=True)
+                            connection = Connection(parent.detach())
+                            with self._state:
+                                if generation != self._generation:
+                                    raise InferenceCancelled()
+                                self._process, self._connection = process, connection
+                                request.update(process=process, connection=connection)
+                        finally:
+                            parent.close()
+                            child.close()
+                    reply["pid"] = process.pid
                     connection.send((request_id, self._config, method, args))
                     reply["response"] = connection.recv()
                 except BaseException as exc:
                     reply["error"] = exc
                 finally:
-                    transferred.set()
+                    # No socket I/O follows this ownership handoff. Only its
+                    # transport thread may dispose an in-flight descriptor.
+                    with self._state:
+                        detached = process is not None and self._process is not process
+                        dead = process is not None and process.poll() is not None
+                        retire = detached or dead or (process is not None and "error" in reply)
+                        if retire and not detached:
+                            self._process = self._connection = None
+                        if self._exchange is request:
+                            self._exchange = None
+                        transferred.set()
+                    if retire:
+                        if not dead and not request["reaper_started"]:
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        if connection is not None:
+                            connection.close()
+                        if not request["reaper_started"]:
+                            _reap(process)
+            started = False
             try:
                 threading.Thread(target=exchange, daemon=True,
                                  name="spoke-inference-transfer").start()
+                started = True
                 while not transferred.wait(0.05):
                     if generation != self.generation:
                         raise InferenceCancelled()
@@ -137,7 +167,7 @@ class InferenceProcess:
                 if not isinstance(response, dict) or response.get("request_id") != request_id:
                     raise RuntimeError("Inference worker returned an invalid request identity")
                 worker = response.get("worker", {})
-                if (worker.get("pid") != process.pid
+                if (worker.get("pid") != reply["pid"]
                         or worker.get("source_root") != str(Path(__file__).resolve().parents[1])
                         or not isinstance(response.get("effective"), dict)
                         or ("value" not in response and not response.get("error"))):
@@ -151,35 +181,27 @@ class InferenceProcess:
                 raise RuntimeError("Inference worker exited without a result") from exc
             finally:
                 with self._state:
-                    detached = self._process is not process
-                    dead = process.poll() is not None
-                    if dead and not detached:
-                        self._process = self._connection = None
-                if detached or dead:
-                    if transferred.is_set():
-                        connection.close()
-                        _reap(process)
-                    else:
-                        _reap(process, connection)
+                    if not started and self._exchange is request:
+                        self._exchange = None
 
     def cancel(self):
         with self._state:
             self._generation += 1
             process, connection = self._process, self._connection
+            exchange = self._exchange
             self._process = self._connection = None
+            self._exchange = None
             if process is None:
                 return False
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        # The blocked caller reaps its process. Idle workers have no caller.
-        if self._calls.acquire(blocking=False):
-            try:
-                connection.close()
-                _reap(process)
-            finally:
-                self._calls.release()
+            if exchange is not None:
+                exchange["reaper_started"] = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if exchange is None:
+            connection.close()
+        _reap(process)
         return True
 
     close = cancel

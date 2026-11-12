@@ -3,6 +3,7 @@
 import importlib
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -208,6 +209,32 @@ def _import_overlay(mock_pyobjc):
     mod = importlib.import_module("spoke.overlay")
     mod._start_overlay_fill_worker = lambda work: work()
     return mod
+
+
+def test_recording_show_cancels_prior_notice(mock_pyobjc, monkeypatch):
+    mod = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+    overlay = mod.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(_make_rect(0, 0, 680, 160))
+    overlay._text_view = _FakeTextView(_make_rect(0, 0, 680, 160), "notice")
+    overlay._scroll_view = _FakeScrollView(_make_rect(0, 0, 680, 160), overlay._text_view, 0)
+    timer = overlay._notice_timer = MagicMock()
+    overlay.show()
+    timer.invalidate.assert_called_once_with()
+    assert overlay._notice_timer is None
+
+
+def test_expired_notice_callback_cannot_hide_new_recording(mock_pyobjc):
+    mod = _import_overlay(mock_pyobjc)
+    overlay = mod.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay.hide = MagicMock()
+    current = overlay._notice_timer = object()
+    overlay.noticeTimerDone_(object())
+    overlay.hide.assert_not_called()
+    assert overlay._notice_timer is current
+    overlay.noticeTimerDone_(current)
+    overlay.hide.assert_called_once()
 
 
 def test_show_resets_stale_scroll_and_document_height(mock_pyobjc, monkeypatch):

@@ -870,6 +870,7 @@ class TranscriptionOverlay(NSObject):
         """Fade the overlay in."""
         if self._window is None:
             return
+        self._cancel_notice_timer()
         self._preview_compositor_suspended_for_asr = False
         self._cancel_tray_capture_flash()
         # If recovery mode is active, clean it up first
@@ -1857,6 +1858,8 @@ class TranscriptionOverlay(NSObject):
         )
 
     def noticeTimerDone_(self, timer) -> None:
+        if timer != getattr(self, "_notice_timer", None):
+            return
         self._notice_timer = None
         fade = getattr(self, "_notice_fade", 1.5)
         self.hide(fade_duration=fade)
