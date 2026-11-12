@@ -14,11 +14,14 @@ def test_capture_rejects_unverified_requested_audio_runtime(monkeypatch, tmp_pat
     requested.write_bytes(b"guard fixture, not a loadable audio library")
     monkeypatch.setenv("SPOKE_PORTAUDIO_LIBRARY", str(requested))
     monkeypatch.setenv("SPOKE_PORTAUDIO_SHA256", "0" * 64)
+    if failure == "wrong_library":
+        monkeypatch.setenv("SPOKE_PORTAUDIO_SHA256", hashlib.sha256(requested.read_bytes()).hexdigest())
     if failure != "wrong_library":
         monkeypatch.setattr(capture.sd, "_libname", str(requested))
     if failure == "incomplete_pin":
         monkeypatch.delenv("SPOKE_PORTAUDIO_SHA256")
-    with pytest.raises(RuntimeError, match="PortAudio"):
+    match = "requested .*loaded" if failure == "wrong_library" else "PortAudio"
+    with pytest.raises(RuntimeError, match=match):
         capture.AudioCapture()
 
 

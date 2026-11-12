@@ -179,6 +179,28 @@ def test_old_vad_flag_does_not_block_stopping_unrelated_history(main_module, mon
     assert not d._history_can_take_over(), "Active unmanaged VAD work must stay protected"
 
 
+def test_pending_vad_segment_stays_protected_after_live_flag_clears(main_module, monkeypatch):
+    from tests.test_delegate import _make_delegate
+    from spoke.inference_process import InferenceControl
+    d = _make_delegate(main_module, monkeypatch)
+    d._inference_control = InferenceControl()
+    d._capture.is_recording = False
+    d._vad_active_for_hold = True
+    d._transcribing = False
+    entered, release = threading.Event(), threading.Event()
+    client = SimpleNamespace(supports_cancellation=True,
+        transcribe=lambda audio: (entered.set(), release.wait(), "old segment")[-1])
+    acc = d._segment_accumulator
+    acc.dispatch(b"fixture", client)
+    try:
+        assert entered.wait(1)
+        assert not d._history_can_take_over(), "Unmanaged segment outlives live flag"
+    finally:
+        release.set()
+        assert acc.wait(timeout=2)
+    assert d._history_can_take_over()
+
+
 @pytest.mark.parametrize("blocked_operation", ["send", "recv"])
 def test_cancel_releases_caller_when_pipe_transfer_is_blocked(monkeypatch, blocked_operation):
     from spoke import inference_process as mod

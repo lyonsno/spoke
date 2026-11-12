@@ -3313,6 +3313,10 @@ class SpokeAppDelegate(NSObject):
 
     def _history_can_take_over(self) -> bool:
         control = getattr(self, "_inference_control", None)
+        accumulator = getattr(self, "_segment_accumulator", None)
+        segmented_work = getattr(self, "_vad_active_for_hold", False) and (
+            self._transcribing
+            or (accumulator is not None and not accumulator.wait(timeout=0.0)))
         return bool(control is not None and control.can_cancel
                     and not getattr(self, "_manual_hold_active", False)
                     and not getattr(self, "_manual_capture_start_pending", False)
@@ -3320,7 +3324,7 @@ class SpokeAppDelegate(NSObject):
                     and (not self._transcribing
                          or getattr(self._client, "supports_cancellation", False) is True)
                     and not self._capture.is_recording
-                    and not (self._transcribing and getattr(self, "_vad_active_for_hold", False))
+                    and not segmented_work
                     and not self._dictation_delivery_records()
                     and not getattr(self, "_dictation_paste_in_flight", False))
 
