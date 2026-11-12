@@ -163,6 +163,7 @@ def main():
             control = d._inference_control = InferenceControl()
             d._client = client
             d._dictation_delivery_records = lambda: ()
+            removals_before = broken._window.orderOut_.call_count
             returned = False
             try:
                 with control.context(None, client):
@@ -172,7 +173,12 @@ def main():
                 pass
             assert returned is True, "History cancellation did not reach replacement admission"
             client.cancel.assert_called_once_with()
-            assert broken._window.orderOut_.called
+            removals_after = broken._window.orderOut_.call_count
+            report["history_glow_window_removals"] = {
+                "before": removals_before, "after": removals_after,
+            }
+            assert removals_after == removals_before + 1, (
+                "History did not request fresh glow window removal")
             assert not d._transcribing
             report["history_glow_cleanup_passed"] = True
         report["phase"] = "pill_timer_bridge"
