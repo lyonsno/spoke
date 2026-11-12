@@ -154,6 +154,27 @@ def main():
                                      "sha256": hashlib.sha256(actual_audio).hexdigest()})
             report["persistent_glow_release_and_retry_passed"] = True
             report["retained_fixture_audio"] = retained
+            report["phase"] = "history_glow_cleanup"
+            from contextlib import nullcontext
+            from types import SimpleNamespace
+            from spoke.inference_process import InferenceControl, InferenceCancelled
+            client = SimpleNamespace(supports_cancellation=True, cancel=MagicMock(),
+                                     cancellation_scope=nullcontext)
+            control = d._inference_control = InferenceControl()
+            d._client = client
+            d._dictation_delivery_records = lambda: ()
+            returned = False
+            try:
+                with control.context(None, client):
+                    assert d._history_can_take_over()
+                    returned = d._cancel_transcription_for_recovery()
+            except InferenceCancelled:
+                pass
+            assert returned is True, "History cancellation did not reach replacement admission"
+            client.cancel.assert_called_once_with()
+            assert broken._window.orderOut_.called
+            assert not d._transcribing
+            report["history_glow_cleanup_passed"] = True
         report["phase"] = "pill_timer_bridge"
         from Foundation import NSTimer
         from spoke.overlay import TranscriptionOverlay

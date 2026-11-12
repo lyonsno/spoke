@@ -341,8 +341,9 @@ def test_remote_request_is_registered_without_taking_gpu_lock(main_module, monke
         client.close()
 
 
+@pytest.mark.parametrize("glow_fault", [False, True])
 def test_history_action_stops_http_and_retries_preserved_audio_on_same_queue(
-        tmp_path, main_module, monkeypatch, request):
+        tmp_path, main_module, monkeypatch, request, glow_fault):
     from concurrent.futures import ThreadPoolExecutor
     import hashlib
     import sys
@@ -399,6 +400,17 @@ def test_history_action_stops_http_and_retries_preserved_audio_on_same_queue(
     delegate._capture.is_recording = False
     delegate._local_inference_lock = threading.Lock()
     delegate._preview_session_token = 0
+    if glow_fault:
+        import importlib
+        monkeypatch.delitem(sys.modules, "spoke.glow", raising=False)
+        glow = importlib.import_module("spoke.glow")
+        broken = delegate._glow = glow.GlowOverlay.alloc().initWithScreen_(None)
+        broken._window = MagicMock()
+        broken._dim_layer = None
+        broken._glow_layer = MagicMock()
+        broken._glow_layer.presentationLayer.return_value = None
+        broken._glow_layer.opacity.return_value = 0.0
+        broken._glow_layer.setOpacity_.side_effect = RuntimeError("persistent native glow fault")
     def build(route):
         result = TranscriptionClient(f"http://127.0.0.1:{server.server_port}",
                                       model=route["model"], isolated=True)
@@ -441,6 +453,8 @@ def test_history_action_stops_http_and_retries_preserved_audio_on_same_queue(
         assert len(requests) == 2 and all(audio in body for body in requests)
         assert hashlib.sha256(spool.read_recording_audio(capture.capture_id)).hexdigest() == capture.sha256
         assert delegate._transcription_token == 1
+        if glow_fault:
+            broken._window.orderOut_.assert_called_once_with(None)
     finally:
         release.set()
 

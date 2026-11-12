@@ -1281,17 +1281,17 @@ class GlowOverlay(NSObject):
         """Fade the glow window out smoothly."""
         if self._window is None:
             return
-        self._cancel_pending_hide()
-        bt = getattr(self, "_brightness_timer", None)
-        if bt is not None:
-            bt.invalidate()
-            self._brightness_timer = None
         self._visible = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
         logger.info("Glow hide (received %d amplitude updates)", self._update_count)
 
         try:
+            self._cancel_pending_hide()
+            bt = getattr(self, "_brightness_timer", None)
+            if bt is not None:
+                bt.invalidate()
+                self._brightness_timer = None
             pres = self._glow_layer.presentationLayer()
             current = pres.opacity() if pres is not None else self._glow_layer.opacity()
             anim = CABasicAnimation.animationWithKeyPath_("opacity")
@@ -1342,10 +1342,18 @@ class GlowOverlay(NSObject):
                 hide_delay, self, "hideWindowAfterFade:", hide_generation, False
             )
         except Exception:
-            # If animation fails, just snap off
-            logger.exception("Fade-out animation failed, snapping off")
-            self._glow_layer.setOpacity_(0.0)
-            self._window.orderOut_(None)
+            logger.exception("Glow fade failed; attempting fallback cleanup")
+            for name in ("_glow_layer", "_vignette_layer", "_dim_layer"):
+                layer = getattr(self, name, None)
+                if layer is not None:
+                    try:
+                        layer.setOpacity_(0.0)
+                    except Exception:
+                        logger.exception("Glow opacity fallback failed for %s", name)
+            try:
+                self._window.orderOut_(None)
+            except Exception:
+                logger.exception("Glow window fallback removal failed")
 
     def hideWindowAfterFade_(self, timer) -> None:
         """Remove window after fade-out animation completes."""

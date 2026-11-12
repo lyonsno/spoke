@@ -1018,6 +1018,37 @@ class TestHoldCallbacks:
         d.amplitudeUpdate_(0.1)
         d._glow.update_amplitude.assert_not_called()
 
+    @pytest.mark.parametrize("path", ["state_callback", "capture_completion"])
+    def test_healthy_handsfree_show_restores_failed_manual_glow(
+        self, main_module, monkeypatch, path
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_loop = lambda *_: None
+        d._glow.show.side_effect = RuntimeError("manual glow failed")
+        d._capture.stop.return_value = b""
+        d._on_hold_start()
+        d._on_hold_end()
+        assert d._recording_glow_failed is True
+        d._glow.show.side_effect = None
+        d._glow._visible = d._overlay._visible = True
+        d._glow._brightness = d._glow._smoothed_amplitude = 0.1
+        d._glow._glow_layer.opacity.return_value = 0.1
+        d._glow._cap_factor = 1.0
+        if path == "state_callback":
+            d._on_handsfree_state_change(main_module.HandsFreeState.DICTATING)
+        else:
+            from spoke.handsfree import HandsFreeController
+            controller = HandsFreeController.__new__(HandsFreeController)
+            controller._delegate = d
+            controller._state = main_module.HandsFreeState.DICTATING
+            future = controller._capture_start_future = Future()
+            future.set_result(None)
+            controller._set_state = MagicMock()
+            controller.capture_started(future)
+        assert d._recording_glow_failed is False
+        d.amplitudeUpdate_(0.1)
+        d._glow.update_amplitude.assert_called_once()
+
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.start.side_effect = RuntimeError("audio dead")

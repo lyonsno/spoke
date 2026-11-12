@@ -417,6 +417,33 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    @pytest.mark.parametrize("fault", ["layer", "timer", "window"])
+    def test_hide_fallback_attempts_window_removal_without_escaping(
+        self, mock_pyobjc, caplog, fault
+    ):
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            if fault == "layer":
+                glow._glow_layer.setOpacity_.side_effect = RuntimeError("layer cleanup failed")
+            elif fault == "timer":
+                glow._hide_timer = MagicMock()
+                glow._hide_timer.invalidate.side_effect = RuntimeError("timer cleanup failed")
+            else:
+                glow._glow_layer.addAnimation_forKey_.side_effect = RuntimeError("animation failed")
+                glow._window.orderOut_.side_effect = RuntimeError("window cleanup failed")
+            glow.hide()
+            glow._window.orderOut_.assert_called_once_with(None)
+            assert glow._visible is False
+            assert glow._hide_generation == 1
+            if fault == "window":
+                assert any(r.exc_info and str(r.exc_info[1]) == "window cleanup failed"
+                           for r in caplog.records)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_hide_schedules_window_teardown_after_dim_fade(self, mock_pyobjc):
         """The window should stay alive until the dim fade has had time to finish."""
         sys.modules.pop("spoke.glow", None)

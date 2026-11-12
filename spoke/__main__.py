@@ -2031,6 +2031,7 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_recording(True)
             if self._glow is not None:
                 self._glow.show()
+                self._recording_glow_failed = False
 
     def handsFreeCaptureStarted_(self, completion) -> None:
         controller, future = completion

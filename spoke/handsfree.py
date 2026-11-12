@@ -399,6 +399,7 @@ class HandsFreeController:
         delegate = self._delegate
         if delegate._glow is not None:
             delegate._glow.show()
+            delegate._recording_glow_failed = False
         if delegate._menubar is not None:
             delegate._menubar.set_recording(True)
 

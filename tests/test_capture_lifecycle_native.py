@@ -31,6 +31,7 @@ def test_native_capture_completion_and_source_identity(tmp_path, matching_source
         assert report["installed_pill_timer_clock_passed"]
         assert report["persistent_glow_release_and_retry_passed"]
         assert len(report["retained_fixture_audio"]) == 2
+        assert report["history_glow_cleanup_passed"]
     else:
         assert report["phase"] == "source"
         assert "digest mismatch" in report["error"]
