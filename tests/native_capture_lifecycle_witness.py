@@ -21,6 +21,7 @@ def main():
     report = {"passed": False, "phase": "source", "repo_root": str(root)}
     release = threading.Event()
     cap = None
+    pill = None
     try:
         sources = [root / p for p in ("spoke/__main__.py", "spoke/capture.py", "spoke/handsfree.py")]
         report["source_digest"] = hashlib.sha256(b"".join(p.read_bytes() for p in sources)).hexdigest()
@@ -45,6 +46,11 @@ def main():
                 "_handsfree": None, "_whisper_backend": "local", "_preview_active": False}.items():
             setattr(d, name, value)
         d._menubar = MagicMock()
+        d._glow = MagicMock()
+        def show_glow():
+            assert cap._start_future is not None, "graphics ran before capture was admitted"
+            report["capture_admitted_before_graphics"] = True
+        d._glow.show.side_effect = show_glow
         d._detector = MagicMock(_enter_held=False, _shift_at_press=False, _shift_latched=False)
         preview = threading.Event()
         d._preview_loop = lambda token: preview.set()
@@ -105,11 +111,30 @@ def main():
             assert d._menubar.set_recording.call_args.args == (True,)
             hf._stop_dictation_capture()
             report["handsfree_completion_passed"] = True
+        report["phase"] = "pill_timer_bridge"
+        from Foundation import NSTimer
+        from spoke.overlay import TranscriptionOverlay
+        pill = TranscriptionOverlay.alloc().initWithScreen_(None)
+        pill._window = MagicMock()
+        pill._show_started_at = time.perf_counter()
+        pill._last_show_timing = {"show_generation": 1}
+        pill._fade_direction = 1
+        pill._fade_step = 0
+        pill._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.01, pill, "fadeStep:", None, True)
+        run_until(lambda: "first_fade_callback_ms" in pill._last_show_timing)
+        pill._cancel_fade()
+        assert pill._last_show_timing["first_fade_callback_ms"] >= 0
+        assert pill._window.setAlphaValue_.called
+        report["installed_pill_timer_clock_passed"] = True
+        report["pill_timer_clock"] = dict(pill._last_show_timing)
         report.update(passed=True, phase="complete")
     except BaseException as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         release.set()
+        if pill is not None:
+            pill._cancel_fade()
         try:
             if cap is not None:
                 cap.stop()

@@ -2500,6 +2500,7 @@ class SpokeAppDelegate(NSObject):
             getattr(self, "_recovery_hold_active", False),
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
+        onset_started = time.perf_counter()
         # Manual holds take precedence over any live hands-free audio path.
         self._manual_hold_active = True
         self._manual_hold_switcher_generation = (
@@ -2531,29 +2532,15 @@ class SpokeAppDelegate(NSObject):
             def segment_cb(wav_bytes: bytes):
                 self._segment_accumulator.dispatch(wav_bytes, self._client)
 
-        if self._glow is not None:
-            self._glow.show()
-        if self._overlay is not None:
-            if self._glow is not None:
-                self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
-                    immediate=True,
-                )
-            self._overlay.show()
-            self._refresh_operator_ping_tokens_from_configured_event_log(
-                update_status=False,
-                summon_stack_body=False,
-            )
-
         self._manual_capture_start_generation = getattr(self, "_manual_capture_start_generation", 0) + 1
         start_generation = self._manual_capture_start_generation
         self._manual_capture_start_pending = True
         self._manual_capture_start_failed = False
         self._update_history_capture_controls()
-        if self._overlay is not None:
-            self._overlay.set_text("Starting microphone - not recording yet")
         self._record_start_time = time.monotonic()
         self._manual_capture_owned = False
+        capture_request_started = time.perf_counter()
+        startup = {"generation": start_generation, "capture_request_status": "submitted"}
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -2570,11 +2557,52 @@ class SpokeAppDelegate(NSObject):
             )
             self._manual_capture_owned = True
         except Exception as exc:
+            startup["capture_request_status"] = "failed"
             future = Future()
             future.set_exception(exc)
+        capture_requested = time.perf_counter()
+        startup["preparation_ms"] = (capture_request_started - onset_started) * 1000.0
+        startup["capture_request_ms"] = (capture_requested - capture_request_started) * 1000.0
+
+        # Native open can progress while optional graphics perform their setup.
+        startup["glow_status"] = "not_requested"
+        if self._glow is not None:
+            try:
+                self._glow.show()
+                startup["glow_status"] = "completed"
+            except Exception:
+                startup["glow_status"] = "failed"
+                logger.exception("Recording glow unavailable; continuing capture startup handling")
+        glow_shown = time.perf_counter()
+        startup["glow_ms"] = (glow_shown - capture_requested) * 1000.0
+        startup["overlay_status"] = "not_requested"
+        if self._overlay is not None:
+            try:
+                if self._glow is not None:
+                    self._overlay.set_brightness(
+                        getattr(self._glow, "_brightness", 0.0),
+                        immediate=True,
+                    )
+                self._overlay.show()
+                pill_timing = getattr(self._overlay, "_last_show_timing", None)
+                if isinstance(pill_timing, dict):
+                    startup["pill"] = dict(pill_timing)
+                self._overlay.set_text("Starting microphone - not recording yet")
+                self._refresh_operator_ping_tokens_from_configured_event_log(
+                    update_status=False,
+                    summon_stack_body=False,
+                )
+                startup["overlay_status"] = "completed"
+            except Exception:
+                startup["overlay_status"] = "failed"
+                logger.exception("Recording pill unavailable; continuing capture startup handling")
+        feedback_shown = time.perf_counter()
+        startup["overlay_ms"] = (feedback_shown - glow_shown) * 1000.0
+        startup["total_ms"] = (feedback_shown - onset_started) * 1000.0
         future.add_done_callback(lambda completed:
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "manualCaptureStarted:", (start_generation, completed), False))
+        logger.info("Hold startup timing %s", startup)
 
     def manualCaptureStarted_(self, completion) -> None:
         start_generation, future = completion

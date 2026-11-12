@@ -225,6 +225,38 @@ def test_recording_show_cancels_prior_notice(mock_pyobjc, monkeypatch):
     assert overlay._notice_timer is None
 
 
+@pytest.mark.parametrize("optics_fails", [False, True])
+def test_show_attributes_sync_optics_cost_and_keeps_plain_pill_on_failure(
+    mock_pyobjc, monkeypatch, optics_fails
+):
+    mod = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+    overlay = mod.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(_make_rect(0, 0, 680, 160))
+    overlay._text_view = _FakeTextView(_make_rect(0, 0, 680, 160), "")
+    overlay._scroll_view = _FakeScrollView(_make_rect(0, 0, 680, 160), overlay._text_view, 0)
+    now = [100.0]
+    # No sleep or machine-speed assertion: only exact phase attribution.
+    monkeypatch.setattr(mod, "time", SimpleNamespace(perf_counter=lambda: now[0]), raising=False)
+    def optics(**kwargs):
+        now[0] += 0.25
+        if optics_fails:
+            raise RuntimeError("native optics setup failed")
+        return True
+    overlay._publish_preview_compositor_snapshot = optics
+    overlay.show()
+    assert overlay._window.ordered_front
+    assert overlay._last_show_timing["optics_ms"] == pytest.approx(250)
+    assert overlay._last_show_timing["total_ms"] == pytest.approx(250)
+    assert overlay._last_show_timing["optics_status"] == ("failed" if optics_fails else "published")
+    now[0] += 0.75
+    overlay.fadeStep_(overlay._fade_timer)
+    assert overlay._last_show_timing["first_fade_callback_ms"] == pytest.approx(1000)
+    assert overlay._last_show_timing["show_generation"] == 1
+    assert overlay._window.alpha == pytest.approx(1 / 144)
+
+
 def test_expired_notice_callback_cannot_hide_new_recording(mock_pyobjc):
     mod = _import_overlay(mock_pyobjc)
     overlay = mod.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())

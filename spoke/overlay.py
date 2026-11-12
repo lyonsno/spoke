@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import threading
+import time
 
 import objc
 from AppKit import (
@@ -868,6 +869,12 @@ class TranscriptionOverlay(NSObject):
 
     def show(self) -> None:
         """Fade the overlay in."""
+        started = time.perf_counter()
+        self._show_started_at = started
+        self._show_generation = getattr(self, "_show_generation", 0) + 1
+        self._last_show_timing = {
+            "show_generation": self._show_generation, "optics_status": "not_requested"
+        }
         if self._window is None:
             return
         self._cancel_notice_timer()
@@ -914,7 +921,14 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
-        self._publish_preview_compositor_snapshot(visible=True, state="materialize")
+        layout_done = time.perf_counter()
+        try:
+            published = self._publish_preview_compositor_snapshot(visible=True, state="materialize")
+            self._last_show_timing["optics_status"] = "published" if published else "unavailable"
+        except Exception:
+            self._last_show_timing["optics_status"] = "failed"
+            logger.exception("Preview optics unavailable; retaining native recording pill")
+        optics_done = time.perf_counter()
         self._window.orderFrontRegardless()
 
         # Fade in using stepped timer
@@ -925,6 +939,13 @@ class TranscriptionOverlay(NSObject):
         interval = _FADE_IN_S / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
+        )
+        finished = time.perf_counter()
+        self._last_show_timing.update(
+            layout_ms=(layout_done - started) * 1000.0,
+            optics_ms=(optics_done - layout_done) * 1000.0,
+            presentation_request_ms=(finished - optics_done) * 1000.0,
+            total_ms=(finished - started) * 1000.0,
         )
         logger.info("Overlay show")
 
@@ -944,7 +965,7 @@ class TranscriptionOverlay(NSObject):
         self._cancel_typewriter()
         self._hide_and_release_preview_compositor_client()
         self._start_fade_out(duration=fade_duration)
-        logger.info("Overlay hide")
+        logger.info("Overlay hide (last_show_timing=%s)", getattr(self, "_last_show_timing", None))
 
     def order_out(self) -> None:
         """Immediately remove the overlay from screen (no fade).
@@ -979,6 +1000,12 @@ class TranscriptionOverlay(NSObject):
 
     def fadeStep_(self, timer) -> None:
         """One step of the fade animation."""
+        timing = getattr(self, "_last_show_timing", None)
+        if (timer is self._fade_timer and self._fade_direction == 1
+                and isinstance(timing, dict) and "first_fade_callback_ms" not in timing):
+            timing["first_fade_callback_ms"] = (
+                time.perf_counter() - self._show_started_at
+            ) * 1000.0
         self._fade_step += 1
         progress = self._fade_step / _FADE_STEPS
 

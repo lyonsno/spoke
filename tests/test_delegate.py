@@ -881,7 +881,7 @@ class TestHoldCallbacks:
         d._capture.start.assert_not_called()
         d._menubar.set_recording.assert_not_called()
 
-    def test_hold_start_shows_preview_before_starting_capture(self, main_module, monkeypatch):
+    def test_hold_start_admits_capture_before_visual_setup(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         call_order: list[str] = []
         d._glow.show.side_effect = lambda: call_order.append("glow")
@@ -890,7 +890,73 @@ class TestHoldCallbacks:
 
         d._on_hold_start()
 
-        assert call_order[:3] == ["glow", "overlay", "capture"]
+        assert call_order[:3] == ["capture", "glow", "overlay"]
+
+    @pytest.mark.parametrize("broken_feedback", ["glow", "overlay"])
+    def test_visual_setup_failure_does_not_abandon_capture(
+        self, main_module, monkeypatch, broken_feedback
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        getattr(d, f"_{broken_feedback}").show.side_effect = RuntimeError("visual setup failed")
+
+        d._on_hold_start()
+
+        d._capture.start.assert_called_once()
+        assert d._manual_capture_owned is True
+        assert d._manual_capture_start_pending is False
+        d._menubar.set_recording.assert_called_with(True)
+        assert d._preview_active is True
+
+    def test_hold_start_records_phase_clocks_without_runtime_state_publication(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        now = [100.0]
+        monkeypatch.setattr(main_module.time, "perf_counter", lambda: now[0])
+        def elapsed(seconds):
+            now[0] += seconds
+        d._capture.start.side_effect = lambda **kwargs: elapsed(0.01)
+        d._glow.show.side_effect = lambda: elapsed(0.02)
+        d._overlay.show.side_effect = lambda: elapsed(0.03)
+        phase_writer = MagicMock()
+        monkeypatch.setattr(main_module, "_record_runtime_phase", phase_writer)
+        with patch.object(main_module.logger, "info") as log:
+            d._on_hold_start()
+        timings = [c.args[1] for c in log.call_args_list if c.args[0] == "Hold startup timing %s"]
+        assert len(timings) == 1
+        assert timings[0]["capture_request_ms"] == pytest.approx(10)
+        assert timings[0]["glow_ms"] == pytest.approx(20)
+        assert timings[0]["overlay_ms"] == pytest.approx(30)
+        assert timings[0]["total_ms"] == pytest.approx(60)
+        assert timings[0]["capture_request_status"] == "submitted"
+        phase_writer.assert_not_called()
+
+    def test_failed_feedback_does_not_report_prior_pill_timings(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay._last_show_timing = {"optics_ms": 90000, "optics_status": "published"}
+        d._overlay.set_brightness.side_effect = RuntimeError("feedback not reached")
+        with patch.object(main_module.logger, "info") as log:
+            d._on_hold_start()
+        timings = [c.args[1] for c in log.call_args_list if c.args[0] == "Hold startup timing %s"]
+        assert "pill" not in timings[0], "Old presentation cannot diagnose this hold"
+        assert timings[0]["overlay_status"] == "failed"
+
+    def test_failed_capture_and_visual_setup_still_finalize_startup(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.start_async.side_effect = RuntimeError("capture request rejected")
+        d._overlay.show.side_effect = RuntimeError("feedback failed too")
+        with patch.object(main_module.logger, "info") as log:
+            d._on_hold_start()
+        assert d._manual_capture_owned is False
+        assert d._manual_hold_active is False
+        assert d._manual_capture_start_failed is True
+        assert d._preview_active is False
+        assert call(True) not in d._menubar.set_recording.call_args_list
+        timing = next(c.args[1] for c in log.call_args_list if c.args[0] == "Hold startup timing %s")
+        assert timing["capture_request_status"] == "failed"
+        assert timing["overlay_status"] == "failed"
 
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -907,7 +973,7 @@ class TestHoldCallbacks:
         )
         assert d._preview_active is False
 
-    def test_hold_start_shows_preview_before_suspending_wakeword_listener(
+    def test_hold_start_shows_preview_before_completion_suspends_wakeword_listener(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -936,9 +1002,9 @@ class TestHoldCallbacks:
             d._on_hold_start()
 
         assert call_order[:4] == [
+            "capture",
             "glow",
             "overlay",
-            "capture",
             "disable:manual hold suspend",
         ]
         assert d._handsfree_resume_state_for_hold == main_module.HandsFreeState.LISTENING

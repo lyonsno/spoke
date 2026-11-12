@@ -24,8 +24,10 @@ def test_native_capture_completion_and_source_identity(tmp_path, matching_source
     if matching_source:
         assert report["phase"] == "complete"
         assert report["pending_and_completion_passed"]
+        assert report["capture_admitted_before_graphics"]
         assert report["stale_completion_ignored"]
         assert report["handsfree_completion_passed"]
+        assert report["installed_pill_timer_clock_passed"]
     else:
         assert report["phase"] == "source"
         assert "digest mismatch" in report["error"]
